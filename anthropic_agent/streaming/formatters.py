@@ -496,7 +496,6 @@ async def json_formatter(
 
         # ---- Error ----
         if event_type == "error":
-            
             error_data = getattr(event, "error", event)
             error_payload = json.dumps(error_data, default=str)
             await _chunk_and_emit(queue, "error", agent_uuid, error_payload, final_on_last=True)
