@@ -5,11 +5,13 @@ Conversation is a single run record for UI display and pagination.
 LLMConfig is the base for provider-specific LLM configuration.
 PendingToolRelay captures state when the agent pauses for frontend/user tool responses.
 
-Serialization note: These dataclasses do NOT have to_dict()/from_dict() methods.
-Storage adapters are responsible for serialization/deserialization externally.
+Serialization note: AgentConfig and Conversation do NOT have to_dict()/from_dict() —
+storage adapters handle their serialization externally via storage/serialization.py.
+LLMConfig has to_dict()/from_dict() so provider subclasses can own their serialization.
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
@@ -39,6 +41,11 @@ class LLMConfig:
     their specific fields. The ``provider`` field on ``AgentConfig``
     tells storage adapters which subclass to reconstruct on load.
 
+    Serialization:
+        The base class provides default ``to_dict()``/``from_dict()`` using
+        ``dataclasses.asdict()`` and field-filtered construction. Provider
+        subclasses can override these if they have nested typed fields.
+
     Example::
 
         @dataclass
@@ -47,6 +54,21 @@ class LLMConfig:
             max_tokens: int | None = None
             server_tools: list[dict[str, Any]] | None = None
     """
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize this LLMConfig to a JSON-safe dict."""
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LLMConfig:
+        """Reconstruct an LLMConfig from a dict.
+
+        Filters keys to only those that are valid dataclass fields on ``cls``,
+        so unknown keys from older/newer schemas are silently ignored.
+        """
+        valid_fields = {f.name for f in dataclasses.fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered)
 
 
 # ==============================================================================
