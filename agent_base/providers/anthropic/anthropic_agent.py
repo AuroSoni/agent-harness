@@ -78,7 +78,7 @@ class AnthropicAgent(Agent):
         self.media_backend = media_backend or LocalMediaBackend()
         
         # Compactor and memory store.
-        self.compactor = compactor or SlidingWindowCompactor()
+        self.compactor = compactor or SummarizingCompactor()
         self.memory_store = memory_store or MemoryStore()
         
         # Sandbox configuration.
