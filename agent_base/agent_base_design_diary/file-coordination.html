@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Developer Diary — When Ephemeral Meets Durable</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1c1917;
+    --paper: #f7faf7;
+    --paper-warm: #edf3ed;
+    --accent: #059669;
+    --accent-soft: #05966918;
+    --teal: #0d6e6e;
+    --teal-soft: #0d6e6e18;
+    --slate: #475569;
+    --slate-soft: #47556918;
+    --amber: #b45309;
+    --amber-soft: #b4530918;
+    --violet: #6d28d9;
+    --violet-soft: #6d28d918;
+    --rose: #be185d;
+    --rose-soft: #be185d18;
+    --crimson: #9f1239;
+    --crimson-soft: #9f123918;
+    --code-bg: #1c1b22;
+    --code-fg: #d4d4d8;
+    --muted: #94a3b8;
+    --border: #c8d4c8;
+    --border-light: #dfe8df;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Newsreader', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 18.5px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ─── Navigation Bar ─── */
+  .nav-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(250, 248, 245, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-light);
+    font-family: 'Outfit', sans-serif;
+    font-size: 12.5px;
+  }
+  .nav-arrow {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 32px;
+    text-align: center;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  .nav-arrow:hover { background: rgba(0,0,0,0.05); }
+  .nav-arrow.disabled {
+    color: var(--muted);
+    pointer-events: none;
+    opacity: 0.35;
+  }
+  .nav-tabs {
+    display: flex;
+    gap: 1px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .nav-tab:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--ink);
+  }
+  .nav-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+  }
+
+  /* ─── Hero ─── */
+  .hero {
+    padding: 68px 40px 50px;
+    text-align: center;
+    border-bottom: 3px double var(--border);
+    background: linear-gradient(175deg, #e4ede4 0%, var(--paper) 60%);
+  }
+  .hero .icon { font-size: 42px; margin-bottom: 12px; display: block; }
+  .hero h1 {
+    font-family: 'Newsreader', serif;
+    font-size: clamp(26px, 4.2vw, 44px);
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 1.18;
+    margin-bottom: 10px;
+  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero .sub {
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    font-weight: 600;
+  }
+  .hero .tagline {
+    font-size: 17px;
+    color: var(--slate);
+    margin-top: 14px;
+    max-width: 620px;
+    margin-left: auto;
+    margin-right: auto;
+    font-style: italic;
+  }
+
+  /* ─── Table of contents ─── */
+  .toc {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 28px 28px 0;
+  }
+  .toc-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  .toc-list {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 6px;
+  }
+  .toc-list a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--ink);
+    font-family: 'Outfit', sans-serif;
+    font-size: 13.5px;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  .toc-list a:hover { background: var(--paper-warm); }
+  .toc-list .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+
+  /* ─── Content ─── */
+  .wrap { max-width: 820px; margin: 0 auto; padding: 0 28px; }
+
+  .entry {
+    padding: 44px 0;
+    border-bottom: 1px solid var(--border-light);
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .entry.vis { opacity: 1; transform: translateY(0); }
+
+  .entry-tag {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  h2 {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    line-height: 1.25;
+  }
+  h3 {
+    font-family: 'Outfit', sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+    margin: 30px 0 12px;
+    color: var(--ink);
+  }
+  p { margin-bottom: 14px; }
+  p strong { color: var(--accent); font-weight: 700; }
+
+  /* ─── Chapter dividers ─── */
+  .chap {
+    text-align: center;
+    padding: 36px 0 8px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    color: var(--muted);
+    font-weight: 700;
+    border-top: 3px double var(--border);
+  }
+  .chap span {
+    background: var(--paper);
+    padding: 0 16px;
+  }
+
+  /* ─── Thought bubbles ─── */
+  .th {
+    background: var(--paper-warm);
+    border-left: 4px solid var(--accent);
+    padding: 16px 22px;
+    margin: 24px 0;
+    border-radius: 0 10px 10px 0;
+    font-style: italic;
+    position: relative;
+  }
+  .th::before {
+    content: '💭';
+    position: absolute;
+    top: -12px;
+    left: -14px;
+    font-size: 18px;
+    font-style: normal;
+  }
+  .tl {
+    font-family: 'Outfit', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-style: normal;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 4px;
+    color: var(--accent);
+  }
+  .th.amber { border-left-color: var(--amber); }
+  .th.amber .tl { color: var(--amber); }
+  .th.amber::before { content: '💡'; }
+  .th.crimson { border-left-color: var(--crimson); }
+  .th.crimson .tl { color: var(--crimson); }
+  .th.crimson::before { content: '⚠️'; }
+  .th.violet { border-left-color: var(--violet); }
+  .th.violet .tl { color: var(--violet); }
+  .th.violet::before { content: '🔍'; }
+  .th.teal { border-left-color: var(--teal); }
+  .th.teal .tl { color: var(--teal); }
+  .th.teal::before { content: '🔑'; }
+
+  /* ─── Insight boxes ─── */
+  .ins {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 28px 0;
+  }
+  .ins .il {
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 8px;
+  }
+  .ins.amber { background: var(--amber-soft); border-color: var(--amber); }
+  .ins.crimson { background: var(--crimson-soft); border-color: var(--crimson); }
+  .ins.teal { background: var(--teal-soft); border-color: var(--teal); }
+
+  /* ─── Code blocks ─── */
+  .cw {
+    margin: 24px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+  }
+  .ch {
+    background: #24243a;
+    padding: 9px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .dt { display: flex; gap: 6px; }
+  .dt span { width: 10px; height: 10px; border-radius: 50%; }
+  .dt span:nth-child(1) { background: #ff5f56; }
+  .dt span:nth-child(2) { background: #ffbd2e; }
+  .dt span:nth-child(3) { background: #27c93f; }
+  .fn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #8888a8;
+    font-weight: 500;
+  }
+  .tg {
+    margin-left: auto;
+    font-family: 'Outfit', sans-serif;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tg-abc { background: #7c3aed30; color: #c4b5fd; }
+  .tg-impl { background: #05966930; color: #86efac; }
+  .tg-del { background: #e11d4830; color: #fda4af; }
+  .tg-cmp { background: #b4530930; color: #fbbf24; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    tab-size: 4;
+  }
+  pre .c { color: #565f89; font-style: italic; }
+  pre .k { color: #bb9af7; }
+  pre .t { color: #7dcfff; }
+  pre .s { color: #9ece6a; }
+  pre .f { color: #e0af68; }
+  pre .p { color: #7aa2f7; }
+  pre .n { color: #ff9e64; }
+  pre .r { color: #f7768e; }
+  pre .hl {
+    background: rgba(187, 154, 247, 0.06);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+  pre .del {
+    background: rgba(248, 113, 113, 0.08);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+    text-decoration: line-through;
+    opacity: 0.6;
+  }
+
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82em;
+    background: var(--paper-warm);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+
+  /* ─── Diagram blocks ─── */
+  .dw {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 24px 0;
+    overflow-x: auto;
+  }
+  .dc {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+  }
+
+  /* ─── Tables ─── */
+  .ctbl {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 24px 0;
+    font-family: 'Outfit', sans-serif;
+    font-size: 14px;
+  }
+  .ctbl th {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 2px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--slate);
+    font-weight: 700;
+  }
+  .ctbl td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-light);
+    line-height: 1.5;
+  }
+
+  /* ─── Comparison layout ─── */
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .compare-col h4 {
+    font-family: 'Outfit', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 8px;
+    padding: 6px 12px;
+    border-radius: 6px;
+  }
+  .compare-col.before h4 { background: var(--crimson-soft); color: var(--crimson); }
+  .compare-col.after h4 { background: var(--accent-soft); color: var(--accent); }
+
+  /* ─── Separator ─── */
+  .sep {
+    text-align: center;
+    padding: 20px 0;
+    color: var(--border);
+    font-size: 18px;
+    letter-spacing: 12px;
+  }
+
+  /* ─── Footer ─── */
+  .footer {
+    text-align: center;
+    padding: 44px 28px;
+    border-top: 3px double var(--border);
+    margin-top: 16px;
+    font-style: italic;
+    color: var(--slate);
+    font-size: 16px;
+    line-height: 1.8;
+  }
+
+  @media (max-width: 600px) {
+    .hero { padding: 46px 18px 36px; }
+    .wrap { padding: 0 16px; }
+    pre { font-size: 11.5px; padding: 14px 16px; }
+    .compare { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav-bar">
+  <a href="media-backend.html" class="nav-arrow">&larr;</a>
+  <div class="nav-tabs">
+    <a href="index.html" class="nav-tab">Hub</a>
+    <a href="core-domain-model.html" class="nav-tab">Domain</a>
+    <a href="tool-system.html" class="nav-tab">Tools</a>
+    <a href="sandbox.html" class="nav-tab">Sandbox</a>
+    <a href="media-backend.html" class="nav-tab">Media</a>
+    <a href="file-coordination.html" class="nav-tab active">Files</a>
+    <a href="planned-systems.html" class="nav-tab">Planned</a>
+  </div>
+  <a href="planned-systems.html" class="nav-arrow">&rarr;</a>
+</nav>
+
+<!-- ━━━━━━━━━━ HERO ━━━━━━━━━━ -->
+<div class="hero">
+  <span class="icon">🔄</span>
+  <h1>When <em>Ephemeral</em> Meets <em>Durable</em></h1>
+  <div class="sub">Developer Diary &middot; File Coordination</div>
+  <p class="tagline">
+    We built a 640-line state machine to move files in and out.
+    Then we deleted it. This is the story of recognizing over-engineering
+    and finding where responsibilities actually belong.
+  </p>
+</div>
+
+<!-- ━━━━━━━━━━ TABLE OF CONTENTS ━━━━━━━━━━ -->
+<nav class="toc">
+  <div class="toc-title">Chapters</div>
+  <ul class="toc-list">
+    <li><a href="#ch1"><span class="num">1</span> The Problem</a></li>
+    <li><a href="#ch2"><span class="num">2</span> First Attempt</a></li>
+    <li><a href="#ch3"><span class="num">3</span> The Smell</a></li>
+    <li><a href="#ch4"><span class="num">4</span> The Insight</a></li>
+    <li><a href="#ch5"><span class="num">5</span> The Simplification</a></li>
+    <li><a href="#ch6"><span class="num">6</span> What We Learned</a></li>
+  </ul>
+</nav>
+
+<div class="wrap">
+
+<!-- ================================================================ -->
+<!-- CHAPTER 1: THE PROBLEM                                          -->
+<!-- ================================================================ -->
+<div class="chap" id="ch1"><span>Chapter 1 &mdash; The Problem</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Two Worlds, One Agent</div>
+  <h2>Files Need to Cross the Boundary</h2>
+
+  <p>The agent lives in two worlds at once. Its <strong>sandbox</strong> is an ephemeral workspace &mdash; files created during a session, destroyed at teardown. Its <strong>media backend</strong> is durable storage &mdash; files that survive across sessions, uploaded by users, persisted for later retrieval.</p>
+
+  <p>These worlds need to talk to each other. When a user uploads a PDF and asks the agent to analyze it, that PDF needs to get <em>from</em> the media backend <em>into</em> the sandbox where tools can read it. When the agent generates a report, that report needs to get <em>from</em> the sandbox <em>into</em> the media backend where the user can download it later.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "So we need to move files between two systems. That's a bridge pattern, right? One class that knows about both sides and moves bytes across the boundary. How hard can it be?"
+  </div>
+
+  <p>The requirements seemed simple:</p>
+  <ul style="margin: 0 0 16px 24px;">
+    <li><strong>Inbound:</strong> User uploads &rarr; media backend &rarr; sandbox (so tools can read them)</li>
+    <li><strong>Outbound:</strong> Tools write files &rarr; sandbox &rarr; media backend (so users can download them)</li>
+    <li><strong>Idempotent:</strong> Materializing the same file twice shouldn't duplicate anything</li>
+    <li><strong>Session-scoped:</strong> Sandbox dies at teardown; durable storage survives</li>
+  </ul>
+
+  <p>Two verbs. Move in, move out. Simple enough. Or so we thought.</p>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 2: FIRST ATTEMPT                                        -->
+<!-- ================================================================ -->
+<div class="chap" id="ch2"><span>Chapter 2 &mdash; First Attempt</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Bridge Pattern</div>
+  <h2>SandboxFileBridge &amp; FileManifest</h2>
+
+  <p>The first design introduced two new classes: a <code>SandboxFileBridge</code> to orchestrate file movement, and a <code>FileManifest</code> to track what's been moved.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">sandbox/bridge.py &mdash; first attempt</span>
+      <span class="tg tg-del">Deleted</span>
+    </div>
+<pre>
+<span class="k">class</span> <span class="t">SandboxFileBridge</span>:
+    <span class="s">"""Moves files between the storage backend and the sandbox."""</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>,
+        sandbox: <span class="t">Sandbox</span>,
+        media_backend: <span class="t">MediaBackend</span>,
+        manifest: <span class="t">FileManifest</span>,
+    ):
+        self._sandbox = sandbox
+        self._backend = media_backend
+        self._manifest = manifest
+
+    <span class="k">async def</span> <span class="f">materialize</span>(<span class="p">self</span>, media_id: <span class="t">str</span>, agent_uuid: <span class="t">str</span>) -> <span class="t">str</span>:
+        <span class="s">"""Download from backend, place in sandbox, track in manifest."""</span>
+        record = self._manifest.get(media_id)
+        <span class="k">if</span> record <span class="k">and</span> record.lifecycle == <span class="t">FileLifecycle</span>.IMPORTED:
+            <span class="k">return</span> record.sandbox_path  <span class="c"># already materialized</span>
+
+        metadata = <span class="k">await</span> self._backend.get_metadata(media_id, agent_uuid)
+        content = <span class="k">await</span> self._backend.retrieve(media_id, agent_uuid)
+        path = <span class="k">f</span><span class="s">".imported/{media_id}/{metadata.media_filename}"</span>
+        <span class="k">await</span> self._sandbox.write_file_bytes(path, content)
+
+        self._manifest.register(media_id, path, <span class="t">FileLifecycle</span>.IMPORTED)
+        <span class="k">return</span> path
+
+    <span class="k">async def</span> <span class="f">persist_exports</span>(<span class="p">self</span>, agent_uuid: <span class="t">str</span>) -> <span class="t">list</span>[<span class="t">MediaMetadata</span>]:
+        <span class="s">"""Scan exports zone, store each file, track in manifest."""</span>
+        results = []
+        <span class="k">for</span> record <span class="k">in</span> self._manifest.by_lifecycle(<span class="t">FileLifecycle</span>.EXPORTED):
+            <span class="k">if not</span> record.is_dirty:
+                <span class="k">continue</span>
+            content = <span class="k">await</span> self._sandbox.read_file_bytes(record.sandbox_path)
+            meta = <span class="k">await</span> self._backend.store(content, ...)
+            record.mark_persisted(meta.media_id)
+            results.append(meta)
+        <span class="k">return</span> results</pre>
+  </div>
+
+  <p>The bridge needed to track <em>state</em> &mdash; what's been imported, what's been exported, what's been modified since last persist. That tracking lived in the <code>FileManifest</code>:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">sandbox/file_manifest.py &mdash; first attempt</span>
+      <span class="tg tg-del">Deleted</span>
+    </div>
+<pre>
+<span class="k">class</span> <span class="t">FileLifecycle</span>(<span class="t">Enum</span>):
+    PENDING   = <span class="s">"pending"</span>     <span class="c"># Known but not yet in sandbox</span>
+    IMPORTING = <span class="s">"importing"</span>   <span class="c"># Download in progress</span>
+    IMPORTED  = <span class="s">"imported"</span>    <span class="c"># In sandbox, ready for tools</span>
+    EXPORTED  = <span class="s">"exported"</span>    <span class="c"># In sandbox exports zone</span>
+    PERSISTED = <span class="s">"persisted"</span>   <span class="c"># Flushed to media backend</span>
+
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">FileRecord</span>:
+    file_id: <span class="t">str</span>
+    sandbox_path: <span class="t">str</span>
+    lifecycle: <span class="t">FileLifecycle</span>
+    is_dirty: <span class="t">bool</span> = <span class="n">False</span>
+    media_id: <span class="t">str</span> | <span class="n">None</span> = <span class="n">None</span>
+
+<span class="k">class</span> <span class="t">FileManifest</span>:
+    <span class="s">"""Tracks every file the bridge has touched."""</span>
+    _records: <span class="t">dict</span>[<span class="t">str</span>, <span class="t">FileRecord</span>]
+
+    <span class="k">def</span> <span class="f">register</span>(<span class="p">self</span>, file_id, path, lifecycle): ...
+    <span class="k">def</span> <span class="f">get</span>(<span class="p">self</span>, file_id) -> <span class="t">FileRecord</span> | <span class="n">None</span>: ...
+    <span class="k">def</span> <span class="f">by_lifecycle</span>(<span class="p">self</span>, lifecycle) -> <span class="t">list</span>[<span class="t">FileRecord</span>]: ...
+    <span class="k">def</span> <span class="f">mark_dirty</span>(<span class="p">self</span>, file_id): ...
+    <span class="k">def</span> <span class="f">mark_persisted</span>(<span class="p">self</span>, file_id, media_id): ...</pre>
+  </div>
+
+  <p>Both classes had comprehensive test coverage: 55 tests for the bridge, 31 for the manifest. They worked correctly. The state machine was deterministic. Lifecycle transitions were validated.</p>
+
+  <div class="th amber">
+    <span class="tl">Developer's inner voice</span>
+    "This feels thorough. Five lifecycle states, dirty tracking, a manifest that survives across operations. But... something's nagging me. The tests pass, the design is clean, but I keep looking at it and thinking: is this really what two verbs need?"
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 3: THE SMELL                                            -->
+<!-- ================================================================ -->
+<div class="chap" id="ch3"><span>Chapter 3 &mdash; The Smell</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Recognizing Over-Engineering</div>
+  <h2>640 Lines for "Move Bytes In, Move Bytes Out"</h2>
+
+  <p>Let's count what we built:</p>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th>Component</th><th>Lines</th><th>Tests</th><th>Purpose</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>SandboxFileBridge</code></td>
+        <td>~480</td>
+        <td>55</td>
+        <td>Move files between sandbox and backend</td>
+      </tr>
+      <tr>
+        <td><code>FileManifest</code></td>
+        <td>~162</td>
+        <td>31</td>
+        <td>Track what's been moved and its state</td>
+      </tr>
+      <tr>
+        <td><code>FileLifecycle</code></td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>5-state enum for file transitions</td>
+      </tr>
+      <tr>
+        <td><code>FileRecord</code></td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>Per-file tracking dataclass</td>
+      </tr>
+      <tr style="font-weight: 700; border-top: 2px solid var(--border);">
+        <td>Total</td>
+        <td>~642</td>
+        <td>86</td>
+        <td>&mdash;</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>642 lines of code. 86 tests. Two new classes. One enum with five values. One dataclass. All for two verbs: <em>move in</em> and <em>move out</em>.</p>
+
+  <div class="th crimson">
+    <span class="tl">Developer's inner voice</span>
+    "Here's what's really bothering me: the bridge is a <em>third party</em> that knows about both the sandbox and the media backend. It's an intermediary. But the sandbox already knows how to write files, and the media backend already knows how to store files. Why does a third class need to exist just to call methods on both?"
+  </div>
+
+  <p>The code smells started to crystallize:</p>
+  <ul style="margin: 0 0 16px 24px;">
+    <li><strong>Artificial indirection.</strong> The bridge just calls <code>backend.retrieve()</code> then <code>sandbox.write_file_bytes()</code>. It's a secretary forwarding phone calls.</li>
+    <li><strong>Zone leakage.</strong> The bridge constructs paths like <code>.imported/{media_id}/{filename}</code>. It knows about the sandbox's internal layout. That's the sandbox's concern.</li>
+    <li><strong>Phantom state.</strong> The manifest tracks lifecycle transitions that the filesystem already knows. Is the file there? Check the filesystem. Is it dirty? That's an application concern, not a file-tracking concern.</li>
+    <li><strong>Three-way coupling.</strong> The bridge depends on Sandbox, MediaBackend, and FileManifest. Changing any of the three ripples into the bridge.</li>
+  </ul>
+
+  <div class="ins crimson">
+    <span class="il">⚠️ The Smell Test</span>
+    <p>If you can describe what a class does in under 10 words &mdash; "moves files between sandbox and backend" &mdash; and it takes 480 lines to implement, something is wrong. Either the description is hiding complexity, or the implementation is creating it.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 4: THE INSIGHT                                          -->
+<!-- ================================================================ -->
+<div class="chap" id="ch4"><span>Chapter 4 &mdash; The Insight</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Finding the Natural Owners</div>
+  <h2>Responsibilities Belong to Their Natural Owners</h2>
+
+  <p>The bridge existed because we assumed file coordination was a <em>third concern</em> &mdash; something that lives between the sandbox and the media backend. But look at the responsibilities more carefully:</p>
+
+  <div class="compare">
+    <div class="compare-col before">
+      <h4>Bridge does this:</h4>
+      <ul style="margin: 0 0 0 20px; font-family: 'Outfit', sans-serif; font-size: 14px;">
+        <li>Write file to <code>.imported/</code> zone</li>
+        <li>Track that it was imported</li>
+        <li>Scan <code>.exports/</code> zone</li>
+        <li>Read exported file content</li>
+        <li>Construct zone paths</li>
+      </ul>
+    </div>
+    <div class="compare-col after">
+      <h4>Who should own it:</h4>
+      <ul style="margin: 0 0 0 20px; font-family: 'Outfit', sans-serif; font-size: 14px;">
+        <li>Sandbox &mdash; it owns the filesystem</li>
+        <li>Sandbox &mdash; it knows what's been written</li>
+        <li>Sandbox &mdash; it owns the directory</li>
+        <li>Sandbox &mdash; it reads files</li>
+        <li>Sandbox &mdash; it owns zone layout</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="compare">
+    <div class="compare-col before">
+      <h4>Bridge does this:</h4>
+      <ul style="margin: 0 0 0 20px; font-family: 'Outfit', sans-serif; font-size: 14px;">
+        <li>Get metadata from backend</li>
+        <li>Retrieve bytes from backend</li>
+        <li>Store exported bytes in backend</li>
+        <li>Infer MIME types</li>
+      </ul>
+    </div>
+    <div class="compare-col after">
+      <h4>Who should own it:</h4>
+      <ul style="margin: 0 0 0 20px; font-family: 'Outfit', sans-serif; font-size: 14px;">
+        <li>MediaBackend &mdash; its own API</li>
+        <li>MediaBackend &mdash; its own API</li>
+        <li>MediaBackend &mdash; its own API</li>
+        <li>MediaBackend &mdash; it does this for store()</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="th teal">
+    <span class="tl">Developer's inner voice</span>
+    "Every single thing the bridge does is already someone else's job. The sandbox owns the filesystem. The media backend owns storage. The bridge is just glue &mdash; and glue shouldn't have 480 lines and its own state machine."
+  </div>
+
+  <p>The fix: give each system its half of the coordination.</p>
+
+  <ul style="margin: 0 0 16px 24px;">
+    <li><strong>Sandbox</strong> gets two abstract methods: <code>import_file()</code> and <code>get_exported_files()</code>. These are <em>semantic</em> &mdash; they say what to do, not how to lay out zones.</li>
+    <li><strong>MediaBackend</strong> gets three <em>concrete</em> methods: <code>attach_sandbox()</code>, <code>materialize()</code>, and <code>flush_exports()</code>. These compose abstract storage operations with sandbox coordination.</li>
+    <li><strong>The bridge class, the manifest, the lifecycle enum, the file record</strong> &mdash; all deleted. Zero new classes.</li>
+  </ul>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 5: THE SIMPLIFICATION                                   -->
+<!-- ================================================================ -->
+<div class="chap" id="ch5"><span>Chapter 5 &mdash; The Simplification</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Final Design</div>
+  <h2>Two Methods on Sandbox, Three on MediaBackend</h2>
+
+  <h3>Sandbox: Own Your Zones</h3>
+
+  <p>The sandbox already owns the filesystem. Now it also owns the concept of importing and exporting files. The zone layout (<code>.imported/</code>, <code>workspace/</code>, <code>.exports/</code>) is an internal detail &mdash; callers get semantic methods.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">sandbox/types.py</span>
+      <span class="tg tg-abc">ABC</span>
+    </div>
+<pre>
+<span class="c"># Added to the Sandbox ABC</span>
+
+<span class="k">@abstractmethod</span>
+<span class="k">async def</span> <span class="f">import_file</span>(<span class="p">self</span>, file_id: <span class="t">str</span>, filename: <span class="t">str</span>, content: <span class="t">bytes</span>) -> <span class="t">str</span>:
+    <span class="s">"""Accept a file for tool use. Idempotent &mdash; skips write if already imported.
+    Returns sandbox-relative path. Callers must not assume path structure."""</span>
+    ...
+
+<span class="k">@abstractmethod</span>
+<span class="k">async def</span> <span class="f">get_exported_files</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">tuple</span>[<span class="t">str</span>, <span class="t">bytes</span>]]:
+    <span class="s">"""Collect files tools produced for export.
+    Returns (relative_filename, content) pairs sorted by name."""</span>
+    ...</pre>
+  </div>
+
+  <p>Idempotency is handled by the filesystem: <code>import_file()</code> checks if the path exists before writing. No manifest needed. No lifecycle enum. The filesystem <em>is</em> the state tracker.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">sandbox/local.py &mdash; implementation</span>
+      <span class="tg tg-impl">Implementation</span>
+    </div>
+<pre>
+<span class="k">async def</span> <span class="f">import_file</span>(<span class="p">self</span>, file_id: <span class="t">str</span>, filename: <span class="t">str</span>, content: <span class="t">bytes</span>) -> <span class="t">str</span>:
+    rel = <span class="k">f</span><span class="s">".imported/{file_id}/{filename}"</span>
+    target = self._resolve(rel)     <span class="c"># path containment check</span>
+
+    <span class="k">if</span> target.exists():              <span class="c"># idempotent &mdash; already imported</span>
+        <span class="k">return</span> rel
+
+    target.parent.mkdir(parents=<span class="n">True</span>, exist_ok=<span class="n">True</span>)
+    target.write_bytes(content)
+    <span class="k">return</span> rel
+
+<span class="k">async def</span> <span class="f">get_exported_files</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">tuple</span>[<span class="t">str</span>, <span class="t">bytes</span>]]:
+    <span class="k">return await</span> self._collect_exports()
+
+<span class="k">async def</span> <span class="f">_collect_exports</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">tuple</span>[<span class="t">str</span>, <span class="t">bytes</span>]]:
+    exports_dir = self.root / <span class="s">".exports"</span>
+    <span class="k">if not</span> exports_dir.exists():
+        <span class="k">return</span> []
+    results = []
+    <span class="k">for</span> path <span class="k">in</span> sorted(exports_dir.rglob(<span class="s">"*"</span>)):
+        <span class="k">if</span> path.is_file():
+            rel = <span class="t">str</span>(path.relative_to(exports_dir))
+            results.append((rel, path.read_bytes()))
+    <span class="k">return</span> results</pre>
+  </div>
+
+  <h3>MediaBackend: Compose, Don't Bridge</h3>
+
+  <p>The media backend already has <code>store()</code>, <code>retrieve()</code>, and <code>get_metadata()</code>. Three new <em>concrete</em> methods compose those with sandbox operations. Concrete &mdash; not abstract &mdash; because every backend inherits the same orchestration logic. Only storage is polymorphic; coordination isn't.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">media_backend/types.py</span>
+      <span class="tg tg-impl">Concrete</span>
+    </div>
+<pre>
+<span class="c"># Concrete methods on MediaBackend ABC &mdash; not abstract</span>
+
+_sandbox: <span class="t">Sandbox</span> | <span class="n">None</span> = <span class="n">None</span>
+
+<span class="k">def</span> <span class="f">attach_sandbox</span>(<span class="p">self</span>, sandbox: <span class="t">Sandbox</span>) -> <span class="n">None</span>:
+    <span class="s">"""Store reference to active sandbox."""</span>
+    self._sandbox = sandbox
+
+<span class="k">async def</span> <span class="f">materialize</span>(<span class="p">self</span>, media_id: <span class="t">str</span>, agent_uuid: <span class="t">str</span>) -> <span class="t">str</span>:
+    <span class="s">"""Retrieve from storage, import into sandbox. Idempotent."""</span>
+<span class="hl">    metadata = <span class="k">await</span> self.get_metadata(media_id, agent_uuid)</span>
+<span class="hl">    content = <span class="k">await</span> self.retrieve(media_id, agent_uuid)</span>
+<span class="hl">    <span class="k">return await</span> self._sandbox.import_file(</span>
+<span class="hl">        media_id, metadata.media_filename, content)</span>
+
+<span class="k">async def</span> <span class="f">flush_exports</span>(<span class="p">self</span>, agent_uuid: <span class="t">str</span>) -> <span class="t">list</span>[<span class="t">MediaMetadata</span>]:
+    <span class="s">"""Collect exported files, store each in backend."""</span>
+    results = []
+<span class="hl">    <span class="k">for</span> rel_path, content <span class="k">in await</span> self._sandbox.get_exported_files():</span>
+<span class="hl">        basename = os.path.basename(rel_path)</span>
+<span class="hl">        mime = mimetypes.guess_type(basename)[<span class="n">0</span>] <span class="k">or</span> <span class="s">"application/octet-stream"</span></span>
+<span class="hl">        meta = <span class="k">await</span> self.store(content, basename, mime, agent_uuid)</span>
+<span class="hl">        <span class="k">if</span> rel_path != basename:</span>
+<span class="hl">            meta.extras[<span class="s">"export_path"</span>] = rel_path</span>
+        results.append(meta)
+    <span class="k">return</span> results</pre>
+  </div>
+
+  <div class="th teal">
+    <span class="tl">Developer's inner voice</span>
+    "Notice the TYPE_CHECKING import. MediaBackend imports Sandbox only for type hints, never at runtime. No circular dependency. No runtime coupling between modules. Just a type annotation that says 'I can work with any Sandbox.'"
+  </div>
+
+  <h3>Zone Encapsulation</h3>
+
+  <p>The critical invariant: <strong>MediaBackend never knows about zone paths</strong>. It calls <code>sandbox.import_file(id, name, bytes)</code> and gets back a path. It calls <code>sandbox.get_exported_files()</code> and gets back <code>(filename, bytes)</code> pairs. A <code>DockerSandbox</code> could organize files completely differently from <code>LocalSandbox</code> &mdash; the media backend wouldn't notice.</p>
+
+  <div class="dw">
+<pre style="background: transparent; color: var(--ink); font-size: 13px; line-height: 1.6;">
+    ┌─────────────────────┐         ┌─────────────────────────────────┐
+    │   MediaBackend      │         │   Sandbox                       │
+    │                     │         │                                 │
+    │  store()            │         │   .imported/{id}/{filename}     │
+    │  retrieve()    ─────┼── attach_sandbox() ──►   workspace/      │
+    │  get_metadata()     │         │   .exports/...                  │
+    │                     │         │                                 │
+    │  materialize() ─────┼── import_file(id, name, bytes) ──►       │
+    │  flush_exports() ◄──┼── get_exported_files() ────────          │
+    │                     │         │                                 │
+    └─────────────────────┘         └─────────────────────────────────┘
+
+    MediaBackend sees:               Sandbox owns:
+      import_file(id, name, bytes)     Zone layout (.imported/, .exports/)
+      get_exported_files()             Path containment
+      → str                           Idempotency (filesystem check)
+      → list[(str, bytes)]            Internal directory structure</pre>
+    <div class="dc">Zone encapsulation: MediaBackend calls semantic methods, Sandbox owns the layout</div>
+  </div>
+
+  <h3>The Numbers</h3>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th></th><th>Before</th><th>After</th><th>Change</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Lines of code</strong></td>
+        <td>~960 (bridge + manifest + enums)</td>
+        <td>~330 (sandbox methods + backend methods)</td>
+        <td style="color: var(--accent); font-weight: 700;">&minus;630</td>
+      </tr>
+      <tr>
+        <td><strong>Tests</strong></td>
+        <td>86 (55 bridge + 31 manifest)</td>
+        <td>32 (17 sandbox + 15 integration)</td>
+        <td style="color: var(--accent); font-weight: 700;">&minus;54</td>
+      </tr>
+      <tr>
+        <td><strong>New classes</strong></td>
+        <td>4 (Bridge, Manifest, Lifecycle, Record)</td>
+        <td>0</td>
+        <td style="color: var(--accent); font-weight: 700;">&minus;4</td>
+      </tr>
+      <tr>
+        <td><strong>New files</strong></td>
+        <td>2 (bridge.py, file_manifest.py)</td>
+        <td>0</td>
+        <td style="color: var(--accent); font-weight: 700;">&minus;2</td>
+      </tr>
+      <tr>
+        <td><strong>New abstract methods</strong></td>
+        <td>0</td>
+        <td>2 (on Sandbox)</td>
+        <td>+2</td>
+      </tr>
+      <tr>
+        <td><strong>New concrete methods</strong></td>
+        <td>0</td>
+        <td>3 (on MediaBackend)</td>
+        <td>+3</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 6: WHAT WE LEARNED                                      -->
+<!-- ================================================================ -->
+<div class="chap" id="ch6"><span>Chapter 6 &mdash; What We Learned</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Principles</div>
+  <h2>The Best Abstraction Is the One You Delete</h2>
+
+  <div class="ins amber">
+    <span class="il">💡 YAGNI Applied to Abstractions</span>
+    <p>The <code>FileManifest</code> tracked five lifecycle states. In practice, only two mattered: "is the file in the sandbox?" and "are there files in exports?" The filesystem already answers both questions. The manifest was duplicating the filesystem's state in a data structure &mdash; and then we had to keep them in sync. Every sync point is a bug waiting to happen.</p>
+  </div>
+
+  <div class="ins teal">
+    <span class="il">🔑 The Intermediary Test</span>
+    <p>When you design a class, ask: <em>"Does this class have unique knowledge, or is it just forwarding calls?"</em> The <code>SandboxFileBridge</code> had no unique knowledge. Everything it did was: call backend method, pass result to sandbox method. The information it tracked (the manifest) was redundant with the filesystem. A class that holds no unique knowledge and does no unique computation is an intermediary. Delete it, and give each real owner its share of the work.</p>
+  </div>
+
+  <div class="ins">
+    <span class="il">✅ Interface Segregation in Practice</span>
+    <p>Rather than one fat bridge interface, the final design puts two focused methods on Sandbox (<code>import_file</code>, <code>get_exported_files</code>) and three focused methods on MediaBackend (<code>attach_sandbox</code>, <code>materialize</code>, <code>flush_exports</code>). Each method does one thing. Each owner provides what it naturally owns. The caller (the agent loop) composes them &mdash; <code>materialize()</code> internally calls both <code>get_metadata() + retrieve()</code> (its own) and <code>sandbox.import_file()</code> (the sandbox's). Composition over intermediation.</p>
+  </div>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th>Principle</th><th>How It Applied</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>YAGNI</strong></td>
+        <td>Five lifecycle states when two booleans suffice. Dirty tracking when the filesystem tracks state. Delete what you don't need.</td>
+      </tr>
+      <tr>
+        <td><strong>Single Responsibility</strong></td>
+        <td>The bridge had three responsibilities: know zone paths, track state, orchestrate. Split them: sandbox owns zones, filesystem tracks state, MediaBackend orchestrates.</td>
+      </tr>
+      <tr>
+        <td><strong>Interface Segregation</strong></td>
+        <td>Two methods on Sandbox instead of one fat bridge. Three methods on MediaBackend instead of one fat bridge. Small interfaces, focused contracts.</td>
+      </tr>
+      <tr>
+        <td><strong>Dependency Inversion</strong></td>
+        <td>MediaBackend depends on the <code>Sandbox</code> ABC, not on <code>LocalSandbox</code>. TYPE_CHECKING import prevents runtime coupling. The dependency is abstract, not concrete.</td>
+      </tr>
+      <tr>
+        <td><strong>Zone Encapsulation</strong></td>
+        <td>MediaBackend never constructs paths like <code>.imported/{id}/</code>. That's the sandbox's concern. Swap the sandbox implementation, and zone layout can change freely.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="sep">· · ·</div>
+
+  <p>The arc of this diary is the arc of most over-engineering stories: a reasonable-sounding abstraction that turned out to be solving a problem that didn't exist. The bridge pattern is valuable when two systems genuinely can't know about each other. But when one system owns the filesystem and the other owns storage, they can each handle their half. The bridge was the answer to a question nobody was asking.</p>
+
+  <p>The final design is five methods spread across two existing classes. No new files. No new classes. No state machine. The filesystem is the manifest.</p>
+</section>
+
+</div><!-- .wrap -->
+
+<footer class="footer">
+  <p>The best code is code you don't write.<br>
+  The best abstraction is the one you delete.<br>
+  The best state machine is the filesystem.</p>
+</footer>
+
+<script>
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('vis'); });
+}, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.entry').forEach(el => obs.observe(el));
+</script>
+
+</body>
+</html>

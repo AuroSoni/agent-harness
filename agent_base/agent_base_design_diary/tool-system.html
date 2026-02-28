@@ -1,0 +1,1226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Developer Diary — Tool Result Architecture</title>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --paper: #f5f0e8;
+    --paper-alt: #eee8da;
+    --accent: #c0392b;
+    --accent-soft: #c0392b22;
+    --blue: #2471a3;
+    --blue-soft: #2471a322;
+    --green: #1e8449;
+    --green-soft: #1e844922;
+    --purple: #6c3483;
+    --purple-soft: #6c348322;
+    --orange: #d35400;
+    --orange-soft: #d3540022;
+    --code-bg: #1e1e2e;
+    --code-fg: #cdd6f4;
+    --margin-note: #7f8c8d;
+    --border: #d4cbb8;
+    --highlight: #f9e79f;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'EB Garamond', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 19px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .hero {
+    padding: 70px 40px 50px;
+    text-align: center;
+    border-bottom: 3px double var(--border);
+    background: linear-gradient(180deg, #ede6d6 0%, var(--paper) 100%);
+  }
+  .hero::before {
+    content: '🔧';
+    font-size: 44px;
+    display: block;
+    margin-bottom: 14px;
+  }
+  .hero h1 {
+    font-family: 'EB Garamond', serif;
+    font-size: clamp(28px, 4.5vw, 46px);
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+    margin-bottom: 10px;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero .subtitle {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 14px;
+    color: var(--margin-note);
+    text-transform: uppercase;
+    letter-spacing: 2.5px;
+    font-weight: 500;
+  }
+
+  .content { max-width: 840px; margin: 0 auto; padding: 0 30px; }
+
+  .entry {
+    padding: 45px 0;
+    border-bottom: 1px solid var(--border);
+    animation: fadeInUp 0.6s ease-out both;
+  }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .entry-date {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--margin-note);
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+
+  .entry h2 {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 18px;
+    line-height: 1.3;
+  }
+  .entry h3 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 32px 0 14px;
+  }
+  .entry p { margin-bottom: 16px; }
+  .entry p strong { color: var(--accent); font-weight: 600; }
+
+  .thought {
+    background: var(--paper-alt);
+    border-left: 4px solid var(--accent);
+    padding: 16px 22px;
+    margin: 22px 0;
+    border-radius: 0 8px 8px 0;
+    font-style: italic;
+    position: relative;
+  }
+  .thought::before {
+    content: '💭';
+    position: absolute;
+    top: -12px;
+    left: -16px;
+    font-size: 20px;
+    font-style: normal;
+  }
+  .thought .label {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--accent);
+    font-style: normal;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 5px;
+  }
+
+  .code-wrapper {
+    margin: 22px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+  }
+  .code-header {
+    background: #282838;
+    padding: 10px 18px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .code-header .dots { display: flex; gap: 6px; }
+  .code-header .dots span { width: 10px; height: 10px; border-radius: 50%; }
+  .code-header .dots span:nth-child(1) { background: #ff5f56; }
+  .code-header .dots span:nth-child(2) { background: #ffbd2e; }
+  .code-header .dots span:nth-child(3) { background: #27c93f; }
+  .code-header .filename {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: #aaa;
+    font-weight: 500;
+  }
+  .code-header .tag {
+    margin-left: auto;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tag-bad { background: #c0392b33; color: #f07070; }
+  .tag-v1 { background: #f39c1233; color: #f5b041; }
+  .tag-v2 { background: #2471a333; color: #5dade2; }
+  .tag-v3 { background: #27ae6033; color: #58d68d; }
+  .tag-contract { background: #6c348333; color: #bb8fce; }
+  .tag-impl { background: #1e844933; color: #58d68d; }
+  .tag-use { background: #d3540033; color: #f0b27a; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 20px 22px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    tab-size: 2;
+  }
+  pre .cm { color: #6c7086; font-style: italic; }
+  pre .kw { color: #cba6f7; }
+  pre .tp { color: #94e2d5; }
+  pre .st { color: #f2cdcd; }
+  pre .fn { color: #f9e2af; }
+  pre .pa { color: #89b4fa; }
+  pre .hl {
+    background: rgba(249, 226, 175, 0.07);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -22px;
+    padding: 0 22px;
+  }
+  pre .decorator { color: #f5c2e7; }
+
+  .diagram-wrapper { margin: 28px 0; text-align: center; }
+  .diagram-wrapper svg { max-width: 100%; height: auto; }
+  .diagram-caption {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    color: var(--margin-note);
+    margin-top: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 500;
+  }
+
+  .insight {
+    border: 2px solid;
+    border-radius: 10px;
+    padding: 22px 26px;
+    margin: 28px 0;
+  }
+  .insight.red { border-color: var(--accent); background: var(--accent-soft); }
+  .insight.blue { border-color: var(--blue); background: var(--blue-soft); }
+  .insight.green { border-color: var(--green); background: var(--green-soft); }
+  .insight.purple { border-color: var(--purple); background: var(--purple-soft); }
+  .insight.orange { border-color: var(--orange); background: var(--orange-soft); }
+  .insight .insight-label {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    display: block;
+  }
+  .insight.red .insight-label { color: var(--accent); }
+  .insight.blue .insight-label { color: var(--blue); }
+  .insight.green .insight-label { color: var(--green); }
+  .insight.purple .insight-label { color: var(--purple); }
+  .insight.orange .insight-label { color: var(--orange); }
+  .insight p { margin-bottom: 0; }
+
+  p code, li code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    background: var(--paper-alt);
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+
+  .chapter-divider {
+    text-align: center;
+    padding: 45px 0 18px;
+    position: relative;
+  }
+  .chapter-divider::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0; right: 0;
+    height: 1px;
+    background: var(--border);
+  }
+  .chapter-divider span {
+    position: relative;
+    background: var(--paper);
+    padding: 0 24px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    color: var(--accent);
+  }
+
+  .reveal {
+    opacity: 0;
+    transform: translateY(30px);
+    transition: opacity 0.7s ease, transform 0.7s ease;
+  }
+  .reveal.visible { opacity: 1; transform: translateY(0); }
+
+  .footer {
+    text-align: center;
+    padding: 45px 30px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    color: var(--margin-note);
+    border-top: 3px double var(--border);
+  }
+
+  .compare-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 22px 0;
+    font-size: 16px;
+  }
+  .compare-table th {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+    text-align: left;
+    padding: 12px 14px;
+    border-bottom: 2px solid var(--ink);
+    color: var(--margin-note);
+  }
+  .compare-table td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .compare-table tr:last-child td { border-bottom: none; }
+  .compare-table code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: var(--paper-alt);
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+
+  .tension-grid {
+    display: grid;
+    grid-template-columns: 1fr 60px 1fr;
+    gap: 0;
+    margin: 24px 0;
+    align-items: center;
+  }
+  .tension-box {
+    padding: 18px 20px;
+    border-radius: 10px;
+    border: 2px solid;
+  }
+  .tension-box.left { border-color: var(--blue); background: var(--blue-soft); }
+  .tension-box.right { border-color: var(--orange); background: var(--orange-soft); }
+  .tension-box .t-label {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .tension-box.left .t-label { color: var(--blue); }
+  .tension-box.right .t-label { color: var(--orange); }
+  .tension-vs {
+    text-align: center;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--margin-note);
+  }
+  /* ─── Navigation Bar ─── */
+  .nav-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(250, 248, 245, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12.5px;
+  }
+  .nav-arrow {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 32px;
+    text-align: center;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  .nav-arrow:hover { background: rgba(0,0,0,0.05); }
+  .nav-arrow.disabled {
+    color: var(--margin-note);
+    pointer-events: none;
+    opacity: 0.35;
+  }
+  .nav-tabs {
+    display: flex;
+    gap: 1px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
+    color: var(--margin-note);
+    text-decoration: none;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .nav-tab:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--ink);
+  }
+  .nav-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav-bar">
+  <a href="core-domain-model.html" class="nav-arrow">&larr;</a>
+  <div class="nav-tabs">
+    <a href="index.html" class="nav-tab">Hub</a>
+    <a href="core-domain-model.html" class="nav-tab">Domain</a>
+    <a href="tool-system.html" class="nav-tab active">Tools</a>
+    <a href="sandbox.html" class="nav-tab">Sandbox</a>
+    <a href="media-backend.html" class="nav-tab">Media</a>
+    <a href="file-coordination.html" class="nav-tab">Files</a>
+    <a href="planned-systems.html" class="nav-tab">Planned</a>
+  </div>
+  <a href="sandbox.html" class="nav-arrow">&rarr;</a>
+</nav>
+
+<header class="hero">
+  <h1>Who Owns the <span>Tool Result</span>?</h1>
+  <p class="subtitle">A Developer Diary — Designing Result Ownership in an Agentic Architecture</p>
+</header>
+
+<div class="content">
+
+<!-- ================================================================ -->
+<!-- PROLOGUE: THE PAIN                                              -->
+<!-- ================================================================ -->
+<section class="entry reveal">
+  <div class="entry-date">The Situation</div>
+  <h2>Two Consumers, One Tool Result, Conflicting Needs</h2>
+
+  <p>You've built an agentic system with a clean canonical message model. Content blocks are polymorphic — <code>TextContent</code>, <code>ImageContent</code>, <code>ToolUseContent</code>, etc. The system works. But a tension has been growing between two consumers of tool results, and it's about to break your abstractions.</p>
+
+  <p>Your agentic loop maintains two parallel states. <strong>AgentConfig</strong> manages the live LLM context window — it cares about what the model needs to see for its next turn. <strong>ConversationHistory</strong> is the full record for the UI — it cares about showing the human what happened, step by step, including execution logs, intermediate steps, and rich media.</p>
+
+  <div class="thought">
+    <span class="label">Developer's inner voice</span>
+    "When a tool returns a result, AgentConfig just wants the final answer: a list of content blocks to stuff back into the context window. But ConversationHistory might want the entire execution trace — logs, intermediate steps, timing data, images with different storage references. These are fundamentally different projections of the same event."
+  </div>
+
+  <p>And there's a second, deeper problem. Today, your <code>ToolResultContent</code> is a flat block in the canonical model. But tool results are <em>not like other content blocks</em>. A <code>TextContent</code> varies only across LLM providers (Anthropic says <code>text</code>, OpenAI says <code>content</code>). A tool result varies across <strong>tool types</strong> — a code execution tool returns stdout + files, a web search tool returns citations + snippets, a sub-agent returns an entire nested conversation. The canonical model can't anticipate all of these.</p>
+
+  <!-- TENSION DIAGRAM -->
+  <div class="diagram-wrapper">
+    <svg viewBox="0 0 760 310" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#7f8c8d" letter-spacing="2">THE ASYMMETRY: TOOL RESULTS ≠ OTHER CONTENT BLOCKS</text>
+
+      <!-- Left: Normal content blocks -->
+      <rect x="30" y="45" width="320" height="240" rx="10" fill="none" stroke="#2471a3" stroke-width="1.5" stroke-dasharray="6,4"/>
+      <text x="190" y="70" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#2471a3" letter-spacing="1.5">NORMAL CONTENT BLOCKS</text>
+
+      <rect x="55" y="85" width="270" height="38" rx="6" fill="#2471a3" opacity="0.1" stroke="#2471a3" stroke-width="1"/>
+      <text x="190" y="109" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" fill="#2471a3">TextContent</text>
+
+      <rect x="55" y="130" width="270" height="38" rx="6" fill="#2471a3" opacity="0.1" stroke="#2471a3" stroke-width="1"/>
+      <text x="190" y="154" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" fill="#2471a3">ImageContent</text>
+
+      <rect x="55" y="175" width="270" height="38" rx="6" fill="#2471a3" opacity="0.1" stroke="#2471a3" stroke-width="1"/>
+      <text x="190" y="199" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" fill="#2471a3">ThinkingContent</text>
+
+      <text x="190" y="240" text-anchor="middle" font-family="EB Garamond, serif" font-size="14" fill="#555" font-style="italic">Varies only by LLM provider</text>
+      <text x="190" y="260" text-anchor="middle" font-family="EB Garamond, serif" font-size="14" fill="#555" font-style="italic">(Anthropic format vs OpenAI format)</text>
+
+      <!-- Right: Tool result blocks -->
+      <rect x="410" y="45" width="320" height="240" rx="10" fill="none" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="6,4"/>
+      <text x="570" y="70" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#c0392b" letter-spacing="1.5">TOOL RESULT BLOCKS</text>
+
+      <rect x="435" y="85" width="270" height="38" rx="6" fill="#c0392b" opacity="0.08" stroke="#c0392b" stroke-width="1"/>
+      <text x="570" y="109" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" fill="#c0392b">CodeExecResult 📄+🖼️+📊</text>
+
+      <rect x="435" y="130" width="270" height="38" rx="6" fill="#c0392b" opacity="0.08" stroke="#c0392b" stroke-width="1"/>
+      <text x="570" y="154" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" fill="#c0392b">WebSearchResult 🔗+📝</text>
+
+      <rect x="435" y="175" width="270" height="38" rx="6" fill="#c0392b" opacity="0.08" stroke="#c0392b" stroke-width="1"/>
+      <text x="570" y="199" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" fill="#c0392b">SubAgentResult 💬+🧠+🔧</text>
+
+      <text x="570" y="240" text-anchor="middle" font-family="EB Garamond, serif" font-size="14" fill="#555" font-style="italic">Varies by TOOL TYPE</text>
+      <text x="570" y="260" text-anchor="middle" font-family="EB Garamond, serif" font-size="14" fill="#555" font-style="italic">(each tool has unique result shape)</text>
+
+      <!-- Divider -->
+      <line x1="375" y1="55" x2="375" y2="275" stroke="#ccc" stroke-width="1" stroke-dasharray="4,4"/>
+      <text x="375" y="297" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" fill="#c0392b" font-weight="700">← THE CRACK IN THE ABSTRACTION →</text>
+    </svg>
+    <div class="diagram-caption">Fig 1 — Tool results have a fundamentally different axis of variation</div>
+  </div>
+
+  <div class="insight red">
+    <span class="insight-label">🚨 The Design Tension</span>
+    <p>Your canonical <code>ToolResultBase</code> tries to represent all tool results with <code>tool_result: str | List[Dict]</code>. This works for simple tools but collapses into an untyped bag-of-dicts for rich tools. The type system can't help you, the serialization is lossy, and every consumer has to do ad-hoc parsing. Worse, you can't add tool-specific metadata (execution logs, timing, generated files) without polluting the canonical model with fields that only matter to one tool.</p>
+  </div>
+</section>
+
+<!-- ================================================================ -->
+<!-- CHAPTER 1: WHAT IF THE TOOL OWNED ITS RESULT?                  -->
+<!-- ================================================================ -->
+<div class="chapter-divider reveal"><span>Chapter 1 — Ownership</span></div>
+
+<section class="entry reveal">
+  <div class="entry-date">The Key Insight</div>
+  <h2>"The Tool Knows Best What Its Result Looks Like"</h2>
+
+  <p>Let's think about who has the knowledge here. The canonical model knows about <em>message structure</em> — roles, content blocks, tool correlation IDs. But it doesn't know (and shouldn't know) that a code execution tool produces stdout, stderr, exit codes, and generated files. That knowledge lives with the tool itself.</p>
+
+  <div class="thought">
+    <span class="label">Developer's inner voice</span>
+    "This is a classic 'information expert' problem from GRASP principles. The responsibility for defining a tool's result shape should go to the class that has the most information about it — the tool itself. My ConfigurableToolBase already owns the tool's schema and execution. Why not also let it own the result definition?"
+  </div>
+
+  <p>But there's a constraint: AgentConfig needs a <strong>standardized projection</strong> of any tool result (content blocks for the LLM context window), while ConversationHistory needs a <strong>rich projection</strong> (everything the UI might want to display). The tool can produce the rich data, but it needs to know how to project it into both shapes.</p>
+
+  <p>This is where the pattern crystallizes. We need a <strong>Rich Result object</strong> owned by the tool, with <strong>two projection methods</strong>: one for the LLM context window, one for the conversation log.</p>
+
+  <!-- THE DUAL PROJECTION DIAGRAM -->
+  <div class="diagram-wrapper">
+    <svg viewBox="0 0 760 370" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="22" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#7f8c8d" letter-spacing="2">THE DUAL-PROJECTION PATTERN</text>
+
+      <!-- Tool execution -->
+      <rect x="255" y="42" width="250" height="55" rx="8" fill="#6c3483" opacity="0.12" stroke="#6c3483" stroke-width="2"/>
+      <text x="380" y="65" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="13" font-weight="600" fill="#6c3483">tool.execute(input)</text>
+      <text x="380" y="85" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#555">Tool runs, produces rich data</text>
+
+      <!-- Arrow down -->
+      <line x1="380" y1="97" x2="380" y2="125" stroke="#6c3483" stroke-width="2"/>
+      <polygon points="375,122 385,122 380,130" fill="#6c3483"/>
+
+      <!-- Rich Result (center) -->
+      <rect x="210" y="132" width="340" height="72" rx="10" fill="#1e8449" opacity="0.1" stroke="#1e8449" stroke-width="2.5"/>
+      <text x="380" y="157" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10" font-weight="700" fill="#1e8449" letter-spacing="1.5">TOOL-OWNED</text>
+      <text x="380" y="177" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="14" font-weight="600" fill="#1e8449">ToolResultEnvelope</text>
+      <text x="380" y="195" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#555">Rich result object — all data the tool produced</text>
+
+      <!-- Two projection arrows -->
+      <!-- Left: for_context_window -->
+      <line x1="300" y1="204" x2="160" y2="268" stroke="#2471a3" stroke-width="2"/>
+      <polygon points="155,265 165,265 160,273" fill="#2471a3"/>
+      <text x="200" y="240" font-family="JetBrains Mono, monospace" font-size="11" fill="#2471a3" font-weight="500" transform="rotate(-25, 200, 240)">.for_context_window()</text>
+
+      <!-- Right: for_conversation_log -->
+      <line x1="460" y1="204" x2="600" y2="268" stroke="#d35400" stroke-width="2"/>
+      <polygon points="595,265 605,265 600,273" fill="#d35400"/>
+      <text x="520" y="240" font-family="JetBrains Mono, monospace" font-size="11" fill="#d35400" font-weight="500" transform="rotate(25, 545, 240)">.for_conversation_log()</text>
+
+      <!-- AgentConfig box -->
+      <rect x="40" y="278" width="240" height="70" rx="8" fill="#2471a3" opacity="0.12" stroke="#2471a3" stroke-width="2"/>
+      <text x="160" y="302" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="13" font-weight="600" fill="#2471a3">AgentConfig</text>
+      <text x="160" y="322" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#555">Gets: List[ContentBlock]</text>
+      <text x="160" y="339" text-anchor="middle" font-family="EB Garamond, serif" font-size="12" fill="#888">Just the answer, for the LLM</text>
+
+      <!-- ConversationHistory box -->
+      <rect x="480" y="278" width="240" height="70" rx="8" fill="#d35400" opacity="0.12" stroke="#d35400" stroke-width="2"/>
+      <text x="600" y="302" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="13" font-weight="600" fill="#d35400">ConversationHistory</text>
+      <text x="600" y="322" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#555">Gets: Rich log dict</text>
+      <text x="600" y="339" text-anchor="middle" font-family="EB Garamond, serif" font-size="12" fill="#888">Logs, timing, files, for the UI</text>
+    </svg>
+    <div class="diagram-caption">Fig 2 — One rich result, two consumer-specific projections</div>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 2: THE ENVELOPE CONTRACT                               -->
+<!-- ================================================================ -->
+<div class="chapter-divider reveal"><span>Chapter 2 — The Envelope</span></div>
+
+<section class="entry reveal">
+  <div class="entry-date">Designing the Contract</div>
+  <h2>ToolResultEnvelope — The Tool's Rich Return Type</h2>
+
+  <p>Instead of having tools return a flat string or a <code>ToolResult</code> that only knows about text and images, we introduce a <strong>ToolResultEnvelope</strong>. This is an abstract base that every tool-specific result type extends. The key insight: the envelope is <em>not</em> a content block — it's a <strong>pre-projection object</strong> that knows how to produce content blocks for different consumers.</p>
+
+  <div class="code-wrapper">
+    <div class="code-header">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="filename">tool_result_envelope.py</span>
+      <span class="tag tag-contract">Abstract Contract</span>
+    </div>
+    <pre><span class="kw">from</span> abc <span class="kw">import</span> ABC, abstractmethod
+<span class="kw">from</span> dataclasses <span class="kw">import</span> dataclass, field
+<span class="kw">from</span> typing <span class="kw">import</span> Any
+
+<span class="cm"># Import the canonical content blocks from your model</span>
+<span class="kw">from</span> .core <span class="kw">import</span> ContentBlock, TextContent, ImageContent, ErrorContent
+
+
+<span class="decorator">@dataclass</span>
+<span class="kw">class</span> <span class="tp">ToolResultEnvelope</span>(ABC):
+    <span class="st">"""Base class for tool-specific rich result objects.
+    
+    Every tool defines its own subclass with whatever fields it needs.
+    The two abstract methods project this rich data into the shapes
+    that each consumer (AgentConfig vs ConversationHistory) requires.
+    
+    This is NOT a ContentBlock. It's a pre-projection object that
+    PRODUCES ContentBlocks. The tool owns the data; the projections
+    adapt it to each consumer's needs.
+    """</span>
+
+    <span class="cm"># --- Shared metadata every result has ---</span>
+    tool_name: str = <span class="st">""</span>
+    tool_id: str = <span class="st">""</span>
+    is_error: bool = <span class="kw">False</span>
+    error_message: str | <span class="kw">None</span> = <span class="kw">None</span>
+    duration_ms: float | <span class="kw">None</span> = <span class="kw">None</span>
+
+    <span class="cm"># ─── Projection 1: For the LLM context window ───</span>
+
+<span class="hl">    <span class="decorator">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">for_context_window</span>(<span class="pa">self</span>) -> list[<span class="tp">ContentBlock</span>]:</span>
+        <span class="st">"""Project this result into ContentBlocks for the LLM.
+        
+        This is what gets stuffed into the ToolResultContent block
+        inside AgentConfig.messages. The LLM will see these blocks
+        on its next turn.
+        
+        Rules:
+          - Must return canonical ContentBlock instances
+          - Should be MINIMAL — only what the LLM needs to continue
+          - Images/docs should use the provider-appropriate source type
+          - Errors should return [ErrorContent(...)] or [TextContent("Error: ...")]
+        """</span>
+        ...
+
+    <span class="cm"># ─── Projection 2: For the conversation log (UI) ───</span>
+
+<span class="hl">    <span class="decorator">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">for_conversation_log</span>(<span class="pa">self</span>) -> dict[str, <span class="tp">Any</span>]:</span>
+        <span class="st">"""Project this result into a rich dict for ConversationHistory.
+        
+        This is what gets stored in the conversation log for UI display.
+        It can include anything the frontend might want to render:
+        execution logs, timing, intermediate steps, file references,
+        nested sub-agent conversations, etc.
+        
+        The dict should always include at minimum:
+          {
+            "tool_name": str,
+            "tool_id": str,
+            "is_error": bool,
+            "summary": str,      # human-readable one-liner
+            "content_blocks": [], # the same blocks as for_context_window
+            ...tool-specific fields...
+          }
+        """</span>
+        ...
+
+    <span class="cm"># ─── Convenience: error envelope factory ───</span>
+
+    <span class="decorator">@classmethod</span>
+    <span class="kw">def</span> <span class="fn">error</span>(<span class="pa">cls</span>, <span class="pa">tool_name</span>: str, <span class="pa">tool_id</span>: str, <span class="pa">message</span>: str) -> <span class="st">"ToolResultEnvelope"</span>:
+        <span class="st">"""Create a generic error envelope (works for any tool)."""</span>
+        <span class="kw">return</span> <span class="tp">GenericErrorEnvelope</span>(
+            tool_name=tool_name, tool_id=tool_id,
+            is_error=<span class="kw">True</span>, error_message=message,
+        )
+
+
+<span class="cm"># --- A simple fallback for tools that don't define their own envelope ---</span>
+
+<span class="decorator">@dataclass</span>
+<span class="kw">class</span> <span class="tp">GenericErrorEnvelope</span>(<span class="tp">ToolResultEnvelope</span>):
+    <span class="st">"""Fallback envelope for errors or legacy tools."""</span>
+
+    <span class="kw">def</span> <span class="fn">for_context_window</span>(<span class="pa">self</span>) -> list[ContentBlock]:
+        <span class="kw">return</span> [TextContent(text=<span class="kw">f</span><span class="st">"Error: {self.error_message}"</span>)]
+
+    <span class="kw">def</span> <span class="fn">for_conversation_log</span>(<span class="pa">self</span>) -> dict[str, Any]:
+        <span class="kw">return</span> {
+            <span class="st">"tool_name"</span>: self.tool_name,
+            <span class="st">"tool_id"</span>: self.tool_id,
+            <span class="st">"is_error"</span>: <span class="kw">True</span>,
+            <span class="st">"summary"</span>: self.error_message,
+            <span class="st">"content_blocks"</span>: [TextContent(text=self.error_message or <span class="st">""</span>).to_dict()],
+        }</pre>
+  </div>
+
+  <div class="thought">
+    <span class="label">Developer's inner voice</span>
+    "Notice what I did NOT do: I didn't make this a ContentBlock subclass. That would pollute the canonical model with tool-specific data. The envelope is a separate layer — it sits between tool execution and the canonical message chain. It's the tool's 'rich return type' that gets projected down into the simpler shapes that each consumer needs."
+  </div>
+
+  <div class="insight blue">
+    <span class="insight-label">🧩 Pattern Recognition</span>
+    <p>This is a <strong>Projection pattern</strong> (sometimes called "View Model" or "DTO projection"). The same source data gets transformed into different shapes for different consumers. The key is that the <em>source</em> (the tool) owns the projection logic, because only the tool knows what's meaningful in each context. AgentConfig gets a lean projection; ConversationHistory gets a rich one.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 3: CONCRETE TOOL ENVELOPES                             -->
+<!-- ================================================================ -->
+<div class="chapter-divider reveal"><span>Chapter 3 — Concrete Envelopes</span></div>
+
+<section class="entry reveal">
+  <div class="entry-date">Building Real Envelopes</div>
+  <h2>Each Tool Defines Its Own Rich Result</h2>
+
+  <p>Now let's see how three very different tools — a code executor, a web search tool, and a sub-agent — each define their own envelope with tool-specific fields, while conforming to the same dual-projection contract.</p>
+
+  <h3>Example A: Code Execution Tool</h3>
+
+  <div class="code-wrapper">
+    <div class="code-header">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="filename">code_exec_envelope.py</span>
+      <span class="tag tag-impl">Tool-Owned</span>
+    </div>
+    <pre><span class="decorator">@dataclass</span>
+<span class="kw">class</span> <span class="tp">CodeExecEnvelope</span>(<span class="tp">ToolResultEnvelope</span>):
+    <span class="st">"""Rich result from a code execution tool."""</span>
+
+    <span class="cm"># ── Tool-specific fields (the canonical model knows nothing about these) ──</span>
+<span class="hl">    stdout: str = <span class="st">""</span></span>
+<span class="hl">    stderr: str = <span class="st">""</span></span>
+<span class="hl">    exit_code: int = 0</span>
+<span class="hl">    generated_files: list[dict] = field(default_factory=list)  <span class="cm"># [{path, mime_type, size}]</span></span>
+<span class="hl">    generated_images: list[dict] = field(default_factory=list)  <span class="cm"># [{path, mime_type, base64}]</span></span>
+<span class="hl">    execution_log: list[str] = field(default_factory=list)     <span class="cm"># line-by-line execution trace</span></span>
+
+    <span class="cm"># ── Projection 1: What the LLM sees ──</span>
+    <span class="kw">def</span> <span class="fn">for_context_window</span>(<span class="pa">self</span>) -> list[ContentBlock]:
+        blocks: list[ContentBlock] = []
+
+        <span class="cm"># LLM gets the stdout (the "answer")</span>
+        <span class="kw">if</span> self.stdout:
+            blocks.append(TextContent(text=self.stdout))
+
+        <span class="cm"># LLM gets generated images inline (so it can reason about them)</span>
+        <span class="kw">for</span> img <span class="kw">in</span> self.generated_images:
+            blocks.append(ImageContent(
+                source_type=SourceType.BASE64,
+                media_type=img[<span class="st">"mime_type"</span>],
+                data=img[<span class="st">"base64"</span>],
+            ))
+
+        <span class="cm"># LLM gets a FILE MANIFEST (not the files themselves)</span>
+        <span class="kw">if</span> self.generated_files:
+            manifest = <span class="st">"Generated files:\n"</span> + <span class="st">"\n"</span>.join(
+                <span class="kw">f</span><span class="st">"  - {f['path']} ({f['mime_type']}, {f['size']} bytes)"</span>
+                <span class="kw">for</span> f <span class="kw">in</span> self.generated_files
+            )
+            blocks.append(TextContent(text=manifest))
+
+        <span class="cm"># stderr only if error</span>
+        <span class="kw">if</span> self.is_error <span class="kw">and</span> self.stderr:
+            blocks.append(TextContent(text=<span class="kw">f</span><span class="st">"STDERR:\n{self.stderr}"</span>))
+
+        <span class="kw">return</span> blocks <span class="kw">or</span> [TextContent(text=<span class="st">"(no output)"</span>)]
+
+    <span class="cm"># ── Projection 2: What the UI sees ──</span>
+    <span class="kw">def</span> <span class="fn">for_conversation_log</span>(<span class="pa">self</span>) -> dict[str, Any]:
+        <span class="kw">return</span> {
+            <span class="st">"tool_name"</span>: self.tool_name,
+            <span class="st">"tool_id"</span>: self.tool_id,
+            <span class="st">"is_error"</span>: self.is_error,
+            <span class="st">"summary"</span>: self.stdout[:200] <span class="kw">if</span> self.stdout <span class="kw">else</span> <span class="st">"(no output)"</span>,
+            <span class="st">"duration_ms"</span>: self.duration_ms,
+            <span class="cm"># ── UI-specific rich data ──</span>
+<span class="hl">            <span class="st">"stdout"</span>: self.stdout,</span>
+<span class="hl">            <span class="st">"stderr"</span>: self.stderr,</span>
+<span class="hl">            <span class="st">"exit_code"</span>: self.exit_code,</span>
+<span class="hl">            <span class="st">"execution_log"</span>: self.execution_log,</span>
+<span class="hl">            <span class="st">"generated_files"</span>: self.generated_files,</span>
+<span class="hl">            <span class="st">"generated_images"</span>: [</span>
+<span class="hl">                {<span class="st">"path"</span>: img[<span class="st">"path"</span>], <span class="st">"mime_type"</span>: img[<span class="st">"mime_type"</span>]}</span>
+<span class="hl">                <span class="kw">for</span> img <span class="kw">in</span> self.generated_images</span>
+<span class="hl">            ],  <span class="cm"># Note: no base64 in the log — just references</span></span>
+            <span class="st">"content_blocks"</span>: [b.to_dict() <span class="kw">for</span> b <span class="kw">in</span> self.for_context_window()],
+        }</pre>
+  </div>
+
+  <p>Notice the asymmetry in the two projections. The LLM gets the stdout and inline images (it needs to reason about them). The conversation log gets stdout, stderr, exit code, execution trace, and file references — but <em>without</em> base64 image blobs (the UI will load those from URLs). Each consumer gets exactly what it needs, no more.</p>
+
+  <h3>Example B: Sub-Agent Tool</h3>
+
+  <p>Sub-agents are the most extreme case. A sub-agent's result is an entire nested conversation. The LLM only needs to see the final answer. The UI might want to display the full nested conversation as a collapsible tree.</p>
+
+  <div class="code-wrapper">
+    <div class="code-header">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="filename">subagent_envelope.py</span>
+      <span class="tag tag-impl">Tool-Owned</span>
+    </div>
+    <pre><span class="decorator">@dataclass</span>
+<span class="kw">class</span> <span class="tp">SubAgentEnvelope</span>(<span class="tp">ToolResultEnvelope</span>):
+    <span class="st">"""Rich result from a sub-agent execution."""</span>
+
+    <span class="cm"># ── Sub-agent specific data ──</span>
+<span class="hl">    final_answer: str = <span class="st">""</span></span>
+<span class="hl">    nested_messages: list[dict] = field(default_factory=list)  <span class="cm"># Full sub-conversation</span></span>
+<span class="hl">    total_steps: int = 0</span>
+<span class="hl">    sub_agent_model: str = <span class="st">""</span></span>
+<span class="hl">    sub_agent_usage: dict = field(default_factory=dict)</span>
+
+    <span class="kw">def</span> <span class="fn">for_context_window</span>(<span class="pa">self</span>) -> list[ContentBlock]:
+        <span class="cm"># The parent LLM ONLY sees the final answer — not the entire sub-conversation</span>
+        <span class="kw">return</span> [TextContent(text=self.final_answer)]
+
+    <span class="kw">def</span> <span class="fn">for_conversation_log</span>(<span class="pa">self</span>) -> dict[str, Any]:
+        <span class="kw">return</span> {
+            <span class="st">"tool_name"</span>: self.tool_name,
+            <span class="st">"tool_id"</span>: self.tool_id,
+            <span class="st">"is_error"</span>: self.is_error,
+            <span class="st">"summary"</span>: self.final_answer[:200],
+            <span class="st">"duration_ms"</span>: self.duration_ms,
+            <span class="cm"># ── The UI gets the entire nested conversation tree ──</span>
+<span class="hl">            <span class="st">"final_answer"</span>: self.final_answer,</span>
+<span class="hl">            <span class="st">"nested_messages"</span>: self.nested_messages,</span>
+<span class="hl">            <span class="st">"total_steps"</span>: self.total_steps,</span>
+<span class="hl">            <span class="st">"sub_agent_model"</span>: self.sub_agent_model,</span>
+<span class="hl">            <span class="st">"sub_agent_usage"</span>: self.sub_agent_usage,</span>
+            <span class="st">"content_blocks"</span>: [b.to_dict() <span class="kw">for</span> b <span class="kw">in</span> self.for_context_window()],
+        }</pre>
+  </div>
+
+  <div class="insight green">
+    <span class="insight-label">✅ What We've Achieved</span>
+    <p>Each tool now owns its result shape completely. The <code>CodeExecEnvelope</code> has <code>stdout</code>, <code>stderr</code>, and <code>execution_log</code>. The <code>SubAgentEnvelope</code> has <code>nested_messages</code> and <code>sub_agent_usage</code>. These fields don't pollute the canonical model — they exist only in the tool's envelope. The canonical model stays clean: it just sees <code>List[ContentBlock]</code> from the context-window projection.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 4: WIRING INTO THE LOOP                                -->
+<!-- ================================================================ -->
+<div class="chapter-divider reveal"><span>Chapter 4 — Wiring</span></div>
+
+<section class="entry reveal">
+  <div class="entry-date">Integration</div>
+  <h2>How the Agentic Loop Consumes Envelopes</h2>
+
+  <p>Now let's see how this changes the agentic loop. Previously, the loop received a flat <code>(content, image_refs)</code> tuple from tool execution. Now it receives a <code>ToolResultEnvelope</code> and projects it differently for each consumer.</p>
+
+  <div class="code-wrapper">
+    <div class="code-header">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="filename">agent_loop.py</span>
+      <span class="tag tag-use">Consumption Site</span>
+    </div>
+    <pre><span class="kw">async def</span> <span class="fn">_handle_tool_result</span>(
+    <span class="pa">self</span>,
+    <span class="pa">tool_use_block</span>: ToolUseContent,
+    <span class="pa">envelope</span>: <span class="tp">ToolResultEnvelope</span>,
+):
+    <span class="st">"""Process a tool result envelope for both consumers."""</span>
+
+    <span class="cm"># ── Projection 1: Feed the LLM (AgentConfig) ──</span>
+<span class="hl">    context_blocks = envelope.for_context_window()</span>
+    
+    <span class="cm"># Build the canonical ToolResultContent for the context window.</span>
+    <span class="cm"># This is the standard content block that every LLM provider adapter knows.</span>
+    result_block = ToolResultContent(
+        tool_name=tool_use_block.tool_name,
+        tool_id=tool_use_block.tool_id,
+<span class="hl">        tool_result=[b.to_dict() <span class="kw">for</span> b <span class="kw">in</span> context_blocks],  <span class="cm"># ← Nested content blocks!</span></span>
+        is_error=envelope.is_error,
+    )
+    
+    <span class="cm"># Append to the context window (AgentConfig.messages)</span>
+    self.agent_config.messages.append(
+        Message(role=Role.USER, content=[result_block])
+    )
+
+    <span class="cm"># ── Projection 2: Log for the UI (ConversationHistory) ──</span>
+<span class="hl">    log_entry = envelope.for_conversation_log()</span>
+    
+    self.conversation_history.append_tool_result(
+        tool_use_id=tool_use_block.tool_id,
+        log_entry=log_entry,  <span class="cm"># ← Rich data: logs, files, timing, nested convos</span>
+    )</pre>
+  </div>
+
+  <p>The agentic loop doesn't know whether it's dealing with a code execution result, a web search result, or a sub-agent result. It just calls the two projection methods. The tool's envelope handles the rest. This is polymorphism doing what it does best — eliminating <code>if/elif</code> chains in the consumer.</p>
+
+  <h3>Updating ConfigurableToolBase</h3>
+
+  <p>The final piece is making <code>ConfigurableToolBase</code> aware of envelopes. Tools that want rich results override a new method; legacy tools that return plain strings still work.</p>
+
+  <div class="code-wrapper">
+    <div class="code-header">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="filename">configurable_tool_base.py</span>
+      <span class="tag tag-v3">Updated Contract</span>
+    </div>
+    <pre><span class="kw">class</span> <span class="tp">ConfigurableToolBase</span>(ABC):
+    <span class="st">"""Updated to support ToolResultEnvelope returns."""</span>
+
+    <span class="cm"># ... existing __init__, _render_docstring, _apply_schema ...</span>
+
+    <span class="decorator">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">get_tool</span>(<span class="pa">self</span>) -> Callable:
+        <span class="st">"""Return a @tool decorated function.
+        
+        The function may return:
+          - str                   → legacy, auto-wrapped in GenericTextEnvelope
+          - ToolResult            → legacy, auto-wrapped in GenericMediaEnvelope
+          - ToolResultEnvelope    → new, used directly (preferred)
+        """</span>
+        ...
+
+    <span class="cm"># --- Optional: Override to customize the envelope type ---</span>
+
+    <span class="kw">def</span> <span class="fn">get_envelope_class</span>(<span class="pa">self</span>) -> type[<span class="tp">ToolResultEnvelope</span>] | <span class="kw">None</span>:
+        <span class="st">"""Return the envelope class this tool produces.
+        
+        Used by the framework for:
+          - Type introspection / documentation generation
+          - Schema validation of tool results
+          - UI component resolution (which React component renders this?)
+        
+        Return None if the tool uses legacy str/ToolResult returns.
+        """</span>
+        <span class="kw">return None</span></pre>
+  </div>
+
+  <p>And in the <code>ToolRegistry.execute()</code> method, we add automatic wrapping for legacy tools:</p>
+
+  <div class="code-wrapper">
+    <div class="code-header">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="filename">tool_registry.py</span>
+      <span class="tag tag-v3">Updated</span>
+    </div>
+    <pre><span class="kw">async def</span> <span class="fn">execute</span>(<span class="pa">self</span>, <span class="pa">tool_name</span>, <span class="pa">tool_input</span>, **<span class="pa">kwargs</span>) -> <span class="tp">ToolResultEnvelope</span>:
+    <span class="st">"""Execute a tool. Always returns a ToolResultEnvelope."""</span>
+    <span class="kw">try</span>:
+        result = <span class="kw">await</span> self._invoke(tool_name, tool_input)
+
+<span class="hl">        <span class="cm"># New path: tool returned an envelope directly</span></span>
+<span class="hl">        <span class="kw">if isinstance</span>(result, <span class="tp">ToolResultEnvelope</span>):</span>
+<span class="hl">            <span class="kw">return</span> result</span>
+
+        <span class="cm"># Legacy path: wrap plain str/ToolResult in a generic envelope</span>
+        <span class="kw">if isinstance</span>(result, <span class="tp">ToolResult</span>):
+            <span class="kw">return</span> <span class="tp">LegacyMediaEnvelope</span>.from_tool_result(
+                tool_name=tool_name, result=result, **kwargs
+            )
+
+        <span class="cm"># Plain string fallback</span>
+        <span class="kw">return</span> <span class="tp">GenericTextEnvelope</span>(
+            tool_name=tool_name,
+            tool_id=kwargs.get(<span class="st">"tool_id"</span>, <span class="st">""</span>),
+            text=str(result),
+        )
+
+    <span class="kw">except</span> Exception <span class="kw">as</span> e:
+        <span class="kw">return</span> ToolResultEnvelope.error(tool_name, kwargs.get(<span class="st">"tool_id"</span>, <span class="st">""</span>), str(e))</pre>
+  </div>
+
+  <div class="insight purple">
+    <span class="insight-label">💡 Backwards Compatibility</span>
+    <p>The auto-wrapping logic means every existing tool that returns a <code>str</code> or <code>ToolResult</code> continues to work without any changes. The envelope is purely additive — tools can opt into it when they need richer result semantics. This is the <strong>Open-Closed Principle</strong> in action: the system is open for extension (new envelope types) but closed for modification (existing tools don't break).</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 5: THE ARCHITECTURE CRYSTALLIZED                       -->
+<!-- ================================================================ -->
+<div class="chapter-divider reveal"><span>Chapter 5 — The Big Picture</span></div>
+
+<section class="entry reveal">
+  <div class="entry-date">Reflection</div>
+  <h2>The Full Data Flow</h2>
+
+  <div class="diagram-wrapper">
+    <svg viewBox="0 0 760 520" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#7f8c8d" letter-spacing="2">COMPLETE DATA FLOW — TOOL EXECUTION TO CONSUMERS</text>
+
+      <!-- PHASE 1: Tool Execution -->
+      <rect x="30" y="40" width="700" height="100" rx="10" fill="#6c3483" opacity="0.05" stroke="#6c3483" stroke-width="1" stroke-dasharray="6,4"/>
+      <text x="50" y="60" font-family="DM Sans, sans-serif" font-size="10" font-weight="700" fill="#6c3483" letter-spacing="1.5">PHASE 1 — TOOL EXECUTION</text>
+
+      <rect x="60" y="75" width="140" height="48" rx="6" fill="#6c3483" opacity="0.12" stroke="#6c3483" stroke-width="1.5"/>
+      <text x="130" y="95" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600" fill="#6c3483">LLM says:</text>
+      <text x="130" y="112" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#6c3483">"use tool X"</text>
+
+      <text x="225" y="100" font-family="DM Sans, sans-serif" font-size="16" fill="#aaa">→</text>
+
+      <rect x="250" y="75" width="190" height="48" rx="6" fill="#6c3483" opacity="0.12" stroke="#6c3483" stroke-width="1.5"/>
+      <text x="345" y="95" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600" fill="#6c3483">ToolRegistry</text>
+      <text x="345" y="112" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#6c3483">.execute(name, input)</text>
+
+      <text x="465" y="100" font-family="DM Sans, sans-serif" font-size="16" fill="#aaa">→</text>
+
+      <rect x="490" y="75" width="220" height="48" rx="6" fill="#1e8449" opacity="0.12" stroke="#1e8449" stroke-width="2"/>
+      <text x="600" y="95" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600" fill="#1e8449">ToolResultEnvelope</text>
+      <text x="600" y="112" text-anchor="middle" font-family="EB Garamond, serif" font-size="12" fill="#555">(tool-specific subclass)</text>
+
+      <!-- PHASE 2: Projection -->
+      <rect x="30" y="160" width="700" height="115" rx="10" fill="#1e8449" opacity="0.05" stroke="#1e8449" stroke-width="1" stroke-dasharray="6,4"/>
+      <text x="50" y="180" font-family="DM Sans, sans-serif" font-size="10" font-weight="700" fill="#1e8449" letter-spacing="1.5">PHASE 2 — DUAL PROJECTION</text>
+
+      <!-- Envelope in center -->
+      <rect x="265" y="192" width="230" height="40" rx="6" fill="#1e8449" opacity="0.12" stroke="#1e8449" stroke-width="2"/>
+      <text x="380" y="218" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#1e8449">envelope</text>
+
+      <!-- Left arrow: context window -->
+      <line x1="265" y1="212" x2="115" y2="250" stroke="#2471a3" stroke-width="2"/>
+      <polygon points="110,248 120,248 115,255" fill="#2471a3"/>
+      <text x="170" y="242" font-family="JetBrains Mono, monospace" font-size="10" fill="#2471a3">.for_context_window()</text>
+
+      <!-- Right arrow: conversation log -->
+      <line x1="495" y1="212" x2="645" y2="250" stroke="#d35400" stroke-width="2"/>
+      <polygon points="640,248 650,248 645,255" fill="#d35400"/>
+      <text x="575" y="242" font-family="JetBrains Mono, monospace" font-size="10" fill="#d35400">.for_conversation_log()</text>
+
+      <!-- PHASE 3: Consumers -->
+      <rect x="30" y="290" width="700" height="210" rx="10" fill="#2471a3" opacity="0.03" stroke="#ccc" stroke-width="1" stroke-dasharray="6,4"/>
+      <text x="50" y="310" font-family="DM Sans, sans-serif" font-size="10" font-weight="700" fill="#7f8c8d" letter-spacing="1.5">PHASE 3 — CONSUMPTION</text>
+
+      <!-- AgentConfig side -->
+      <rect x="50" y="325" width="300" height="155" rx="8" fill="#2471a3" opacity="0.08" stroke="#2471a3" stroke-width="1.5"/>
+      <text x="200" y="348" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#2471a3" letter-spacing="1">AGENTCONFIG</text>
+
+      <rect x="70" y="360" width="260" height="32" rx="5" fill="white" stroke="#2471a3" stroke-width="1"/>
+      <text x="200" y="381" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#2471a3">ToolResultContent(</text>
+
+      <rect x="90" y="395" width="220" height="24" rx="4" fill="#2471a3" opacity="0.08"/>
+      <text x="200" y="412" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#555">tool_result=[ContentBlock dicts]</text>
+
+      <rect x="70" y="425" width="260" height="32" rx="5" fill="white" stroke="#2471a3" stroke-width="1"/>
+      <text x="200" y="446" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#555">→ LLM Provider Adapter → API call</text>
+
+      <!-- ConversationHistory side -->
+      <rect x="410" y="325" width="300" height="155" rx="8" fill="#d35400" opacity="0.08" stroke="#d35400" stroke-width="1.5"/>
+      <text x="560" y="348" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#d35400" letter-spacing="1">CONVERSATION HISTORY</text>
+
+      <rect x="430" y="360" width="260" height="24" rx="4" fill="#d35400" opacity="0.08"/>
+      <text x="560" y="378" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#555">tool_name, tool_id, summary</text>
+
+      <rect x="430" y="388" width="260" height="24" rx="4" fill="#d35400" opacity="0.08"/>
+      <text x="560" y="406" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#555">stdout, stderr, exit_code</text>
+
+      <rect x="430" y="416" width="260" height="24" rx="4" fill="#d35400" opacity="0.08"/>
+      <text x="560" y="434" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#555">execution_log, generated_files</text>
+
+      <rect x="430" y="448" width="260" height="32" rx="5" fill="white" stroke="#d35400" stroke-width="1"/>
+      <text x="560" y="469" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#555">→ Database → Frontend UI</text>
+    </svg>
+    <div class="diagram-caption">Fig 3 — The complete flow: execute → envelope → project → consume</div>
+  </div>
+
+  <h3>Naming the Patterns</h3>
+
+  <p>Let's step back and name the design patterns we just discovered by solving this problem. The interesting thing is we didn't start with patterns — we started with pain and the patterns emerged.</p>
+
+  <table class="compare-table">
+    <thead>
+      <tr>
+        <th>Pattern</th>
+        <th>Where It Appears</th>
+        <th>What Pain It Solves</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Projection / View Model</strong></td>
+        <td><code>for_context_window()</code> and <code>for_conversation_log()</code></td>
+        <td>Same data, different consumers need different shapes. The source object owns the transformation logic.</td>
+      </tr>
+      <tr>
+        <td><strong>Envelope / Rich Result</strong></td>
+        <td><code>ToolResultEnvelope</code> subclasses</td>
+        <td>Tool-specific data that doesn't belong in the canonical model but needs to travel with the result.</td>
+      </tr>
+      <tr>
+        <td><strong>Information Expert (GRASP)</strong></td>
+        <td>Tools own their envelope definitions</td>
+        <td>The class with the most knowledge about data shape should own its serialization.</td>
+      </tr>
+      <tr>
+        <td><strong>Adapter (legacy wrapping)</strong></td>
+        <td><code>GenericTextEnvelope</code>, auto-wrapping in <code>execute()</code></td>
+        <td>Old tools returning <code>str</code> get wrapped into the new interface without code changes.</td>
+      </tr>
+      <tr>
+        <td><strong>Open-Closed Principle</strong></td>
+        <td>New tools add new envelope subclasses</td>
+        <td>Adding a new tool type never requires modifying the agentic loop, AgentConfig, or ConversationHistory.</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 6: WHY NOT ALTERNATIVES                                -->
+<!-- ================================================================ -->
+<div class="chapter-divider reveal"><span>Chapter 6 — Rejected Alternatives</span></div>
+
+<section class="entry reveal">
+  <div class="entry-date">Developer's Decision Log</div>
+  <h2>Paths Not Taken (And Why)</h2>
+
+  <p>A senior developer's diary isn't just about what they built — it's about what they considered and rejected. Here are the alternatives that were weighed.</p>
+
+  <h3>Alternative A: "Just Make ToolResultBase Fatter"</h3>
+
+  <div class="thought">
+    <span class="label">Rejected</span>
+    "I could add optional fields to ToolResultBase — stdout, stderr, nested_messages, execution_log, etc. But this creates a God Object. Every tool would see every other tool's fields. The type system can't enforce which combinations are valid. And every new tool type means modifying the canonical model, violating Open-Closed."
+  </div>
+
+  <h3>Alternative B: "Stuff Everything in kwargs"</h3>
+
+  <div class="thought">
+    <span class="label">Rejected</span>
+    "I could use the existing kwargs field to carry tool-specific data. But kwargs is a Dict[str, Any] — completely untyped. No autocomplete, no validation, no documentation. Every consumer would need to know the exact key names for each tool type, and there's no compile-time help. This is the 'stringly typed' anti-pattern."
+  </div>
+
+  <h3>Alternative C: "Two Separate Return Types from Tools"</h3>
+
+  <div class="thought">
+    <span class="label">Rejected</span>
+    "I could have tools return a tuple of (context_window_blocks, conversation_log_dict). But this couples the tool to knowledge of both consumers. If a third consumer appears (e.g., analytics/billing), every tool needs updating. The envelope pattern defers projection to method calls, so adding a third projection method is a single interface change."
+  </div>
+
+  <div class="insight orange">
+    <span class="insight-label">🔑 The Decisive Factor</span>
+    <p>The envelope won because it's the only approach where <strong>adding a new tool type requires zero changes outside the tool's own code</strong>, and <strong>adding a new consumer requires only adding one abstract method to the base</strong>. Both axes of change are isolated. This is the hallmark of a well-factored design — changes in one dimension don't ripple into others.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 7: THOUGHT PROCESS                                     -->
+<!-- ================================================================ -->
+<div class="chapter-divider reveal"><span>Epilogue — The Thought Process</span></div>
+
+<section class="entry reveal">
+  <div class="entry-date">Meta-Reflection</div>
+  <h2>How Senior Developers Extract Patterns</h2>
+
+  <p>The journey we just walked through follows a repeatable mental process. It's not about knowing pattern names upfront — it's about recognizing structural tensions in code and resolving them by separating concerns.</p>
+
+  <div class="diagram-wrapper">
+    <svg viewBox="0 0 760 340" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="22" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#7f8c8d" letter-spacing="2">THE SENIOR DEVELOPER'S PATTERN EXTRACTION LOOP</text>
+
+      <!-- Step 1 -->
+      <rect x="20" y="50" width="140" height="90" rx="8" fill="#c0392b" opacity="0.1" stroke="#c0392b" stroke-width="1.5"/>
+      <text x="90" y="75" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#c0392b">① FEEL PAIN</text>
+      <text x="90" y="98" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">"Two consumers</text>
+      <text x="90" y="115" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">want different</text>
+      <text x="90" y="132" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">views of the data"</text>
+      <text x="178" y="95" font-family="DM Sans, sans-serif" font-size="18" fill="#aaa">→</text>
+
+      <!-- Step 2 -->
+      <rect x="195" y="50" width="140" height="90" rx="8" fill="#f39c12" opacity="0.1" stroke="#f39c12" stroke-width="1.5"/>
+      <text x="265" y="75" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#e67e22">② FIND AXES</text>
+      <text x="265" y="98" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">"What changes</text>
+      <text x="265" y="115" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">for different</text>
+      <text x="265" y="132" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">reasons?"</text>
+      <text x="353" y="95" font-family="DM Sans, sans-serif" font-size="18" fill="#aaa">→</text>
+
+      <!-- Step 3 -->
+      <rect x="370" y="50" width="140" height="90" rx="8" fill="#2471a3" opacity="0.1" stroke="#2471a3" stroke-width="1.5"/>
+      <text x="440" y="75" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#2471a3">③ DRAW BOUNDARY</text>
+      <text x="440" y="98" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">"Tool result</text>
+      <text x="440" y="115" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">shape ≠ canonical</text>
+      <text x="440" y="132" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">content block"</text>
+      <text x="528" y="95" font-family="DM Sans, sans-serif" font-size="18" fill="#aaa">→</text>
+
+      <!-- Step 4 -->
+      <rect x="545" y="50" width="140" height="90" rx="8" fill="#1e8449" opacity="0.1" stroke="#1e8449" stroke-width="1.5"/>
+      <text x="615" y="75" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" font-weight="700" fill="#1e8449">④ NAME IT</text>
+      <text x="615" y="98" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">"Envelope with</text>
+      <text x="615" y="115" text-anchor="middle" font-family="EB Garamond, serif" font-size="13" fill="#333">dual projection"</text>
+
+      <!-- Bottom: the meta loop -->
+      <path d="M 700 95 Q 740 95 740 175 Q 740 210 700 210 L 60 210 Q 20 210 20 175 Q 20 155 60 155" stroke="#ccc" stroke-width="1.5" fill="none" stroke-dasharray="6,4" marker-end="url(#arrowGrey)"/>
+      <defs>
+        <marker id="arrowGrey" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#ccc"/>
+        </marker>
+      </defs>
+      <text x="380" y="200" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10" fill="#aaa" letter-spacing="1">LOOP: NEW TOOL TYPE → DOES THE ENVELOPE HANDLE IT? → IF NOT, REFINE</text>
+
+      <!-- Bottom insight -->
+      <rect x="65" y="240" width="630" height="85" rx="10" fill="#1e8449" opacity="0.06" stroke="#1e8449" stroke-width="1"/>
+      <text x="380" y="268" text-anchor="middle" font-family="EB Garamond, serif" font-size="17" fill="#333" font-style="italic">"The pattern isn't the point. The point is isolating the axes of change.</text>
+      <text x="380" y="290" text-anchor="middle" font-family="EB Garamond, serif" font-size="17" fill="#333" font-style="italic">The pattern is just the name we give the solution so we can talk about it."</text>
+      <text x="380" y="314" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="11" fill="#888">— The developer's diary</text>
+    </svg>
+    <div class="diagram-caption">Fig 4 — Pain → Axes of Change → Boundary → Named Pattern → Iterate</div>
+  </div>
+
+  <p>In this specific case, we identified <strong>two orthogonal axes of variation</strong>: tool type (code exec vs. web search vs. sub-agent) and consumer type (LLM context vs. UI log). The canonical model was trying to collapse both axes into one flat hierarchy, which is why it was breaking. The envelope introduces a new layer that handles the tool-type axis, while the projection methods handle the consumer-type axis. Each axis can now vary independently.</p>
+
+  <div class="insight green">
+    <span class="insight-label">✅ The Litmus Test</span>
+    <p>Ask yourself these two questions about the design: <em>"If I add a new tool type (say, a database query tool), how many files do I touch?"</em> Answer: one — the new tool's file, where I define both the envelope and the tool. <em>"If I add a new consumer (say, a billing/analytics system), how many files do I touch?"</em> Answer: one — the <code>ToolResultEnvelope</code> base, where I add a third projection method. If both answers are "one", the factoring is right.</p>
+  </div>
+</section>
+
+</div>
+
+<footer class="footer">
+  <p>Patterns are the <em>names</em> we give to structural solutions after we discover them.<br>
+  The skill isn't knowing the names — it's feeling the pain that calls for them.</p>
+</footer>
+
+<script>
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) entry.target.classList.add('visible');
+  });
+}, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+</script>
+
+</body>
+</html>

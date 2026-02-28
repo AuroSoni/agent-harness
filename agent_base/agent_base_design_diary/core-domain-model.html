@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Developer Diary — Building the Vocabulary</title>
+<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1a1a2e;
+    --paper: #f8f7ff;
+    --paper-warm: #efedfc;
+    --accent: #4f46e5;
+    --accent-soft: #4f46e518;
+    --teal: #0d6e6e;
+    --teal-soft: #0d6e6e18;
+    --slate: #475569;
+    --slate-soft: #47556918;
+    --amber: #b45309;
+    --amber-soft: #b4530918;
+    --violet: #7c3aed;
+    --violet-soft: #7c3aed18;
+    --rose: #be185d;
+    --rose-soft: #be185d18;
+    --crimson: #9f1239;
+    --crimson-soft: #9f123918;
+    --emerald: #047857;
+    --emerald-soft: #04785718;
+    --code-bg: #1e1e2e;
+    --code-fg: #cdd6f4;
+    --muted: #94a3b8;
+    --border: #cdc8e8;
+    --border-light: #e0dcf0;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Lora', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 18.5px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ─── Navigation Bar ─── */
+  .nav-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(250, 248, 245, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-light);
+    font-family: 'Inter', sans-serif;
+    font-size: 12.5px;
+  }
+  .nav-arrow {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 32px;
+    text-align: center;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  .nav-arrow:hover { background: rgba(0,0,0,0.05); }
+  .nav-arrow.disabled {
+    color: var(--muted);
+    pointer-events: none;
+    opacity: 0.35;
+  }
+  .nav-tabs {
+    display: flex;
+    gap: 1px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .nav-tab:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--ink);
+  }
+  .nav-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+  }
+
+  /* ─── Hero ─── */
+  .hero {
+    padding: 68px 40px 50px;
+    text-align: center;
+    border-bottom: 3px double var(--border);
+    background: linear-gradient(175deg, #e8e6f8 0%, var(--paper) 60%);
+  }
+  .hero .icon { font-size: 42px; margin-bottom: 12px; display: block; }
+  .hero h1 {
+    font-family: 'Lora', serif;
+    font-size: clamp(26px, 4.2vw, 44px);
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 1.18;
+    margin-bottom: 10px;
+  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero .sub {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    font-weight: 600;
+  }
+  .hero .tagline {
+    font-size: 17px;
+    color: var(--slate);
+    margin-top: 14px;
+    max-width: 620px;
+    margin-left: auto;
+    margin-right: auto;
+    font-style: italic;
+  }
+
+  /* ─── Table of contents ─── */
+  .toc {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 28px 28px 0;
+  }
+  .toc-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  .toc-list {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 6px;
+  }
+  .toc-list a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  .toc-list a:hover { background: var(--paper-warm); }
+  .toc-list .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+
+  /* ─── Content ─── */
+  .wrap { max-width: 820px; margin: 0 auto; padding: 0 28px; }
+
+  .entry {
+    padding: 44px 0;
+    border-bottom: 1px solid var(--border-light);
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .entry.vis { opacity: 1; transform: translateY(0); }
+
+  .entry-tag {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  h2 {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    line-height: 1.25;
+  }
+  h3 {
+    font-family: 'Inter', sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+    margin: 30px 0 12px;
+    color: var(--ink);
+  }
+  p { margin-bottom: 14px; }
+  p strong { color: var(--accent); font-weight: 700; }
+  ul, ol { margin: 0 0 14px 24px; }
+  li { margin-bottom: 4px; }
+
+  /* ─── Chapter dividers ─── */
+  .chap {
+    text-align: center;
+    padding: 36px 0 8px;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    color: var(--muted);
+    font-weight: 700;
+    border-top: 3px double var(--border);
+  }
+  .chap span {
+    background: var(--paper);
+    padding: 0 16px;
+  }
+
+  /* ─── Thought bubbles ─── */
+  .th {
+    background: var(--paper-warm);
+    border-left: 4px solid var(--accent);
+    padding: 16px 22px;
+    margin: 24px 0;
+    border-radius: 0 10px 10px 0;
+    font-style: italic;
+    position: relative;
+  }
+  .th::before {
+    content: '💭';
+    position: absolute;
+    top: -12px;
+    left: -14px;
+    font-size: 18px;
+    font-style: normal;
+  }
+  .tl {
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-style: normal;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 4px;
+    color: var(--accent);
+  }
+  .th.amber { border-left-color: var(--amber); }
+  .th.amber .tl { color: var(--amber); }
+  .th.amber::before { content: '💡'; }
+  .th.crimson { border-left-color: var(--crimson); }
+  .th.crimson .tl { color: var(--crimson); }
+  .th.crimson::before { content: '⚠️'; }
+  .th.teal { border-left-color: var(--teal); }
+  .th.teal .tl { color: var(--teal); }
+  .th.teal::before { content: '🔑'; }
+  .th.emerald { border-left-color: var(--emerald); }
+  .th.emerald .tl { color: var(--emerald); }
+  .th.emerald::before { content: '✅'; }
+
+  /* ─── Insight boxes ─── */
+  .ins {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 28px 0;
+  }
+  .ins .il {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 8px;
+  }
+  .ins.amber { background: var(--amber-soft); border-color: var(--amber); }
+  .ins.emerald { background: var(--emerald-soft); border-color: var(--emerald); }
+
+  /* ─── Code blocks ─── */
+  .cw {
+    margin: 24px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+  }
+  .ch {
+    background: #24243a;
+    padding: 9px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .dt { display: flex; gap: 6px; }
+  .dt span { width: 10px; height: 10px; border-radius: 50%; }
+  .dt span:nth-child(1) { background: #ff5f56; }
+  .dt span:nth-child(2) { background: #ffbd2e; }
+  .dt span:nth-child(3) { background: #27c93f; }
+  .fn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #8888a8;
+    font-weight: 500;
+  }
+  .tg {
+    margin-left: auto;
+    font-family: 'Inter', sans-serif;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tg-abc { background: #7c3aed30; color: #c4b5fd; }
+  .tg-type { background: #0d948830; color: #5eead4; }
+  .tg-impl { background: #05966930; color: #86efac; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    tab-size: 4;
+  }
+  pre .c { color: #6c7086; font-style: italic; }
+  pre .k { color: #cba6f7; }
+  pre .t { color: #89b4fa; }
+  pre .s { color: #a6e3a1; }
+  pre .f { color: #f9e2af; }
+  pre .p { color: #89b4fa; }
+  pre .n { color: #fab387; }
+  pre .r { color: #f38ba8; }
+  pre .hl {
+    background: rgba(203, 166, 247, 0.06);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82em;
+    background: var(--paper-warm);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+
+  /* ─── Tables ─── */
+  .ctbl {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 24px 0;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+  }
+  .ctbl th {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 2px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--slate);
+    font-weight: 700;
+  }
+  .ctbl td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-light);
+    line-height: 1.5;
+  }
+
+  /* ─── Diagram blocks ─── */
+  .dw {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 24px 0;
+    overflow-x: auto;
+  }
+  .dc {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+  }
+
+  /* ─── Separator ─── */
+  .sep {
+    text-align: center;
+    padding: 20px 0;
+    color: var(--border);
+    font-size: 18px;
+    letter-spacing: 12px;
+  }
+
+  /* ─── Footer ─── */
+  .footer {
+    text-align: center;
+    padding: 44px 28px;
+    border-top: 3px double var(--border);
+    margin-top: 16px;
+    font-style: italic;
+    color: var(--slate);
+    font-size: 16px;
+    line-height: 1.8;
+  }
+
+  @media (max-width: 600px) {
+    .hero { padding: 46px 18px 36px; }
+    .wrap { padding: 0 16px; }
+    pre { font-size: 11.5px; padding: 14px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav-bar">
+  <a href="index.html" class="nav-arrow">&larr;</a>
+  <div class="nav-tabs">
+    <a href="index.html" class="nav-tab">Hub</a>
+    <a href="core-domain-model.html" class="nav-tab active">Domain</a>
+    <a href="tool-system.html" class="nav-tab">Tools</a>
+    <a href="sandbox.html" class="nav-tab">Sandbox</a>
+    <a href="media-backend.html" class="nav-tab">Media</a>
+    <a href="file-coordination.html" class="nav-tab">Files</a>
+    <a href="planned-systems.html" class="nav-tab">Planned</a>
+  </div>
+  <a href="tool-system.html" class="nav-arrow">&rarr;</a>
+</nav>
+
+<!-- ━━━━━━━━━━ HERO ━━━━━━━━━━ -->
+<div class="hero">
+  <span class="icon">🧬</span>
+  <h1>Building the <em>Vocabulary</em></h1>
+  <div class="sub">Developer Diary &middot; Core Domain Model</div>
+  <p class="tagline">
+    Your tool receives an <code>anthropic.types.ToolUseBlock</code>.
+    Now try switching to OpenAI. This is the story of building provider-agnostic
+    types that let the framework speak one language while providers speak many.
+  </p>
+</div>
+
+<!-- ━━━━━━━━━━ TABLE OF CONTENTS ━━━━━━━━━━ -->
+<nav class="toc">
+  <div class="toc-title">Chapters</div>
+  <ul class="toc-list">
+    <li><a href="#ch1"><span class="num">1</span> The Problem</a></li>
+    <li><a href="#ch2"><span class="num">2</span> The Vocabulary</a></li>
+    <li><a href="#ch3"><span class="num">3</span> Messages &amp; Usage</a></li>
+    <li><a href="#ch4"><span class="num">4</span> The Agent Contract</a></li>
+    <li><a href="#ch5"><span class="num">5</span> Provider Mapping</a></li>
+    <li><a href="#ch6"><span class="num">6</span> Connecting the Dots</a></li>
+  </ul>
+</nav>
+
+<div class="wrap">
+
+<!-- ================================================================ -->
+<!-- CHAPTER 1: THE PROBLEM                                          -->
+<!-- ================================================================ -->
+<div class="chap" id="ch1"><span>Chapter 1 &mdash; The Problem</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Provider Lock-in Through Types</div>
+  <h2>When Your Types Are Someone Else's API</h2>
+
+  <p>In the original <code>anthropic_agent</code>, provider types leaked everywhere. A tool handler received <code>anthropic.types.ToolUseBlock</code>. The message list was <code>list[anthropic.types.MessageParam]</code>. The streaming code parsed <code>anthropic.types.RawContentBlockDeltaEvent</code>. Every file in the codebase imported from <code>anthropic.types</code>.</p>
+
+  <p>This worked fine &mdash; until someone asked: <em>"Can we support OpenAI too?"</em></p>
+
+  <div class="th crimson">
+    <span class="tl">Developer's inner voice</span>
+    "The problem isn't that we use Anthropic's types internally. The problem is that we expose them at every seam. Tools see them. Storage sees them. Compaction sees them. Streaming sees them. To add a second provider, I'd have to touch every file in the project. That's not coupling &mdash; that's entanglement."
+  </div>
+
+  <p>The coupling was structural, not just nominal:</p>
+  <ul>
+    <li><strong>Tool code</strong> imported <code>anthropic.types</code> to read tool inputs and construct results</li>
+    <li><strong>Storage code</strong> serialized <code>anthropic.types.Message</code> objects &mdash; whose shape is Anthropic-specific</li>
+    <li><strong>Compaction code</strong> counted tokens using Anthropic's message format</li>
+    <li><strong>Streaming code</strong> parsed Anthropic-specific SSE events</li>
+  </ul>
+
+  <p>None of these modules <em>should</em> know which LLM provider is being used. A tool that reads a file doesn't care whether Claude or GPT-4 asked for it. A compactor that trims old messages doesn't care what wire format those messages originally arrived in.</p>
+
+  <div class="ins amber">
+    <span class="il">💡 The Core Question</span>
+    <p>What vocabulary does the framework actually need? Not Anthropic's vocabulary, not OpenAI's. A <em>canonical</em> vocabulary that captures the semantics of multi-modal, tool-using conversations &mdash; without tying to any provider's wire format.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 2: THE VOCABULARY                                       -->
+<!-- ================================================================ -->
+<div class="chap" id="ch2"><span>Chapter 2 &mdash; The Vocabulary</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The ContentBlock Hierarchy</div>
+  <h2>Defining What Content Can Be</h2>
+
+  <p>The content model needed to answer one question: <strong>what kinds of things can appear in a conversation turn?</strong> Not "what does Anthropic support" or "what does OpenAI support" &mdash; but what are the semantically meaningful content types the framework understands?</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">core/types.py</span>
+      <span class="tg tg-type">Type Hierarchy</span>
+    </div>
+<pre>
+<span class="t">ContentBlock</span> <span class="c">(ABC, dataclass)</span>
+├── <span class="t">TextContent</span>                          <span class="c"># text</span>
+├── <span class="t">ThinkingContent</span>                      <span class="c"># thinking, signature</span>
+├── <span class="t">MediaContent</span>                         <span class="c"># media_type, media_id (required)</span>
+│   ├── <span class="t">ImageContent</span>                     <span class="c"># source_type, data (transient)</span>
+│   ├── <span class="t">DocumentContent</span>                  <span class="c"># source_type, data (transient)</span>
+│   └── <span class="t">AttachmentContent</span>                <span class="c"># filename, source_type</span>
+├── <span class="t">ToolUseBase</span>                          <span class="c"># tool_name, tool_id, tool_input</span>
+│   ├── <span class="t">ToolUseContent</span>                   <span class="c"># client-side tool invocation</span>
+│   ├── <span class="t">ServerToolUseContent</span>             <span class="c"># server-side (provider-managed)</span>
+│   └── <span class="t">MCPToolUseContent</span>                <span class="c"># MCP protocol (+ mcp_server_name)</span>
+├── <span class="t">ToolResultBase</span>                       <span class="c"># tool_name, tool_id, tool_result, is_error</span>
+│   ├── <span class="t">ToolResultContent</span>                <span class="c"># client-side result</span>
+│   ├── <span class="t">ServerToolResultContent</span>          <span class="c"># server-side result</span>
+│   └── <span class="t">MCPToolResultContent</span>             <span class="c"># MCP result (+ mcp_server_name)</span>
+├── <span class="t">CitationBase</span>                         <span class="c"># cited_text</span>
+│   ├── <span class="t">CharCitation</span> / <span class="t">PageCitation</span>
+│   ├── <span class="t">ContentBlockCitation</span>
+│   ├── <span class="t">SearchResultCitation</span>
+│   └── <span class="t">WebSearchResultCitation</span>
+└── <span class="t">ErrorContent</span>                         <span class="c"># error_message, error_type</span></pre>
+  </div>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "This isn't the LCD of all providers, and it's not the superset. It's the set of semantically meaningful types the framework needs to reason about. A thinking block matters because compaction treats it differently. A media block matters because it needs resolution. A tool result matters because it has dual projections. If a type doesn't influence framework behavior, it doesn't need to be in the hierarchy."
+  </div>
+
+  <h3>The Serialization Contract</h3>
+
+  <p>Every content block must round-trip through JSON. The base class defines the contract:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">core/types.py &mdash; ContentBlock base</span>
+      <span class="tg tg-abc">Contract</span>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">ContentBlock</span>(<span class="t">ABC</span>):
+    <span class="s">"""Base for all content types. raw is transient, kwargs are persisted."""</span>
+    content_block_type: <span class="t">ContentBlockType</span> = field(init=<span class="n">False</span>)
+    kwargs: <span class="t">Dict</span>[<span class="t">str</span>, <span class="t">Any</span>] = field(default_factory=<span class="t">dict</span>)
+    raw: <span class="t">Any</span> = field(default=<span class="n">None</span>, repr=<span class="n">False</span>)  <span class="c"># &larr; never serialized</span>
+
+    <span class="k">@abstractmethod</span>
+    <span class="k">def</span> <span class="f">to_dict</span>(<span class="p">self</span>) -> <span class="t">Dict</span>[<span class="t">str</span>, <span class="t">Any</span>]:
+<span class="hl">        <span class="s">"""JSON-native primitives only. Enums emit .value strings."""</span></span>
+        ...
+
+    <span class="k">@classmethod</span>
+    <span class="k">def</span> <span class="f">from_dict</span>(<span class="p">cls</span>, data: <span class="t">Dict</span>) -> <span class="s">"ContentBlock"</span>:
+<span class="hl">        <span class="s">"""Match-based polymorphic dispatcher."""</span></span>
+        block_type = data.get(<span class="s">"content_block_type"</span>)
+        <span class="k">match</span> block_type:
+            <span class="k">case</span> <span class="t">ContentBlockType</span>.TEXT.value:
+                <span class="k">return</span> _build_dataclass_block(<span class="t">TextContent</span>, data)
+            <span class="c"># ... other cases ...</span></pre>
+  </div>
+
+  <p>Two key design choices:</p>
+  <ul>
+    <li><strong><code>raw</code> is transient.</strong> The original provider SDK object is stored for debugging but never serialized. This prevents provider types from leaking into persistence.</li>
+    <li><strong><code>kwargs</code> is the escape hatch.</strong> Provider-specific fields that don't map to canonical fields go into <code>kwargs</code>. They're persisted but not interpreted by the framework. This lets providers preserve information without polluting the canonical model.</li>
+  </ul>
+
+  <h3>Media Content: Identity vs Data</h3>
+
+  <p>Media blocks encode a critical separation: <strong>identity</strong> (<code>media_id</code>) is required and persisted; <strong>data</strong> (base64, bytes) is transient and resolved on demand.</p>
+
+  <div class="th amber">
+    <span class="tl">Developer's inner voice</span>
+    "The <code>data</code> field on <code>ImageContent</code> is marked transient &mdash; never serialized. When you save a conversation, you save <code>media_id: 'abc123'</code>, not 2MB of base64. When you reload, the media backend resolves the ID to bytes on demand. This keeps persisted conversations lightweight and makes backend swaps trivial."
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 3: MESSAGES & USAGE                                     -->
+<!-- ================================================================ -->
+<div class="chap" id="ch3"><span>Chapter 3 &mdash; Messages &amp; Usage</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Conversation Envelope</div>
+  <h2>Wrapping Content in Context</h2>
+
+  <p>A <code>Message</code> is a single turn in a conversation &mdash; one or more <code>ContentBlock</code>s, a role, optional usage metrics, and provider/model identity.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">core/messages.py</span>
+      <span class="tg tg-type">Dataclass</span>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">Message</span>:
+    id: <span class="t">str</span> = field(default_factory=<span class="k">lambda</span>: <span class="t">str</span>(uuid.uuid4()))
+    role: <span class="t">Role</span> = <span class="t">Role</span>.USER
+    content: <span class="t">List</span>[<span class="t">ContentBlock</span>] = field(default_factory=<span class="t">list</span>)
+    stop_reason: <span class="t">Optional</span>[<span class="t">str</span>] = <span class="n">None</span>
+    usage: <span class="t">Optional</span>[<span class="t">Usage</span>] = <span class="n">None</span>
+    provider: <span class="t">str</span> = <span class="s">""</span>
+    model: <span class="t">str</span> = <span class="s">""</span></pre>
+  </div>
+
+  <p>The <code>MessageFormatter</code> ABC sits at the translation boundary:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">core/messages.py</span>
+      <span class="tg tg-abc">ABC</span>
+    </div>
+<pre>
+<span class="k">class</span> <span class="t">MessageFormatter</span>(<span class="t">ABC</span>):
+    <span class="k">@abstractmethod</span>
+    <span class="k">def</span> <span class="f">format_messages</span>(<span class="p">self</span>, messages, params) -> <span class="t">Dict</span>:
+        <span class="s">"""Canonical messages &rarr; provider wire format."""</span>
+        ...
+
+    <span class="k">@abstractmethod</span>
+    <span class="k">def</span> <span class="f">parse_response</span>(<span class="p">self</span>, raw_response) -> <span class="t">Message</span>:
+        <span class="s">"""Provider wire format &rarr; canonical message."""</span>
+        ...</pre>
+  </div>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "The formatter is the gateway. Canonical types flow in, provider types flow out, and vice versa. The formatter is the <em>only</em> place where provider SDK types are imported. If I grep for <code>import anthropic</code> in the entire codebase, it should only hit files inside <code>providers/anthropic/</code>."
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 4: THE AGENT CONTRACT                                   -->
+<!-- ================================================================ -->
+<div class="chap" id="ch4"><span>Chapter 4 &mdash; The Agent Contract</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Separating Orchestration from Transport</div>
+  <h2>Agent, Provider, Formatter &mdash; Three Concerns</h2>
+
+  <p>In the original <code>anthropic_agent</code>, a single class did everything: manage the agentic loop, make SDK API calls, parse responses, and format messages. The refactoring split this into three classes, each owning one concern:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">core/agent.py + core/provider.py</span>
+      <span class="tg tg-abc">ABC</span>
+    </div>
+<pre>
+<span class="k">class</span> <span class="t">Agent</span>(<span class="t">ABC</span>):
+    <span class="s">"""Owns orchestration: step counting, tool dispatch, compaction."""</span>
+    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">run</span>(<span class="p">self</span>, prompt: <span class="t">str</span> | <span class="t">Message</span>) -> <span class="t">AgentResult</span>: ...
+    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">resume_run_with_tool_results</span>(<span class="p">self</span>, results) -> <span class="t">AgentResult</span>: ...
+
+<span class="k">class</span> <span class="t">Provider</span>(<span class="t">ABC</span>):
+    <span class="s">"""Owns transport: HTTP calls, retry, streaming, response parsing."""</span>
+    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">generate</span>(<span class="p">self</span>, system_prompt, messages, tool_schemas,
+                       llm_config, model, ...) -> <span class="t">Message</span>: ...
+    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">generate_stream</span>(<span class="p">self</span>, ..., queue, stream_formatter) -> <span class="t">Message</span>: ...</pre>
+  </div>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th>Class</th><th>Concern</th><th>Provider SDK imports?</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Agent</code></td>
+        <td>Orchestration &mdash; step counting, tool dispatch, compaction</td>
+        <td>No</td>
+      </tr>
+      <tr>
+        <td><code>Provider</code></td>
+        <td>Transport &mdash; HTTP, retry, streaming, accumulation</td>
+        <td>Yes (in concrete subclass)</td>
+      </tr>
+      <tr>
+        <td><code>MessageFormatter</code></td>
+        <td>Translation &mdash; canonical types &harr; wire format</td>
+        <td>Yes (in concrete subclass)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="th teal">
+    <span class="tl">Developer's inner voice</span>
+    "The Agent calls <code>self.provider.generate()</code> &mdash; it never imports a provider SDK directly. The Provider calls <code>self.formatter.format_messages()</code> then <code>self.formatter.parse_response()</code>. Each class does one job. To add OpenAI, I write three files: <code>OpenAIAgent</code>, <code>OpenAIProvider</code>, <code>OpenAIMessageFormatter</code>. Zero changes to <code>core/</code>."
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 5: PROVIDER MAPPING                                     -->
+<!-- ================================================================ -->
+<div class="chap" id="ch5"><span>Chapter 5 &mdash; Provider Mapping</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Where Translation Lives</div>
+  <h2>The Formatter as the Gateway</h2>
+
+  <p>Each provider directory contains exactly four files &mdash; each owning one concern:</p>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th>File</th><th>Class</th><th>Responsibility</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>agent.py</code></td>
+        <td><code>AnthropicAgent</code></td>
+        <td>Orchestration loop &mdash; step counting, tool dispatch, compaction, streaming</td>
+      </tr>
+      <tr>
+        <td><code>provider.py</code></td>
+        <td><code>AnthropicProvider</code></td>
+        <td>LLM API call &mdash; SDK client, retry, streaming accumulation</td>
+      </tr>
+      <tr>
+        <td><code>formatter.py</code></td>
+        <td><code>AnthropicMessageFormatter</code></td>
+        <td>Wire format translation &mdash; canonical &harr; Anthropic API, media resolution</td>
+      </tr>
+      <tr>
+        <td><code>config.py</code></td>
+        <td><code>AnthropicLLMConfig</code></td>
+        <td>Provider-specific params &mdash; thinking_tokens, beta_headers, container_id</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="dw">
+<pre style="background: transparent; color: var(--ink); font-size: 13px; line-height: 1.6;">
+  ┌──────────────────────────────────────────────┐
+  │            Framework (core/)                  │
+  │                                              │
+  │  ContentBlock  &larr;&rarr;  Message  &larr;&rarr;  Agent ABC  │
+  │                                              │
+  └──────────────────┬───────────────────────────┘
+                     │
+            format_messages() / parse_response()
+                     │
+  ┌──────────────────▼───────────────────────────┐
+  │        MessageFormatter (ABC)                │
+  │     "The only place provider types exist"    │
+  └──────────────────┬───────────────────────────┘
+                     │
+  ┌──────────────────▼───────────────────────────┐
+  │     providers/anthropic/formatter.py         │
+  │                                              │
+  │  canonical ContentBlock &rarr; anthropic.types    │
+  │  anthropic.types &rarr; canonical ContentBlock    │
+  └──────────────────────────────────────────────┘</pre>
+    <div class="dc">The formatter is the gateway between canonical and provider types</div>
+  </div>
+
+  <div class="th amber">
+    <span class="tl">Developer's inner voice</span>
+    "The formatter does media resolution too. When formatting messages for the LLM, it encounters a <code>MediaContent</code> block with just a <code>media_id</code>. It calls <code>media_backend.to_base64(media_id)</code> to get the actual bytes. This is lazy resolution at the boundary &mdash; the content block carries an identity reference, and the formatter resolves it right before the API call."
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 6: CONNECTING THE DOTS                                  -->
+<!-- ================================================================ -->
+<div class="chap" id="ch6"><span>Chapter 6 &mdash; Connecting the Dots</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Architectural Principles</div>
+  <h2>What This Design Buys Us</h2>
+
+  <div class="ins">
+    <span class="il">🔑 Dependency Inversion</span>
+    <p>High-level modules (tools, compaction, storage) depend on abstractions (<code>ContentBlock</code>, <code>Message</code>, <code>Agent</code>), not on concrete provider types. The dependency arrow points <em>inward</em> toward the canonical model. Providers depend on the core; the core never depends on providers.</p>
+  </div>
+
+  <div class="ins emerald">
+    <span class="il">✅ Liskov Substitution</span>
+    <p>Any <code>Provider</code> subclass can be swapped in wherever a <code>Provider</code> is expected. <code>AnthropicProvider</code> and a future <code>OpenAIProvider</code> both accept canonical <code>Message</code> lists and return canonical <code>Message</code> objects. The agent loop doesn't know or care which one it's talking to.</p>
+  </div>
+
+  <div class="ins amber">
+    <span class="il">💡 The Grep Test</span>
+    <p>A well-factored codebase passes the grep test. <code>grep -r "import anthropic" agent_base/</code> should only match files inside <code>providers/anthropic/</code>. <code>grep -r "from anthropic" agent_base/core/</code> should return zero results. <code>grep -r "from anthropic" agent_base/tools/</code> should return zero results. If any of these fail, provider types have leaked into the framework core.</p>
+  </div>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th>Principle</th><th>How It Applied</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Dependency Inversion</strong></td>
+        <td>Tools, storage, compaction depend on canonical types in <code>core/</code>, not on provider SDKs. The dependency direction is always inward.</td>
+      </tr>
+      <tr>
+        <td><strong>Liskov Substitution</strong></td>
+        <td>Any Provider can replace any other Provider. The contract is <code>generate(canonical) &rarr; canonical</code>. The agent loop never breaks.</td>
+      </tr>
+      <tr>
+        <td><strong>Open/Closed</strong></td>
+        <td>Adding a new provider means adding a new directory with four files. Zero modifications to <code>core/</code>, <code>tools/</code>, <code>storage/</code>, or any existing provider.</td>
+      </tr>
+      <tr>
+        <td><strong>Single Responsibility</strong></td>
+        <td>Agent owns orchestration. Provider owns transport. Formatter owns translation. Three concerns, three classes, three files.</td>
+      </tr>
+      <tr>
+        <td><strong>Lazy Resolution</strong></td>
+        <td>Content blocks carry identity references (<code>media_id</code>), not data. Resolution happens at the consumer boundary &mdash; the formatter, the streaming layer, the persistence layer. Never at creation time.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="sep">· · ·</div>
+
+  <p>The canonical model is the fulcrum of the entire architecture. Everything above it (tools, compaction, storage, streaming) speaks one language. Everything below it (Anthropic, OpenAI, LiteLLM) speaks its own language. The formatter translates between them. Add a new language by adding a translator. The core never changes.</p>
+</section>
+
+</div><!-- .wrap -->
+
+<footer class="footer">
+  <p>Define the vocabulary first. Let the vocabulary define the architecture.<br>
+  A canonical type system isn't a luxury &mdash; it's the foundation<br>
+  that makes everything else swappable.</p>
+</footer>
+
+<script>
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('vis'); });
+}, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.entry').forEach(el => obs.observe(el));
+</script>
+
+</body>
+</html>

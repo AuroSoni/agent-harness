@@ -1,0 +1,1690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Developer Diary — Sandboxing Agent Tools</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1c1917;
+    --paper: #faf8f5;
+    --paper-warm: #f3efe8;
+    --accent: #9f1239;
+    --accent-soft: #9f123918;
+    --teal: #0d6e6e;
+    --teal-soft: #0d6e6e18;
+    --slate: #475569;
+    --slate-soft: #47556918;
+    --amber: #b45309;
+    --amber-soft: #b4530918;
+    --violet: #6d28d9;
+    --violet-soft: #6d28d918;
+    --rose: #be185d;
+    --rose-soft: #be185d18;
+    --emerald: #047857;
+    --emerald-soft: #04785718;
+    --code-bg: #1c1b22;
+    --code-fg: #d4d4d8;
+    --muted: #94a3b8;
+    --border: #d6d3cd;
+    --border-light: #e8e5df;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Newsreader', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 18.5px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .hero {
+    padding: 68px 40px 50px;
+    text-align: center;
+    border-bottom: 3px double var(--border);
+    background: linear-gradient(175deg, #f0ece4 0%, var(--paper) 60%);
+  }
+  .hero .icon { font-size: 42px; margin-bottom: 12px; display: block; }
+  .hero h1 {
+    font-family: 'Newsreader', serif;
+    font-size: clamp(26px, 4.2vw, 44px);
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 1.18;
+    margin-bottom: 10px;
+  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero .sub {
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 2.5px;
+    font-weight: 600;
+  }
+  .hero .context {
+    font-family: 'Newsreader', serif;
+    font-size: 16px;
+    color: var(--slate);
+    margin-top: 14px;
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+    font-style: italic;
+  }
+
+  .content { max-width: 850px; margin: 0 auto; padding: 0 28px; }
+
+  .entry {
+    padding: 44px 0;
+    border-bottom: 1px solid var(--border-light);
+    opacity: 0; transform: translateY(24px);
+    transition: opacity 0.65s ease, transform 0.65s ease;
+  }
+  .entry.vis { opacity: 1; transform: translateY(0); }
+  .entry-tag {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 7px;
+  }
+  .entry h2 { font-size: 27px; font-weight: 700; margin-bottom: 16px; line-height: 1.25; }
+  .entry h3 { font-size: 21px; font-weight: 600; margin: 30px 0 12px; }
+  .entry p { margin-bottom: 15px; }
+  .entry p strong { color: var(--accent); font-weight: 600; }
+
+  .th {
+    background: var(--paper-warm);
+    border-left: 4px solid var(--accent);
+    padding: 15px 22px;
+    margin: 22px 0;
+    border-radius: 0 8px 8px 0;
+    font-style: italic;
+    position: relative;
+  }
+  .th::before {
+    content: '💭';
+    position: absolute;
+    top: -12px;
+    left: -15px;
+    font-size: 18px;
+    font-style: normal;
+  }
+  .th .tl {
+    font-family: 'Outfit', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-style: normal;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .th .tl { color: var(--accent); }
+  .th.blue { border-left-color: var(--teal); }
+  .th.blue .tl { color: var(--teal); }
+  .th.violet { border-left-color: var(--violet); }
+  .th.violet .tl { color: var(--violet); }
+  .th.amber { border-left-color: var(--amber); }
+  .th.amber .tl { color: var(--amber); }
+
+  .cw {
+    margin: 22px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 3px 18px rgba(0,0,0,0.10);
+  }
+  .ch {
+    background: #27262e;
+    padding: 9px 16px;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+  }
+  .ch .dt { display: flex; gap: 6px; }
+  .ch .dt span { width: 9px; height: 9px; border-radius: 50%; }
+  .ch .dt span:nth-child(1) { background: #ff5f56; }
+  .ch .dt span:nth-child(2) { background: #ffbd2e; }
+  .ch .dt span:nth-child(3) { background: #27c93f; }
+  .ch .fn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #999;
+    font-weight: 500;
+  }
+  .ch .tg {
+    margin-left: auto;
+    font-family: 'Outfit', sans-serif;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 9px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tg-bad { background: #9f123933; color: #f87171; }
+  .tg-abs { background: #6d28d933; color: #c4b5fd; }
+  .tg-impl { background: #0d6e6e33; color: #5eead4; }
+  .tg-wire { background: #47556933; color: #94a3b8; }
+  .tg-v2 { background: #16a34a33; color: #86efac; }
+  .tg-v3 { background: #be185d33; color: #f9a8d4; }
+  .tg-lvl1 { background: #0d6e6e33; color: #5eead4; }
+  .tg-lvl2 { background: #6d28d933; color: #c4b5fd; }
+  .tg-lvl3 { background: #b4530933; color: #fbbf24; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.8px;
+    line-height: 1.68;
+    tab-size: 4;
+  }
+  pre .c { color: #6b7280; font-style: italic; }
+  pre .k { color: #c4b5fd; }
+  pre .t { color: #5eead4; }
+  pre .s { color: #fca5a5; }
+  pre .f { color: #fde68a; }
+  pre .p { color: #93c5fd; }
+  pre .d { color: #f0abfc; }
+  pre .n { color: #fbbf24; }
+  pre .hl {
+    background: rgba(253, 230, 138, 0.06);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+  pre .hl-r {
+    background: rgba(248, 113, 113, 0.08);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+  pre .hl-g {
+    background: rgba(134, 239, 172, 0.06);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+
+  .dw { margin: 26px 0; text-align: center; }
+  .dw svg { max-width: 100%; height: auto; }
+  .dc {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-top: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 500;
+  }
+
+  .ins {
+    border: 2px solid;
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin: 26px 0;
+  }
+  .ins.red { border-color: var(--accent); background: var(--accent-soft); }
+  .ins.teal { border-color: var(--teal); background: var(--teal-soft); }
+  .ins.violet { border-color: var(--violet); background: var(--violet-soft); }
+  .ins.amber { border-color: var(--amber); background: var(--amber-soft); }
+  .ins.slate { border-color: var(--slate); background: var(--slate-soft); }
+  .ins.rose { border-color: var(--rose); background: var(--rose-soft); }
+  .ins.emerald { border-color: var(--emerald); background: var(--emerald-soft); }
+  .ins .il {
+    font-family: 'Outfit', sans-serif;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+    margin-bottom: 7px;
+    display: block;
+  }
+  .ins.red .il { color: var(--accent); }
+  .ins.teal .il { color: var(--teal); }
+  .ins.violet .il { color: var(--violet); }
+  .ins.amber .il { color: var(--amber); }
+  .ins.slate .il { color: var(--slate); }
+  .ins.rose .il { color: var(--rose); }
+  .ins.emerald .il { color: var(--emerald); }
+  .ins p { margin-bottom: 0; }
+
+  p code, li code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14.5px;
+    background: var(--paper-warm);
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border-light);
+  }
+
+  .chap {
+    text-align: center;
+    padding: 44px 0 16px;
+    position: relative;
+  }
+  .chap::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0; right: 0;
+    height: 1px;
+    background: var(--border);
+  }
+  .chap span {
+    position: relative;
+    background: var(--paper);
+    padding: 0 22px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    color: var(--accent);
+  }
+
+  .ctbl {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 22px 0;
+    font-size: 15.5px;
+  }
+  .ctbl th {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+    text-align: left;
+    padding: 11px 13px;
+    border-bottom: 2px solid var(--ink);
+    color: var(--muted);
+  }
+  .ctbl td {
+    padding: 11px 13px;
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+  }
+  .ctbl tr:last-child td { border-bottom: none; }
+  .ctbl code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: var(--paper-warm);
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+
+  .footer {
+    text-align: center;
+    padding: 44px 28px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    border-top: 3px double var(--border);
+  }
+
+  .level-strip {
+    display: flex;
+    gap: 0;
+    margin: 22px 0;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .level-strip > div {
+    flex: 1;
+    padding: 14px 16px;
+    text-align: center;
+  }
+  .level-strip .ls-lbl {
+    font-family: 'Outfit', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .level-strip .ls-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    display: block;
+  }
+  /* ─── Navigation Bar ─── */
+  .nav-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(250, 248, 245, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-light);
+    font-family: 'Outfit', sans-serif;
+    font-size: 12.5px;
+  }
+  .nav-arrow {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 32px;
+    text-align: center;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  .nav-arrow:hover { background: rgba(0,0,0,0.05); }
+  .nav-arrow.disabled {
+    color: var(--muted);
+    pointer-events: none;
+    opacity: 0.35;
+  }
+  .nav-tabs {
+    display: flex;
+    gap: 1px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .nav-tab:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--ink);
+  }
+  .nav-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav-bar">
+  <a href="tool-system.html" class="nav-arrow">&larr;</a>
+  <div class="nav-tabs">
+    <a href="index.html" class="nav-tab">Hub</a>
+    <a href="core-domain-model.html" class="nav-tab">Domain</a>
+    <a href="tool-system.html" class="nav-tab">Tools</a>
+    <a href="sandbox.html" class="nav-tab active">Sandbox</a>
+    <a href="media-backend.html" class="nav-tab">Media</a>
+    <a href="file-coordination.html" class="nav-tab">Files</a>
+    <a href="planned-systems.html" class="nav-tab">Planned</a>
+  </div>
+  <a href="media-backend.html" class="nav-arrow">&rarr;</a>
+</nav>
+
+<header class="hero">
+  <span class="icon">🏗️</span>
+  <h1>Sandboxing <em>Agent Tools</em>:<br>From Base Paths to Containers</h1>
+  <p class="sub">Developer Diary — Designing for Incremental Isolation</p>
+  <p class="context">The tools work. Now we need to cage them — gently at first, then seriously — without rewriting a single tool.</p>
+</header>
+
+<div class="content">
+
+<!-- ================================================================ -->
+<!-- PROLOGUE: THE PROBLEM                                          -->
+<!-- ================================================================ -->
+<section class="entry">
+  <div class="entry-tag">The Problem</div>
+  <h2>Why Sandboxing Is Harder Than It Looks in an Agentic System</h2>
+
+  <p>Your agent has a toolkit: <code>file_read</code>, <code>file_write</code>, <code>list_dir</code>, <code>grep</code>, <code>apply_patch</code>, <code>bash</code>, <code>code_exec</code>. Right now, they all operate directly on the host filesystem. <code>bash</code> runs <code>subprocess.run()</code>. <code>file_read</code> opens whatever path the LLM provides. And you're starting to realize this is terrifying.</p>
+
+  <p>The LLM can hallucinate a path like <code>/etc/passwd</code> and your <code>file_read</code> will cheerfully return its contents. The <code>bash</code> tool can run <code>rm -rf /</code> if the model is confused enough. Two concurrent agent sessions can step on each other's files. There is no isolation, no containment, and no cleanup boundary.</p>
+
+  <p>You need sandboxing. But here's the constraint that makes this architecturally interesting: you can't pause everything for two months while you build a Docker-based sandbox. You need to <strong>ship isolation incrementally</strong>. Today: simple path restriction. Next month: Docker containers. Eventually: cloud sandboxes like E2B. And through all of this, <em>the tools themselves should not change</em>.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "This is a classic interface-extraction problem. Right now, tools do I/O directly — open(), subprocess.run(), os.listdir(). I need to put something between the tools and the OS. That 'something' is the sandbox. But the sandbox's internal implementation will evolve from 'path restriction' to 'Docker container' to 'cloud VM.' The tools can't know or care which level they're running in. This means I need an abstraction that captures what tools need — filesystem access and command execution — while hiding how those operations are implemented."
+  </div>
+
+  <div class="ins red">
+    <span class="il">🚨 The Core Constraint</span>
+    <p>Tools must be sandbox-agnostic. A <code>file_read</code> tool that works with a path-restricted sandbox today must work unchanged inside a Docker container tomorrow and inside an E2B cloud VM next quarter. This means tools cannot do raw <code>open()</code> or <code>subprocess.run()</code>. They must delegate all I/O through a sandbox interface. The sandbox is the <strong>seam</strong> between the agent's intent and the operating system's reality.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 1: THE NAIVE VERSION                                   -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 1 — What We're Replacing</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Current State</div>
+  <h2>Tools That Talk Directly to the OS</h2>
+
+  <p>Here's what your tools look like before sandboxing. They do raw I/O. They trust whatever path the LLM provides. They run commands as the current user with full filesystem access. Every tool is a little root shell.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">tools/file_tools.py</span>
+      <span class="tg tg-bad">Before — No Sandbox</span>
+    </div>
+    <pre><span class="k">class</span> <span class="t">FileReadTool</span>(<span class="t">ConfigurableToolBase</span>):
+    <span class="k">def</span> <span class="f">get_tool</span>(<span class="p">self</span>):
+        <span class="k">async def</span> <span class="f">file_read</span>(<span class="p">path</span>: str) -> str:
+<span class="hl-r">            <span class="c"># Opens ANY path on the host filesystem. /etc/passwd? Sure!</span></span>
+<span class="hl-r">            <span class="k">async with</span> aiofiles.open(path, <span class="s">"r"</span>) <span class="k">as</span> f:</span>
+<span class="hl-r">                <span class="k">return await</span> f.read()</span>
+        <span class="k">return</span> self._apply_schema(file_read)
+
+
+<span class="k">class</span> <span class="t">BashTool</span>(<span class="t">ConfigurableToolBase</span>):
+    <span class="k">def</span> <span class="f">get_tool</span>(<span class="p">self</span>):
+        <span class="k">async def</span> <span class="f">bash</span>(<span class="p">command</span>: str) -> str:
+<span class="hl-r">            <span class="c"># Runs ANY command as the current user. rm -rf /? No problem!</span></span>
+<span class="hl-r">            proc = <span class="k">await</span> asyncio.create_subprocess_shell(</span>
+<span class="hl-r">                command,</span>
+<span class="hl-r">                stdout=asyncio.subprocess.PIPE,</span>
+<span class="hl-r">                stderr=asyncio.subprocess.PIPE,</span>
+<span class="hl-r">            )</span>
+            stdout, stderr = <span class="k">await</span> proc.communicate()
+            <span class="k">return</span> stdout.decode() + (<span class="k">f</span><span class="s">"\nSTDERR: {stderr.decode()}"</span> <span class="k">if</span> stderr <span class="k">else</span> <span class="s">""</span>)
+        <span class="k">return</span> self._apply_schema(bash)</pre>
+  </div>
+
+  <p>The issue isn't just security. It's also the absence of a cleanup boundary. When an agent session ends, how do you know which files on the filesystem belong to that session? You don't. There's no namespace, no fencing, no way to say "delete everything this agent touched." And when two agent sessions run concurrently, their files are interleaved in whatever directory they happen to use. One agent's <code>rm *.py</code> can nuke another agent's work.</p>
+
+  <div class="dw">
+    <svg viewBox="0 0 760 200" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">THE CURRENT REALITY: TOOLS WITH UNFENCED ACCESS</text>
+
+      <!-- Agent A -->
+      <rect x="40" y="45" width="130" height="40" rx="6" fill="#0d6e6e" opacity="0.12" stroke="#0d6e6e" stroke-width="1.5"/>
+      <text x="105" y="70" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#0d6e6e">Agent Session A</text>
+
+      <!-- Agent B -->
+      <rect x="40" y="100" width="130" height="40" rx="6" fill="#6d28d9" opacity="0.12" stroke="#6d28d9" stroke-width="1.5"/>
+      <text x="105" y="125" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#6d28d9">Agent Session B</text>
+
+      <!-- Arrows -->
+      <line x1="170" y1="65" x2="300" y2="100" stroke="#9f1239" stroke-width="1.8" marker-end="url(#arrDanger)"/>
+      <line x1="170" y1="120" x2="300" y2="100" stroke="#9f1239" stroke-width="1.8" marker-end="url(#arrDanger)"/>
+      <defs>
+        <marker id="arrDanger" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#9f1239"/></marker>
+      </defs>
+
+      <!-- Host filesystem -->
+      <rect x="305" y="50" width="420" height="110" rx="8" fill="#9f1239" opacity="0.06" stroke="#9f1239" stroke-width="2"/>
+      <text x="515" y="74" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#9f1239" letter-spacing="1.5">HOST FILESYSTEM — NO BOUNDARIES</text>
+      <text x="350" y="100" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#475569">/tmp/agent_work/main.py</text>
+      <text x="350" y="118" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#475569">/etc/passwd</text>
+      <text x="350" y="136" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#475569">/home/deploy/.ssh/id_rsa</text>
+      <text x="350" y="150" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#9f1239">← both agents can read ALL of this</text>
+
+      <!-- Warning -->
+      <text x="515" y="178" text-anchor="middle" font-family="Newsreader, serif" font-size="14" fill="#9f1239" font-style="italic">No isolation. No cleanup boundary. No concurrent safety.</text>
+    </svg>
+    <div class="dc">Fig 1 — Both agents share unfenced access to the entire host filesystem</div>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 2: THE ABSTRACTION                                     -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 2 — The Abstraction</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Designing the Seam</div>
+  <h2>What Do Tools Actually Need From "the Outside World"?</h2>
+
+  <p>Before writing any sandbox code, let's inventory what our tools actually do with the OS. Not what they <em>could</em> do — what they <em>need</em> to do to serve the agent's purpose. This inventory drives the interface.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "Let me trace through each tool and list every syscall-level operation it performs. file_read needs to read a file's content. file_write needs to create or overwrite a file. list_dir needs to list entries in a directory. grep needs to search through file contents. apply_patch needs to read, modify, and write a file. bash needs to execute an arbitrary shell command and capture stdout/stderr. code_exec needs to write a temp file, execute it, and capture the output. If I squint, there are really only three fundamental capabilities: read/write files in a namespace, execute commands, and manage lifecycle (setup and teardown). Everything else is composition."
+  </div>
+
+  <p>This gives us the interface. It has three faces: a filesystem, a command executor, and a lifecycle manager. Notably, the filesystem face uses <strong>relative paths</strong> — paths relative to the sandbox's workspace root. This is crucial. The LLM generates paths like <code>src/main.py</code>, not <code>/var/sandboxes/agent_abc123/workspace/src/main.py</code>. The sandbox resolves relative paths to absolute paths internally. No consumer ever sees or touches the real filesystem location.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">sandbox/base.py</span>
+      <span class="tg tg-abs">Abstract Contract</span>
+    </div>
+    <pre><span class="k">from</span> abc <span class="k">import</span> ABC, abstractmethod
+<span class="k">from</span> dataclasses <span class="k">import</span> dataclass, field
+<span class="k">from</span> typing <span class="k">import</span> AsyncIterator
+
+
+<span class="d">@dataclass</span>
+<span class="k">class</span> <span class="t">ExecResult</span>:
+    <span class="s">"""The output of a command execution inside a sandbox."""</span>
+    exit_code: int = 0
+    stdout: str = <span class="s">""</span>
+    stderr: str = <span class="s">""</span>
+    timed_out: bool = <span class="k">False</span>
+    duration_ms: float = 0.0
+
+
+<span class="d">@dataclass</span>
+<span class="k">class</span> <span class="t">FileEntry</span>:
+    <span class="s">"""A single entry in a directory listing."""</span>
+    name: str
+    is_dir: bool = <span class="k">False</span>
+    size_bytes: int = 0
+
+
+<span class="k">class</span> <span class="t">Sandbox</span>(ABC):
+    <span class="s">"""Abstract execution environment for agent tools.
+    
+    A Sandbox provides two capabilities:
+      1. Filesystem — read, write, list, delete files in an isolated namespace
+      2. Execution  — run shell commands and code within the sandbox boundary
+    
+    Tools interact with the Sandbox through this interface.
+    They never do raw open(), subprocess.run(), or os.listdir().
+    
+    All file paths are RELATIVE to the sandbox workspace root.
+    The sandbox resolves them to real paths internally.
+    
+    Implementations:
+      - LocalSandbox:  path-restricted directory on the host
+      - DockerSandbox: Docker container with mounted workspace
+      - E2BSandbox:    remote E2B cloud sandbox via API
+    """</span>
+
+    <span class="c"># ─── Lifecycle ───</span>
+
+<span class="hl">    <span class="d">@abstractmethod</span></span>
+<span class="hl">    <span class="k">async def</span> <span class="f">setup</span>(<span class="p">self</span>) -> <span class="k">None</span>:</span>
+        <span class="s">"""Initialize the sandbox.
+        
+        LocalSandbox:   create the workspace directory
+        DockerSandbox:  pull image, create container, start it
+        E2BSandbox:     create a remote sandbox instance via API
+        
+        Must be called before any other method.
+        """</span>
+        ...
+
+<span class="hl">    <span class="d">@abstractmethod</span></span>
+<span class="hl">    <span class="k">async def</span> <span class="f">teardown</span>(<span class="p">self</span>) -> <span class="k">None</span>:</span>
+        <span class="s">"""Destroy the sandbox and all its contents.
+        
+        LocalSandbox:   rm -rf the workspace directory
+        DockerSandbox:  stop and remove the container
+        E2BSandbox:     terminate the remote sandbox
+        
+        After teardown, no other method should be called.
+        """</span>
+        ...
+
+    <span class="c"># ─── Filesystem ───</span>
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">read_file</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> str:
+        <span class="s">"""Read a text file at the given relative path."""</span>
+        ...
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">write_file</span>(<span class="p">self</span>, <span class="p">path</span>: str, <span class="p">content</span>: str) -> <span class="k">None</span>:
+        <span class="s">"""Write content to a file. Creates parent directories as needed."""</span>
+        ...
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">read_file_bytes</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> bytes:
+        <span class="s">"""Read a binary file."""</span>
+        ...
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">write_file_bytes</span>(<span class="p">self</span>, <span class="p">path</span>: str, <span class="p">content</span>: bytes) -> <span class="k">None</span>:
+        <span class="s">"""Write binary content to a file."""</span>
+        ...
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">list_dir</span>(<span class="p">self</span>, <span class="p">path</span>: str = <span class="s">"."</span>) -> list[<span class="t">FileEntry</span>]:
+        <span class="s">"""List entries in a directory."""</span>
+        ...
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">file_exists</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> bool:
+        <span class="s">"""Check whether a file or directory exists."""</span>
+        ...
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">delete</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> bool:
+        <span class="s">"""Delete a file or directory."""</span>
+        ...
+
+    <span class="c"># ─── Command Execution ───</span>
+
+<span class="hl">    <span class="d">@abstractmethod</span></span>
+<span class="hl">    <span class="k">async def</span> <span class="f">exec</span>(</span>
+<span class="hl">        <span class="p">self</span>,</span>
+<span class="hl">        <span class="p">command</span>: str,</span>
+<span class="hl">        <span class="p">timeout</span>: float = 30.0,</span>
+<span class="hl">        <span class="p">cwd</span>: str | <span class="k">None</span> = <span class="k">None</span>,    <span class="c"># Relative path within the sandbox</span></span>
+<span class="hl">        <span class="p">env</span>: dict[str, str] | <span class="k">None</span> = <span class="k">None</span>,</span>
+<span class="hl">    ) -> <span class="t">ExecResult</span>:</span>
+        <span class="s">"""Execute a shell command inside the sandbox.
+        
+        LocalSandbox:   subprocess with cwd set to workspace
+        DockerSandbox:  docker exec inside the container
+        E2BSandbox:     API call to run command in remote VM
+        
+        All commands run within the sandbox boundary. They cannot
+        escape to the host filesystem (for Docker and E2B backends).
+        """</span>
+        ...
+
+    <span class="c"># ─── Streaming Execution (for long-running commands) ───</span>
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">exec_stream</span>(
+        <span class="p">self</span>,
+        <span class="p">command</span>: str,
+        <span class="p">timeout</span>: float = 30.0,
+        <span class="p">cwd</span>: str | <span class="k">None</span> = <span class="k">None</span>,
+        <span class="p">env</span>: dict[str, str] | <span class="k">None</span> = <span class="k">None</span>,
+    ) -> <span class="t">AsyncIterator</span>[str]:
+        <span class="s">"""Execute a command and stream output line by line.
+        
+        Useful for long-running builds, test suites, etc. where the
+        agent (or UI) needs incremental output.
+        """</span>
+        ...
+
+    <span class="c"># ─── Context Manager (convenience) ───</span>
+
+    <span class="k">async def</span> <span class="f">__aenter__</span>(<span class="p">self</span>):
+        <span class="k">await</span> self.setup()
+        <span class="k">return</span> self
+
+    <span class="k">async def</span> <span class="f">__aexit__</span>(<span class="p">self</span>, *exc):
+        <span class="k">await</span> self.teardown()</pre>
+  </div>
+
+  <div class="ins teal">
+    <span class="il">🧩 Why Relative Paths Are Non-Negotiable</span>
+    <p>The LLM generates paths like <code>src/main.py</code>, <code>tests/test_auth.py</code>, <code>./config.json</code>. These are workspace-relative paths — exactly what a developer would type. The sandbox resolves them internally. In a <code>LocalSandbox</code>, <code>src/main.py</code> resolves to <code>/var/sandboxes/abc123/workspace/src/main.py</code>. In a <code>DockerSandbox</code>, it resolves to <code>/workspace/src/main.py</code> inside the container. In an <code>E2BSandbox</code>, it resolves to an API call targeting <code>/home/user/src/main.py</code> on the remote VM. The LLM and the tools never know the real absolute path. This is what makes the sandbox swappable.</p>
+  </div>
+
+  <p>One design decision worth calling out: <code>exec()</code> takes a <code>command: str</code>, not a <code>list[str]</code>. This is deliberate. The LLM generates shell commands as strings (<code>"python main.py --verbose"</code>, <code>"grep -rn 'TODO' src/"</code>). Parsing these into argument lists ourselves would be fragile and would lose shell features like pipes, redirection, and globbing. We pass the string to a shell inside the sandbox — which in a Docker or E2B context is safely contained. In the local sandbox, this is the least-isolated part of the system, which is precisely why you upgrade to Docker when security matters.</p>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 3: LOCAL SANDBOX                                       -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 3 — Level 1: Path Restriction</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Simplest Sandbox</div>
+  <h2>LocalSandbox — Fenced Directories, Ship It Today</h2>
+
+  <p>The local sandbox is not a security boundary. It's an <strong>organizational boundary</strong>. It gives each agent session its own directory, resolves all paths relative to that directory, prevents path traversal attacks (no <code>../../etc/passwd</code>), and provides a clean teardown by simply deleting the directory. It's what you ship today while you build the real container-based sandbox.</p>
+
+  <div class="level-strip">
+    <div style="background: #0d6e6e15;">
+      <span class="ls-lbl" style="color: var(--teal);">Isolation</span>
+      <span class="ls-val">Path only — no process isolation</span>
+    </div>
+    <div style="background: #0d6e6e15;">
+      <span class="ls-lbl" style="color: var(--teal);">Security</span>
+      <span class="ls-val">Path traversal prevention</span>
+    </div>
+    <div style="background: #0d6e6e15;">
+      <span class="ls-lbl" style="color: var(--teal);">Setup Time</span>
+      <span class="ls-val">~1ms (mkdir)</span>
+    </div>
+    <div style="background: #0d6e6e15;">
+      <span class="ls-lbl" style="color: var(--teal);">Best For</span>
+      <span class="ls-val">Dev, trusted agents</span>
+    </div>
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">sandbox/local.py</span>
+      <span class="tg tg-lvl1">Level 1</span>
+    </div>
+    <pre><span class="k">import</span> asyncio, os, shutil, time
+<span class="k">from</span> pathlib <span class="k">import</span> Path
+
+
+<span class="k">class</span> <span class="t">LocalSandbox</span>(<span class="t">Sandbox</span>):
+    <span class="s">"""Path-restricted sandbox on the local filesystem.
+    
+    Each agent session gets its own directory under base_dir:
+        {base_dir}/{sandbox_id}/workspace/
+    
+    All file paths are resolved relative to workspace/.
+    Path traversal is blocked by resolving and checking containment.
+    Commands run as subprocesses with cwd set to the workspace.
+    
+    This provides organizational isolation, not security isolation.
+    Use DockerSandbox or E2BSandbox when you need real containment.
+    """</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(
+        <span class="p">self</span>,
+        <span class="p">sandbox_id</span>: str,
+        <span class="p">base_dir</span>: str = <span class="s">"/var/sandboxes"</span>,
+        <span class="p">default_timeout</span>: float = 30.0,
+    ):
+        self.sandbox_id = sandbox_id
+        self.base_dir = Path(base_dir)
+        self.workspace = self.base_dir / sandbox_id / <span class="s">"workspace"</span>
+        self.default_timeout = default_timeout
+
+    <span class="c"># ─── Path Resolution (the critical security check) ───</span>
+
+<span class="hl">    <span class="k">def</span> <span class="f">_resolve</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> Path:</span>
+<span class="hl">        <span class="s">"""Resolve a relative path to an absolute path within the workspace.</span>
+<span class="hl">        <span class="s">        </span>
+<span class="hl">        <span class="s">        Raises ValueError if the resolved path escapes the workspace.</span>
+<span class="hl">        <span class="s">        This blocks path traversal attacks like '../../etc/passwd'.</span>
+<span class="hl">        <span class="s">        """</span></span>
+<span class="hl">        <span class="c"># Resolve relative to workspace, then check containment</span></span>
+<span class="hl">        resolved = (self.workspace / path).resolve()</span>
+<span class="hl">        workspace_resolved = self.workspace.resolve()</span>
+<span class="hl">        </span>
+<span class="hl">        <span class="k">if not</span> str(resolved).startswith(str(workspace_resolved)):</span>
+<span class="hl">            <span class="k">raise</span> ValueError(</span>
+<span class="hl">                <span class="k">f</span><span class="s">"Path traversal blocked: '{path}' resolves outside workspace"</span></span>
+<span class="hl">            )</span>
+<span class="hl">        <span class="k">return</span> resolved</span>
+
+    <span class="c"># ─── Lifecycle ───</span>
+
+    <span class="k">async def</span> <span class="f">setup</span>(<span class="p">self</span>):
+        self.workspace.mkdir(parents=<span class="k">True</span>, exist_ok=<span class="k">True</span>)
+
+    <span class="k">async def</span> <span class="f">teardown</span>(<span class="p">self</span>):
+        sandbox_root = self.base_dir / self.sandbox_id
+        <span class="k">if</span> sandbox_root.exists():
+            shutil.rmtree(sandbox_root)
+
+    <span class="c"># ─── Filesystem ───</span>
+
+    <span class="k">async def</span> <span class="f">read_file</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> str:
+        resolved = self._resolve(path)
+        <span class="k">async with</span> aiofiles.open(resolved, <span class="s">"r"</span>) <span class="k">as</span> f:
+            <span class="k">return await</span> f.read()
+
+    <span class="k">async def</span> <span class="f">write_file</span>(<span class="p">self</span>, <span class="p">path</span>: str, <span class="p">content</span>: str):
+        resolved = self._resolve(path)
+        resolved.parent.mkdir(parents=<span class="k">True</span>, exist_ok=<span class="k">True</span>)
+        <span class="k">async with</span> aiofiles.open(resolved, <span class="s">"w"</span>) <span class="k">as</span> f:
+            <span class="k">await</span> f.write(content)
+
+    <span class="k">async def</span> <span class="f">list_dir</span>(<span class="p">self</span>, <span class="p">path</span>: str = <span class="s">"."</span>) -> list[<span class="t">FileEntry</span>]:
+        resolved = self._resolve(path)
+        entries = []
+        <span class="k">for</span> item <span class="k">in</span> sorted(resolved.iterdir()):
+            entries.append(FileEntry(
+                name=item.name,
+                is_dir=item.is_dir(),
+                size_bytes=item.stat().st_size <span class="k">if</span> item.is_file() <span class="k">else</span> 0,
+            ))
+        <span class="k">return</span> entries
+
+    <span class="k">async def</span> <span class="f">file_exists</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> bool:
+        <span class="k">return</span> self._resolve(path).exists()
+
+    <span class="k">async def</span> <span class="f">delete</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> bool:
+        resolved = self._resolve(path)
+        <span class="k">if</span> resolved.is_dir():
+            shutil.rmtree(resolved)
+        <span class="k">elif</span> resolved.is_file():
+            resolved.unlink()
+        <span class="k">else</span>:
+            <span class="k">return False</span>
+        <span class="k">return True</span>
+
+    <span class="c"># ─── Command Execution ───</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">exec</span>(<span class="p">self</span>, <span class="p">command</span>, <span class="p">timeout</span>=<span class="k">None</span>, <span class="p">cwd</span>=<span class="k">None</span>, <span class="p">env</span>=<span class="k">None</span>):</span>
+        timeout = timeout <span class="k">or</span> self.default_timeout
+        work_dir = self._resolve(cwd) <span class="k">if</span> cwd <span class="k">else</span> self.workspace
+
+        start = time.monotonic()
+        <span class="k">try</span>:
+            proc = <span class="k">await</span> asyncio.create_subprocess_shell(
+                command,
+<span class="hl">                cwd=str(work_dir),  <span class="c"># Restrict working directory</span></span>
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**(os.environ | (env <span class="k">or</span> {}))},
+            )
+            stdout, stderr = <span class="k">await</span> asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+            <span class="k">return</span> ExecResult(
+                exit_code=proc.returncode,
+                stdout=stdout.decode(errors=<span class="s">"replace"</span>),
+                stderr=stderr.decode(errors=<span class="s">"replace"</span>),
+                duration_ms=(time.monotonic() - start) * 1000,
+            )
+        <span class="k">except</span> asyncio.TimeoutError:
+            proc.kill()
+            <span class="k">return</span> ExecResult(exit_code=-1, timed_out=<span class="k">True</span>,
+                              duration_ms=(time.monotonic() - start) * 1000)
+
+    <span class="k">async def</span> <span class="f">exec_stream</span>(<span class="p">self</span>, <span class="p">command</span>, <span class="p">timeout</span>=<span class="k">None</span>, <span class="p">cwd</span>=<span class="k">None</span>, <span class="p">env</span>=<span class="k">None</span>):
+        work_dir = self._resolve(cwd) <span class="k">if</span> cwd <span class="k">else</span> self.workspace
+        proc = <span class="k">await</span> asyncio.create_subprocess_shell(
+            command, cwd=str(work_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,  <span class="c"># Merge stderr into stdout for streaming</span>
+            env={**(os.environ | (env <span class="k">or</span> {}))},
+        )
+        <span class="k">async for</span> line <span class="k">in</span> proc.stdout:
+            <span class="k">yield</span> line.decode(errors=<span class="s">"replace"</span>)
+        <span class="k">await</span> proc.wait()</pre>
+  </div>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "The _resolve() method is the entire security model of the local sandbox. It's one function: resolve the path, check that it's still under the workspace. If someone passes '../../etc/passwd', Path.resolve() follows the '..' segments, and the containment check catches it. This is enough to prevent accidental path escapes and LLM hallucinations. It is NOT enough to prevent a determined attacker — the subprocess can still escape via bash commands like 'cat /etc/passwd' or symlink tricks. That's why this is Level 1. Real isolation needs a process boundary."
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 4: TOOLS REWRITTEN                                     -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 4 — Rewriting Tools</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The One-Time Migration</div>
+  <h2>Tools That Delegate to the Sandbox</h2>
+
+  <p>Here's the critical payoff. We rewrite each tool <strong>once</strong> to delegate through the <code>Sandbox</code> interface. After this, the tools never change again — regardless of whether the sandbox is a local directory, a Docker container, or a cloud VM.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">tools/file_tools.py</span>
+      <span class="tg tg-v2">After — Sandbox-Aware</span>
+    </div>
+    <pre><span class="k">class</span> <span class="t">FileReadTool</span>(<span class="t">ConfigurableToolBase</span>):
+    <span class="s">"""Read file contents. Delegates to the Sandbox — works in any environment."""</span>
+    
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>, <span class="p">sandbox</span>: <span class="t">Sandbox</span>, **kwargs):
+        <span class="k">super</span>().__init__(**kwargs)
+        self.sandbox = sandbox
+
+    <span class="k">def</span> <span class="f">get_tool</span>(<span class="p">self</span>):
+        sandbox = self.sandbox
+        <span class="k">async def</span> <span class="f">file_read</span>(<span class="p">path</span>: str, <span class="p">offset</span>: int = 0, <span class="p">limit</span>: int | <span class="k">None</span> = <span class="k">None</span>) -> str:
+            <span class="s">"""Read the contents of a file.
+
+            Args:
+                path: Relative path to the file (e.g., "src/main.py").
+                offset: Line offset to start from.
+                limit: Maximum number of lines to return.
+            """</span>
+<span class="hl-g">            <span class="c"># One line. Works on local disk, Docker, E2B — doesn't matter.</span></span>
+<span class="hl-g">            content = <span class="k">await</span> sandbox.read_file(path)</span>
+            
+            lines = content.splitlines(keepends=<span class="k">True</span>)
+            <span class="k">if</span> limit:
+                lines = lines[offset:offset + limit]
+            <span class="k">else</span>:
+                lines = lines[offset:]
+            <span class="k">return</span> <span class="s">""</span>.join(lines)
+
+        <span class="k">return</span> self._apply_schema(file_read)
+
+
+<span class="k">class</span> <span class="t">FileWriteTool</span>(<span class="t">ConfigurableToolBase</span>):
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>, <span class="p">sandbox</span>: <span class="t">Sandbox</span>, **kwargs):
+        <span class="k">super</span>().__init__(**kwargs)
+        self.sandbox = sandbox
+
+    <span class="k">def</span> <span class="f">get_tool</span>(<span class="p">self</span>):
+        sandbox = self.sandbox
+        <span class="k">async def</span> <span class="f">file_write</span>(<span class="p">path</span>: str, <span class="p">content</span>: str) -> str:
+<span class="hl-g">            <span class="k">await</span> sandbox.write_file(path, content)</span>
+            <span class="k">return</span> <span class="k">f</span><span class="s">"Wrote {len(content)} chars to {path}"</span>
+        <span class="k">return</span> self._apply_schema(file_write)
+
+
+<span class="k">class</span> <span class="t">BashTool</span>(<span class="t">ConfigurableToolBase</span>):
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>, <span class="p">sandbox</span>: <span class="t">Sandbox</span>, **kwargs):
+        <span class="k">super</span>().__init__(**kwargs)
+        self.sandbox = sandbox
+
+    <span class="k">def</span> <span class="f">get_tool</span>(<span class="p">self</span>):
+        sandbox = self.sandbox
+        <span class="k">async def</span> <span class="f">bash</span>(<span class="p">command</span>: str, <span class="p">timeout</span>: float = 30.0) -> str:
+            <span class="s">"""Execute a shell command.
+
+            Args:
+                command: The shell command to run.
+                timeout: Maximum execution time in seconds.
+            """</span>
+<span class="hl-g">            result = <span class="k">await</span> sandbox.exec(command, timeout=timeout)</span>
+            
+            output = result.stdout
+            <span class="k">if</span> result.stderr:
+                output += <span class="k">f</span><span class="s">"\nSTDERR:\n{result.stderr}"</span>
+            <span class="k">if</span> result.timed_out:
+                output += <span class="s">"\n[Command timed out]"</span>
+            <span class="k">if</span> result.exit_code != 0:
+                output += <span class="k">f</span><span class="s">"\n[Exit code: {result.exit_code}]"</span>
+            <span class="k">return</span> output
+        <span class="k">return</span> self._apply_schema(bash)
+
+
+<span class="k">class</span> <span class="t">GrepTool</span>(<span class="t">ConfigurableToolBase</span>):
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>, <span class="p">sandbox</span>: <span class="t">Sandbox</span>, **kwargs):
+        <span class="k">super</span>().__init__(**kwargs)
+        self.sandbox = sandbox
+
+    <span class="k">def</span> <span class="f">get_tool</span>(<span class="p">self</span>):
+        sandbox = self.sandbox
+        <span class="k">async def</span> <span class="f">grep</span>(<span class="p">pattern</span>: str, <span class="p">path</span>: str = <span class="s">"."</span>, <span class="p">include</span>: str = <span class="s">""</span>) -> str:
+            <span class="s">"""Search for a pattern in files.
+
+            Args:
+                pattern: Regex pattern to search for.
+                path: Directory or file to search in.
+                include: Glob pattern for files to include (e.g., "*.py").
+            """</span>
+            cmd = <span class="k">f</span><span class="s">'grep -rn "{pattern}" {path}'</span>
+            <span class="k">if</span> include:
+                cmd += <span class="k">f</span><span class="s">' --include="{include}"'</span>
+<span class="hl-g">            result = <span class="k">await</span> sandbox.exec(cmd, timeout=15.0)</span>
+            <span class="k">return</span> result.stdout <span class="k">or</span> <span class="s">"No matches found."</span>
+        <span class="k">return</span> self._apply_schema(grep)</pre>
+  </div>
+
+  <p>Notice what happened. Every tool that used to do <code>open()</code> now calls <code>sandbox.read_file()</code>. Every tool that used to do <code>subprocess.run()</code> now calls <code>sandbox.exec()</code>. The tools have no idea whether the sandbox is a local directory or a Docker container. They don't import <code>os</code>, <code>subprocess</code>, or <code>aiofiles</code>. All OS interaction is mediated through the sandbox interface. This is the <strong>Dependency Inversion Principle</strong> applied to the operating system itself — tools depend on an abstraction (Sandbox), not a concretion (the host OS).</p>
+
+  <div class="ins emerald">
+    <span class="il">✅ The Invariant</span>
+    <p>After this migration, tools are <em>finished</em>. The entire sandbox evolution — from local directories to Docker containers to cloud VMs — happens behind the <code>Sandbox</code> interface. No tool file is ever touched again. The litmus test: <code>grep -r "import os\|import subprocess\|import aiofiles" tools/</code> should return zero results. If a tool imports an OS module, it's leaking through the abstraction.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 5: DOCKER SANDBOX                                      -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 5 — Level 2: Docker Containers</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Real Process Isolation</div>
+  <h2>DockerSandbox — Same Interface, Different Universe</h2>
+
+  <p>A month later, you need real isolation. An enterprise client wants their agents sandboxed so that a misbehaving LLM can't read host files, exhaust host memory, or interfere with other sessions. The <code>Sandbox</code> interface means you can build this without touching any tool code.</p>
+
+  <div class="level-strip">
+    <div style="background: #6d28d915;">
+      <span class="ls-lbl" style="color: var(--violet);">Isolation</span>
+      <span class="ls-val">Process + filesystem + network</span>
+    </div>
+    <div style="background: #6d28d915;">
+      <span class="ls-lbl" style="color: var(--violet);">Security</span>
+      <span class="ls-val">Container boundary, resource limits</span>
+    </div>
+    <div style="background: #6d28d915;">
+      <span class="ls-lbl" style="color: var(--violet);">Setup Time</span>
+      <span class="ls-val">~2–5s (container start)</span>
+    </div>
+    <div style="background: #6d28d915;">
+      <span class="ls-lbl" style="color: var(--violet);">Best For</span>
+      <span class="ls-val">Production, untrusted code</span>
+    </div>
+  </div>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "The architecture is: create a container from a prebuilt image (with Python, Node, common tools installed), mount the workspace as a volume so files are shared between host and container, and run all commands via 'docker exec'. File operations go through the mounted volume — so read_file and write_file are still local filesystem operations on the host, but exec() now runs inside the container's process namespace. This gives me real process isolation (the container can't see host processes), filesystem isolation (the container only sees its own root plus the mounted workspace), and resource limits (CPU, memory caps via Docker)."
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">sandbox/docker.py</span>
+      <span class="tg tg-lvl2">Level 2</span>
+    </div>
+    <pre><span class="k">import</span> aiodocker
+
+<span class="k">class</span> <span class="t">DockerSandbox</span>(<span class="t">Sandbox</span>):
+    <span class="s">"""Docker-based sandbox with real process and filesystem isolation.
+    
+    Architecture:
+      - A container is created from a prebuilt image
+      - The workspace directory is bind-mounted into the container
+      - File operations go through the mount (fast, no copying)
+      - Command execution happens via 'docker exec' (fully isolated)
+      - Container has CPU/memory limits
+      - Teardown removes the container entirely
+    """</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(
+        <span class="p">self</span>,
+        <span class="p">sandbox_id</span>: str,
+        <span class="p">image</span>: str = <span class="s">"agent-sandbox:latest"</span>,
+        <span class="p">base_dir</span>: str = <span class="s">"/var/sandboxes"</span>,
+        <span class="p">cpu_limit</span>: float = 1.0,       <span class="c"># Number of CPU cores</span>
+        <span class="p">mem_limit</span>: str = <span class="s">"512m"</span>,      <span class="c"># Memory limit</span>
+        <span class="p">network_enabled</span>: bool = <span class="k">False</span>, <span class="c"># Block network by default</span>
+    ):
+        self.sandbox_id = sandbox_id
+        self.image = image
+        self.workspace_host = Path(base_dir) / sandbox_id / <span class="s">"workspace"</span>
+        self.workspace_container = <span class="s">"/workspace"</span>  <span class="c"># Path INSIDE the container</span>
+        self.cpu_limit = cpu_limit
+        self.mem_limit = mem_limit
+        self.network_enabled = network_enabled
+        self._docker = aiodocker.Docker()
+        self._container = <span class="k">None</span>
+
+    <span class="c"># ─── Lifecycle ───</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">setup</span>(<span class="p">self</span>):</span>
+        <span class="c"># Create workspace on host</span>
+        self.workspace_host.mkdir(parents=<span class="k">True</span>, exist_ok=<span class="k">True</span>)
+
+        <span class="c"># Create the container with resource limits and the bind mount</span>
+<span class="hl">        self._container = <span class="k">await</span> self._docker.containers.create_or_replace(</span>
+<span class="hl">            name=<span class="k">f</span><span class="s">"sandbox-{self.sandbox_id}"</span>,</span>
+<span class="hl">            config={</span>
+<span class="hl">                <span class="s">"Image"</span>: self.image,</span>
+<span class="hl">                <span class="s">"Cmd"</span>: [<span class="s">"sleep"</span>, <span class="s">"infinity"</span>],  <span class="c"># Keep alive for exec</span></span>
+<span class="hl">                <span class="s">"HostConfig"</span>: {</span>
+<span class="hl">                    <span class="s">"Binds"</span>: [<span class="k">f</span><span class="s">"{self.workspace_host}:{self.workspace_container}"</span>],</span>
+<span class="hl">                    <span class="s">"NanoCpus"</span>: int(self.cpu_limit * 1e9),</span>
+<span class="hl">                    <span class="s">"Memory"</span>: self._parse_mem(self.mem_limit),</span>
+<span class="hl">                    <span class="s">"NetworkMode"</span>: <span class="s">"none"</span> <span class="k">if not</span> self.network_enabled <span class="k">else</span> <span class="s">"bridge"</span>,</span>
+<span class="hl">                },</span>
+<span class="hl">                <span class="s">"WorkingDir"</span>: self.workspace_container,</span>
+<span class="hl">            },</span>
+<span class="hl">        )</span>
+        <span class="k">await</span> self._container.start()
+
+<span class="hl">    <span class="k">async def</span> <span class="f">teardown</span>(<span class="p">self</span>):</span>
+        <span class="k">if</span> self._container:
+            <span class="k">await</span> self._container.kill()
+            <span class="k">await</span> self._container.delete(force=<span class="k">True</span>)
+        <span class="c"># Clean up host workspace</span>
+        <span class="k">if</span> self.workspace_host.exists():
+            shutil.rmtree(self.workspace_host.parent)
+
+    <span class="c"># ─── Filesystem (through the bind mount — fast, no docker cp) ───</span>
+
+    <span class="k">def</span> <span class="f">_resolve</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> Path:
+        <span class="c"># Same containment check as LocalSandbox, but on the host mount path</span>
+        resolved = (self.workspace_host / path).resolve()
+        <span class="k">if not</span> str(resolved).startswith(str(self.workspace_host.resolve())):
+            <span class="k">raise</span> ValueError(<span class="k">f</span><span class="s">"Path traversal blocked: '{path}'"</span>)
+        <span class="k">return</span> resolved
+
+<span class="hl">    <span class="c"># read_file, write_file, list_dir, file_exists, delete →</span></span>
+<span class="hl">    <span class="c"># IDENTICAL to LocalSandbox (they go through the bind mount on the host)</span></span>
+<span class="hl">    <span class="c"># In practice, you'd extract a _HostFilesystemMixin for DRY.</span></span>
+
+    <span class="k">async def</span> <span class="f">read_file</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> str:
+        resolved = self._resolve(path)
+        <span class="k">async with</span> aiofiles.open(resolved, <span class="s">"r"</span>) <span class="k">as</span> f:
+            <span class="k">return await</span> f.read()
+
+    <span class="k">async def</span> <span class="f">write_file</span>(<span class="p">self</span>, <span class="p">path</span>: str, <span class="p">content</span>: str):
+        resolved = self._resolve(path)
+        resolved.parent.mkdir(parents=<span class="k">True</span>, exist_ok=<span class="k">True</span>)
+        <span class="k">async with</span> aiofiles.open(resolved, <span class="s">"w"</span>) <span class="k">as</span> f:
+            <span class="k">await</span> f.write(content)
+
+    <span class="c"># ... list_dir, file_exists, delete: same as LocalSandbox ...</span>
+
+    <span class="c"># ─── Command Execution (via docker exec — ISOLATED) ───</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">exec</span>(<span class="p">self</span>, <span class="p">command</span>, <span class="p">timeout</span>=30.0, <span class="p">cwd</span>=<span class="k">None</span>, <span class="p">env</span>=<span class="k">None</span>):</span>
+        work_dir = <span class="k">f</span><span class="s">"{self.workspace_container}/{cwd}"</span> <span class="k">if</span> cwd <span class="k">else</span> self.workspace_container
+
+        <span class="c"># Build the docker exec command</span>
+        exec_config = {
+            <span class="s">"Cmd"</span>: [<span class="s">"sh"</span>, <span class="s">"-c"</span>, command],
+            <span class="s">"AttachStdout"</span>: <span class="k">True</span>,
+            <span class="s">"AttachStderr"</span>: <span class="k">True</span>,
+            <span class="s">"WorkingDir"</span>: work_dir,
+        }
+        <span class="k">if</span> env:
+            exec_config[<span class="s">"Env"</span>] = [<span class="k">f</span><span class="s">"{k}={v}"</span> <span class="k">for</span> k, v <span class="k">in</span> env.items()]
+
+        start = time.monotonic()
+<span class="hl">        <span class="c"># This runs INSIDE the container — can't see host filesystem</span></span>
+<span class="hl">        exec_instance = <span class="k">await</span> self._container.exec(exec_config)</span>
+        <span class="k">try</span>:
+            <span class="c"># Collect output with timeout</span>
+            stream = exec_instance.start()
+            output = <span class="k">await</span> asyncio.wait_for(stream.read_out(), timeout=timeout)
+            inspect = <span class="k">await</span> exec_instance.inspect()
+
+            <span class="k">return</span> ExecResult(
+                exit_code=inspect[<span class="s">"ExitCode"</span>],
+                stdout=output.decode(errors=<span class="s">"replace"</span>) <span class="k">if</span> output <span class="k">else</span> <span class="s">""</span>,
+                duration_ms=(time.monotonic() - start) * 1000,
+            )
+        <span class="k">except</span> asyncio.TimeoutError:
+            <span class="k">return</span> ExecResult(exit_code=-1, timed_out=<span class="k">True</span>,
+                              duration_ms=(time.monotonic() - start) * 1000)</pre>
+  </div>
+
+  <p>The crucial architectural observation is in the <strong>asymmetry</strong> between filesystem operations and command execution. File operations go through the bind mount — the host reads and writes to the workspace directory, and the container sees those changes immediately because it's the same physical directory. This is fast (no copying) and simple (no Docker API needed for file I/O). Command execution goes through <code>docker exec</code> — the command runs inside the container's isolated process namespace, with no access to host processes or the host filesystem outside the mount. This split gives you the best of both worlds: fast file I/O and isolated execution.</p>
+
+  <!-- Docker architecture diagram -->
+  <div class="dw">
+    <svg viewBox="0 0 760 290" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">DOCKER SANDBOX: TWO PATHS FOR TWO CONCERNS</text>
+
+      <!-- Host side -->
+      <rect x="30" y="45" width="330" height="220" rx="10" fill="#0d6e6e" opacity="0.04" stroke="#0d6e6e" stroke-width="1.5"/>
+      <text x="195" y="68" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#0d6e6e" letter-spacing="1.5">HOST PROCESS (your API server)</text>
+
+      <rect x="55" y="85" width="130" height="32" rx="5" fill="#0d6e6e" opacity="0.1"/>
+      <text x="120" y="105" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#0d6e6e">read_file()</text>
+
+      <rect x="205" y="85" width="130" height="32" rx="5" fill="#0d6e6e" opacity="0.1"/>
+      <text x="270" y="105" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#0d6e6e">write_file()</text>
+
+      <text x="195" y="145" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="600" fill="#0d6e6e">↓ direct I/O through bind mount</text>
+
+      <rect x="55" y="160" width="280" height="40" rx="6" fill="#0d6e6e" opacity="0.12" stroke="#0d6e6e" stroke-width="1.5"/>
+      <text x="195" y="185" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#0d6e6e">/var/sandboxes/abc/workspace/</text>
+
+      <text x="195" y="225" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569" font-style="italic">Fast: local disk I/O</text>
+      <text x="195" y="245" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569" font-style="italic">No Docker API overhead</text>
+
+      <!-- Container side -->
+      <rect x="400" y="45" width="330" height="220" rx="10" fill="#6d28d9" opacity="0.04" stroke="#6d28d9" stroke-width="1.5"/>
+      <text x="565" y="68" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#6d28d9" letter-spacing="1.5">DOCKER CONTAINER (isolated)</text>
+
+      <rect x="430" y="85" width="130" height="32" rx="5" fill="#6d28d9" opacity="0.1"/>
+      <text x="495" y="105" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#6d28d9">exec(cmd)</text>
+
+      <rect x="580" y="85" width="130" height="32" rx="5" fill="#6d28d9" opacity="0.1"/>
+      <text x="645" y="105" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#6d28d9">exec_stream()</text>
+
+      <text x="565" y="145" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="600" fill="#6d28d9">↓ docker exec (API call)</text>
+
+      <rect x="430" y="160" width="280" height="40" rx="6" fill="#6d28d9" opacity="0.12" stroke="#6d28d9" stroke-width="1.5"/>
+      <text x="565" y="185" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#6d28d9">/workspace/ (bind mount target)</text>
+
+      <text x="565" y="225" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569" font-style="italic">Isolated: can't see host FS/procs</text>
+      <text x="565" y="245" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569" font-style="italic">CPU/memory limits enforced</text>
+
+      <!-- Shared mount arrow -->
+      <line x1="335" y1="180" x2="430" y2="180" stroke="#b45309" stroke-width="2" stroke-dasharray="6,4"/>
+      <text x="383" y="173" text-anchor="middle" font-family="Outfit, sans-serif" font-size="9" font-weight="700" fill="#b45309">BIND</text>
+      <text x="383" y="193" text-anchor="middle" font-family="Outfit, sans-serif" font-size="9" font-weight="700" fill="#b45309">MOUNT</text>
+    </svg>
+    <div class="dc">Fig 2 — File I/O is fast (through the mount); execution is isolated (through docker exec)</div>
+  </div>
+
+  <div class="ins violet">
+    <span class="il">🧩 The Bind Mount Insight</span>
+    <p>The bind mount is what makes the Docker sandbox practical for agentic workloads. Without it, every <code>read_file</code> and <code>write_file</code> would require a <code>docker cp</code> round-trip — copying bytes in and out of the container, adding seconds of latency to every file operation. With the bind mount, file I/O is local-speed on the host, and the container sees changes instantly. Execution is the only thing that crosses the Docker API boundary. This asymmetry — fast filesystem, isolated execution — is exactly what agent tools need.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 6: E2B SANDBOX                                         -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 6 — Level 3: Cloud Sandboxes</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Remote Execution</div>
+  <h2>E2BSandbox — Everything Over the Network</h2>
+
+  <p>Eventually you need sandboxes that run on entirely separate machines. Maybe you need GPUs. Maybe you need sandboxes in the same region as the user. Maybe you need to scale to thousands of concurrent agents and your Docker host can only run fifty containers. E2B (and similar cloud sandbox providers) give you on-demand VMs via an API.</p>
+
+  <div class="level-strip">
+    <div style="background: #b4530915;">
+      <span class="ls-lbl" style="color: var(--amber);">Isolation</span>
+      <span class="ls-val">Full VM — separate machine</span>
+    </div>
+    <div style="background: #b4530915;">
+      <span class="ls-lbl" style="color: var(--amber);">Security</span>
+      <span class="ls-val">VM boundary, network isolation</span>
+    </div>
+    <div style="background: #b4530915;">
+      <span class="ls-lbl" style="color: var(--amber);">Setup Time</span>
+      <span class="ls-val">~5–15s (VM boot)</span>
+    </div>
+    <div style="background: #b4530915;">
+      <span class="ls-lbl" style="color: var(--amber);">Best For</span>
+      <span class="ls-val">Scale, GPU, full isolation</span>
+    </div>
+  </div>
+
+  <div class="th amber">
+    <span class="tl">Developer's inner voice</span>
+    "This is where the Sandbox abstraction really proves its worth. With E2B, there's no bind mount. There's no shared filesystem. Everything goes over the network — file reads, file writes, command execution, directory listings. The implementation is fundamentally different from both LocalSandbox and DockerSandbox. But the tools don't know. They still call sandbox.read_file('src/main.py') and get a string back. The network round-trip is hidden behind the interface."
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">sandbox/e2b.py</span>
+      <span class="tg tg-lvl3">Level 3</span>
+    </div>
+    <pre><span class="k">from</span> e2b_code_interpreter <span class="k">import</span> AsyncSandbox <span class="k">as</span> E2BClient
+
+<span class="k">class</span> <span class="t">E2BSandbox</span>(<span class="t">Sandbox</span>):
+    <span class="s">"""Remote cloud sandbox via E2B.
+    
+    Every operation is an API call to a remote VM.
+    No shared filesystem — files are transferred over the network.
+    Full VM isolation. Billed per second of usage.
+    
+    The key design difference from Docker: there is no bind mount.
+    File operations require explicit network transfer. This means
+    we need to be smart about caching and batching — but the tools
+    don't know or care about any of this.
+    """</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(
+        <span class="p">self</span>,
+        <span class="p">sandbox_id</span>: str,
+        <span class="p">template</span>: str = <span class="s">"base"</span>,         <span class="c"># E2B sandbox template</span>
+        <span class="p">api_key</span>: str = <span class="s">""</span>,
+        <span class="p">timeout</span>: int = 300,               <span class="c"># Sandbox lifetime in seconds</span>
+    ):
+        self.sandbox_id = sandbox_id
+        self.template = template
+        self.api_key = api_key
+        self.timeout = timeout
+        self._sbx: E2BClient | <span class="k">None</span> = <span class="k">None</span>
+
+    <span class="c"># ─── Lifecycle ───</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">setup</span>(<span class="p">self</span>):</span>
+<span class="hl">        <span class="c"># Creates a fresh VM in the cloud — takes a few seconds</span></span>
+<span class="hl">        self._sbx = <span class="k">await</span> E2BClient.create(</span>
+<span class="hl">            template=self.template,</span>
+<span class="hl">            api_key=self.api_key,</span>
+<span class="hl">            timeout=self.timeout,</span>
+<span class="hl">        )</span>
+
+    <span class="k">async def</span> <span class="f">teardown</span>(<span class="p">self</span>):
+        <span class="k">if</span> self._sbx:
+            <span class="k">await</span> self._sbx.kill()
+
+    <span class="c"># ─── Filesystem (all network calls — no local disk) ───</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">read_file</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> str:</span>
+<span class="hl">        <span class="c"># API call to the remote VM's filesystem</span></span>
+<span class="hl">        content = <span class="k">await</span> self._sbx.files.read(path)</span>
+<span class="hl">        <span class="k">return</span> content</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">write_file</span>(<span class="p">self</span>, <span class="p">path</span>: str, <span class="p">content</span>: str):</span>
+<span class="hl">        <span class="k">await</span> self._sbx.files.write(path, content)</span>
+
+    <span class="k">async def</span> <span class="f">read_file_bytes</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> bytes:
+        <span class="k">return await</span> self._sbx.files.read_bytes(path)
+
+    <span class="k">async def</span> <span class="f">write_file_bytes</span>(<span class="p">self</span>, <span class="p">path</span>: str, <span class="p">content</span>: bytes):
+        <span class="k">await</span> self._sbx.files.write_bytes(path, content)
+
+    <span class="k">async def</span> <span class="f">list_dir</span>(<span class="p">self</span>, <span class="p">path</span>: str = <span class="s">"."</span>) -> list[<span class="t">FileEntry</span>]:
+        entries = <span class="k">await</span> self._sbx.files.list(path)
+        <span class="k">return</span> [
+            FileEntry(name=e.name, is_dir=e.is_dir, size_bytes=e.size <span class="k">or</span> 0)
+            <span class="k">for</span> e <span class="k">in</span> entries
+        ]
+
+    <span class="k">async def</span> <span class="f">file_exists</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> bool:
+        <span class="k">try</span>:
+            <span class="k">await</span> self._sbx.files.read(path)
+            <span class="k">return True</span>
+        <span class="k">except</span> Exception:
+            <span class="k">return False</span>
+
+    <span class="k">async def</span> <span class="f">delete</span>(<span class="p">self</span>, <span class="p">path</span>: str) -> bool:
+        <span class="k">await</span> self._sbx.files.remove(path)
+        <span class="k">return True</span>
+
+    <span class="c"># ─── Command Execution (API call to remote VM) ───</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">exec</span>(<span class="p">self</span>, <span class="p">command</span>, <span class="p">timeout</span>=30.0, <span class="p">cwd</span>=<span class="k">None</span>, <span class="p">env</span>=<span class="k">None</span>):</span>
+        start = time.monotonic()
+        result = <span class="k">await</span> self._sbx.commands.run(
+            command,
+            cwd=cwd <span class="k">or</span> <span class="s">"/home/user"</span>,
+            envs=env <span class="k">or</span> {},
+            timeout=timeout,
+        )
+        <span class="k">return</span> ExecResult(
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
+
+    <span class="k">async def</span> <span class="f">exec_stream</span>(<span class="p">self</span>, <span class="p">command</span>, <span class="p">timeout</span>=30.0, <span class="p">cwd</span>=<span class="k">None</span>, <span class="p">env</span>=<span class="k">None</span>):
+        <span class="k">async for</span> event <span class="k">in</span> self._sbx.commands.stream(
+            command, cwd=cwd, envs=env, timeout=timeout
+        ):
+            <span class="k">if</span> event.type == <span class="s">"stdout"</span>:
+                <span class="k">yield</span> event.data</pre>
+  </div>
+
+  <p>The most profound thing about this implementation is how <em>different</em> it is internally from the Docker sandbox. There's no bind mount. There's no <code>_resolve()</code> path containment check (the VM is the containment). Every file operation is a network round-trip. And yet, every tool works identically because the interface is the same. This is the Repository pattern applied to execution environments — the abstraction hides not just different storage locations, but entirely different computational models.</p>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 7: COMPOSITION ROOT                                    -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 7 — Wiring It Together</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Composition Root</div>
+  <h2>One Config Switch, Three Universes</h2>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">main.py</span>
+      <span class="tg tg-wire">Composition Root</span>
+    </div>
+    <pre><span class="k">async def</span> <span class="f">create_sandbox</span>(<span class="p">settings</span>: Settings, <span class="p">session_id</span>: str) -> <span class="t">Sandbox</span>:
+    <span class="s">"""Factory: create a sandbox from config."""</span>
+
+<span class="hl">    <span class="k">match</span> settings.sandbox_backend:</span>
+<span class="hl">        <span class="k">case</span> <span class="s">"local"</span>:</span>
+<span class="hl">            sandbox = LocalSandbox(</span>
+<span class="hl">                sandbox_id=session_id,</span>
+<span class="hl">                base_dir=settings.sandbox_base_dir,</span>
+<span class="hl">            )</span>
+<span class="hl">        <span class="k">case</span> <span class="s">"docker"</span>:</span>
+<span class="hl">            sandbox = DockerSandbox(</span>
+<span class="hl">                sandbox_id=session_id,</span>
+<span class="hl">                image=settings.sandbox_docker_image,</span>
+<span class="hl">                cpu_limit=settings.sandbox_cpu_limit,</span>
+<span class="hl">                mem_limit=settings.sandbox_mem_limit,</span>
+<span class="hl">                network_enabled=settings.sandbox_network,</span>
+<span class="hl">            )</span>
+<span class="hl">        <span class="k">case</span> <span class="s">"e2b"</span>:</span>
+<span class="hl">            sandbox = E2BSandbox(</span>
+<span class="hl">                sandbox_id=session_id,</span>
+<span class="hl">                template=settings.e2b_template,</span>
+<span class="hl">                api_key=settings.e2b_api_key,</span>
+<span class="hl">            )</span>
+        <span class="k">case</span> _:
+            <span class="k">raise</span> ValueError(<span class="k">f</span><span class="s">"Unknown sandbox: {settings.sandbox_backend}"</span>)
+
+    <span class="k">return</span> sandbox
+
+
+<span class="c"># ── In the agent loop ──</span>
+
+<span class="k">async def</span> <span class="f">run_agent_session</span>(<span class="p">settings</span>: Settings, <span class="p">session_id</span>: str):
+    sandbox = <span class="k">await</span> create_sandbox(settings, session_id)
+
+    <span class="k">async with</span> sandbox:  <span class="c"># setup() on enter, teardown() on exit</span>
+        <span class="c"># Build tools — they receive the Sandbox, not a path or Docker client</span>
+        tools = [
+            FileReadTool(sandbox=sandbox),
+            FileWriteTool(sandbox=sandbox),
+            BashTool(sandbox=sandbox),
+            GrepTool(sandbox=sandbox),
+        ]
+
+        <span class="c"># Run the agent loop — tools are sandbox-agnostic</span>
+        agent = AgentLoop(tools=tools, ...)
+        <span class="k">await</span> agent.run()
+
+    <span class="c"># sandbox.__aexit__ calls teardown() — container killed, files cleaned up</span>
+
+
+<span class="c"># ── In your .env ──</span>
+<span class="c"># SANDBOX_BACKEND=local          # Development</span>
+<span class="c"># SANDBOX_BACKEND=docker         # Production, single server</span>
+<span class="c"># SANDBOX_BACKEND=e2b            # Production, scaled</span></pre>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 8: CONNECTING TO THE FILE CACHE                        -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 8 — Connecting the Dots</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Composing With the Media Backend</div>
+  <h2>How the Sandbox Relates to the File Cache and Storage Backend</h2>
+
+  <p>If you've been following the earlier diaries, you might be wondering: where does the <code>LocalFileCache</code> from Part II fit now that we have sandboxes? The answer requires distinguishing between two different kinds of files in the system.</p>
+
+  <p><strong>Working files</strong> are files the agent creates and manipulates during its session — source code it's writing, scripts it's running, data it's generating. These live <em>inside</em> the sandbox. The sandbox is their only home during the session. They're created by <code>sandbox.write_file()</code>, read by <code>sandbox.read_file()</code>, and destroyed when <code>sandbox.teardown()</code> runs.</p>
+
+  <p><strong>Uploaded files</strong> are files the user uploaded (PDFs, images, spreadsheets) or files that need to persist across sessions. These live in the <em>storage backend</em> (S3, local disk via <code>FileStorageBackend</code>). They're identified by <code>file_id</code> and managed by the media system.</p>
+
+  <p>Instead of a separate bridge class, the responsibilities are split between the two natural owners. The sandbox gets two semantic methods &mdash; <code>import_file()</code> and <code>get_exported_files()</code> &mdash; directly on the ABC. The media backend gets three concrete orchestration methods &mdash; <code>attach_sandbox()</code>, <code>materialize()</code>, <code>flush_exports()</code>.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">sandbox/types.py &mdash; file coordination</span>
+      <span class="tg tg-abc">ABC</span>
+    </div>
+    <pre><span class="c"># Added to the Sandbox ABC</span>
+
+<span class="k">@abstractmethod</span>
+<span class="k">async def</span> <span class="f">import_file</span>(<span class="p">self</span>, file_id: <span class="t">str</span>, filename: <span class="t">str</span>, content: <span class="t">bytes</span>) -> <span class="t">str</span>:
+    <span class="s">"""Accept a file for tool use. Idempotent &mdash; skips write if already imported.
+    Returns sandbox-relative path. Callers must not assume path structure."""</span>
+    ...
+
+<span class="k">@abstractmethod</span>
+<span class="k">async def</span> <span class="f">get_exported_files</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">tuple</span>[<span class="t">str</span>, <span class="t">bytes</span>]]:
+    <span class="s">"""Collect files tools produced for export.
+    Returns (relative_filename, content) pairs sorted by name."""</span>
+    ...</pre>
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">media_backend/types.py &mdash; orchestration</span>
+      <span class="tg tg-impl">Concrete</span>
+    </div>
+    <pre><span class="c"># Concrete methods on MediaBackend ABC &mdash; not abstract</span>
+
+<span class="k">def</span> <span class="f">attach_sandbox</span>(<span class="p">self</span>, sandbox: <span class="t">Sandbox</span>) -> <span class="n">None</span>:
+    <span class="s">"""Store reference to active sandbox."""</span>
+
+<span class="k">async def</span> <span class="f">materialize</span>(<span class="p">self</span>, media_id: <span class="t">str</span>, agent_uuid: <span class="t">str</span>) -> <span class="t">str</span>:
+    <span class="s">"""Retrieve from storage, import into sandbox. Idempotent."""</span>
+<span class="hl">    metadata = <span class="k">await</span> self.get_metadata(media_id, agent_uuid)</span>
+<span class="hl">    content = <span class="k">await</span> self.retrieve(media_id, agent_uuid)</span>
+<span class="hl">    <span class="k">return await</span> self._sandbox.import_file(</span>
+<span class="hl">        media_id, metadata.media_filename, content)</span>
+
+<span class="k">async def</span> <span class="f">flush_exports</span>(<span class="p">self</span>, agent_uuid: <span class="t">str</span>) -> <span class="t">list</span>[<span class="t">MediaMetadata</span>]:
+    <span class="s">"""Collect exported files, store each in backend."""</span>
+<span class="hl">    <span class="k">for</span> rel_path, content <span class="k">in await</span> self._sandbox.get_exported_files():</span>
+<span class="hl">        meta = <span class="k">await</span> self.store(content, basename, mime, agent_uuid)</span></pre>
+  </div>
+
+  <div class="th blue">
+    <span class="tl">Developer's inner voice</span>
+    "The LocalFileCache role doesn't change &mdash; it's still a performance layer for local I/O. But there's no separate bridge class anymore. The sandbox owns zone layout (<code>.imported/</code>, <code>workspace/</code>, <code>.exports/</code>) and the media backend owns orchestration. Zone encapsulation means MediaBackend never knows about zone paths &mdash; it calls <code>sandbox.import_file(id, name, bytes)</code> and gets back a path. Different sandbox implementations can organize files however they want."
+  </div>
+
+  <div class="dw">
+    <svg viewBox="0 0 760 360" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">THE COMPLETE PICTURE: STORAGE, SANDBOX, AND TOOLS</text>
+
+      <!-- Media Backend -->
+      <rect x="30" y="50" width="200" height="120" rx="8" fill="#0d6e6e" opacity="0.08" stroke="#0d6e6e" stroke-width="1.5"/>
+      <text x="130" y="75" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#0d6e6e" letter-spacing="1">MEDIA BACKEND</text>
+      <text x="130" y="96" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">store() · retrieve()</text>
+      <text x="130" y="116" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">materialize()</text>
+      <text x="130" y="136" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">flush_exports()</text>
+      <text x="130" y="156" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#94a3b8" font-style="italic">Durable, shared</text>
+
+      <defs>
+        <marker id="arrTeal" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#0d6e6e"/></marker>
+        <marker id="arrVio" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#6d28d9"/></marker>
+      </defs>
+
+      <!-- attach_sandbox arrow -->
+      <line x1="230" y1="100" x2="400" y2="100" stroke="#0d6e6e" stroke-width="1.8" marker-end="url(#arrTeal)"/>
+      <text x="315" y="92" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" font-weight="600" fill="#0d6e6e">attach_sandbox()</text>
+
+      <!-- Sandbox -->
+      <rect x="400" y="42" width="330" height="140" rx="10" fill="#6d28d9" opacity="0.06" stroke="#6d28d9" stroke-width="2.5"/>
+      <text x="565" y="67" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#6d28d9" letter-spacing="1.5">SANDBOX (any implementation)</text>
+      <text x="565" y="92" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#1c1917">read_file() · write_file()</text>
+      <text x="565" y="112" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#1c1917">import_file() · get_exported_files()</text>
+      <text x="565" y="132" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#1c1917">exec() · exec_stream()</text>
+      <text x="565" y="162" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#94a3b8" font-style="italic">Ephemeral, per-session workspace</text>
+
+      <!-- Tools -->
+      <rect x="425" y="220" width="120" height="34" rx="6" fill="#1c1917"/>
+      <text x="485" y="242" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#d4d4d8">file_read</text>
+
+      <rect x="560" y="220" width="120" height="34" rx="6" fill="#1c1917"/>
+      <text x="620" y="242" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#d4d4d8">bash / grep</text>
+
+      <rect x="425" y="266" width="120" height="34" rx="6" fill="#1c1917"/>
+      <text x="485" y="288" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#d4d4d8">file_write</text>
+
+      <rect x="560" y="266" width="120" height="34" rx="6" fill="#1c1917"/>
+      <text x="620" y="288" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#d4d4d8">code_exec</text>
+
+      <line x1="565" y1="182" x2="565" y2="216" stroke="#6d28d9" stroke-width="1.5" marker-end="url(#arrVio)"/>
+      <text x="565" y="208" text-anchor="middle" font-family="Outfit, sans-serif" font-size="9" font-weight="600" fill="#6d28d9">TOOLS USE SANDBOX</text>
+
+      <!-- Resolver side -->
+      <rect x="30" y="210" width="200" height="80" rx="8" fill="#be185d" opacity="0.06" stroke="#be185d" stroke-width="1.5"/>
+      <text x="130" y="232" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#be185d" letter-spacing="1">RESOLUTION</text>
+      <text x="130" y="254" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">to_base64() &rarr; LLM</text>
+      <text x="130" y="273" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">to_url() &rarr; Frontend</text>
+
+      <line x1="130" y1="170" x2="130" y2="210" stroke="#be185d" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+      <!-- The 3 sandbox implementations -->
+      <rect x="425" y="325" width="78" height="30" rx="5" fill="#0d6e6e" opacity="0.1" stroke="#0d6e6e" stroke-width="1"/>
+      <text x="464" y="345" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="#0d6e6e">Local</text>
+
+      <rect x="514" y="325" width="78" height="30" rx="5" fill="#6d28d9" opacity="0.1" stroke="#6d28d9" stroke-width="1"/>
+      <text x="553" y="345" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="#6d28d9">Docker</text>
+
+      <rect x="603" y="325" width="78" height="30" rx="5" fill="#b45309" opacity="0.1" stroke="#b45309" stroke-width="1"/>
+      <text x="642" y="345" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="#b45309">E2B</text>
+    </svg>
+    <div class="dc">Fig 3 &mdash; MediaBackend owns storage &amp; orchestration; Sandbox owns workspace &amp; zones; tools only know the sandbox</div>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- EPILOGUE                                                        -->
+<!-- ================================================================ -->
+<div class="chap"><span>Epilogue — The Architecture Map</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Reflection</div>
+  <h2>What Changed, What Didn't, and Why</h2>
+
+  <table class="ctbl">
+    <thead>
+      <tr>
+        <th>Pattern</th>
+        <th>Where</th>
+        <th>What It Resolves</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Strategy</strong></td>
+        <td><code>Sandbox</code> interface + 3 implementations</td>
+        <td>The execution environment is a pluggable strategy. Swap local → Docker → E2B without touching tools or the agent loop.</td>
+      </tr>
+      <tr>
+        <td><strong>Dependency Inversion</strong></td>
+        <td>Tools depend on <code>Sandbox</code>, not <code>os</code> / <code>subprocess</code></td>
+        <td>High-level modules (tools) depend on an abstraction (Sandbox), not low-level modules (the OS). This makes tools portable across execution environments.</td>
+      </tr>
+      <tr>
+        <td><strong>Path Containment</strong></td>
+        <td><code>_resolve()</code> in Local and Docker sandboxes</td>
+        <td>All relative paths are resolved and checked for containment before any I/O. Blocks path traversal. Not needed in E2B (the VM is the boundary).</td>
+      </tr>
+      <tr>
+        <td><strong>Asymmetric I/O (Docker)</strong></td>
+        <td>Bind mount for files, docker exec for commands</td>
+        <td>File operations are fast (local disk through the mount). Command execution is isolated (inside the container). Best of both worlds.</td>
+      </tr>
+      <tr>
+        <td><strong>Zone Encapsulation</strong></td>
+        <td><code>import_file()</code> / <code>get_exported_files()</code></td>
+        <td>The sandbox owns its internal zones (<code>.imported/</code>, <code>.exports/</code>) and exposes only abstract verbs — "bring a file in" and "list what tools produced." MediaBackend calls these without knowing zone paths.</td>
+      </tr>
+      <tr>
+        <td><strong>Context Manager Lifecycle</strong></td>
+        <td><code>async with sandbox</code></td>
+        <td>Setup and teardown are tied to scope. Whether it's a 1ms mkdir or a 10s container start, the lifecycle is managed by the <code>with</code> block. Resource leaks are impossible.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="ins amber">
+    <span class="il">🔑 The Unifying Insight</span>
+    <p>The entire sandbox architecture flows from one question: <strong>"What does a tool actually need from the world?"</strong> The answer was surprisingly small — read a file, write a file, list a directory, run a command. Not "access the filesystem." Not "create a subprocess." Just those four verbs. Once you have the verbs, the implementations are just different translations of those verbs into different environments. <code>LocalSandbox</code> translates them into <code>open()</code> and <code>subprocess.run()</code>. <code>DockerSandbox</code> translates file verbs into bind-mount I/O and command verbs into <code>docker exec</code>. <code>E2BSandbox</code> translates everything into HTTP API calls to a remote VM. The tools say what they want. The sandbox figures out how to get it done. That's the whole pattern.</p>
+  </div>
+
+  <div class="ins teal">
+    <span class="il">✅ The Litmus Test</span>
+    <p>Three scenarios verify the factoring. <em>"Add a new sandbox backend (Firecracker microVMs)?"</em> — One new file implementing the <code>Sandbox</code> interface. Zero tool changes. <em>"Add a new tool (apply_patch)?"</em> — One new file that calls <code>sandbox.read_file()</code> and <code>sandbox.write_file()</code>. Zero sandbox changes. <em>"Switch an entire deployment from Docker to E2B?"</em> — One environment variable: <code>SANDBOX_BACKEND=e2b</code>. Zero code changes. Each axis — sandbox backends, tool implementations, deployment configuration — changes independently.</p>
+  </div>
+</section>
+
+</div>
+
+<footer class="footer">
+  <p>Tools should say what they want, not how to get it.<br>
+  The sandbox is the translator between intent and operating system.<br>
+  Change the translator, never the speaker.</p>
+</footer>
+
+<script>
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('vis'); });
+}, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.entry').forEach(el => obs.observe(el));
+</script>
+
+</body>
+</html>

@@ -79,10 +79,10 @@ class ToolResultEnvelope(ABC):
 
 @dataclass
 class GenericErrorEnvelope(ToolResultEnvelope):
-    """Fallback envelope for errors or legacy tools."""
+    """Fallback envelope for errors."""
 
     def for_context_window(self) -> list[ContentBlock]:
-        return [TextContent(text=f"Error: {self.error_message}")]   #TODO: Improve Error Message
+        return [TextContent(text=f"Error: {self.error_message}")]
 
     def for_conversation_log(self) -> dict[str, Any]:
         return {
@@ -91,4 +91,27 @@ class GenericErrorEnvelope(ToolResultEnvelope):
             "is_error": True,
             "summary": self.error_message,
             "content_blocks": [TextContent(text=self.error_message or "").to_dict()],
+        }
+
+
+@dataclass
+class GenericTextEnvelope(ToolResultEnvelope):
+    """Auto-wrapper for tools that return plain strings.
+
+    Used by the ToolRegistry to wrap string returns from tools that don't
+    define their own ToolResultEnvelope subclass.
+    """
+    text: str = ""
+
+    def for_context_window(self) -> list[ContentBlock]:
+        return [TextContent(text=self.text)]
+
+    def for_conversation_log(self) -> dict[str, Any]:
+        return {
+            "tool_name": self.tool_name,
+            "tool_id": self.tool_id,
+            "is_error": self.is_error,
+            "summary": self.text[:200],
+            "content_blocks": [TextContent(text=self.text).to_dict()],
+            "duration_ms": self.duration_ms,
         }

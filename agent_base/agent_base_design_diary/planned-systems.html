@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Developer Diary — The Road Ahead</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;0,800;1,400;1,600&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #18181b;
+    --paper: #fafaf7;
+    --paper-warm: #f2f0ea;
+    --paper-deep: #eae7df;
+    --accent: #64748b;
+    --accent-soft: #64748b14;
+    --accent-mid: #64748b40;
+    --purple: #7c3aed;
+    --purple-soft: #7c3aed14;
+    --teal: #0d9488;
+    --teal-soft: #0d948814;
+    --amber: #d97706;
+    --amber-soft: #d9770614;
+    --blue: #2563eb;
+    --blue-soft: #2563eb14;
+    --emerald: #059669;
+    --emerald-soft: #05966914;
+    --crimson: #be123c;
+    --crimson-soft: #be123c14;
+    --code-bg: #1a1b26;
+    --code-fg: #c0caf5;
+    --muted: #94a3b8;
+    --border: #d4d0c8;
+    --border-light: #e5e2da;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Playfair Display', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 18.5px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ─── Navigation Bar ─── */
+  .nav-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(250, 250, 247, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-light);
+    font-family: 'Inter', sans-serif;
+    font-size: 12.5px;
+  }
+  .nav-arrow {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 32px;
+    text-align: center;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  .nav-arrow:hover { background: rgba(0,0,0,0.05); }
+  .nav-arrow.disabled {
+    color: var(--muted);
+    pointer-events: none;
+    opacity: 0.35;
+  }
+  .nav-tabs {
+    display: flex;
+    gap: 1px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .nav-tab:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--ink);
+  }
+  .nav-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+  }
+
+  /* ─── Hero ─── */
+  .hero {
+    padding: 68px 40px 50px;
+    text-align: center;
+    border-bottom: 3px double var(--border);
+    background: linear-gradient(175deg, #edeae2 0%, var(--paper) 60%);
+  }
+  .hero .icon { font-size: 42px; margin-bottom: 12px; display: block; }
+  .hero h1 {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(26px, 4.2vw, 44px);
+    font-weight: 800;
+    letter-spacing: -0.4px;
+    line-height: 1.18;
+    margin-bottom: 10px;
+  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero .sub {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    font-weight: 600;
+  }
+  .hero .tagline {
+    font-size: 17px;
+    color: var(--accent);
+    margin-top: 14px;
+    max-width: 620px;
+    margin-left: auto;
+    margin-right: auto;
+    font-style: italic;
+  }
+
+  /* ─── Content ─── */
+  .content { max-width: 880px; margin: 0 auto; padding: 0 28px; }
+
+  .section {
+    padding: 48px 0;
+    border-bottom: 1px solid var(--border-light);
+  }
+  .section:last-child { border-bottom: none; }
+
+  .section-tag {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  h2 {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 18px;
+    line-height: 1.25;
+  }
+  h3 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 28px 0 12px;
+  }
+  p { margin-bottom: 14px; }
+  p strong { color: var(--purple); font-weight: 700; }
+
+  /* ─── Status badge ─── */
+  .status {
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    background: var(--amber-soft);
+    color: var(--amber);
+  }
+
+  /* ─── Thought callouts ─── */
+  .thought {
+    background: var(--paper-warm);
+    border-left: 4px solid var(--accent);
+    padding: 16px 22px;
+    margin: 24px 0;
+    border-radius: 0 10px 10px 0;
+    font-style: italic;
+    position: relative;
+  }
+  .thought::before {
+    content: '💭';
+    position: absolute;
+    top: -12px;
+    left: -15px;
+    font-size: 19px;
+    font-style: normal;
+  }
+  .thought .label {
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-style: normal;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 5px;
+    color: var(--accent);
+  }
+
+  /* ─── Code blocks ─── */
+  .cw {
+    margin: 24px 0;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+  }
+  .ch {
+    background: #24243a;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .ch .dots { display: flex; gap: 6px; }
+  .ch .dots span { width: 10px; height: 10px; border-radius: 50%; }
+  .ch .dots span:nth-child(1) { background: #ff5f56; }
+  .ch .dots span:nth-child(2) { background: #ffbd2e; }
+  .ch .dots span:nth-child(3) { background: #27c93f; }
+  .ch .fn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #8888a8;
+    font-weight: 500;
+  }
+  .ch .tag {
+    margin-left: auto;
+    font-family: 'Inter', sans-serif;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tag-abc { background: #7c3aed30; color: #c4b5fd; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 20px 22px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    tab-size: 4;
+  }
+  pre .c { color: #565f89; font-style: italic; }
+  pre .k { color: #bb9af7; }
+  pre .t { color: #7dcfff; }
+  pre .s { color: #9ece6a; }
+  pre .f { color: #e0af68; }
+  pre .p { color: #7aa2f7; }
+  pre .n { color: #ff9e64; }
+
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82em;
+    background: var(--paper-deep);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--purple);
+  }
+
+  /* ─── Tables ─── */
+  .table-wrap {
+    margin: 24px 0;
+    overflow-x: auto;
+    border-radius: 12px;
+    border: 1px solid var(--border-light);
+    box-shadow: var(--shadow-sm);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+  }
+  thead { background: var(--paper-warm); }
+  th {
+    padding: 12px 16px;
+    text-align: left;
+    font-weight: 700;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--accent);
+    border-bottom: 2px solid var(--border);
+  }
+  td {
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border-light);
+    line-height: 1.5;
+  }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--paper-warm); }
+  td code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: var(--paper-deep);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--purple);
+  }
+
+  /* ─── Diagram blocks ─── */
+  .diagram {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    margin: 24px 0;
+    overflow-x: auto;
+    box-shadow: var(--shadow-sm);
+  }
+  .diagram pre {
+    background: transparent;
+    color: var(--ink);
+    padding: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    box-shadow: none;
+  }
+  .diagram .caption {
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 14px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+  }
+
+  /* ─── Footer ─── */
+  .footer {
+    text-align: center;
+    padding: 48px 28px;
+    border-top: 3px double var(--border);
+    margin-top: 20px;
+  }
+  .footer .mark {
+    font-family: 'Playfair Display', serif;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  .footer .note {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  @media (max-width: 600px) {
+    .hero { padding: 50px 20px 36px; }
+    .content { padding: 0 16px; }
+    pre { font-size: 11.5px; padding: 14px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav-bar">
+  <a href="file-coordination.html" class="nav-arrow">&larr;</a>
+  <div class="nav-tabs">
+    <a href="index.html" class="nav-tab">Hub</a>
+    <a href="core-domain-model.html" class="nav-tab">Domain</a>
+    <a href="tool-system.html" class="nav-tab">Tools</a>
+    <a href="sandbox.html" class="nav-tab">Sandbox</a>
+    <a href="media-backend.html" class="nav-tab">Media</a>
+    <a href="file-coordination.html" class="nav-tab">Files</a>
+    <a href="planned-systems.html" class="nav-tab active">Planned</a>
+  </div>
+  <span class="nav-arrow disabled">&rarr;</span>
+</nav>
+
+<!-- ━━━━━━━━━━ HERO ━━━━━━━━━━ -->
+<div class="hero">
+  <span class="icon">🗺️</span>
+  <h1>The Road <em>Ahead</em></h1>
+  <div class="sub">Developer Diary &middot; Planned Systems</div>
+  <p class="tagline">
+    Designs that are settled but not yet fully implemented in agent_base.
+    The ABCs are defined, the patterns are chosen &mdash; the work is wiring them up.
+  </p>
+</div>
+
+<div class="content">
+
+<!-- ━━━━━━━━━━ COMPACTION & MEMORY ━━━━━━━━━━ -->
+<section class="section" id="compaction">
+  <div class="section-tag"><span class="status">Planned</span> Context Management</div>
+  <h2>Compaction &amp; Memory &mdash; Two Time Scales</h2>
+
+  <p>
+    These two systems serve different time horizons and <strong>never interact</strong>.
+    Compaction manages the within-session context window. Memory manages cross-session
+    knowledge. Both are wired into the agent loop but at different points.
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th></th><th>Compactor</th><th>MemoryStore</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Scope</strong></td>
+          <td>Within-session context window</td>
+          <td>Across-session knowledge</td>
+        </tr>
+        <tr>
+          <td><strong>Frequency</strong></td>
+          <td>Every step of the agent loop</td>
+          <td>Once at run start + once at run end</td>
+        </tr>
+        <tr>
+          <td><strong>Input</strong></td>
+          <td><code>AgentConfig</code> (full message list)</td>
+          <td><code>Message</code> list + conversation history</td>
+        </tr>
+        <tr>
+          <td><strong>Output</strong></td>
+          <td><code>(bool, list[Message])</code></td>
+          <td><code>list[ContentBlock]</code> (retrieve) / <code>dict</code> (update)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Compaction Strategies</h3>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Strategy</th><th>Approach</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>NoOpCompactor</code></td>
+          <td>Pass-through, no compaction</td>
+        </tr>
+        <tr>
+          <td><code>SlidingWindowCompactor</code></td>
+          <td><strong>Default.</strong> 4-phase progressive: remove thinking &rarr; truncate tool results &rarr; placeholder old results &rarr; remove old turns</td>
+        </tr>
+        <tr>
+          <td><code>ToolResultRemovalCompactor</code></td>
+          <td>2-phase: replace old tool results &rarr; remove old turns</td>
+        </tr>
+        <tr>
+          <td><code>SummarizingCompactor</code></td>
+          <td>LLM-based summarization of older history</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="fn">compaction/base.py + memory/base.py</span>
+      <span class="tag tag-abc">ABC</span>
+    </div>
+<pre>
+<span class="k">class</span> <span class="t">Compactor</span>(<span class="t">ABC</span>):
+    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">apply_compaction</span>(<span class="p">self</span>, agent_config: <span class="t">AgentConfig</span>)
+        -> <span class="t">tuple</span>[<span class="t">bool</span>, <span class="t">list</span>[<span class="t">Message</span>]]: ...
+
+<span class="k">class</span> <span class="t">MemoryStore</span>(<span class="t">ABC</span>):
+    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">retrieve</span>(<span class="p">self</span>, user_message, messages) -> <span class="t">list</span>[<span class="t">ContentBlock</span>]: ...
+    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">update</span>(<span class="p">self</span>, messages, conversation_history) -> <span class="t">dict</span>: ...</pre>
+  </div>
+
+  <div class="thought">
+    <span class="label">Design Decision</span>
+    Compaction runs <em>before</em> each LLM call. Memory retrieval runs <em>once</em> at run start
+    (injected as context). Memory update runs <em>once</em> at run end. They share no state.
+    This separation means you can swap compaction strategies without affecting memory,
+    and vice versa.
+  </div>
+</section>
+
+<!-- ━━━━━━━━━━ STORAGE ADAPTERS ━━━━━━━━━━ -->
+<section class="section" id="storage">
+  <div class="section-tag"><span class="status">Planned</span> Persistence</div>
+  <h2>Storage Adapters &mdash; Three Independent Axes</h2>
+
+  <p>
+    The three-adapter pattern is carried over from <code>anthropic_agent</code> largely as-is.
+    Each adapter is independently swappable &mdash; you can run config in Postgres, conversations
+    on the filesystem, and run logs in memory.
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Adapter</th><th>Entity</th><th>Purpose</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>AgentConfigAdapter</code></td>
+          <td><code>AgentConfig</code></td>
+          <td>Session state &mdash; messages, model, relay state</td>
+        </tr>
+        <tr>
+          <td><code>ConversationAdapter</code></td>
+          <td><code>Conversation</code></td>
+          <td>Per-run records for UI history / pagination</td>
+        </tr>
+        <tr>
+          <td><code>AgentRunAdapter</code></td>
+          <td><code>AgentRunLog</code></td>
+          <td>Step-by-step execution logs for debugging</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    Backends: memory (default), filesystem, and Postgres.
+    Factory: <code>create_adapters(backend_type, **kwargs)</code>.
+  </p>
+
+  <div class="thought">
+    <span class="label">Design Decision</span>
+    Each adapter is truly independent. You can run <code>AgentConfigAdapter</code> on Postgres
+    while <code>ConversationAdapter</code> runs on the filesystem. They share no state, no
+    transactions, no connection pools. This lets teams optimize persistence per-concern:
+    fast in-memory for config during development, durable Postgres for production conversations.
+  </div>
+</section>
+
+<!-- ━━━━━━━━━━ PROVIDERS ━━━━━━━━━━ -->
+<section class="section" id="providers">
+  <div class="section-tag"><span class="status">Planned</span> Providers</div>
+  <h2>Provider Implementations</h2>
+
+  <p>
+    Each provider directory contains exactly four files &mdash; each owning one concern.
+    Currently, only the Anthropic provider is implemented. OpenAI and LiteLLM are planned.
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>File</th><th>Class</th><th>Responsibility</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>agent.py</code></td>
+          <td><code>AnthropicAgent</code></td>
+          <td>Orchestration loop &mdash; step counting, tool dispatch, compaction, streaming</td>
+        </tr>
+        <tr>
+          <td><code>provider.py</code></td>
+          <td><code>AnthropicProvider</code></td>
+          <td>LLM API call &mdash; SDK client, retry, streaming accumulation</td>
+        </tr>
+        <tr>
+          <td><code>formatter.py</code></td>
+          <td><code>AnthropicMessageFormatter</code></td>
+          <td>Wire format translation &mdash; canonical &harr; Anthropic API, media resolution</td>
+        </tr>
+        <tr>
+          <td><code>config.py</code></td>
+          <td><code>AnthropicLLMConfig</code></td>
+          <td>Provider-specific params &mdash; thinking_tokens, beta_headers, container_id</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Concern</th><th>Owner</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Agentic loop (step counting, dispatch, compaction)</td><td>Provider's Agent</td></tr>
+        <tr><td>LLM API call (auth, retry, streaming)</td><td>Provider's Provider</td></tr>
+        <tr><td>Wire format translation</td><td>Provider's Formatter</td></tr>
+        <tr><td>Tool execution &amp; enveloping</td><td>Framework (tools/)</td></tr>
+        <tr><td>Sandbox lifecycle</td><td>Framework (sandbox/)</td></tr>
+        <tr><td>Compaction</td><td>Framework (compaction/)</td></tr>
+        <tr><td>Memory stores</td><td>Framework (memory/)</td></tr>
+        <tr><td>Storage adapters</td><td>Framework (storage/)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ━━━━━━━━━━ COMPOSITION & WIRING ━━━━━━━━━━ -->
+<section class="section" id="composition">
+  <div class="section-tag"><span class="status">Planned</span> Assembly</div>
+  <h2>Composition &amp; Wiring</h2>
+
+  <h3>Agent Construction</h3>
+  <div class="cw">
+    <div class="ch">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="fn">example &mdash; wiring an agent</span>
+      <span class="tag tag-abc">Composition</span>
+    </div>
+<pre>
+agent = <span class="t">AnthropicAgent</span>(
+    system_prompt=<span class="s">"You are a helpful assistant."</span>,
+    model=<span class="s">"claude-sonnet-4-5"</span>,
+    config=<span class="t">AnthropicLLMConfig</span>(thinking_tokens=<span class="n">10000</span>),
+
+    tools=[my_tool_a, my_tool_b],
+    subagents={<span class="s">"research"</span>: research_agent},
+
+    sandbox=<span class="t">DockerSandbox</span>(image=<span class="s">"python:3.12-slim"</span>),
+    media_backend=<span class="t">S3MediaBackend</span>(bucket=<span class="s">"my-bucket"</span>),
+    compactor=<span class="t">SlidingWindowCompactor</span>(),
+    memory_store=<span class="t">NoOpMemoryStore</span>(),
+
+    config_adapter=<span class="t">PostgresAgentConfigAdapter</span>(db_url),
+    conversation_adapter=<span class="t">PostgresConversationAdapter</span>(db_url),
+    run_adapter=<span class="t">PostgresAgentRunAdapter</span>(db_url),
+)</pre>
+  </div>
+
+  <h3>The Run Loop</h3>
+  <div class="diagram">
+<pre>
+await agent.run(prompt)
+  │
+  ├── initialize() if needed
+  ├── memory_store.retrieve() &rarr; inject context
+  ├── append prompt to messages + conversation
+  │
+  └── _resume_loop():
+       while step &lt; max_steps:
+       │
+       ├── compactor.apply_compaction(agent_config)
+       │
+       ├── provider.generate[_stream](         &larr; Provider handles:
+       │     messages, tool_schemas,              formatter.format_messages()
+       │     llm_config, model, ...               SDK API call + retry
+       │   ) &rarr; Message                            formatter.parse_response()
+       │
+       ├── append assistant message
+       │
+       └── match stop_reason:
+            │
+            ├── "pause_turn" &rarr; continue
+            │
+            ├── "tool_use":
+            │    envelopes = tool_registry.execute_tools(tool_calls)
+            │    for envelope:
+            │      .for_context_window() &rarr; agent_config.messages
+            │      .for_conversation_log() &rarr; conversation
+            │    continue
+            │
+            └── "end_turn":
+                 memory_store.update()
+                 build AgentResult &rarr; return</pre>
+    <div class="caption">The agentic loop &mdash; from prompt to result</div>
+  </div>
+</section>
+
+</div><!-- .content -->
+
+<div class="footer">
+  <div class="mark">agent_base</div>
+  <div class="note">Planned Systems &middot; February 2026</div>
+</div>
+
+</body>
+</html>

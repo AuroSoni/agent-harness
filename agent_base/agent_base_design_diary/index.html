@@ -94,10 +94,7 @@
     position: relative;
     z-index: 1;
   }
-  .hero h1 em {
-    font-style: italic;
-    color: var(--accent);
-  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
   .hero .subtitle {
     font-family: 'Inter', sans-serif;
     font-size: 13px;
@@ -121,75 +118,16 @@
     z-index: 1;
   }
 
-  /* ─── Navigation ─── */
-  .toc {
-    max-width: 880px;
-    margin: 0 auto;
-    padding: 32px 28px 0;
-  }
-  .toc-title {
-    font-family: 'Inter', sans-serif;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 3px;
-    color: var(--muted);
-    font-weight: 700;
-    margin-bottom: 16px;
-  }
-  .toc-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    gap: 10px;
-  }
-  .toc-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    text-decoration: none;
-    color: var(--ink);
-    border: 1px solid transparent;
-  }
-  .toc-item:hover {
-    background: var(--paper-warm);
-    border-color: var(--border-light);
-  }
-  .toc-num {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--accent);
-    background: var(--accent-soft);
-    width: 26px;
-    height: 26px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 6px;
-    flex-shrink: 0;
-  }
-  .toc-label {
-    font-family: 'Inter', sans-serif;
-    font-size: 13.5px;
-    font-weight: 500;
-  }
-
   /* ─── Content ─── */
-  .content { max-width: 880px; margin: 0 auto; padding: 0 28px; }
+  .content { max-width: 960px; margin: 0 auto; padding: 0 28px; }
 
-  .entry {
+  .section {
     padding: 48px 0;
     border-bottom: 1px solid var(--border-light);
-    opacity: 0;
-    transform: translateY(28px);
-    transition: opacity 0.7s ease, transform 0.7s ease;
   }
-  .entry.vis { opacity: 1; transform: translateY(0); }
+  .section:last-child { border-bottom: none; }
 
-  .entry-tag {
+  .section-tag {
     font-family: 'Inter', sans-serif;
     font-size: 11px;
     text-transform: uppercase;
@@ -197,86 +135,94 @@
     color: var(--muted);
     font-weight: 700;
     margin-bottom: 8px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .entry-tag .num {
-    color: var(--accent);
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
   }
 
-  .entry h2 {
+  h2 {
     font-size: 28px;
     font-weight: 700;
     margin-bottom: 18px;
     line-height: 1.25;
   }
-  .entry h3 {
+  h3 {
     font-size: 22px;
     font-weight: 600;
     margin: 34px 0 14px;
     color: var(--ink);
   }
-  .entry h4 {
-    font-family: 'Inter', sans-serif;
-    font-size: 15px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin: 28px 0 10px;
-    color: var(--slate);
-  }
-  .entry p { margin-bottom: 16px; }
-  .entry p strong { color: var(--accent); font-weight: 700; }
-  .entry ul, .entry ol { margin: 0 0 16px 24px; }
-  .entry li { margin-bottom: 6px; }
+  p { margin-bottom: 16px; }
+  p strong { color: var(--accent); font-weight: 700; }
+  ul, ol { margin: 0 0 16px 24px; }
+  li { margin-bottom: 6px; }
 
-  /* ─── Thought callouts ─── */
-  .thought {
-    background: var(--paper-warm);
-    border-left: 4px solid var(--accent);
-    padding: 16px 22px;
-    margin: 24px 0;
-    border-radius: 0 10px 10px 0;
-    font-style: italic;
+  /* ─── Module cards ─── */
+  .module-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 18px;
+    margin: 28px 0;
+  }
+  .module-card {
+    background: white;
+    border: 1px solid var(--border-light);
+    border-radius: 14px;
+    padding: 24px;
+    transition: all 0.25s ease;
+    box-shadow: var(--shadow-sm);
+    text-decoration: none;
+    color: var(--ink);
+    display: block;
     position: relative;
   }
-  .thought::before {
-    content: '💭';
-    position: absolute;
-    top: -12px;
-    left: -15px;
-    font-size: 19px;
-    font-style: normal;
+  .module-card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-3px);
+    border-color: var(--accent-mid);
   }
-  .thought .label {
+  .module-card .card-icon {
+    font-size: 28px;
+    margin-bottom: 10px;
+    display: block;
+  }
+  .module-card .card-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    line-height: 1.3;
+  }
+  .module-card .card-desc {
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    color: var(--slate);
+    line-height: 1.6;
+    margin-bottom: 14px;
+  }
+  .module-card .card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .module-card .card-link {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.3px;
+  }
+  .module-card:hover .card-link { text-decoration: underline; }
+
+  /* ─── Status badges ─── */
+  .status {
     font-family: 'Inter', sans-serif;
     font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 2px;
-    font-style: normal;
     font-weight: 700;
-    display: block;
-    margin-bottom: 5px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    padding: 3px 10px;
+    border-radius: 20px;
   }
-  .thought .label { color: var(--accent); }
-  .thought.teal { border-left-color: var(--teal); }
-  .thought.teal .label { color: var(--teal); }
-  .thought.teal::before { content: '🔍'; }
-  .thought.crimson { border-left-color: var(--crimson); }
-  .thought.crimson .label { color: var(--crimson); }
-  .thought.crimson::before { content: '⚠️'; }
-  .thought.amber { border-left-color: var(--amber); }
-  .thought.amber .label { color: var(--amber); }
-  .thought.amber::before { content: '💡'; }
-  .thought.emerald { border-left-color: var(--emerald); }
-  .thought.emerald .label { color: var(--emerald); }
-  .thought.emerald::before { content: '✅'; }
-  .thought.blue { border-left-color: var(--blue); }
-  .thought.blue .label { color: var(--blue); }
-  .thought.blue::before { content: '🏗️'; }
+  .status-impl { background: var(--emerald-soft); color: var(--emerald); }
+  .status-plan { background: var(--amber-soft); color: var(--amber); }
 
   /* ─── Principle cards ─── */
   .principle-grid {
@@ -319,74 +265,41 @@
     line-height: 1.6;
   }
 
-  /* ─── Code blocks ─── */
-  .cw {
+  /* ─── Thought callouts ─── */
+  .thought {
+    background: var(--paper-warm);
+    border-left: 4px solid var(--accent);
+    padding: 16px 22px;
     margin: 24px 0;
-    border-radius: 12px;
-    overflow: hidden;
-    box-shadow: var(--shadow-md);
+    border-radius: 0 10px 10px 0;
+    font-style: italic;
+    position: relative;
   }
-  .ch {
-    background: #24243a;
-    padding: 10px 16px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
+  .thought::before {
+    content: '💭';
+    position: absolute;
+    top: -12px;
+    left: -15px;
+    font-size: 19px;
+    font-style: normal;
   }
-  .ch .dots { display: flex; gap: 6px; }
-  .ch .dots span { width: 10px; height: 10px; border-radius: 50%; }
-  .ch .dots span:nth-child(1) { background: #ff5f56; }
-  .ch .dots span:nth-child(2) { background: #ffbd2e; }
-  .ch .dots span:nth-child(3) { background: #27c93f; }
-  .ch .fn {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11.5px;
-    color: #8888a8;
-    font-weight: 500;
-  }
-  .ch .tag {
-    margin-left: auto;
+  .thought .label {
     font-family: 'Inter', sans-serif;
-    font-size: 9.5px;
+    font-size: 10px;
     text-transform: uppercase;
-    letter-spacing: 1.5px;
-    padding: 3px 10px;
-    border-radius: 4px;
+    letter-spacing: 2px;
+    font-style: normal;
     font-weight: 700;
+    display: block;
+    margin-bottom: 5px;
+    color: var(--accent);
   }
-  .tag-abc { background: #7c3aed30; color: #c4b5fd; }
-  .tag-type { background: #0d948830; color: #5eead4; }
-  .tag-impl { background: #05966930; color: #86efac; }
-  .tag-wire { background: #2563eb30; color: #93c5fd; }
-  .tag-loop { background: #d9770630; color: #fbbf24; }
-  .tag-tree { background: #64748b30; color: #cbd5e1; }
-  .tag-comp { background: #be123c30; color: #fda4af; }
-
-  pre {
-    background: var(--code-bg);
-    color: var(--code-fg);
-    padding: 20px 22px;
-    overflow-x: auto;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-    line-height: 1.7;
-    tab-size: 4;
-  }
-  pre .c { color: #565f89; font-style: italic; }
-  pre .k { color: #bb9af7; }
-  pre .t { color: #7dcfff; }
-  pre .s { color: #9ece6a; }
-  pre .f { color: #e0af68; }
-  pre .p { color: #7aa2f7; }
-  pre .n { color: #ff9e64; }
-  pre .r { color: #f7768e; }
-  pre .hl {
-    background: rgba(187, 154, 247, 0.06);
-    display: inline-block;
-    width: 100%;
-    margin: 0 -22px;
-    padding: 0 22px;
-  }
+  .thought.amber { border-left-color: var(--amber); }
+  .thought.amber .label { color: var(--amber); }
+  .thought.amber::before { content: '💡'; }
+  .thought.emerald { border-left-color: var(--emerald); }
+  .thought.emerald .label { color: var(--emerald); }
+  .thought.emerald::before { content: '✅'; }
 
   /* ─── Diagram blocks ─── */
   .diagram {
@@ -402,6 +315,7 @@
     background: transparent;
     color: var(--ink);
     padding: 0;
+    font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
     line-height: 1.5;
     box-shadow: none;
@@ -431,9 +345,7 @@
     font-family: 'Inter', sans-serif;
     font-size: 14px;
   }
-  thead {
-    background: var(--paper-warm);
-  }
+  thead { background: var(--paper-warm); }
   th {
     padding: 12px 16px;
     text-align: left;
@@ -470,7 +382,92 @@
     color: var(--accent);
   }
 
-  /* ─── Flow / hierarchy badges ─── */
+  /* ─── Code blocks ─── */
+  .cw {
+    margin: 24px 0;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+  }
+  .ch {
+    background: #24243a;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .ch .dots { display: flex; gap: 6px; }
+  .ch .dots span { width: 10px; height: 10px; border-radius: 50%; }
+  .ch .dots span:nth-child(1) { background: #ff5f56; }
+  .ch .dots span:nth-child(2) { background: #ffbd2e; }
+  .ch .dots span:nth-child(3) { background: #27c93f; }
+  .ch .fn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #8888a8;
+    font-weight: 500;
+  }
+  .ch .tag {
+    margin-left: auto;
+    font-family: 'Inter', sans-serif;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tag-tree { background: #64748b30; color: #cbd5e1; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 20px 22px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    tab-size: 4;
+  }
+  pre .c { color: #565f89; font-style: italic; }
+  pre .p { color: #7aa2f7; }
+  pre .f { color: #e0af68; }
+  pre .n { color: #ff9e64; }
+  pre .t { color: #7dcfff; }
+  pre .s { color: #9ece6a; }
+  pre .k { color: #bb9af7; }
+  pre .r { color: #f7768e; }
+
+  /* ─── Collapsible ─── */
+  details {
+    margin: 24px 0;
+    border: 1px solid var(--border-light);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  details summary {
+    padding: 14px 22px;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--slate);
+    background: var(--paper-warm);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  details summary::before {
+    content: '▸';
+    font-size: 12px;
+    transition: transform 0.2s;
+  }
+  details[open] summary::before { transform: rotate(90deg); }
+  details summary::-webkit-details-marker { display: none; }
+  details .details-content { padding: 0; }
+
+  /* ─── Axes table badges ─── */
   .badge {
     display: inline-block;
     font-family: 'Inter', sans-serif;
@@ -483,11 +480,7 @@
     margin: 0 4px 4px 0;
   }
   .badge-purple { background: var(--accent-soft); color: var(--accent); }
-  .badge-teal { background: var(--teal-soft); color: var(--teal); }
-  .badge-amber { background: var(--amber-soft); color: var(--amber); }
   .badge-crimson { background: var(--crimson-soft); color: var(--crimson); }
-  .badge-blue { background: var(--blue-soft); color: var(--blue); }
-  .badge-emerald { background: var(--emerald-soft); color: var(--emerald); }
 
   /* ─── Separator ─── */
   .sep {
@@ -496,42 +489,6 @@
     color: var(--border);
     font-size: 20px;
     letter-spacing: 12px;
-  }
-
-  /* ─── Back to top ─── */
-  .back-top {
-    position: fixed;
-    bottom: 28px;
-    right: 28px;
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    background: var(--accent);
-    color: white;
-    border: none;
-    cursor: pointer;
-    font-size: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: var(--shadow-md);
-    opacity: 0;
-    transform: translateY(10px);
-    transition: all 0.3s ease;
-    z-index: 100;
-  }
-  .back-top.show { opacity: 1; transform: translateY(0); }
-  .back-top:hover { background: #6d28d9; transform: translateY(-2px); }
-
-  /* ─── Progress bar ─── */
-  .progress-bar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    height: 3px;
-    background: linear-gradient(90deg, var(--accent), var(--teal));
-    z-index: 200;
-    transition: width 0.1s linear;
   }
 
   /* ─── Footer ─── */
@@ -559,14 +516,85 @@
     .hero { padding: 50px 20px 36px; }
     .content { padding: 0 16px; }
     .principle-grid { grid-template-columns: 1fr; }
-    .toc-grid { grid-template-columns: 1fr; }
+    .module-grid { grid-template-columns: 1fr; }
     pre { font-size: 11.5px; padding: 14px 16px; }
+  }
+
+  /* ─── Navigation Bar ─── */
+  .nav-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(250, 250, 247, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-light);
+    font-family: 'Inter', sans-serif;
+    font-size: 12.5px;
+  }
+  .nav-arrow {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 32px;
+    text-align: center;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  .nav-arrow:hover { background: rgba(0,0,0,0.05); }
+  .nav-arrow.disabled {
+    color: var(--muted);
+    pointer-events: none;
+    opacity: 0.35;
+  }
+  .nav-tabs {
+    display: flex;
+    gap: 1px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .nav-tab:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--ink);
+  }
+  .nav-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
   }
 </style>
 </head>
 <body>
 
-<div class="progress-bar" id="progress"></div>
+<nav class="nav-bar">
+  <span class="nav-arrow disabled">&larr;</span>
+  <div class="nav-tabs">
+    <a href="index.html" class="nav-tab active">Hub</a>
+    <a href="core-domain-model.html" class="nav-tab">Domain</a>
+    <a href="tool-system.html" class="nav-tab">Tools</a>
+    <a href="sandbox.html" class="nav-tab">Sandbox</a>
+    <a href="media-backend.html" class="nav-tab">Media</a>
+    <a href="file-coordination.html" class="nav-tab">Files</a>
+    <a href="planned-systems.html" class="nav-tab">Planned</a>
+  </div>
+  <a href="core-domain-model.html" class="nav-arrow">&rarr;</a>
+</nav>
 
 <!-- ━━━━━━━━━━ HERO ━━━━━━━━━━ -->
 <div class="hero">
@@ -574,59 +602,30 @@
   <h1>The <em>agent_base</em> Framework</h1>
   <div class="subtitle">Developer Diary &middot; Architecture &amp; Design</div>
   <p class="tagline">
-    A provider-agnostic, async-first foundation for production AI agents — from
+    A provider-agnostic, async-first foundation for production AI agents &mdash; from
     anthropic_agent to a composable, extensible framework.
   </p>
 </div>
 
-<!-- ━━━━━━━━━━ TABLE OF CONTENTS ━━━━━━━━━━ -->
-<nav class="toc" id="toc">
-  <div class="toc-title">Chapters</div>
-  <div class="toc-grid">
-    <a class="toc-item" href="#ch1"><span class="toc-num">01</span><span class="toc-label">The Big Picture</span></a>
-    <a class="toc-item" href="#ch2"><span class="toc-num">02</span><span class="toc-label">Design Principles</span></a>
-    <a class="toc-item" href="#ch3"><span class="toc-num">03</span><span class="toc-label">Directory Layout</span></a>
-    <a class="toc-item" href="#ch4"><span class="toc-num">04</span><span class="toc-label">Core Domain Model</span></a>
-    <a class="toc-item" href="#ch5"><span class="toc-num">05</span><span class="toc-label">The Tool System</span></a>
-    <a class="toc-item" href="#ch6"><span class="toc-num">06</span><span class="toc-label">Sandbox Isolation</span></a>
-    <a class="toc-item" href="#ch7"><span class="toc-num">07</span><span class="toc-label">Media Backend</span></a>
-    <a class="toc-item" href="#ch8"><span class="toc-num">08</span><span class="toc-label">Compaction &amp; Memory</span></a>
-    <a class="toc-item" href="#ch9"><span class="toc-num">09</span><span class="toc-label">Storage Adapters</span></a>
-    <a class="toc-item" href="#ch10"><span class="toc-num">10</span><span class="toc-label">Provider Implementations</span></a>
-    <a class="toc-item" href="#ch11"><span class="toc-num">11</span><span class="toc-label">Composition &amp; Wiring</span></a>
-    <a class="toc-item" href="#ch12"><span class="toc-num">12</span><span class="toc-label">Axes of Change</span></a>
-    <a class="toc-item" href="#ch13"><span class="toc-num">13</span><span class="toc-label">File Lifecycle Management</span></a>
-  </div>
-</nav>
-
 <div class="content">
 
-<!-- ━━━━━━━━━━ CHAPTER 1: THE BIG PICTURE ━━━━━━━━━━ -->
-<section class="entry" id="ch1">
-  <div class="entry-tag"><span class="num">01</span> Genesis</div>
-  <h2>The Big Picture — Why <em>agent_base</em>?</h2>
+<!-- ━━━━━━━━━━ THE BIG PICTURE ━━━━━━━━━━ -->
+<section class="section">
+  <div class="section-tag">Genesis</div>
+  <h2>The Big Picture &mdash; Why <em>agent_base</em>?</h2>
 
   <p>
     The <code>anthropic_agent</code> library started as a tightly coupled implementation for
-    building AI agents on Anthropic's Claude API. It worked — streaming, tool execution,
-    state persistence, multimodal support — but it was <strong>locked to a single provider</strong>.
+    building AI agents on Anthropic's Claude API. It worked &mdash; streaming, tool execution,
+    state persistence, multimodal support &mdash; but it was <strong>locked to a single provider</strong>.
   </p>
   <p>
-    The refactoring goal: extract the <em>orchestration logic</em> — the agentic loop, tool
-    dispatch, context management, media handling — into a <strong>provider-agnostic base</strong>
-    that any LLM provider can plug into. The provider-specific bits (wire format, SDK calls,
-    streaming event parsing) move to thin adapter layers.
+    The refactoring goal: extract the <em>orchestration logic</em> into a
+    <strong>provider-agnostic base</strong> that any LLM provider can plug into. Three entirely
+    new subsystems &mdash; <strong>media backends</strong>, <strong>tool sandboxing</strong>, and
+    <strong>tool result enveloping</strong> &mdash; reshape how data flows through the agent.
   </p>
 
-  <div class="thought amber">
-    <span class="label">Key Insight</span>
-    This isn't just "rename the package." We're introducing three entirely new subsystems
-    — <strong>media backends</strong>, <strong>tool sandboxing</strong>, and
-    <strong>tool result enveloping</strong> — that reshape how data flows through the agent.
-    Each one addresses a concrete limitation of the original design.
-  </div>
-
-  <h3>What Changed, At a Glance</h3>
   <div class="table-wrap">
     <table>
       <thead>
@@ -640,13 +639,13 @@
         </tr>
         <tr>
           <td>File handling</td>
-          <td><code>file_backends/</code> — storage only, no resolution</td>
-          <td><code>media_backend/</code> — combined storage + resolution + streaming</td>
+          <td><code>file_backends/</code> &mdash; storage only</td>
+          <td><code>media_backend/</code> &mdash; storage + resolution + sandbox orchestration</td>
         </tr>
         <tr>
           <td>Tool results</td>
           <td>Flat strings or legacy <code>ToolResult</code></td>
-          <td><code>ToolResultEnvelope</code> — dual projection (LLM vs UI)</td>
+          <td><code>ToolResultEnvelope</code> &mdash; dual projection (LLM vs UI)</td>
         </tr>
         <tr>
           <td>Tool I/O isolation</td>
@@ -663,9 +662,9 @@
   </div>
 </section>
 
-<!-- ━━━━━━━━━━ CHAPTER 2: DESIGN PRINCIPLES ━━━━━━━━━━ -->
-<section class="entry" id="ch2">
-  <div class="entry-tag"><span class="num">02</span> Philosophy</div>
+<!-- ━━━━━━━━━━ DESIGN PRINCIPLES ━━━━━━━━━━ -->
+<section class="section">
+  <div class="section-tag">Philosophy</div>
   <h2>Design Principles</h2>
 
   <p>
@@ -679,7 +678,7 @@
       <div class="title">Separate Identity from Location from Representation</div>
       <div class="desc">
         A media file's <code>media_id</code> is stable. Where its bytes live is a backend
-        concern. How those bytes are projected (base64, URL, reference) depends on the consumer.
+        concern. How those bytes are projected depends on the consumer.
         Three concerns, three layers, zero coupling.
       </div>
     </div>
@@ -689,7 +688,7 @@
       <div class="desc">
         All file I/O and command execution flows through a <code>Sandbox</code> interface.
         Swap <code>LocalSandbox</code> for <code>DockerSandbox</code> by changing config,
-        not code. The litmus test: <code>grep -r "import os" common_tools/</code> returns zero.
+        not code.
       </div>
     </div>
     <div class="principle-card">
@@ -698,7 +697,7 @@
       <div class="desc">
         Each tool defines a <code>ToolResultEnvelope</code> subclass with two projections:
         one for the LLM context (minimal), one for the conversation log (rich). The agent
-        loop is polymorphic — no if/elif chains.
+        loop is polymorphic &mdash; no if/elif chains.
       </div>
     </div>
     <div class="principle-card">
@@ -722,847 +721,136 @@
       <div class="num">06</div>
       <div class="title">Lazy Resolution at the Boundary</div>
       <div class="desc">
-        Content blocks store abstract references (<code>media_id</code>, <code>FILE_ID</code>)
-        internally. Resolution to base64/URL/bytes happens at the consumer boundary — never
-        at creation time.
+        Content blocks store abstract references (<code>media_id</code>) internally. Resolution
+        to base64/URL/bytes happens at the consumer boundary &mdash; never at creation time.
       </div>
     </div>
   </div>
 </section>
 
-<!-- ━━━━━━━━━━ CHAPTER 3: DIRECTORY LAYOUT ━━━━━━━━━━ -->
-<section class="entry" id="ch3">
-  <div class="entry-tag"><span class="num">03</span> Structure</div>
-  <h2>Directory Layout</h2>
+<!-- ━━━━━━━━━━ MODULE MAP ━━━━━━━━━━ -->
+<section class="section">
+  <div class="section-tag">Deep Dives</div>
+  <h2>Module Diaries</h2>
 
   <p>
-    The module structure mirrors the separation of concerns. Each top-level directory owns
-    exactly one axis of responsibility.
+    Each module has its own developer diary &mdash; a narrative that starts with a concrete
+    problem and walks through the design decisions that shaped the solution. Click any card
+    to read the full story.
   </p>
 
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">agent_base/</span>
-      <span class="tag tag-tree">Directory Tree</span>
-    </div>
-<pre>
-<span class="c">agent_base/</span>
-├── <span class="p">core/</span>                          <span class="c"># Provider-agnostic domain model & contracts</span>
-│   ├── types.py                   <span class="c"># ContentBlock hierarchy, enums, serialization</span>
-│   ├── messages.py                <span class="c"># Message, Usage, MessageFormatter ABC</span>
-│   ├── config.py                  <span class="c"># AgentConfig, Conversation dataclasses</span>
-│   ├── agent.py                   <span class="c"># Agent ABC (run, resume_run_with_tool_results)</span>
-│   ├── provider.py                <span class="c"># Provider ABC (generate, generate_stream)</span>
-│   ├── result.py                  <span class="c"># AgentResult dataclass</span>
-│   └── streaming.py               <span class="c"># StreamDelta types for framework-level SSE</span>
-│
-├── <span class="f">tools/</span>                         <span class="c"># Tool infrastructure (registry, decorator, envelope)</span>
-│   ├── types.py                   <span class="c"># ToolResultEnvelope ABC, GenericErrorEnvelope</span>
-│   ├── registry.py                <span class="c"># ToolRegistry (register, execute, schema export)</span>
-│   ├── decorators.py              <span class="c"># @tool decorator, schema generation</span>
-│   └── base.py                    <span class="c"># ConfigurableToolBase ABC</span>
-│
-├── <span class="f">common_tools/</span>                  <span class="c"># Built-in tool implementations</span>
-│   ├── code_execution.py          <span class="c"># CodeExecutionTool + CodeExecEnvelope</span>
-│   ├── file_read.py / file_write.py
-│   ├── glob_search.py / grep_search.py
-│   ├── subagent.py                <span class="c"># SubAgentTool + SubAgentEnvelope</span>
-│   └── ...
-│
-├── <span class="n">sandbox/</span>                       <span class="c"># Sandbox infrastructure (isolation layer)</span>
-│   ├── types.py                   <span class="c"># Sandbox ABC, ExecResult</span>
-│   ├── local.py                   <span class="c"># LocalSandbox (~1ms setup)</span>
-│   ├── docker.py                  <span class="c"># DockerSandbox (2–5s setup)</span>
-│   ├── e2b.py                     <span class="c"># E2BSandbox (5–15s setup)</span>
-│   └── bridge.py                  <span class="c"># SandboxFileBridge (media ↔ sandbox)</span>
-│
-├── <span class="t">media_backend/</span>                 <span class="c"># Media storage + resolution</span>
-│   ├── types.py                   <span class="c"># MediaMetadata dataclass</span>
-│   ├── base.py                    <span class="c"># MediaBackend ABC</span>
-│   ├── local.py / s3.py / memory.py
-│   └── cache.py                   <span class="c"># LocalFileCache (read-through + write-back)</span>
-│
-├── <span class="r">compaction/</span>                    <span class="c"># Context window management</span>
-│   ├── base.py                    <span class="c"># Compactor ABC</span>
-│   ├── sliding_window.py          <span class="c"># SlidingWindowCompactor (default)</span>
-│   ├── summarizing.py             <span class="c"># SummarizingCompactor (LLM-based)</span>
-│   └── tool_result_removal.py / noop.py
-│
-├── <span class="s">memory/</span>                        <span class="c"># Cross-session memory stores</span>
-│   ├── base.py                    <span class="c"># MemoryStore ABC (retrieve, update)</span>
-│   └── noop.py
-│
-├── <span class="k">storage/</span>                       <span class="c"># Persistence (three-adapter pattern)</span>
-│   ├── base.py                    <span class="c"># ABCs: AgentConfigAdapter, ConversationAdapter, AgentRunAdapter</span>
-│   ├── adapters/                  <span class="c"># memory.py, filesystem.py, postgres.py</span>
-│   └── factory.py                 <span class="c"># create_adapters(backend_type, **kwargs)</span>
-│
-├── <span class="p">providers/</span>                     <span class="c"># Concrete provider implementations</span>
-│   ├── anthropic/                 <span class="c"># agent.py, provider.py, formatter.py, config.py</span>
-│   ├── openai/                    <span class="c"># (future)</span>
-│   └── litellm/                   <span class="c"># (future)</span>
-│
-└── <span class="c">developer-diaries/             # Design discussion records</span>
-</pre>
-  </div>
+  <div class="module-grid">
+    <a class="module-card" href="core-domain-model.html">
+      <span class="card-icon">🧬</span>
+      <div class="card-title">Core Domain Model</div>
+      <div class="card-desc">
+        The provider-agnostic vocabulary: ContentBlock hierarchy, Message, Agent ABC,
+        Provider ABC. How canonical types prevent provider lock-in.
+      </div>
+      <div class="card-footer">
+        <span class="card-link">Read the diary &rarr;</span>
+        <span class="status status-impl">Implemented</span>
+      </div>
+    </a>
 
-  <div class="thought teal">
-    <span class="label">Design Note</span>
-    Notice that <code>tools/</code> (infrastructure) and <code>common_tools/</code> (implementations)
-    are separate. Framework code never depends on specific tool implementations. Adding a new
-    tool means adding one file in <code>common_tools/</code> — zero changes to the registry or
-    envelope system.
+    <a class="module-card" href="tool-system.html">
+      <span class="card-icon">🔧</span>
+      <div class="card-title">Tool System</div>
+      <div class="card-desc">
+        Two consumers, one tool result, conflicting needs. The ToolResultEnvelope
+        dual-projection pattern and how it wires into the agent loop.
+      </div>
+      <div class="card-footer">
+        <span class="card-link">Read the diary &rarr;</span>
+        <span class="status status-impl">Implemented</span>
+      </div>
+    </a>
+
+    <a class="module-card" href="sandbox.html">
+      <span class="card-icon">📦</span>
+      <div class="card-title">Sandbox Isolation</div>
+      <div class="card-desc">
+        Your agent has a toolkit. The LLM can hallucinate <code>/etc/passwd</code>.
+        Three isolation levels, one interface, zero tool code changes.
+      </div>
+      <div class="card-footer">
+        <span class="card-link">Read the diary &rarr;</span>
+        <span class="status status-impl">Implemented</span>
+      </div>
+    </a>
+
+    <a class="module-card" href="media-backend.html">
+      <span class="card-icon">🎨</span>
+      <div class="card-title">Media Backend</div>
+      <div class="card-desc">
+        Where bytes live and how they move. Combined storage + resolution + sandbox
+        orchestration. Lazy materialization, idempotent import.
+      </div>
+      <div class="card-footer">
+        <span class="card-link">Read the diary &rarr;</span>
+        <span class="status status-impl">Implemented</span>
+      </div>
+    </a>
+
+    <a class="module-card" href="file-coordination.html">
+      <span class="card-icon">🔄</span>
+      <div class="card-title">File Coordination</div>
+      <div class="card-desc">
+        When ephemeral meets durable. We built a 640-line state machine to move files
+        in and out. Then we deleted it. The over-engineering &rarr; simplification story.
+      </div>
+      <div class="card-footer">
+        <span class="card-link">Read the diary &rarr;</span>
+        <span class="status status-impl">Implemented</span>
+      </div>
+    </a>
+
+    <a class="module-card" href="planned-systems.html#compaction">
+      <span class="card-icon">🗜️</span>
+      <div class="card-title">Compaction &amp; Memory</div>
+      <div class="card-desc">
+        Two time scales that never interact: within-session context trimming and
+        cross-session knowledge. Four compaction strategies, one ABC.
+      </div>
+      <div class="card-footer">
+        <span class="card-link">Read the diary &rarr;</span>
+        <span class="status status-plan">Planned</span>
+      </div>
+    </a>
+
+    <a class="module-card" href="planned-systems.html#storage">
+      <span class="card-icon">💾</span>
+      <div class="card-title">Storage Adapters</div>
+      <div class="card-desc">
+        Three independent persistence axes: config, conversations, run logs. Each
+        independently swappable between memory, filesystem, and Postgres.
+      </div>
+      <div class="card-footer">
+        <span class="card-link">Read the diary &rarr;</span>
+        <span class="status status-plan">Planned</span>
+      </div>
+    </a>
+
+    <a class="module-card" href="planned-systems.html#providers">
+      <span class="card-icon">🔌</span>
+      <div class="card-title">Provider Implementations</div>
+      <div class="card-desc">
+        Each provider directory owns four files and four concerns: orchestration,
+        transport, wire format, and provider-specific config.
+      </div>
+      <div class="card-footer">
+        <span class="card-link">Read the diary &rarr;</span>
+        <span class="status status-plan">Planned</span>
+      </div>
+    </a>
   </div>
 </section>
 
-<!-- ━━━━━━━━━━ CHAPTER 4: CORE DOMAIN MODEL ━━━━━━━━━━ -->
-<section class="entry" id="ch4">
-  <div class="entry-tag"><span class="num">04</span> Foundation</div>
-  <h2>Core Domain Model</h2>
+<!-- ━━━━━━━━━━ DEPENDENCY DIAGRAM ━━━━━━━━━━ -->
+<section class="section">
+  <div class="section-tag">Architecture</div>
+  <h2>Component Dependency Graph</h2>
 
-  <p>
-    Everything in <code>core/</code> is <strong>provider-agnostic</strong>. No provider SDK imports.
-    No provider-specific logic. This is the canonical vocabulary the entire framework speaks.
-  </p>
-
-  <h3>The ContentBlock Hierarchy</h3>
-  <p>
-    The polymorphic content model follows a "best of all" philosophy: neither the LCD of all
-    LLMs nor the superset. It represents the richest <em>semantically meaningful</em> content types
-    the framework understands, with <code>kwargs</code> as the escape hatch for provider extensions.
-  </p>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">core/types.py</span>
-      <span class="tag tag-type">Type Hierarchy</span>
-    </div>
-<pre>
-<span class="t">ContentBlock</span> <span class="c">(ABC, dataclass)</span>
-├── <span class="t">TextContent</span>                          <span class="c"># text</span>
-├── <span class="t">ThinkingContent</span>                      <span class="c"># thinking, signature</span>
-├── <span class="t">MediaContent</span>                         <span class="c"># media_type, media_id (required)</span>
-│   ├── <span class="t">ImageContent</span>                     <span class="c"># source_type, data (transient)</span>
-│   ├── <span class="t">DocumentContent</span>                  <span class="c"># source_type, data (transient)</span>
-│   └── <span class="t">AttachmentContent</span>                <span class="c"># filename, source_type</span>
-├── <span class="t">ToolUseBase</span>                          <span class="c"># tool_name, tool_id, tool_input</span>
-│   ├── <span class="t">ToolUseContent</span>                   <span class="c"># client-side tool invocation</span>
-│   ├── <span class="t">ServerToolUseContent</span>             <span class="c"># server-side (provider-managed)</span>
-│   └── <span class="t">MCPToolUseContent</span>                <span class="c"># MCP protocol (+ mcp_server_name)</span>
-├── <span class="t">ToolResultBase</span>                       <span class="c"># tool_name, tool_id, tool_result, is_error</span>
-│   ├── <span class="t">ToolResultContent</span>                <span class="c"># client-side result</span>
-│   ├── <span class="t">ServerToolResultContent</span>          <span class="c"># server-side result</span>
-│   └── <span class="t">MCPToolResultContent</span>             <span class="c"># MCP result (+ mcp_server_name)</span>
-├── <span class="t">CitationBase</span>                         <span class="c"># cited_text</span>
-│   ├── <span class="t">CharCitation</span> / <span class="t">PageCitation</span>
-│   ├── <span class="t">ContentBlockCitation</span>
-│   ├── <span class="t">SearchResultCitation</span>
-│   └── <span class="t">WebSearchResultCitation</span>
-└── <span class="t">ErrorContent</span>                         <span class="c"># error_message, error_type</span>
-</pre>
-  </div>
-
-  <h4>Serialization Contract</h4>
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">core/types.py — ContentBlock base</span>
-      <span class="tag tag-abc">Contract</span>
-    </div>
-<pre>
-<span class="k">@dataclass</span>
-<span class="k">class</span> <span class="t">ContentBlock</span>(<span class="t">ABC</span>):
-    <span class="s">"""Base for all content types. raw is transient, kwargs are persisted."""</span>
-    content_block_type: <span class="t">ContentBlockType</span> = field(init=<span class="n">False</span>)
-    kwargs: <span class="t">Dict</span>[<span class="t">str</span>, <span class="t">Any</span>] = field(default_factory=<span class="t">dict</span>)
-    raw: <span class="t">Any</span> = field(default=<span class="n">None</span>, repr=<span class="n">False</span>)  <span class="c"># ← never serialized</span>
-
-    <span class="k">@abstractmethod</span>
-    <span class="k">def</span> <span class="f">to_dict</span>(<span class="p">self</span>) -> <span class="t">Dict</span>[<span class="t">str</span>, <span class="t">Any</span>]:
-<span class="hl">        <span class="s">"""JSON-native primitives only. Enums emit .value strings."""</span></span>
-        ...
-
-    <span class="k">@classmethod</span>
-    <span class="k">def</span> <span class="f">from_dict</span>(<span class="p">cls</span>, data: <span class="t">Dict</span>) -> <span class="s">"ContentBlock"</span>:
-<span class="hl">        <span class="s">"""Match-based polymorphic dispatcher."""</span></span>
-        block_type = data.get(<span class="s">"content_block_type"</span>)
-        <span class="k">match</span> block_type:
-            <span class="k">case</span> <span class="t">ContentBlockType</span>.TEXT.value:
-                <span class="k">return</span> _build_dataclass_block(<span class="t">TextContent</span>, data)
-            <span class="c"># ... other cases ...</span>
-</pre>
-  </div>
-
-  <div class="thought">
-    <span class="label">Design Decision</span>
-    The <code>data</code> field on media blocks is <strong>transient</strong> — never serialized.
-    Actual bytes/base64 are resolved on demand via <code>media_id</code> from the media backend.
-    This keeps persisted messages lightweight and makes storage backend swaps trivial.
-  </div>
-
-  <h3>Message &amp; Usage</h3>
-  <p>
-    <code>Message</code> is a single turn in a conversation — one or more <code>ContentBlock</code>s,
-    a role, optional usage metrics, and provider/model identity. The <code>MessageFormatter</code>
-    ABC translates between canonical messages and provider wire format.
-  </p>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">core/messages.py</span>
-      <span class="tag tag-type">Dataclass</span>
-    </div>
-<pre>
-<span class="k">@dataclass</span>
-<span class="k">class</span> <span class="t">Message</span>:
-    id: <span class="t">str</span> = field(default_factory=<span class="k">lambda</span>: <span class="t">str</span>(uuid.uuid4()))
-    role: <span class="t">Role</span> = <span class="t">Role</span>.USER
-    content: <span class="t">List</span>[<span class="t">ContentBlock</span>] = field(default_factory=<span class="t">list</span>)
-    stop_reason: <span class="t">Optional</span>[<span class="t">str</span>] = <span class="n">None</span>
-    usage: <span class="t">Optional</span>[<span class="t">Usage</span>] = <span class="n">None</span>
-    provider: <span class="t">str</span> = <span class="s">""</span>
-    model: <span class="t">str</span> = <span class="s">""</span>
-
-<span class="k">class</span> <span class="t">MessageFormatter</span>(<span class="t">ABC</span>):
-    <span class="k">@abstractmethod</span>
-    <span class="k">def</span> <span class="f">format_messages</span>(<span class="p">self</span>, messages, params) -> <span class="t">Dict</span>: ...
-    <span class="k">@abstractmethod</span>
-    <span class="k">def</span> <span class="f">parse_response</span>(<span class="p">self</span>, raw_response) -> <span class="t">Message</span>: ...
-</pre>
-  </div>
-
-  <h3>Agent &amp; Provider ABCs</h3>
-  <p>
-    The <code>Agent</code> ABC defines the external contract: <code>run()</code> and
-    <code>resume_run_with_tool_results()</code>. All orchestration logic lives in concrete
-    subclasses under <code>providers/</code>.
-  </p>
-  <p>
-    The <code>Provider</code> ABC abstracts the raw LLM API call — authentication, retry,
-    streaming. The Agent calls <code>self.provider.generate()</code>; it never imports a
-    provider SDK directly.
-  </p>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">core/agent.py + core/provider.py</span>
-      <span class="tag tag-abc">ABC</span>
-    </div>
-<pre>
-<span class="k">class</span> <span class="t">Agent</span>(<span class="t">ABC</span>):
-    <span class="k">@abstractmethod</span>
-    <span class="k">async def</span> <span class="f">run</span>(<span class="p">self</span>, prompt: <span class="t">str</span> | <span class="t">Message</span>) -> <span class="t">AgentResult</span>: ...
-    <span class="k">@abstractmethod</span>
-    <span class="k">async def</span> <span class="f">resume_run_with_tool_results</span>(<span class="p">self</span>, results) -> <span class="t">AgentResult</span>: ...
-
-<span class="k">class</span> <span class="t">Provider</span>(<span class="t">ABC</span>):
-    <span class="k">@abstractmethod</span>
-    <span class="k">async def</span> <span class="f">generate</span>(<span class="p">self</span>, system_prompt, messages, tool_schemas,
-                       llm_config, model, max_retries, ...) -> <span class="t">Message</span>: ...
-    <span class="k">@abstractmethod</span>
-    <span class="k">async def</span> <span class="f">generate_stream</span>(<span class="p">self</span>, ..., queue, stream_formatter) -> <span class="t">Message</span>: ...
-</pre>
-  </div>
-
-  <div class="thought blue">
-    <span class="label">Separation</span>
-    <strong>Agent</strong> owns orchestration (step counting, tool dispatch, compaction).
-    <strong>Provider</strong> owns transport (HTTP, retry, streaming, response parsing).
-    <strong>MessageFormatter</strong> owns translation (canonical ↔ wire format).
-    Three concerns, three classes.
-  </div>
-</section>
-
-<!-- ━━━━━━━━━━ CHAPTER 5: TOOL SYSTEM ━━━━━━━━━━ -->
-<section class="entry" id="ch5">
-  <div class="entry-tag"><span class="num">05</span> Tools</div>
-  <h2>The Tool System — Envelopes &amp; Registry</h2>
-
-  <p>
-    The tool system splits cleanly into two modules: <span class="badge badge-purple">tools/</span>
-    is infrastructure (registry, decorator, envelope ABC) and <span class="badge badge-amber">common_tools/</span>
-    is application code (concrete tool implementations).
-  </p>
-
-  <h3>The ToolResultEnvelope Pattern</h3>
-  <p>
-    The central insight: tool result shapes vary <em>by tool type</em> (code exec returns
-    stdout+files, sub-agent returns a nested conversation, web search returns citations).
-    This is a fundamentally different axis of variation from content blocks, which vary by
-    LLM provider.
-  </p>
-  <p>
-    The <code>ToolResultEnvelope</code> isolates the tool-type axis. Its two projection methods
-    isolate the consumer-type axis.
-  </p>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">tools/types.py</span>
-      <span class="tag tag-abc">ABC</span>
-    </div>
-<pre>
-<span class="k">@dataclass</span>
-<span class="k">class</span> <span class="t">ToolResultEnvelope</span>(<span class="t">ABC</span>):
-    tool_name: <span class="t">str</span> = <span class="s">""</span>
-    tool_id: <span class="t">str</span> = <span class="s">""</span>
-    is_error: <span class="t">bool</span> = <span class="n">False</span>
-    error_message: <span class="t">str</span> | <span class="n">None</span> = <span class="n">None</span>
-    duration_ms: <span class="t">float</span> | <span class="n">None</span> = <span class="n">None</span>
-
-    <span class="k">@abstractmethod</span>
-    <span class="k">def</span> <span class="f">for_context_window</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">ContentBlock</span>]:
-<span class="hl">        <span class="s">"""Minimal projection for the LLM's next turn."""</span></span>
-        ...
-
-    <span class="k">@abstractmethod</span>
-    <span class="k">def</span> <span class="f">for_conversation_log</span>(<span class="p">self</span>) -> <span class="t">dict</span>[<span class="t">str</span>, <span class="t">Any</span>]:
-<span class="hl">        <span class="s">"""Rich projection for UI display / conversation history."""</span></span>
-        ...
-</pre>
-  </div>
-
-  <h3>How It Wires Into the Loop</h3>
-  <p>
-    The agent loop is polymorphic over envelope types — no <code>if/elif</code> chains.
-    Adding a new tool means defining one envelope subclass. Zero changes outside the tool's file.
-  </p>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">Agent loop — tool handling</span>
-      <span class="tag tag-loop">Loop</span>
-    </div>
-<pre>
-<span class="c"># In the agent's tool handling path:</span>
-envelope: <span class="t">ToolResultEnvelope</span> = <span class="k">await</span> self.tool_registry.execute(tool_name, tool_input)
-
-<span class="c"># Projection 1 → LLM context window</span>
-<span class="hl">context_blocks = envelope.<span class="f">for_context_window</span>()</span>
-result_block = <span class="t">ToolResultContent</span>(
-    tool_id=envelope.tool_id,
-    tool_name=envelope.tool_name,
-    tool_result=context_blocks,
-    is_error=envelope.is_error,
-)
-self.agent_config.messages.append(<span class="t">Message</span>.user([result_block]))
-
-<span class="c"># Projection 2 → Conversation log / UI</span>
-<span class="hl">log_entry = envelope.<span class="f">for_conversation_log</span>()</span>
-self.conversation.append_tool_result(log_entry)
-</pre>
-  </div>
-
-  <div class="thought emerald">
-    <span class="label">Auto-Wrapping</span>
-    Tools that return plain <code>str</code> or legacy <code>ToolResult</code> objects are
-    automatically wrapped in <code>GenericTextEnvelope</code> / <code>LegacyMediaEnvelope</code>.
-    No existing tool breaks during migration.
-  </div>
-
-  <h3>ToolRegistry</h3>
-  <p>
-    The registry handles registration, dispatch, schema export, and sandbox injection:
-  </p>
-  <ul>
-    <li><code>register()</code> / <code>register_tools()</code> — single or batch registration</li>
-    <li><code>execute()</code> → <code>ToolResultEnvelope</code> — async dispatch with auto-wrapping</li>
-    <li><code>execute_tools()</code> — bounded parallel via <code>asyncio.Semaphore</code></li>
-    <li><code>get_schemas(format="anthropic"|"openai")</code> — provider-specific schema export</li>
-    <li><code>attach_sandbox(sandbox)</code> — inject sandbox into all registered tools</li>
-    <li><code>check_for_relay()</code> — identify frontend/relay tool calls</li>
-  </ul>
-</section>
-
-<!-- ━━━━━━━━━━ CHAPTER 6: SANDBOX ━━━━━━━━━━ -->
-<section class="entry" id="ch6">
-  <div class="entry-tag"><span class="num">06</span> Isolation</div>
-  <h2>Sandbox Isolation</h2>
-
-  <p>
-    The <code>Sandbox</code> abstracts all tool interactions with "the outside world" into
-    four verbs: <strong>read a file</strong>, <strong>write a file</strong>,
-    <strong>list a directory</strong>, <strong>run a command</strong>.
-  </p>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">sandbox/types.py</span>
-      <span class="tag tag-abc">ABC</span>
-    </div>
-<pre>
-<span class="k">class</span> <span class="t">Sandbox</span>(<span class="t">ABC</span>):
-    <span class="c"># Lifecycle — async context manager</span>
-    <span class="k">async def</span> <span class="f">setup</span>(<span class="p">self</span>) -> <span class="n">None</span>: ...
-    <span class="k">async def</span> <span class="f">teardown</span>(<span class="p">self</span>) -> <span class="n">None</span>: ...
-
-    <span class="c"># Filesystem (all paths are relative)</span>
-    <span class="k">async def</span> <span class="f">read_file</span>(<span class="p">self</span>, path: <span class="t">str</span>) -> <span class="t">str</span>: ...
-    <span class="k">async def</span> <span class="f">write_file</span>(<span class="p">self</span>, path: <span class="t">str</span>, content: <span class="t">str</span>) -> <span class="n">None</span>: ...
-    <span class="k">async def</span> <span class="f">read_file_bytes</span>(<span class="p">self</span>, path: <span class="t">str</span>) -> <span class="t">bytes</span>: ...
-    <span class="k">async def</span> <span class="f">list_dir</span>(<span class="p">self</span>, path: <span class="t">str</span> = <span class="s">"."</span>) -> <span class="t">list</span>[<span class="t">str</span>]: ...
-    <span class="k">async def</span> <span class="f">file_exists</span>(<span class="p">self</span>, path: <span class="t">str</span>) -> <span class="t">bool</span>: ...
-    <span class="k">async def</span> <span class="f">delete</span>(<span class="p">self</span>, path: <span class="t">str</span>) -> <span class="n">None</span>: ...
-
-    <span class="c"># Execution</span>
-    <span class="k">async def</span> <span class="f">exec</span>(<span class="p">self</span>, command: <span class="t">str</span>, timeout, cwd, env) -> <span class="t">ExecResult</span>: ...
-    <span class="k">async def</span> <span class="f">exec_stream</span>(<span class="p">self</span>, command: <span class="t">str</span>, ...) -> <span class="t">AsyncIterator</span>[<span class="t">str</span>]: ...
-</pre>
-  </div>
-
-  <h3>Three Isolation Levels</h3>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>Level</th><th>Implementation</th><th>Setup</th><th>Filesystem</th><th>Execution</th><th>Boundary</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><span class="badge badge-emerald">1</span></td>
-          <td><code>LocalSandbox</code></td>
-          <td>~1ms</td>
-          <td>Path-restricted host dir</td>
-          <td><code>subprocess</code></td>
-          <td>Path containment</td>
-        </tr>
-        <tr>
-          <td><span class="badge badge-purple">2</span></td>
-          <td><code>DockerSandbox</code></td>
-          <td>2–5s</td>
-          <td>Bind-mounted host dir</td>
-          <td><code>docker exec</code></td>
-          <td>Process + FS isolation</td>
-        </tr>
-        <tr>
-          <td><span class="badge badge-crimson">3</span></td>
-          <td><code>E2BSandbox</code></td>
-          <td>5–15s</td>
-          <td>Remote VM filesystem</td>
-          <td>Remote execution</td>
-          <td>Full VM isolation</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="thought amber">
-    <span class="label">Bind-Mount Asymmetry (Level 2)</span>
-    In <code>DockerSandbox</code>, file operations go through a bind-mount (local disk speed),
-    but command execution goes through <code>docker exec</code> (isolated). Best of both worlds:
-    fast file I/O and isolated execution.
-  </div>
-
-  <h3>The SandboxFileBridge</h3>
-  <p>
-    The bridge connects two worlds — <em>working files</em> (transient, inside the sandbox)
-    and <em>persisted files</em> (durable, in the media backend):
-  </p>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">sandbox/bridge.py</span>
-      <span class="tag tag-impl">Bridge</span>
-    </div>
-<pre>
-<span class="k">class</span> <span class="t">SandboxFileBridge</span>:
-    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>, media_backend: <span class="t">MediaBackend</span>, cache: <span class="t">LocalFileCache</span> | <span class="n">None</span>): ...
-
-    <span class="k">async def</span> <span class="f">materialize_into_sandbox</span>(<span class="p">self</span>, file_id, sandbox, sandbox_path):
-        <span class="s">"""Download from media backend → write into sandbox workspace."""</span>
-
-    <span class="k">async def</span> <span class="f">persist_from_sandbox</span>(<span class="p">self</span>, sandbox, sandbox_path, agent_uuid) -> <span class="t">MediaMetadata</span>:
-        <span class="s">"""Read from sandbox workspace → store in media backend."""</span>
-</pre>
-  </div>
-
-  <div class="thought teal">
-    <span class="label">Key Design Decision</span>
-    <strong>Relative paths only.</strong> The LLM generates paths like <code>src/main.py</code>.
-    The sandbox resolves them internally. No consumer ever sees the real filesystem location.
-    This is what makes sandbox levels swappable without touching tool code.
-  </div>
-</section>
-
-<!-- ━━━━━━━━━━ CHAPTER 7: MEDIA BACKEND ━━━━━━━━━━ -->
-<section class="entry" id="ch7">
-  <div class="entry-tag"><span class="num">07</span> Media</div>
-  <h2>Media Backend — Storage Meets Resolution</h2>
-
-  <p>
-    The media backend is the <strong>combined</strong> storage + resolution system, replacing
-    the old <code>file_backends/</code> module. It handles storing bytes <em>and</em> projecting
-    <code>media_id</code> references into the format each consumer needs.
-  </p>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">media_backend/base.py</span>
-      <span class="tag tag-abc">ABC</span>
-    </div>
-<pre>
-<span class="k">class</span> <span class="t">MediaBackend</span>(<span class="t">ABC</span>):
-    <span class="c"># Storage</span>
-    <span class="k">async def</span> <span class="f">store</span>(<span class="p">self</span>, content: <span class="t">bytes</span> | <span class="t">AsyncByteStream</span>,
-                    filename, mime_type, agent_uuid) -> <span class="t">MediaMetadata</span>: ...
-    <span class="k">async def</span> <span class="f">retrieve</span>(<span class="p">self</span>, media_id, agent_uuid) -> <span class="t">bytes</span> | <span class="n">None</span>: ...
-    <span class="k">async def</span> <span class="f">retrieve_stream</span>(<span class="p">self</span>, media_id, agent_uuid) -> <span class="t">AsyncIterator</span>[<span class="t">bytes</span>]: ...
-    <span class="k">async def</span> <span class="f">delete</span>(<span class="p">self</span>, media_id, agent_uuid) -> <span class="t">bool</span>: ...
-
-    <span class="c"># Resolution (projections for different consumers)</span>
-<span class="hl">    <span class="k">async def</span> <span class="f">to_base64</span>(<span class="p">self</span>, media_id, agent_uuid) -> <span class="t">dict</span>: ...  <span class="c"># → LLM</span></span>
-<span class="hl">    <span class="k">async def</span> <span class="f">to_url</span>(<span class="p">self</span>, media_id, agent_uuid) -> <span class="t">str</span>: ...     <span class="c"># → Frontend</span></span>
-<span class="hl">    <span class="k">async def</span> <span class="f">to_reference</span>(<span class="p">self</span>, media_id, agent_uuid) -> <span class="t">dict</span>: ... <span class="c"># → Log</span></span>
-
-    <span class="c"># Sandbox integration</span>
-    <span class="k">def</span> <span class="f">attach_sandbox</span>(<span class="p">self</span>, sandbox: <span class="t">Sandbox</span>) -> <span class="n">None</span>: ...
-</pre>
-  </div>
-
-  <h3>Lazy Resolution in Content Blocks</h3>
-  <p>
-    Media content blocks store <code>media_id</code> references, <em>not</em> inline data.
-    Resolution happens at the consumer boundary:
-  </p>
-  <ul>
-    <li><strong>LLM call:</strong> <code>MessageFormatter.format_messages()</code> calls <code>media_backend.to_base64()</code></li>
-    <li><strong>Frontend SSE:</strong> Streaming formatter calls <code>media_backend.to_url()</code></li>
-    <li><strong>Persistence:</strong> <code>to_dict()</code> serializes just the <code>media_id</code></li>
-  </ul>
-
-  <div class="thought">
-    <span class="label">Why Combined?</span>
-    <code>to_url()</code> lives on the backend because URL shape is tied to storage type:
-    local returns <code>/api/files/{id}</code>, S3 returns a presigned URL, GCS returns a
-    signed URL. Splitting storage and resolution would force them to share internal state.
-  </div>
-
-  <h3>MediaMetadata</h3>
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">media_backend/types.py</span>
-      <span class="tag tag-type">Dataclass</span>
-    </div>
-<pre>
-<span class="k">@dataclass</span>
-<span class="k">class</span> <span class="t">MediaMetadata</span>:
-    media_id: <span class="t">str</span>                    <span class="c"># Stable identity ("media_{uuid4().hex[:16]}")</span>
-    media_mime_type: <span class="t">str</span>             <span class="c"># "image/png", "application/pdf"</span>
-    media_filename: <span class="t">str</span>              <span class="c"># Original filename</span>
-    media_extension: <span class="t">str</span>             <span class="c"># "png", "pdf"</span>
-    media_size: <span class="t">int</span>                  <span class="c"># Size in bytes</span>
-    storage_type: <span class="t">str</span>               <span class="c"># "local", "s3", "memory"</span>
-    storage_location: <span class="t">str</span>            <span class="c"># Physical location (path, S3 key)</span>
-    extras: <span class="t">dict</span>[<span class="t">str</span>, <span class="t">Any</span>] = field(default_factory=<span class="t">dict</span>)
-</pre>
-  </div>
-
-  <h3>LocalFileCache</h3>
-  <p>
-    A read-through + write-back cache between tools and the media backend. Not a storage
-    backend itself — a performance layer. Features <strong>double-checked locking</strong>
-    to prevent duplicate downloads and <strong>LRU eviction</strong> for space management.
-  </p>
-</section>
-
-<!-- ━━━━━━━━━━ CHAPTER 8: COMPACTION & MEMORY ━━━━━━━━━━ -->
-<section class="entry" id="ch8">
-  <div class="entry-tag"><span class="num">08</span> Context Management</div>
-  <h2>Compaction &amp; Memory — Two Time Scales</h2>
-
-  <p>
-    These two systems serve different time horizons and <strong>never interact</strong>.
-  </p>
-
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th></th><th>Compactor</th><th>MemoryStore</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong>Scope</strong></td>
-          <td>Within-session context window</td>
-          <td>Across-session knowledge</td>
-        </tr>
-        <tr>
-          <td><strong>Frequency</strong></td>
-          <td>Every step of the agent loop</td>
-          <td>Once at run start + once at run end</td>
-        </tr>
-        <tr>
-          <td><strong>Input</strong></td>
-          <td><code>AgentConfig</code> (full message list)</td>
-          <td><code>Message</code> list + conversation history</td>
-        </tr>
-        <tr>
-          <td><strong>Output</strong></td>
-          <td><code>(bool, list[Message])</code></td>
-          <td><code>list[ContentBlock]</code> (retrieve) / <code>dict</code> (update)</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <h3>Compaction Strategies</h3>
-
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>Strategy</th><th>Approach</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><code>NoOpCompactor</code></td>
-          <td>Pass-through, no compaction</td>
-        </tr>
-        <tr>
-          <td><code>SlidingWindowCompactor</code></td>
-          <td><strong>Default.</strong> 4-phase progressive: remove thinking → truncate tool results → placeholder old results → remove old turns</td>
-        </tr>
-        <tr>
-          <td><code>ToolResultRemovalCompactor</code></td>
-          <td>2-phase: replace old tool results → remove old turns</td>
-        </tr>
-        <tr>
-          <td><code>SummarizingCompactor</code></td>
-          <td>LLM-based summarization of older history</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">compaction/base.py + memory/base.py</span>
-      <span class="tag tag-abc">ABC</span>
-    </div>
-<pre>
-<span class="k">class</span> <span class="t">Compactor</span>(<span class="t">ABC</span>):
-    <span class="k">@abstractmethod</span>
-    <span class="k">async def</span> <span class="f">apply_compaction</span>(<span class="p">self</span>, agent_config: <span class="t">AgentConfig</span>)
-        -> <span class="t">tuple</span>[<span class="t">bool</span>, <span class="t">list</span>[<span class="t">Message</span>]]: ...
-
-<span class="k">class</span> <span class="t">MemoryStore</span>(<span class="t">ABC</span>):
-    <span class="k">@abstractmethod</span>
-    <span class="k">async def</span> <span class="f">retrieve</span>(<span class="p">self</span>, user_message, messages) -> <span class="t">list</span>[<span class="t">ContentBlock</span>]: ...
-    <span class="k">@abstractmethod</span>
-    <span class="k">async def</span> <span class="f">update</span>(<span class="p">self</span>, messages, conversation_history) -> <span class="t">dict</span>: ...
-</pre>
-  </div>
-</section>
-
-<!-- ━━━━━━━━━━ CHAPTER 9: STORAGE ━━━━━━━━━━ -->
-<section class="entry" id="ch9">
-  <div class="entry-tag"><span class="num">09</span> Persistence</div>
-  <h2>Storage Adapters — Three Independent Axes</h2>
-
-  <p>
-    The three-adapter pattern is carried over from <code>anthropic_agent</code> largely as-is.
-    Each adapter is independently swappable — you can run config in Postgres, conversations
-    on the filesystem, and run logs in memory.
-  </p>
-
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>Adapter</th><th>Entity</th><th>Purpose</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><code>AgentConfigAdapter</code></td>
-          <td><code>AgentConfig</code></td>
-          <td>Session state — messages, model, relay state</td>
-        </tr>
-        <tr>
-          <td><code>ConversationAdapter</code></td>
-          <td><code>Conversation</code></td>
-          <td>Per-run records for UI history / pagination</td>
-        </tr>
-        <tr>
-          <td><code>AgentRunAdapter</code></td>
-          <td><code>AgentRunLog</code></td>
-          <td>Step-by-step execution logs for debugging</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <p>
-    Backends: <span class="badge badge-emerald">memory</span> (default),
-    <span class="badge badge-blue">filesystem</span>,
-    <span class="badge badge-purple">postgres</span>.
-    Factory: <code>create_adapters(backend_type, **kwargs)</code>.
-  </p>
-</section>
-
-<!-- ━━━━━━━━━━ CHAPTER 10: PROVIDERS ━━━━━━━━━━ -->
-<section class="entry" id="ch10">
-  <div class="entry-tag"><span class="num">10</span> Providers</div>
-  <h2>Provider Implementations</h2>
-
-  <p>
-    Each provider directory contains exactly four files — each owning one concern:
-  </p>
-
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>File</th><th>Class</th><th>Responsibility</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><code>agent.py</code></td>
-          <td><code>AnthropicAgent</code></td>
-          <td>Orchestration loop — step counting, tool dispatch, compaction, streaming</td>
-        </tr>
-        <tr>
-          <td><code>provider.py</code></td>
-          <td><code>AnthropicProvider</code></td>
-          <td>LLM API call — SDK client, retry, streaming accumulation</td>
-        </tr>
-        <tr>
-          <td><code>formatter.py</code></td>
-          <td><code>AnthropicMessageFormatter</code></td>
-          <td>Wire format translation — canonical ↔ Anthropic API, media resolution</td>
-        </tr>
-        <tr>
-          <td><code>config.py</code></td>
-          <td><code>AnthropicLLMConfig</code></td>
-          <td>Provider-specific params — thinking_tokens, beta_headers, container_id</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">providers/anthropic/agent.py</span>
-      <span class="tag tag-impl">Concrete</span>
-    </div>
-<pre>
-<span class="k">class</span> <span class="t">AnthropicAgent</span>(<span class="t">Agent</span>):
-    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>,
-        system_prompt, model,
-        compactor: <span class="t">Compactor</span> | <span class="n">None</span> = <span class="n">None</span>,
-        memory_store: <span class="t">MemoryStore</span> | <span class="n">None</span> = <span class="n">None</span>,
-        sandbox: <span class="t">Sandbox</span> | <span class="n">None</span> = <span class="n">None</span>,
-        media_backend: <span class="t">MediaBackend</span> | <span class="n">None</span> = <span class="n">None</span>,
-        ...
-    ):
-        self.media_backend = media_backend <span class="k">or</span> <span class="t">LocalMediaBackend</span>()
-        self.compactor = compactor <span class="k">or</span> <span class="t">SlidingWindowCompactor</span>()
-        self.memory_store = memory_store <span class="k">or</span> <span class="t">MemoryStore</span>()
-        self.sandbox = sandbox <span class="k">or</span> <span class="t">Sandbox</span>()
-        self.message_formatter = <span class="t">AnthropicMessageFormatter</span>()
-        self.provider = <span class="t">AnthropicProvider</span>()
-</pre>
-  </div>
-
-  <h3>What Lives Where</h3>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>Concern</th><th>Owner</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>Agentic loop (step counting, dispatch, compaction)</td><td><span class="badge badge-crimson">Provider's Agent</span></td></tr>
-        <tr><td>LLM API call (auth, retry, streaming)</td><td><span class="badge badge-crimson">Provider's Provider</span></td></tr>
-        <tr><td>Wire format translation</td><td><span class="badge badge-crimson">Provider's Formatter</span></td></tr>
-        <tr><td>Tool execution &amp; enveloping</td><td><span class="badge badge-purple">Framework (tools/)</span></td></tr>
-        <tr><td>Sandbox lifecycle</td><td><span class="badge badge-purple">Framework (sandbox/)</span></td></tr>
-        <tr><td>Compaction</td><td><span class="badge badge-purple">Framework (compaction/)</span></td></tr>
-        <tr><td>Memory stores</td><td><span class="badge badge-purple">Framework (memory/)</span></td></tr>
-        <tr><td>Storage adapters</td><td><span class="badge badge-purple">Framework (storage/)</span></td></tr>
-        <tr><td>Stream delta types</td><td><span class="badge badge-purple">Framework (core/)</span></td></tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<!-- ━━━━━━━━━━ CHAPTER 11: COMPOSITION & WIRING ━━━━━━━━━━ -->
-<section class="entry" id="ch11">
-  <div class="entry-tag"><span class="num">11</span> Assembly</div>
-  <h2>Composition &amp; Wiring</h2>
-
-  <h3>Agent Construction</h3>
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">example — wiring an agent</span>
-      <span class="tag tag-comp">Composition</span>
-    </div>
-<pre>
-agent = <span class="t">AnthropicAgent</span>(
-    system_prompt=<span class="s">"You are a helpful assistant."</span>,
-    model=<span class="s">"claude-sonnet-4-5"</span>,
-    config=<span class="t">AnthropicLLMConfig</span>(thinking_tokens=<span class="n">10000</span>),
-
-    tools=[my_tool_a, my_tool_b],
-    subagents={<span class="s">"research"</span>: research_agent},
-
-    sandbox=<span class="t">DockerSandbox</span>(image=<span class="s">"python:3.12-slim"</span>),
-    media_backend=<span class="t">S3MediaBackend</span>(bucket=<span class="s">"my-bucket"</span>),
-    compactor=<span class="t">SlidingWindowCompactor</span>(),
-    memory_store=<span class="t">NoOpMemoryStore</span>(),
-
-    config_adapter=<span class="t">PostgresAgentConfigAdapter</span>(db_url),
-    conversation_adapter=<span class="t">PostgresConversationAdapter</span>(db_url),
-    run_adapter=<span class="t">PostgresAgentRunAdapter</span>(db_url),
-)
-</pre>
-  </div>
-
-  <h3>The Run Loop</h3>
-  <div class="diagram">
-<pre>
-await agent.run(prompt)
-  │
-  ├── initialize() if needed
-  ├── memory_store.retrieve() → inject context
-  ├── append prompt to messages + conversation
-  │
-  └── _resume_loop():
-       while step &lt; max_steps:
-       │
-       ├── compactor.apply_compaction(agent_config)
-       │
-       ├── provider.generate[_stream](         ← Provider handles:
-       │     messages, tool_schemas,              formatter.format_messages()
-       │     llm_config, model, ...               SDK API call + retry
-       │   ) → Message                            formatter.parse_response()
-       │
-       ├── append assistant message
-       │
-       └── match stop_reason:
-            │
-            ├── "pause_turn" → continue
-            │
-            ├── "tool_use":
-            │    envelopes = tool_registry.execute_tools(tool_calls)
-            │    for envelope:
-            │      .for_context_window() → agent_config.messages
-            │      .for_conversation_log() → conversation
-            │    continue
-            │
-            └── "end_turn":
-                 memory_store.update()
-                 build AgentResult → return</pre>
-    <div class="caption">The agentic loop — from prompt to result</div>
-  </div>
-
-  <h3>Dependency Graph</h3>
   <div class="diagram">
 <pre>
                     ┌───────────────────┐
@@ -1578,13 +866,16 @@ await agent.run(prompt)
     └─────┬─────┘    └──────┬──────┘    └─────────────┘
           │                 │
     ┌─────▼──────┐   ┌──────▼──────┐
-    │ Formatter  │   │   Sandbox   │◄──────────────────┐
-    │(wire fmt)  │   │ (isolation) │                   │
-    └─────┬──────┘   └──────┬──────┘          ┌────────┴────────┐
-          │                 │                 │SandboxFileBridge │
-          │          ┌──────▼──────┐          └────────┬────────┘
-          └─────────►│MediaBackend │◄──────────────────┘
-                     │(store+resolve)
+    │ Formatter  │   │   Sandbox   │
+    │(wire fmt)  │   │ (isolation) │
+    └─────┬──────┘   └──────┬──────┘
+          │                 ^
+          │                 │ attach_sandbox()
+          └─────────►┌──────┴──────┐
+                     │MediaBackend │
+                     │(store+resolve+
+                     │ materialize+
+                     │ flush_exports)
                      └──────┬──────┘
                             │
                      ┌──────▼──────┐
@@ -1605,20 +896,20 @@ await agent.run(prompt)
   </div>
 </section>
 
-<!-- ━━━━━━━━━━ CHAPTER 12: AXES OF CHANGE ━━━━━━━━━━ -->
-<section class="entry" id="ch12">
-  <div class="entry-tag"><span class="num">12</span> Extensibility</div>
+<!-- ━━━━━━━━━━ AXES OF CHANGE ━━━━━━━━━━ -->
+<section class="section">
+  <div class="section-tag">Extensibility</div>
   <h2>Axes of Change</h2>
 
   <p>
     Each axis of change is isolated so that modifications along one axis require changes
-    in <strong>one place only</strong>. This is the payoff of the entire architecture.
+    in <strong>one place only</strong>.
   </p>
 
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Axis</th><th>What Changes</th><th>Where It Lives</th><th>Adding a New One Touches</th></tr>
+        <tr><th>Axis</th><th>What Changes</th><th>Where It Lives</th><th>Adding One Touches</th></tr>
       </thead>
       <tbody>
         <tr>
@@ -1658,12 +949,6 @@ await agent.run(prompt)
           <td>1 file</td>
         </tr>
         <tr>
-          <td><strong>Stream Transport</strong></td>
-          <td>SSE format, chunking</td>
-          <td>Stream formatter module</td>
-          <td>1 file</td>
-        </tr>
-        <tr>
           <td><strong>Content Block Type</strong></td>
           <td>New canonical content type</td>
           <td><code>core/types.py</code> + formatters</td>
@@ -1677,485 +962,112 @@ await agent.run(prompt)
     <span class="label">The Test</span>
     If adding a new tool requires changes to <code>core/</code>, the architecture has failed.
     If adding a new provider requires changes to <code>tools/</code>, the architecture has failed.
-    Each axis is its own island — connected by interfaces, never by implementation.
+    Each axis is its own island &mdash; connected by interfaces, never by implementation.
   </div>
-
-  <div class="sep">· · ·</div>
-
-  <h3>Migration Notes: anthropic_agent → agent_base</h3>
-
-  <h4>Carried Over As-Is</h4>
-  <ul>
-    <li>Storage three-adapter pattern</li>
-    <li>Compaction strategies (refactored into own module)</li>
-    <li>Memory store interface</li>
-    <li>Structured logging &amp; token counting heuristics</li>
-  </ul>
-
-  <h4>Refactored</h4>
-  <ul>
-    <li><code>AnthropicAgent</code> split into Agent ABC + Provider + Formatter + Agent subclass</li>
-    <li><code>file_backends/</code> merged into <code>media_backend/</code> (storage + resolution combined)</li>
-    <li><code>ToolResult</code> replaced by <code>ToolResultEnvelope</code> dual-projection pattern</li>
-    <li>Raw OS I/O in tools replaced by sandboxed I/O through <code>Sandbox</code></li>
-    <li>Provider-specific streaming replaced by framework <code>StreamDelta</code> types</li>
-  </ul>
-
-  <h4>New</h4>
-  <ul>
-    <li>Sandbox system with three isolation levels + <code>SandboxFileBridge</code></li>
-    <li><code>LocalFileCache</code> for tool I/O performance</li>
-    <li><code>Provider</code> ABC separating LLM calls from orchestration</li>
-    <li>Framework-level <code>StreamDelta</code> types</li>
-    <li><code>MediaBackend</code> with combined storage + resolution + streaming</li>
-  </ul>
 </section>
 
-<!-- ━━━━━━━━━━ CHAPTER 13: FILE LIFECYCLE MANAGEMENT ━━━━━━━━━━ -->
-<section class="entry" id="ch13">
-  <div class="entry-tag"><span class="num">13</span> File Lifecycle</div>
-  <h2>File Lifecycle Management — Zones Meet Manifest</h2>
+<!-- ━━━━━━━━━━ DIRECTORY LAYOUT ━━━━━━━━━━ -->
+<section class="section">
+  <div class="section-tag">Structure</div>
+  <h2>Directory Layout</h2>
 
-  <p>
-    Files flow through the agent system in fundamentally different patterns depending on their
-    origin, purpose, and required durability. The sandbox is an ephemeral workspace; the
-    MediaBackend is durable storage. Files cross that boundary in <strong>five distinct patterns</strong>,
-    each with different materialization, persistence, and cleanup rules.
-  </p>
+  <details>
+    <summary>Show full directory tree</summary>
+    <div class="details-content">
+      <div class="cw" style="margin: 0; border-radius: 0;">
+        <div class="ch">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <span class="fn">agent_base/</span>
+          <span class="tag tag-tree">Directory Tree</span>
+        </div>
+<pre>
+<span class="c">agent_base/</span>
+├── <span class="p">core/</span>                          <span class="c"># Provider-agnostic domain model &amp; contracts</span>
+│   ├── types.py                   <span class="c"># ContentBlock hierarchy, enums, serialization</span>
+│   ├── messages.py                <span class="c"># Message, Usage, MessageFormatter ABC</span>
+│   ├── config.py                  <span class="c"># AgentConfig, Conversation dataclasses</span>
+│   ├── agent.py                   <span class="c"># Agent ABC (run, resume_run_with_tool_results)</span>
+│   ├── provider.py                <span class="c"># Provider ABC (generate, generate_stream)</span>
+│   ├── result.py                  <span class="c"># AgentResult dataclass</span>
+│   └── streaming.py               <span class="c"># StreamDelta types for framework-level SSE</span>
+│
+├── <span class="f">tools/</span>                         <span class="c"># Tool infrastructure (registry, decorator, envelope)</span>
+│   ├── types.py                   <span class="c"># ToolResultEnvelope ABC, GenericErrorEnvelope</span>
+│   ├── registry.py                <span class="c"># ToolRegistry (register, execute, schema export)</span>
+│   ├── decorators.py              <span class="c"># @tool decorator, schema generation</span>
+│   └── base.py                    <span class="c"># ConfigurableToolBase ABC</span>
+│
+├── <span class="f">common_tools/</span>                  <span class="c"># Built-in tool implementations</span>
+│   ├── code_execution.py          <span class="c"># CodeExecutionTool + CodeExecEnvelope</span>
+│   ├── file_read.py / file_write.py
+│   ├── glob_search.py / grep_search.py
+│   ├── subagent.py                <span class="c"># SubAgentTool + SubAgentEnvelope</span>
+│   └── ...
+│
+├── <span class="n">sandbox/</span>                       <span class="c"># Sandbox infrastructure (isolation layer)</span>
+│   ├── types.py                   <span class="c"># Sandbox ABC, ExecResult</span>
+│   ├── local.py                   <span class="c"># LocalSandbox (~1ms setup)</span>
+│   ├── docker.py                  <span class="c"># DockerSandbox (2–5s setup)</span>
+│   └── e2b.py                     <span class="c"># E2BSandbox (5–15s setup)</span>
+│
+├── <span class="t">media_backend/</span>                 <span class="c"># Media storage + resolution</span>
+│   ├── types.py                   <span class="c"># MediaMetadata dataclass, MediaBackend ABC</span>
+│   ├── local.py / s3.py / memory.py
+│   └── cache.py                   <span class="c"># LocalFileCache (read-through + write-back)</span>
+│
+├── <span class="r">compaction/</span>                    <span class="c"># Context window management</span>
+│   ├── base.py                    <span class="c"># Compactor ABC</span>
+│   ├── sliding_window.py          <span class="c"># SlidingWindowCompactor (default)</span>
+│   ├── summarizing.py             <span class="c"># SummarizingCompactor (LLM-based)</span>
+│   └── tool_result_removal.py / noop.py
+│
+├── <span class="s">memory/</span>                        <span class="c"># Cross-session memory stores</span>
+│   ├── base.py                    <span class="c"># MemoryStore ABC (retrieve, update)</span>
+│   └── noop.py
+│
+├── <span class="k">storage/</span>                       <span class="c"># Persistence (three-adapter pattern)</span>
+│   ├── base.py                    <span class="c"># ABCs: AgentConfigAdapter, ConversationAdapter, AgentRunAdapter</span>
+│   ├── adapters/                  <span class="c"># memory.py, filesystem.py, postgres.py</span>
+│   └── factory.py                 <span class="c"># create_adapters(backend_type, **kwargs)</span>
+│
+├── <span class="p">providers/</span>                     <span class="c"># Concrete provider implementations</span>
+│   ├── anthropic/                 <span class="c"># agent.py, provider.py, formatter.py, config.py</span>
+│   ├── openai/                    <span class="c"># (future)</span>
+│   └── litellm/                   <span class="c"># (future)</span>
+│
+└── <span class="c">developer-diaries/             # Design discussion records</span>
+</pre>
+      </div>
+    </div>
+  </details>
+</section>
 
-  <h3>The Problem: Five Categories, One Sandbox</h3>
+<!-- ━━━━━━━━━━ MIGRATION NOTES ━━━━━━━━━━ -->
+<section class="section">
+  <div class="section-tag">Migration</div>
+  <h2>anthropic_agent &rarr; agent_base</h2>
 
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>#</th><th>Category</th><th>Origin</th><th>Direction</th><th>Durability</th><th>Sandbox?</th></tr>
+        <tr><th>Category</th><th>Details</th></tr>
       </thead>
       <tbody>
         <tr>
-          <td><span class="badge badge-purple">1</span></td>
-          <td><strong>User uploads</strong></td>
-          <td>Frontend / API</td>
-          <td>MediaBackend &rarr; Sandbox</td>
-          <td>Permanent</td>
-          <td>Materialized on demand</td>
+          <td><strong>Carried over</strong></td>
+          <td>Storage three-adapter pattern, compaction strategies, memory store interface, structured logging, token counting</td>
         </tr>
         <tr>
-          <td><span class="badge badge-blue">2</span></td>
-          <td><strong>Provider server files</strong></td>
-          <td>Provider API</td>
-          <td>External &rarr; MediaBackend (ref)</td>
-          <td>Permanent (metadata)</td>
-          <td><strong>Not</strong> materialized</td>
+          <td><strong>Refactored</strong></td>
+          <td><code>AnthropicAgent</code> split into Agent ABC + Provider + Formatter; <code>file_backends/</code> merged into <code>media_backend/</code>; <code>ToolResult</code> replaced by <code>ToolResultEnvelope</code>; raw OS I/O replaced by sandboxed I/O</td>
         </tr>
         <tr>
-          <td><span class="badge badge-emerald">3</span></td>
-          <td><strong>Exportable artifacts</strong></td>
-          <td>Tools in sandbox</td>
-          <td>Sandbox &rarr; MediaBackend</td>
-          <td>Permanent</td>
-          <td>Created in sandbox, cloned out</td>
-        </tr>
-        <tr>
-          <td><span class="badge badge-amber">4</span></td>
-          <td><strong>Session workspace</strong></td>
-          <td>Tools in sandbox</td>
-          <td>N/A</td>
-          <td>Session-scoped</td>
-          <td>Full residence</td>
-        </tr>
-        <tr>
-          <td><span class="badge badge-crimson">5</span></td>
-          <td><strong>Ephemeral output</strong></td>
-          <td>Tools in sandbox</td>
-          <td>None</td>
-          <td>Transient</td>
-          <td>Sandbox-only</td>
+          <td><strong>New</strong></td>
+          <td>Sandbox system (3 isolation levels + file coordination), <code>MediaBackend</code> (storage + resolution + orchestration), <code>Provider</code> ABC, framework-level <code>StreamDelta</code> types, three-zone sandbox layout</td>
         </tr>
       </tbody>
     </table>
   </div>
-
-  <div class="thought">
-    <span class="label">Core Tension</span>
-    The sandbox and MediaBackend have different lifetimes. User uploads must outlive the sandbox.
-    Exportable artifacts must be cloned out before teardown. Provider files are never in the sandbox
-    at all. Ephemeral output should never escape the sandbox. And the workspace sits in between &mdash;
-    session-scoped but optionally archivable. <strong>Who classifies files, who decides what persists,
-    and what happens at lifecycle boundaries?</strong>
-  </div>
-
-  <h3>The Design: Hybrid Zones + Manifest</h3>
-  <p>
-    The solution combines <strong>filesystem zone conventions</strong> for the common cases with an
-    explicit <strong>FileManifest</strong> for tracking and override. Zones provide sensible defaults;
-    the manifest provides control and auditability.
-  </p>
-
-  <h4>The FileLifecycle Enum</h4>
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">file_lifecycle.py</span>
-      <span class="tag tag-type">Enum</span>
-    </div>
-<pre>
-<span class="k">class</span> <span class="t">FileLifecycle</span>(<span class="t">Enum</span>):
-    DURABLE     = <span class="s">"durable"</span>      <span class="c"># Permanent in MediaBackend. Survives sandbox teardown.</span>
-    EXPORTABLE  = <span class="s">"exportable"</span>   <span class="c"># Created in sandbox. Cloned to MediaBackend on flush.</span>
-    SESSION     = <span class="s">"session"</span>      <span class="c"># Lives in sandbox. Dies with it. Optionally archivable.</span>
-    EPHEMERAL   = <span class="s">"ephemeral"</span>    <span class="c"># Sandbox scratch. Never persisted. Never archived.</span>
-    REFERENCE   = <span class="s">"reference"</span>    <span class="c"># External provider file. Metadata only, bytes external.</span>
-</pre>
-  </div>
-
-  <h3>Sandbox Zone Layout</h3>
-  <p>
-    The sandbox filesystem has predefined zone directories. A file's <strong>location</strong> determines
-    its default lifecycle &mdash; no explicit tagging required for the common path.
-  </p>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">sandbox_root/</span>
-      <span class="tag tag-tree">Zone Layout</span>
-    </div>
-<pre>
-<span class="c">sandbox_root/</span>
-├── <span class="p">.imported/</span>              <span class="c"># Zone 1 — DURABLE (materialized from MediaBackend)</span>
-│   └── {media_id}/         <span class="c">#   Lazily populated on first tool access.</span>
-│       └── filename.ext    <span class="c">#   Read-through. Write-back if dirty.</span>
-│
-├── <span class="f">workspace/</span>              <span class="c"># Zone 2 — SESSION (LLM's working directory, default cwd)</span>
-│   └── src/...             <span class="c">#   Tools read/write freely.</span>
-│                           <span class="c">#   Archive-or-drop on teardown (configurable).</span>
-│
-├── <span class="t">.exports/</span>               <span class="c"># Zone 3 — EXPORTABLE (durable output artifacts)</span>
-│   └── report.pdf          <span class="c">#   Auto-registered in manifest as EXPORTABLE.</span>
-│                           <span class="c">#   Flushed to MediaBackend on sync/teardown.</span>
-│
-├── <span class="r">.ephemeral/</span>             <span class="c"># Zone 4 — EPHEMERAL (transient scratch space)</span>
-│   ├── logs/               <span class="c">#   NEVER persisted. NEVER archived.</span>
-│   └── code_output/        <span class="c">#   Destroyed on teardown.</span>
-│
-└── <span class="k">.refs/</span>                  <span class="c"># Zone 5 — REFERENCE (provider-file manifest)</span>
-    └── manifest.json       <span class="c">#   media_id → provider_file_id mapping.</span>
-                            <span class="c">#   No bytes materialized.</span>
-</pre>
-  </div>
-
-  <div class="thought teal">
-    <span class="label">Design Note</span>
-    <code>.</code>-prefixed zones (<code>.imported/</code>, <code>.exports/</code>, <code>.ephemeral/</code>,
-    <code>.refs/</code>) are system-managed &mdash; hidden from the LLM's natural working space. The LLM
-    works in <code>workspace/</code> (its default <code>cwd</code>) and doesn't reason about plumbing.
-    The only zone tools explicitly write to is <code>.exports/</code> &mdash; a simple convention:
-    "write here if the user should keep it."
-  </div>
-
-  <h3>Zone-to-Lifecycle Defaults</h3>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>Zone</th><th>Default Lifecycle</th><th>Override?</th><th>Notes</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><code>.imported/</code></td>
-          <td><span class="badge badge-purple">DURABLE</span></td>
-          <td>No</td>
-          <td>Always durable &mdash; these came from MediaBackend</td>
-        </tr>
-        <tr>
-          <td><code>workspace/</code></td>
-          <td><span class="badge badge-amber">SESSION</span></td>
-          <td>Yes &rarr; EXPORTABLE</td>
-          <td>Tool or agent can promote via manifest</td>
-        </tr>
-        <tr>
-          <td><code>.exports/</code></td>
-          <td><span class="badge badge-emerald">EXPORTABLE</span></td>
-          <td>No</td>
-          <td>Writing here is an explicit durability signal</td>
-        </tr>
-        <tr>
-          <td><code>.ephemeral/</code></td>
-          <td><span class="badge badge-crimson">EPHEMERAL</span></td>
-          <td>No</td>
-          <td>Never persisted, never archived</td>
-        </tr>
-        <tr>
-          <td><code>.refs/</code></td>
-          <td><span class="badge badge-blue">REFERENCE</span></td>
-          <td>No</td>
-          <td>Metadata only, bytes managed externally</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <p>
-    <strong>Conflict resolution:</strong> If a file's zone convention and manifest disagree, the
-    <strong>manifest wins</strong>. The manifest is authoritative; zones provide defaults for files
-    not yet tracked.
-  </p>
-
-  <h3>The FileManifest</h3>
-  <p>
-    The manifest is the single source of truth for all tracked files. It records each file's lifecycle
-    disposition, current location (sandbox path and/or MediaBackend metadata), origin, and sync state.
-  </p>
-
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">file_manifest.py</span>
-      <span class="tag tag-type">Dataclass</span>
-    </div>
-<pre>
-<span class="k">@dataclass</span>
-<span class="k">class</span> <span class="t">FileRecord</span>:
-    media_id: <span class="t">str</span>
-    lifecycle: <span class="t">FileLifecycle</span>
-    sandbox_path: <span class="t">str</span> | <span class="n">None</span> = <span class="n">None</span>
-    media_metadata: <span class="t">MediaMetadata</span> | <span class="n">None</span> = <span class="n">None</span>
-    provider_ref: <span class="t">str</span> | <span class="n">None</span> = <span class="n">None</span>        <span class="c"># For REFERENCE files</span>
-    source: <span class="t">str</span> = <span class="s">""</span>                       <span class="c"># "user_upload", "tool:{name}", "provider:{id}"</span>
-    dirty: <span class="t">bool</span> = <span class="n">False</span>                   <span class="c"># Modified since last sync</span>
-    created_at: <span class="t">str</span> = <span class="s">""</span>
-    last_synced_at: <span class="t">str</span> | <span class="n">None</span> = <span class="n">None</span>
-
-<span class="k">class</span> <span class="t">FileManifest</span>:
-    records: <span class="t">dict</span>[<span class="t">str</span>, <span class="t">FileRecord</span>]       <span class="c"># Keyed by media_id</span>
-
-    <span class="k">def</span> <span class="f">by_lifecycle</span>(<span class="p">self</span>, lifecycle) -> <span class="t">list</span>[<span class="t">FileRecord</span>]: ...
-    <span class="k">def</span> <span class="f">dirty_files</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">FileRecord</span>]: ...
-    <span class="k">def</span> <span class="f">exportable_files</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">FileRecord</span>]: ...
-<span class="hl">    <span class="k">def</span> <span class="f">surfaceable_files</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">FileRecord</span>]:</span>
-<span class="hl">        <span class="s">"""DURABLE + EXPORTABLE + REFERENCE — files visible to the user."""</span></span>
-
-    <span class="k">def</span> <span class="f">to_dict</span>(<span class="p">self</span>) -> <span class="t">dict</span>: ...
-    <span class="k">@classmethod</span>
-    <span class="k">def</span> <span class="f">from_dict</span>(<span class="p">cls</span>, data) -> <span class="s">"FileManifest"</span>: ...
-</pre>
-  </div>
-
-  <div class="thought amber">
-    <span class="label">Key Insight</span>
-    Only DURABLE, EXPORTABLE, and REFERENCE records are persisted in the manifest.
-    SESSION and EPHEMERAL files are <strong>not tracked</strong> &mdash; they die with the sandbox
-    and don't need recovery. This keeps the manifest small and focused on what matters.
-  </div>
-
-  <h3>How Each Category Flows</h3>
-
-  <h4>Category 1 &mdash; User Uploads (DURABLE)</h4>
-  <div class="diagram">
-<pre>
-User upload &rarr; API layer
-  &rarr; media_backend.store(bytes, filename, mime_type)
-  &rarr; MediaMetadata created, FileRecord(lifecycle=DURABLE) in manifest
-  &rarr; File NOT yet in sandbox
-  ... later, tool needs the file ...
-  &rarr; SandboxFileBridge.materialize(media_id, ".imported/{media_id}/filename")
-  &rarr; manifest.record.sandbox_path updated
-  &rarr; Tool reads/modifies via sandbox.read_file(...)
-  &rarr; If modified: manifest.record.dirty = True</pre>
-    <div class="caption">Inbound flow: MediaBackend &rarr; Sandbox (lazy materialization)</div>
-  </div>
-
-  <h4>Category 2 &mdash; Provider Server Files (REFERENCE)</h4>
-  <div class="diagram">
-<pre>
-Provider response contains file_id (e.g., Anthropic container file)
-  &rarr; media_backend.register_reference(provider_file_id, metadata)
-  &rarr; FileRecord(lifecycle=REFERENCE, provider_ref=file_id) in manifest
-  &rarr; No sandbox materialization
-  &rarr; Resolution: to_base64() calls provider API to fetch bytes
-  &rarr; Resolution: to_url() returns provider-hosted or proxied URL</pre>
-    <div class="caption">External reference: never enters the sandbox</div>
-  </div>
-
-  <h4>Category 3 &mdash; Exportable Artifacts (EXPORTABLE)</h4>
-  <div class="diagram">
-<pre>
-Tool generates user-facing output
-  &rarr; sandbox.write_file(".exports/report.csv", data)
-  &rarr; Zone convention &rarr; FileRecord(lifecycle=EXPORTABLE) auto-created
-  &rarr; At sync point: SandboxFileBridge.persist_from_sandbox(...)
-  &rarr; MediaMetadata created, stored in MediaBackend
-  &rarr; manifest record updated with media_metadata + last_synced_at</pre>
-    <div class="caption">Outbound flow: Sandbox &rarr; MediaBackend</div>
-  </div>
-
-  <h4>Category 4 &mdash; Session Workspace (SESSION)</h4>
-  <div class="diagram">
-<pre>
-Tool clones a repo, creates working files
-  &rarr; sandbox.write_file("workspace/src/main.py", code)
-  &rarr; Zone convention &rarr; SESSION lifecycle (not tracked in manifest)
-  &rarr; Files live and die with the sandbox
-  &rarr; If archiving: workspace/ tarred to MediaBackend on teardown</pre>
-    <div class="caption">Session-scoped: lives in sandbox, optionally archived</div>
-  </div>
-
-  <h4>Category 5 &mdash; Ephemeral Output (EPHEMERAL)</h4>
-  <div class="diagram">
-<pre>
-Code execution writes stdout, bash logs
-  &rarr; sandbox.write_file(".ephemeral/logs/exec_001.log", output)
-  &rarr; Zone convention &rarr; EPHEMERAL (never tracked in manifest)
-  &rarr; Destroyed on teardown. No recovery. No archive.</pre>
-    <div class="caption">Transient: never escapes the sandbox</div>
-  </div>
-
-  <h3>Teardown Protocol</h3>
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">on_teardown()</span>
-      <span class="tag tag-loop">Lifecycle</span>
-    </div>
-<pre>
-<span class="k">async def</span> <span class="f">on_teardown</span>(<span class="p">self</span>, agent_uuid, archive_workspace=<span class="n">False</span>):
-
-    <span class="c"># 1. Flush EXPORTABLE files to MediaBackend</span>
-    <span class="k">for</span> record <span class="k">in</span> self.manifest.exportable_files():
-        <span class="k">if</span> record.sandbox_path <span class="k">and</span> (<span class="k">not</span> record.media_metadata <span class="k">or</span> record.dirty):
-            content = <span class="k">await</span> self.sandbox.read_file_bytes(record.sandbox_path)
-            meta = <span class="k">await</span> self.media_backend.store(content, ...)
-            record.media_metadata = meta
-            record.dirty = <span class="n">False</span>
-
-    <span class="c"># 2. Write-back dirty DURABLE files (modified user uploads)</span>
-    <span class="k">for</span> record <span class="k">in</span> self.manifest.dirty_files():
-        <span class="k">if</span> record.lifecycle == <span class="t">FileLifecycle</span>.DURABLE:
-            content = <span class="k">await</span> self.sandbox.read_file_bytes(record.sandbox_path)
-            <span class="k">await</span> self.media_backend.update(record.media_id, content, agent_uuid)
-            record.dirty = <span class="n">False</span>
-
-<span class="hl">    <span class="c"># 3. Optionally archive workspace/ as a tarball</span></span>
-<span class="hl">    <span class="k">if</span> archive_workspace:</span>
-<span class="hl">        archive = <span class="k">await</span> self.sandbox.exec(<span class="s">"tar czf - workspace/"</span>)</span>
-<span class="hl">        <span class="k">await</span> self.media_backend.store(archive, <span class="s">"workspace.tar.gz"</span>, ...)</span>
-
-    <span class="c"># 4. Persist manifest to AgentConfig</span>
-    self.agent_config.file_manifest = self.manifest.to_dict()
-    <span class="k">await</span> self.config_adapter.save(self.agent_config)
-
-    <span class="c"># 5. Destroy sandbox filesystem</span>
-    <span class="k">await</span> self.sandbox.teardown()
-</pre>
-  </div>
-
-  <h3>Reload Protocol</h3>
-  <div class="cw">
-    <div class="ch">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">on_reload()</span>
-      <span class="tag tag-loop">Lifecycle</span>
-    </div>
-<pre>
-<span class="k">async def</span> <span class="f">on_reload</span>(<span class="p">self</span>, agent_uuid):
-
-    <span class="c"># 1. Create fresh sandbox with zone directories</span>
-    <span class="k">await</span> self.sandbox.setup()
-    <span class="k">await</span> self.sandbox.exec(<span class="s">"mkdir -p .imported .exports .ephemeral .refs workspace"</span>)
-
-    <span class="c"># 2. Load manifest from AgentConfig</span>
-    self.manifest = <span class="t">FileManifest</span>.from_dict(self.agent_config.file_manifest)
-
-<span class="hl">    <span class="c"># 3. Restore workspace from archive if available</span></span>
-<span class="hl">    archive = self.manifest.find_archive()</span>
-<span class="hl">    <span class="k">if</span> archive:</span>
-<span class="hl">        bytes = <span class="k">await</span> self.media_backend.retrieve(archive.media_id, agent_uuid)</span>
-<span class="hl">        <span class="k">await</span> self.sandbox.write_file_bytes(<span class="s">".archive.tar.gz"</span>, bytes)</span>
-<span class="hl">        <span class="k">await</span> self.sandbox.exec(<span class="s">"tar xzf .archive.tar.gz && rm .archive.tar.gz"</span>)</span>
-
-    <span class="c"># 4. Rebuild .refs/manifest.json from REFERENCE records</span>
-    refs = {r.media_id: r.provider_ref
-            <span class="k">for</span> r <span class="k">in</span> self.manifest.by_lifecycle(<span class="t">FileLifecycle</span>.REFERENCE)}
-    <span class="k">await</span> self.sandbox.write_file(<span class="s">".refs/manifest.json"</span>, json.dumps(refs))
-
-    <span class="c"># 5. .imported/ stays empty — lazy materialization on first access</span>
-    <span class="c"># 6. .exports/ stays empty — already in MediaBackend</span>
-    <span class="c"># 7. .ephemeral/ starts empty — transient by definition</span>
-</pre>
-  </div>
-
-  <div class="thought emerald">
-    <span class="label">Crash Recovery</span>
-    Relying only on teardown for persistence is fragile &mdash; a crash loses EXPORTABLE files.
-    The agent loop should <strong>sync incrementally</strong> after each tool step that produces
-    EXPORTABLE files. Cost is low (only unsynced files in <code>.exports/</code>) and ensures at
-    most one tool step's work is lost.
-  </div>
-
-  <h3>Manifest Persistence</h3>
-  <p>
-    The <code>FileManifest</code> is serialized into <code>AgentConfig.file_manifest</code> and
-    persisted via the existing <code>AgentConfigAdapter</code>. This means:
-  </p>
-  <ul>
-    <li><strong>Survives sandbox teardown</strong> &mdash; it's in durable storage.</li>
-    <li><strong>Available on reload</strong> &mdash; the agent knows what to re-materialize.</li>
-    <li><strong>Available across machines</strong> &mdash; for horizontal scaling.</li>
-  </ul>
-
-  <h3>What the User Sees</h3>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th>Lifecycle</th><th>Surfaced?</th><th>How</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><span class="badge badge-purple">DURABLE</span></td>
-          <td>Yes</td>
-          <td>User uploaded them; shown in file list</td>
-        </tr>
-        <tr>
-          <td><span class="badge badge-emerald">EXPORTABLE</span></td>
-          <td>Yes</td>
-          <td>Generated artifacts; downloadable</td>
-        </tr>
-        <tr>
-          <td><span class="badge badge-blue">REFERENCE</span></td>
-          <td>Yes</td>
-          <td>Provider-generated; shown with attribution</td>
-        </tr>
-        <tr>
-          <td><span class="badge badge-amber">SESSION</span></td>
-          <td>No</td>
-          <td>Internal workspace; not user-facing</td>
-        </tr>
-        <tr>
-          <td><span class="badge badge-crimson">EPHEMERAL</span></td>
-          <td>No</td>
-          <td>Scratch space; never visible</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-  <p>
-    <code>FileManifest.surfaceable_files()</code> returns DURABLE + EXPORTABLE + REFERENCE.
-    This populates <code>generated_files</code> on <code>AgentResult</code> and streams to the
-    frontend via <code>MetaDelta(type="meta_files")</code>.
-  </p>
-
-  <h3>Open Questions</h3>
-  <div class="thought crimson">
-    <span class="label">Under Consideration</span>
-    These decisions depend on deployment context and are intentionally left configurable:
-  </div>
-  <ul>
-    <li><strong>Sandbox lifetime policy:</strong> When should sandboxes be torn down? Options: session end, idle timeout, resource pressure, admin action.</li>
-    <li><strong>Workspace archiving:</strong> Should <code>workspace/</code> be archived on teardown? Trade-off: enables perfect resume but costs storage. Configurable via <code>SandboxConfig.archive_workspace_on_teardown</code>.</li>
-    <li><strong>Reload frequency:</strong> Single-server (rare) vs. serverless (every request). The reload protocol is idempotent and fast (lazy materialization).</li>
-    <li><strong>SESSION promotion:</strong> Can workspace files be promoted to EXPORTABLE post-creation? Current design: yes, via <code>manifest.set_lifecycle()</code>. Risk: tools forget. Mitigation: agent loop inspects envelopes for <code>generated_files</code> hints.</li>
-    <li><strong>Provider file fallback:</strong> What if the provider API is unavailable for REFERENCE resolution? Options: fail fast, cached version, placeholder.</li>
-    <li><strong>Cross-sandbox sharing (subagents):</strong> Subagent writes to <code>.exports/</code>, parent reads via <code>media_id</code> through shared MediaBackend.</li>
-  </ul>
 </section>
 
 </div><!-- .content -->
@@ -2166,75 +1078,10 @@ Code execution writes stdout, bash logs
   <div class="note">Framework Design Diary &middot; February 2026</div>
 </div>
 
-<button class="back-top" id="backTop" title="Back to top">↑</button>
-
 <!-- ━━━━━━━━━━ JAVASCRIPT ━━━━━━━━━━ -->
 <script>
 (function() {
   'use strict';
-
-  // ─── Scroll-triggered entry reveal ───
-  const entries = document.querySelectorAll('.entry');
-  const observer = new IntersectionObserver(
-    (items) => {
-      items.forEach((item, i) => {
-        if (item.isIntersecting) {
-          setTimeout(() => item.target.classList.add('vis'), i * 80);
-          observer.unobserve(item.target);
-        }
-      });
-    },
-    { threshold: 0.08, rootMargin: '0px 0px -40px 0px' }
-  );
-  entries.forEach(e => observer.observe(e));
-
-  // ─── Progress bar ───
-  const progress = document.getElementById('progress');
-  function updateProgress() {
-    const scrollTop = window.scrollY;
-    const docHeight = document.documentElement.scrollHeight - window.innerHeight;
-    const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
-    progress.style.width = pct + '%';
-  }
-
-  // ─── Back to top button ───
-  const backTop = document.getElementById('backTop');
-  function updateBackTop() {
-    if (window.scrollY > 600) {
-      backTop.classList.add('show');
-    } else {
-      backTop.classList.remove('show');
-    }
-  }
-  backTop.addEventListener('click', () => {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  });
-
-  // ─── Scroll handler (throttled) ───
-  let ticking = false;
-  window.addEventListener('scroll', () => {
-    if (!ticking) {
-      requestAnimationFrame(() => {
-        updateProgress();
-        updateBackTop();
-        ticking = false;
-      });
-      ticking = true;
-    }
-  });
-
-  // ─── Smooth scroll for TOC links ───
-  document.querySelectorAll('.toc-item').forEach(link => {
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      const target = document.querySelector(link.getAttribute('href'));
-      if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        // Trigger visibility immediately
-        setTimeout(() => target.classList.add('vis'), 100);
-      }
-    });
-  });
 
   // ─── Principle card hover tilt (subtle) ───
   document.querySelectorAll('.principle-card').forEach(card => {
@@ -2248,10 +1095,6 @@ Code execution writes stdout, bash logs
       card.style.transform = '';
     });
   });
-
-  // Initial calls
-  updateProgress();
-  updateBackTop();
 })();
 </script>
 

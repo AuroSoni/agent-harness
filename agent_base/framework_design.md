@@ -54,12 +54,10 @@ agent_base/
 │   ├── types.py                   # Sandbox ABC, ExecResult dataclass
 │   ├── local.py                   # LocalSandbox (path restriction, ~1ms setup)
 │   ├── docker.py                  # DockerSandbox (container isolation, 2-5s setup)
-│   ├── e2b.py                     # E2BSandbox (cloud VM isolation, 5-15s setup)
-│   └── bridge.py                  # SandboxFileBridge (media <-> sandbox transfer)
+│   └── e2b.py                     # E2BSandbox (cloud VM isolation, 5-15s setup)
 │
 ├── media_backend/                 # Media storage + resolution (combined)
-│   ├── types.py                   # MediaMetadata dataclass
-│   ├── base.py                    # MediaBackend ABC (store, retrieve, resolve, stream)
+│   ├── types.py                   # MediaMetadata dataclass, MediaBackend ABC
 │   ├── local.py                   # LocalMediaBackend (filesystem)
 │   ├── s3.py                      # S3MediaBackend (AWS S3)
 │   ├── memory.py                  # MemoryMediaBackend (in-process, for tests)
@@ -425,6 +423,12 @@ class Sandbox(ABC):
     # Execution
     async def exec(self, command: str, timeout: int = ..., cwd: str = ..., env: dict = ...) -> ExecResult: ...
     async def exec_stream(self, command: str, ...) -> AsyncIterator[str]: ...
+
+    # File Coordination (import/export across the storage boundary)
+    async def import_file(self, file_id: str, filename: str, content: bytes) -> str: ...
+        # Idempotent: skips write if already imported. Returns sandbox-relative path.
+    async def get_exported_files(self) -> list[tuple[str, bytes]]: ...
+        # Recursively scans exports area. Returns (relative_filename, content) pairs.
 ```
 
 **Key design decisions:**
@@ -444,38 +448,36 @@ class Sandbox(ABC):
 
 **Path containment (`_resolve()`):** Levels 1 and 2 resolve relative paths and check containment to block `../../etc/passwd` traversal. Level 3 doesn't need it — the VM itself is the containment boundary.
 
-### 5.3 SandboxFileBridge (`sandbox/bridge.py`)
+### 5.3 File Coordination (Sandbox + MediaBackend)
 
-Moves files between the sandbox (working files) and the media backend (persistent storage):
+Files cross between two worlds: the sandbox (ephemeral working files) and the media backend (persistent storage). Instead of a separate bridge class, the responsibilities are split between the two natural owners:
+
+**Sandbox owns zone layout.** The sandbox creates three zone directories at `setup()`: `.imported/` (materialized files from storage), `workspace/` (default cwd for tools), `.exports/` (tool-produced artifacts for the user). It exposes two semantic methods — `import_file()` and `get_exported_files()` — so that callers never reason about zone paths.
+
+**MediaBackend owns orchestration.** The `MediaBackend` ABC provides three concrete (non-abstract) methods that compose abstract storage operations with sandbox file coordination:
 
 ```python
-class SandboxFileBridge:
-    def __init__(self, media_backend: MediaBackend, cache: LocalFileCache | None = None): ...
-
-    async def materialize_into_sandbox(self, file_id: str, sandbox: Sandbox, sandbox_path: str) -> None:
-        """Download from media backend, write into sandbox workspace."""
-
-    async def persist_from_sandbox(self, sandbox: Sandbox, sandbox_path: str, agent_uuid: str) -> MediaMetadata:
-        """Read from sandbox workspace, store in media backend."""
+# On MediaBackend ABC (concrete methods, not abstract):
+def attach_sandbox(self, sandbox: Sandbox) -> None: ...
+async def materialize(self, media_id: str, agent_uuid: str) -> str: ...
+    # retrieve metadata + bytes from storage, call sandbox.import_file()
+async def flush_exports(self, agent_uuid: str) -> list[MediaMetadata]: ...
+    # call sandbox.get_exported_files(), store each file in backend
 ```
 
-**Two kinds of files:**
-- **Working files**: Created/manipulated during the session. Live inside the sandbox. Destroyed on `teardown()`.
-- **Uploaded/persisted files**: User uploads (PDFs, images), tool-generated artifacts. Live in the media backend, identified by `media_id`.
-
-The bridge connects these two worlds. For `LocalSandbox`/`DockerSandbox`, the `LocalFileCache` can serve as the materializer. For `E2BSandbox`, the bridge calls `media_backend.retrieve()` and `sandbox.write_file_bytes()` directly.
+**Key invariant:** MediaBackend never knows about `.imported/`, `.exports/`, or any zone path. It calls `sandbox.import_file(media_id, filename, content)` and gets back a sandbox-relative path. It calls `sandbox.get_exported_files()` and gets back `(relative_filename, content)` pairs. The zone layout is entirely the sandbox's internal concern — different sandbox implementations can organize files however they want.
 
 ### 5.4 Sandbox Attachment
 
-During `Agent.initialize()`, the sandbox is attached to both the tool registry and the media backend:
+During `Agent.initialize()`, the sandbox is set up and attached to both the tool registry and the media backend:
 
 ```python
-self.sandbox.setup()
-self.tool_registry.attach_sandbox(self.sandbox)
-self.media_backend.attach_sandbox(self.sandbox)
+await self.sandbox.setup()              # Creates root + zone dirs (.imported/, workspace/, .exports/)
+self.tool_registry.attach_sandbox(self.sandbox)   # Tools read/write through sandbox
+self.media_backend.attach_sandbox(self.sandbox)    # Enables materialize() and flush_exports()
 ```
 
-This connects the sandbox to both I/O paths: tools read/write files through it, and the media backend resolves local file paths through it.
+This connects the sandbox to both I/O paths: tools read/write files through it, and the media backend uses it for file import/export across the storage boundary.
 
 ---
 
@@ -502,9 +504,9 @@ class MediaMetadata:
     extras: dict[str, Any]           # Backend-specific data (e.g., S3 bucket/key)
 ```
 
-### 6.3 MediaBackend ABC (`media_backend/base.py`)
+### 6.3 MediaBackend ABC (`media_backend/types.py`)
 
-**Status:** To be defined.
+**Status:** Implemented (`LocalMediaBackend` complete with full test coverage).
 
 ```python
 class MediaBackend(ABC):
@@ -512,32 +514,42 @@ class MediaBackend(ABC):
     async def connect(self) -> None: ...
     async def close(self) -> None: ...
 
-    # Storage operations
-    async def store(self, content: bytes | AsyncByteStream, filename: str, mime_type: str,
-                    agent_uuid: str, size_hint: int | None = None) -> MediaMetadata: ...
+    # Storage operations (abstract — each backend implements these)
+    async def store(self, content: bytes, filename: str, mime_type: str,
+                    agent_uuid: str) -> MediaMetadata: ...
     async def retrieve(self, media_id: str, agent_uuid: str) -> bytes | None: ...
-    async def retrieve_stream(self, media_id: str, agent_uuid: str) -> AsyncIterator[bytes]: ...
     async def delete(self, media_id: str, agent_uuid: str) -> bool: ...
     async def exists(self, media_id: str, agent_uuid: str) -> bool: ...
+    async def get_metadata(self, media_id: str, agent_uuid: str) -> MediaMetadata | None: ...
 
-    # Resolution (projections for different consumers)
+    # Resolution — abstract (projections for different consumers)
     async def to_base64(self, media_id: str, agent_uuid: str) -> dict: ...
         # Returns {"data": "<base64>", "media_type": "image/png"} for LLM provider adapters
-
     async def to_url(self, media_id: str, agent_uuid: str) -> str: ...
         # Returns URL for frontend rendering (presigned S3 URL, local API path, etc.)
-
     async def to_reference(self, media_id: str, agent_uuid: str) -> dict: ...
         # Returns lightweight metadata dict for conversation log
 
-    # Sandbox integration
+    # Sandbox integration — concrete (compose abstract storage + sandbox)
+    _sandbox: Sandbox | None = None
     def attach_sandbox(self, sandbox: Sandbox) -> None: ...
+
+    async def materialize(self, media_id: str, agent_uuid: str) -> str: ...
+        # get_metadata() + retrieve() + sandbox.import_file()
+        # Idempotent: import_file() skips write if already imported.
+        # Raises RuntimeError if no sandbox, FileNotFoundError if media_id missing.
+
+    async def flush_exports(self, agent_uuid: str) -> list[MediaMetadata]: ...
+        # sandbox.get_exported_files() + store() each file
+        # Uses os.path.basename() for storage filename (no slashes).
+        # Preserves full relative path in metadata.extras["export_path"] for nested files.
 ```
 
 **Key decisions:**
-- `store()` accepts `bytes | AsyncByteStream` — supports both simple uploads and streaming for large files.
-- `to_url()` lives on the backend (not a separate URL service) because URL shape is tied to storage type: local returns `/api/files/{id}`, S3 returns presigned URL, GCS returns signed URL.
+- `to_url()` lives on the backend (not a separate URL service) because URL shape is tied to storage type: local returns `/api/files/{id}`, S3 returns presigned URL.
 - All methods take `agent_uuid` — files are namespaced to agent sessions for cleanup, security, and storage layout.
+- `materialize()` and `flush_exports()` are **concrete** on the ABC — they compose abstract storage methods with sandbox file coordination. Concrete backends (LocalMediaBackend, S3MediaBackend) inherit them for free.
+- MediaBackend imports `Sandbox` under `TYPE_CHECKING` only — no runtime circular dependency.
 
 ### 6.4 LocalFileCache (`media_backend/cache.py`)
 
@@ -805,13 +817,15 @@ await agent.run(prompt)
     +-----+-----+    +------+------+    +-------------+
           |                 |
     +-----v------+   +------v------+
-    | Formatter  |   |   Sandbox   |<--------------+
-    | (wire fmt) |   | (isolation) |               |
-    +-----+------+   +------+------+               |
-          |                 |              +--------+--------+
-          |          +------v------+       | SandboxFileBridge |
-          +--------->  MediaBackend <------+------------------+
-                     (store+resolve)
+    | Formatter  |   |   Sandbox   |
+    | (wire fmt) |   | (isolation) |
+    +-----+------+   +------+------+
+          |                 ^
+          |                 | attach_sandbox()
+          +--------->  MediaBackend
+                     (store+resolve+
+                      materialize+
+                      flush_exports)
                      +------+------+
                             |
                      +------v------+
@@ -866,336 +880,105 @@ Each axis of change is isolated so that modifications along one axis require cha
 - Provider-specific streaming replaced by framework `StreamDelta` types + per-provider translation
 
 ### New
-- `Sandbox` system with three isolation levels
-- `SandboxFileBridge` connecting sandbox and media backend
+- `Sandbox` system with three isolation levels + file coordination (`import_file`, `get_exported_files`)
 - `LocalFileCache` for tool I/O performance
 - `Provider` ABC separating LLM API calls from orchestration
 - Framework-level `StreamDelta` types
-- `MediaBackend` with combined storage + resolution + streaming
-- File lifecycle management (zone-based conventions + manifest tracking)
+- `MediaBackend` with combined storage + resolution + sandbox orchestration (`materialize`, `flush_exports`)
+- Three-zone sandbox layout (`.imported/`, `workspace/`, `.exports/`) managed by sandbox `setup()`
 
 ---
 
-## 14. File Lifecycle Management
+## 14. File Coordination
 
-Files flow through the agent system in fundamentally different patterns depending on their origin, purpose, and required durability. This section defines the **hybrid zone + manifest** design that handles all five file categories using filesystem conventions for the common cases and an explicit manifest for tracking and override.
+Files cross between two worlds: the sandbox (ephemeral working files) and the media backend (durable persistent storage). This section describes how the two modules collaborate.
 
-### 14.1 The Five File Categories
+### 14.1 Three-Zone Sandbox Layout
 
-| # | Category | Origin | Direction | Durability | Sandbox Presence |
-|---|----------|--------|-----------|------------|-----------------|
-| 1 | **User uploads** | Frontend/API | MediaBackend → Sandbox | Permanent | Materialized on demand |
-| 2 | **Provider server files** | Provider API (e.g., Anthropic container) | External → MediaBackend (reference) | Permanent (metadata) | **Not** materialized |
-| 3 | **Exportable artifacts** | Tools in sandbox | Sandbox → MediaBackend | Permanent | Created in sandbox, cloned out |
-| 4 | **Session workspace files** | Tools in sandbox | N/A | Session-scoped | Full residence |
-| 5 | **Ephemeral tool output** | Tools in sandbox | None | Transient | Sandbox-only |
-
-**Examples:**
-1. PDF attachment in a user message, image upload
-2. Anthropic container-generated chart (file lives on Anthropic's servers, we hold a `file_id` reference)
-3. Generated CSV report, exported plot PNG written to `.exports/`
-4. Cloned repository, installed packages, virtual environment
-5. Bash stdout logs, code execution intermediate output, planning scratch files
-
-### 14.2 FileLifecycle Enum
-
-```python
-class FileLifecycle(Enum):
-    DURABLE = "durable"        # Permanent in MediaBackend. Survives sandbox teardown.
-    EXPORTABLE = "exportable"  # Created in sandbox. Cloned to MediaBackend on flush/teardown.
-    SESSION = "session"        # Lives in sandbox. Dies with sandbox, optionally archivable.
-    EPHEMERAL = "ephemeral"    # Sandbox scratch space. Never persisted, never archived.
-    REFERENCE = "reference"    # External provider file. Metadata only, bytes managed externally.
-```
-
-### 14.3 Sandbox Zone Layout (Convention Layer)
-
-The sandbox filesystem has predefined zone directories. A file's **location** determines its default lifecycle — no explicit tagging required for the common path.
+The sandbox creates three zone directories at `setup()`:
 
 ```
 sandbox_root/
-├── .imported/              # Zone 1 — DURABLE (materialized from MediaBackend)
-│   └── {media_id}/         #   Lazily populated on first tool access.
-│       └── filename.ext    #   Read-through from MediaBackend.
-│                           #   Write-back if dirty on flush/teardown.
+├── .imported/              # Materialized files from MediaBackend
+│   └── {media_id}/         #   Lazily populated via import_file()
+│       └── filename.ext    #   Idempotent: skips write if already present
 │
-├── workspace/              # Zone 2 — SESSION (the LLM's working directory, default cwd)
-│   └── src/...             #   Tools read/write freely.
-│                           #   Archive-or-drop on teardown (configurable).
+├── workspace/              # LLM's working directory (default cwd for exec)
+│   └── src/...             #   Tools read/write freely
+│                           #   Session-scoped — dies with sandbox
 │
-├── .exports/               # Zone 3 — EXPORTABLE (durable output artifacts)
-│   └── report.pdf          #   New files auto-registered in manifest as EXPORTABLE.
-│                           #   Flushed to MediaBackend on sync/teardown.
-│
-├── .ephemeral/             # Zone 4 — EPHEMERAL (transient scratch space)
-│   ├── logs/               #   NEVER persisted. NEVER archived. Destroyed on teardown.
-│   └── code_output/        #   Tools directed here for large transient output.
-│
-└── .refs/                  # Zone 5 — REFERENCE (provider-file manifest, metadata only)
-    └── manifest.json       #   media_id → provider_file_id mapping.
-                            #   No bytes materialized. Resolved via MediaBackend.
+└── .exports/               # Tool-produced artifacts for the user
+    └── report.csv          #   Convention: write here if the user should keep it
+                            #   Flushed to MediaBackend via flush_exports()
 ```
 
-**Zone design rationale:**
-- `.` prefix for system-managed zones (`.imported/`, `.exports/`, `.ephemeral/`, `.refs/`) keeps them out of the LLM's natural working space. The LLM works in `workspace/` and doesn't need to reason about plumbing.
-- `workspace/` is the default `cwd` for tool execution. When a tool writes to `src/main.py`, it lands in `workspace/src/main.py`.
-- `.exports/` is the only zone that tools explicitly write to when they produce user-facing artifacts. This is a simple convention: "write to `.exports/` if the user should keep it."
+**Design rationale:**
+- `.` prefix on system-managed zones keeps them out of the LLM's natural working space
+- `workspace/` is the default `cwd` for tool execution
+- `.exports/` is the only zone tools explicitly write to for user-facing output
+- Zone layout is the sandbox's internal concern — callers use `import_file()` and `get_exported_files()`, never zone paths
 
-### 14.4 FileManifest (Tracking Layer)
+### 14.2 File Flow Patterns
 
-The `FileManifest` is the single source of truth for all tracked files across both the sandbox and MediaBackend. It records each file's lifecycle disposition and current location.
-
-```python
-@dataclass
-class FileRecord:
-    media_id: str
-    lifecycle: FileLifecycle
-    sandbox_path: str | None = None         # Set if file exists in sandbox
-    media_metadata: MediaMetadata | None = None  # Set if file exists in MediaBackend
-    provider_ref: str | None = None         # Set if REFERENCE (external provider file_id)
-    source: str = ""                        # Origin: "user_upload", "tool:{name}", "provider:{id}"
-    dirty: bool = False                     # Modified in sandbox since last sync
-    created_at: str = ""                    # ISO timestamp
-    last_synced_at: str | None = None       # Last flush to MediaBackend
-
-    def to_dict(self) -> dict[str, Any]: ...
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "FileRecord": ...
-
-class FileManifest:
-    """Tracks all files across sandbox and MediaBackend for a single agent session."""
-
-    records: dict[str, FileRecord]  # Keyed by media_id
-
-    def add(self, record: FileRecord) -> None: ...
-    def get(self, media_id: str) -> FileRecord | None: ...
-    def remove(self, media_id: str) -> None: ...
-
-    def by_lifecycle(self, lifecycle: FileLifecycle) -> list[FileRecord]: ...
-    def dirty_files(self) -> list[FileRecord]: ...
-    def exportable_files(self) -> list[FileRecord]: ...
-    def surfaceable_files(self) -> list[FileRecord]:
-        """Files that should be visible to the user (DURABLE + EXPORTABLE + REFERENCE)."""
-        ...
-
-    def to_dict(self) -> dict[str, Any]: ...
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "FileManifest": ...
+**Inbound (MediaBackend → Sandbox):**
 ```
-
-### 14.5 Zone-to-Lifecycle Defaults and Override Rules
-
-| Zone | Default Lifecycle | Override Allowed? | Notes |
-|------|------------------|-------------------|-------|
-| `.imported/` | DURABLE | No | Always durable — these came from MediaBackend |
-| `workspace/` | SESSION | Yes → EXPORTABLE | Tool or agent can promote via manifest |
-| `.exports/` | EXPORTABLE | No | Always exportable — writing here is an explicit durability signal |
-| `.ephemeral/` | EPHEMERAL | No | Always transient — tools write here for scratch work |
-| `.refs/` | REFERENCE | No | Always reference — metadata only |
-
-**Override mechanism (workspace → exportable):**
-
-```python
-# Option A: Tool explicitly writes to .exports/
-await self.sandbox.write_file(".exports/analysis.csv", data)
-# → Manifest auto-populated with EXPORTABLE lifecycle
-
-# Option B: Tool writes to workspace/ then promotes
-await self.sandbox.write_file("workspace/analysis.csv", data)
-manifest.set_lifecycle("workspace/analysis.csv", FileLifecycle.EXPORTABLE)
-
-# Option C: Agent loop promotes after tool execution based on envelope metadata
-envelope = await self.tool_registry.execute(tool_name, tool_input)
-for file_path in envelope.generated_files:
-    manifest.set_lifecycle(file_path, FileLifecycle.EXPORTABLE)
-```
-
-**Conflict resolution:** If a file's zone convention and manifest disagree, the **manifest wins**. The manifest is the authoritative source; zones provide defaults for files not yet in the manifest.
-
-### 14.6 How Each Category Flows
-
-**Category 1 — User uploads:**
-```
-User upload → API layer
-  → media_backend.store(bytes, filename, mime_type, agent_uuid)
-  → MediaMetadata created (DURABLE in manifest)
+User uploads file → API layer stores via media_backend.store()
+  → MediaMetadata created with media_id
   → File NOT yet in sandbox
   → ...later, tool needs the file...
-  → SandboxFileBridge.materialize_into_sandbox(media_id, sandbox, ".imported/{media_id}/filename")
-  → manifest.record.sandbox_path = ".imported/{media_id}/filename"
-  → Tool reads/modifies via sandbox.read_file(".imported/{media_id}/filename")
-  → If modified: manifest.record.dirty = True
+  → media_backend.materialize(media_id, agent_uuid)
+    → retrieves metadata + bytes from storage
+    → calls sandbox.import_file(media_id, filename, content)
+    → sandbox writes to .imported/{media_id}/{filename} (idempotent)
+    → returns sandbox-relative path
+  → Tool reads via sandbox.read_file(path)
 ```
 
-**Category 2 — Provider server files:**
+**Outbound (Sandbox → MediaBackend):**
 ```
-Provider response contains file_id (e.g., Anthropic container file)
-  → media_backend.register_reference(provider_file_id, metadata, agent_uuid)
-  → FileRecord(lifecycle=REFERENCE, provider_ref=provider_file_id) added to manifest
-  → No sandbox materialization
-  → Resolution: media_backend.to_base64(media_id) calls provider API to fetch bytes
-  → Resolution: media_backend.to_url(media_id) returns provider-hosted or proxied URL
-```
-
-**Category 3 — Exportable artifacts:**
-```
-Tool generates a file intended for the user
+Tool generates user-facing output
   → Tool writes to sandbox: sandbox.write_file(".exports/report.csv", data)
-  → Zone convention → manifest auto-creates FileRecord(lifecycle=EXPORTABLE)
-  → At sync point: SandboxFileBridge.persist_from_sandbox(sandbox, ".exports/report.csv", agent_uuid)
-  → MediaMetadata created, stored in MediaBackend
-  → manifest.record.media_metadata = meta, manifest.record.last_synced_at = now
+  → At end of run (or periodic sync):
+    → media_backend.flush_exports(agent_uuid)
+      → calls sandbox.get_exported_files()
+      → for each (relative_path, content):
+        → store(content, basename, mime_type, agent_uuid)
+        → if nested: metadata.extras["export_path"] = relative_path
+      → returns list[MediaMetadata]
 ```
 
-**Category 4 — Session workspace files:**
+**Session workspace (sandbox-only):**
 ```
-Tool clones a repo, creates working files
-  → Tool writes to sandbox: sandbox.write_file("workspace/src/main.py", code)
-  → Zone convention → SESSION lifecycle (not tracked in manifest by default)
-  → Files live and die with the sandbox
-  → If archiving enabled: workspace/ tarred and stored in MediaBackend on teardown
+Tool writes to workspace/src/main.py
+  → Lives and dies with the sandbox
+  → Not tracked. Not persisted. Destroyed on teardown.
 ```
 
-**Category 5 — Ephemeral tool output:**
-```
-Code execution writes stdout, bash logs
-  → Tool writes to sandbox: sandbox.write_file(".ephemeral/logs/exec_001.log", output)
-  → Zone convention → EPHEMERAL lifecycle (never tracked in manifest)
-  → Destroyed on teardown. No recovery.
-```
-
-### 14.7 Sandbox Teardown Protocol
+### 14.3 Agent Loop Integration
 
 ```python
-async def on_teardown(self, agent_uuid: str, archive_workspace: bool = False):
-    """Called when sandbox is being destroyed."""
+# Initialization
+await sandbox.setup()                           # Creates .imported/, workspace/, .exports/
+media_backend.attach_sandbox(sandbox)
+tool_registry.attach_sandbox(sandbox)
 
-    # 1. Flush EXPORTABLE files to MediaBackend
-    for record in self.manifest.exportable_files():
-        if record.sandbox_path and (not record.media_metadata or record.dirty):
-            content = await self.sandbox.read_file_bytes(record.sandbox_path)
-            meta = await self.media_backend.store(content, ...)
-            record.media_metadata = meta
-            record.dirty = False
-            record.last_synced_at = now()
+# Before tool execution (if tool needs a user-uploaded file)
+path = await media_backend.materialize(media_id, agent_uuid)
+# → tool can now read via sandbox.read_file(path)
 
-    # 2. Write-back dirty DURABLE files (user uploads modified in sandbox)
-    for record in self.manifest.dirty_files():
-        if record.lifecycle == FileLifecycle.DURABLE and record.sandbox_path:
-            content = await self.sandbox.read_file_bytes(record.sandbox_path)
-            await self.media_backend.update(record.media_id, content, agent_uuid)
-            record.dirty = False
-            record.last_synced_at = now()
+# After tool execution (end of run or periodic sync)
+exported = await media_backend.flush_exports(agent_uuid)
+# → each exported file is now stored durably in MediaBackend
 
-    # 3. Optionally archive workspace/ as a tarball
-    if archive_workspace:
-        archive_bytes = await self.sandbox.exec("tar czf - workspace/")
-        meta = await self.media_backend.store(
-            archive_bytes, f"workspace_{agent_uuid}.tar.gz",
-            "application/gzip", agent_uuid
-        )
-        self.manifest.add(FileRecord(
-            media_id=meta.media_id,
-            lifecycle=FileLifecycle.DURABLE,
-            media_metadata=meta,
-            source="sandbox_archive",
-        ))
-
-    # 4. Persist manifest to AgentConfig (via storage adapter)
-    self.agent_config.file_manifest = self.manifest.to_dict()
-    await self.config_adapter.save(self.agent_config)
-
-    # 5. Destroy sandbox filesystem
-    await self.sandbox.teardown()
+# Teardown (triggered by backend, not necessarily at end of agent loop)
+await sandbox.teardown()
 ```
 
-### 14.8 Sandbox Reload Protocol
+### 14.4 Open Questions
 
-```python
-async def on_reload(self, agent_uuid: str):
-    """Called when sandbox is being recreated (session resume, scaling, crash recovery)."""
-
-    # 1. Create fresh sandbox with zone directories
-    await self.sandbox.setup()
-    await self.sandbox.exec("mkdir -p .imported .exports .ephemeral .refs workspace")
-
-    # 2. Load manifest from AgentConfig
-    self.manifest = FileManifest.from_dict(self.agent_config.file_manifest)
-
-    # 3. Restore workspace from archive if available
-    archive_records = [r for r in self.manifest.records.values()
-                       if r.source == "sandbox_archive"]
-    if archive_records:
-        latest = max(archive_records, key=lambda r: r.created_at)
-        archive_bytes = await self.media_backend.retrieve(latest.media_id, agent_uuid)
-        await self.sandbox.write_file_bytes(".workspace_archive.tar.gz", archive_bytes)
-        await self.sandbox.exec("tar xzf .workspace_archive.tar.gz && rm .workspace_archive.tar.gz")
-
-    # 4. Rebuild .refs/manifest.json from REFERENCE records
-    refs = {r.media_id: r.provider_ref for r in self.manifest.by_lifecycle(FileLifecycle.REFERENCE)}
-    await self.sandbox.write_file(".refs/manifest.json", json.dumps(refs))
-
-    # 5. .imported/ stays empty — files materialize lazily on first tool access
-    # 6. .exports/ stays empty — previously exported files are already in MediaBackend
-    # 7. .ephemeral/ starts empty — transient by definition
-```
-
-### 14.9 Periodic Sync (Crash Recovery)
-
-Relying only on teardown for persistence is fragile — a crash means EXPORTABLE files are lost. The agent loop should periodically sync:
-
-```python
-# In the agent's _resume_loop(), after tool execution:
-if self.manifest.has_unsycned_exportables():
-    await self.file_coordinator.sync_exportables(agent_uuid)
-```
-
-**Sync frequency:** After every tool execution step that produces EXPORTABLE files. This is low-cost (only files in `.exports/` with no `last_synced_at` or with `dirty=True`) and ensures crash recovery loses at most one tool step's worth of artifacts.
-
-### 14.10 FileManifest Persistence
-
-The `FileManifest` is serialized into `AgentConfig.file_manifest: dict[str, Any]` and persisted via the existing `AgentConfigAdapter`. This means:
-
-- **Manifest survives sandbox teardown** — it's in durable storage.
-- **Manifest is available on reload** — the agent can reconstruct what needs to be re-materialized.
-- **Manifest is available across machines** — for horizontal scaling where a different server resumes the agent.
-
-Only DURABLE, EXPORTABLE, and REFERENCE records are persisted in the manifest. SESSION and EPHEMERAL files are not tracked (they die with the sandbox and don't need recovery).
-
-### 14.11 Which Files Are Surfaced to the User?
-
-| Lifecycle | Surfaced to User? | How? |
-|-----------|-------------------|------|
-| DURABLE | Yes | User uploaded them; shown in file list |
-| EXPORTABLE | Yes | Generated artifacts; shown in file list + downloadable |
-| REFERENCE | Yes | Provider-generated; shown with provider attribution |
-| SESSION | No (unless archived) | Internal workspace; not user-facing |
-| EPHEMERAL | No | Scratch space; never visible |
-
-The `FileManifest.surfaceable_files()` method returns the union of DURABLE + EXPORTABLE + REFERENCE records. This list populates the `generated_files` field on `AgentResult` and `Conversation`, and is streamed to the frontend via `MetaDelta(type="meta_files", ...)`.
-
-### 14.12 Open Questions (Under Consideration)
-
-These decisions depend on deployment context and are intentionally left configurable:
-
-1. **Sandbox lifetime policy:** When should sandboxes be torn down?
-   - Options: on session end, on idle timeout (configurable TTL), on resource pressure, explicit admin action.
-   - The teardown protocol (§14.7) works regardless of trigger.
-
-2. **Workspace archiving policy:** Should `workspace/` be archived on teardown?
-   - Trade-off: archive enables perfect session resume but costs storage and teardown latency.
-   - Recommendation: archive for long-lived agents (coding assistants), skip for short-lived agents (single-query).
-   - Configurable via `SandboxConfig.archive_workspace_on_teardown: bool`.
-
-3. **Sandbox reload frequency:** How often will agents need to resume into a fresh sandbox?
-   - Depends on infrastructure: single-server (rare reloads) vs. serverless (every request).
-   - The reload protocol (§14.8) is designed to be idempotent and fast (lazy materialization).
-
-4. **SESSION file promotion:** Should workspace files be promotable to EXPORTABLE after creation?
-   - Current design: yes, via explicit `manifest.set_lifecycle()` call.
-   - Risk: tools forget to promote files users want. Mitigation: the agent loop can inspect tool envelopes for `generated_files` hints and auto-promote.
+- **Sandbox lifetime policy:** When should sandboxes be torn down? Options: session end, idle timeout, resource pressure, admin action. Teardown is independent of the agent loop — the backend can trigger it externally.
+- **Flush frequency:** End-of-run flush is the baseline. Periodic flush after each tool step that writes to `.exports/` improves crash recovery at minimal cost.
+- **Provider server files:** Files that live on the provider's servers (e.g., Anthropic container files) are represented as metadata-only references in MediaBackend. They are never materialized into the sandbox. Resolution (`to_base64`, `to_url`) calls the provider API directly.
 
 5. **Provider file resolution strategy:** How should REFERENCE files be resolved when the provider API is unavailable?
    - Options: fail fast, return cached version (if previously resolved), return placeholder.

@@ -1,0 +1,2227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Developer Diary — Media Backend: Where Bytes Live</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1c1917;
+    --paper: #faf8f5;
+    --paper-warm: #f3efe8;
+    --accent: #9f1239;
+    --accent-soft: #9f123918;
+    --teal: #0d6e6e;
+    --teal-soft: #0d6e6e18;
+    --slate: #475569;
+    --slate-soft: #47556918;
+    --amber: #b45309;
+    --amber-soft: #b4530918;
+    --violet: #6d28d9;
+    --violet-soft: #6d28d918;
+    --rose: #be185d;
+    --rose-soft: #be185d18;
+    --code-bg: #1c1b22;
+    --code-fg: #d4d4d8;
+    --muted: #94a3b8;
+    --border: #d6d3cd;
+    --border-light: #e8e5df;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Newsreader', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 18.5px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* === HERO === */
+  .hero {
+    padding: 72px 40px 54px;
+    text-align: center;
+    border-bottom: 3px double var(--border);
+    background: linear-gradient(175deg, #f0ece4 0%, var(--paper) 60%);
+    position: relative;
+  }
+  .hero .icon { font-size: 42px; margin-bottom: 12px; display: block; filter: grayscale(0.2); }
+  .hero h1 {
+    font-family: 'Newsreader', serif;
+    font-size: clamp(28px, 4.5vw, 48px);
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 1.18;
+    margin-bottom: 10px;
+  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero .sub {
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    font-weight: 600;
+  }
+
+  /* === CONTENT === */
+  .content { max-width: 850px; margin: 0 auto; padding: 0 28px; }
+
+  /* === ENTRY === */
+  .entry {
+    padding: 44px 0;
+    border-bottom: 1px solid var(--border-light);
+    opacity: 0; transform: translateY(24px);
+    transition: opacity 0.65s ease, transform 0.65s ease;
+  }
+  .entry.vis { opacity: 1; transform: translateY(0); }
+  .entry-tag {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 7px;
+  }
+  .entry h2 { font-size: 27px; font-weight: 700; margin-bottom: 16px; line-height: 1.25; }
+  .entry h3 { font-size: 21px; font-weight: 600; margin: 30px 0 12px; }
+  .entry p { margin-bottom: 15px; }
+  .entry p strong { color: var(--accent); font-weight: 600; }
+
+  /* === THOUGHT === */
+  .th {
+    background: var(--paper-warm);
+    border-left: 4px solid var(--accent);
+    padding: 15px 22px;
+    margin: 22px 0;
+    border-radius: 0 8px 8px 0;
+    font-style: italic;
+    position: relative;
+  }
+  .th::before {
+    content: '💭';
+    position: absolute;
+    top: -12px;
+    left: -15px;
+    font-size: 18px;
+    font-style: normal;
+  }
+  .th .tl {
+    font-family: 'Outfit', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--accent);
+    font-style: normal;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  /* === CODE === */
+  .cw {
+    margin: 22px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 3px 18px rgba(0,0,0,0.10);
+  }
+  .ch {
+    background: #27262e;
+    padding: 9px 16px;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+  }
+  .ch .dt { display: flex; gap: 6px; }
+  .ch .dt span { width: 9px; height: 9px; border-radius: 50%; }
+  .ch .dt span:nth-child(1) { background: #ff5f56; }
+  .ch .dt span:nth-child(2) { background: #ffbd2e; }
+  .ch .dt span:nth-child(3) { background: #27c93f; }
+  .ch .fn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #999;
+    font-weight: 500;
+  }
+  .ch .tg {
+    margin-left: auto;
+    font-family: 'Outfit', sans-serif;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 9px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tg-bad { background: #9f123933; color: #f87171; }
+  .tg-v1 { background: #b4530933; color: #fbbf24; }
+  .tg-abs { background: #6d28d933; color: #c4b5fd; }
+  .tg-impl { background: #0d6e6e33; color: #5eead4; }
+  .tg-wire { background: #47556933; color: #94a3b8; }
+  .tg-test { background: #16a34a33; color: #86efac; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.8px;
+    line-height: 1.68;
+    tab-size: 4;
+  }
+  pre .c { color: #6b7280; font-style: italic; }
+  pre .k { color: #c4b5fd; }
+  pre .t { color: #5eead4; }
+  pre .s { color: #fca5a5; }
+  pre .f { color: #fde68a; }
+  pre .p { color: #93c5fd; }
+  pre .d { color: #f0abfc; }
+  pre .hl {
+    background: rgba(253, 230, 138, 0.06);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+
+  /* === DIAGRAM === */
+  .dw { margin: 26px 0; text-align: center; }
+  .dw svg { max-width: 100%; height: auto; }
+  .dc {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-top: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 500;
+  }
+
+  /* === INSIGHT === */
+  .ins {
+    border: 2px solid;
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin: 26px 0;
+  }
+  .ins.red { border-color: var(--accent); background: var(--accent-soft); }
+  .ins.teal { border-color: var(--teal); background: var(--teal-soft); }
+  .ins.violet { border-color: var(--violet); background: var(--violet-soft); }
+  .ins.amber { border-color: var(--amber); background: var(--amber-soft); }
+  .ins.slate { border-color: var(--slate); background: var(--slate-soft); }
+  .ins .il {
+    font-family: 'Outfit', sans-serif;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+    margin-bottom: 7px;
+    display: block;
+  }
+  .ins.red .il { color: var(--accent); }
+  .ins.teal .il { color: var(--teal); }
+  .ins.violet .il { color: var(--violet); }
+  .ins.amber .il { color: var(--amber); }
+  .ins.slate .il { color: var(--slate); }
+  .ins p { margin-bottom: 0; }
+
+  p code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14.5px;
+    background: var(--paper-warm);
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border-light);
+  }
+
+  /* === CHAPTER === */
+  .chap {
+    text-align: center;
+    padding: 44px 0 16px;
+    position: relative;
+  }
+  .chap::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0; right: 0;
+    height: 1px;
+    background: var(--border);
+  }
+  .chap span {
+    position: relative;
+    background: var(--paper);
+    padding: 0 22px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    color: var(--accent);
+  }
+
+  /* === TABLE === */
+  .ctbl {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 22px 0;
+    font-size: 15.5px;
+  }
+  .ctbl th {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+    text-align: left;
+    padding: 11px 13px;
+    border-bottom: 2px solid var(--ink);
+    color: var(--muted);
+  }
+  .ctbl td {
+    padding: 11px 13px;
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+  }
+  .ctbl tr:last-child td { border-bottom: none; }
+  .ctbl code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: var(--paper-warm);
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+
+  .footer {
+    text-align: center;
+    padding: 44px 28px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    border-top: 3px double var(--border);
+  }
+
+  /* === INSIGHT: ROSE VARIANT === */
+  .ins.rose { background: var(--rose-soft); border-left-color: var(--rose); }
+  .ins.rose .il { color: var(--rose); }
+
+  /* === MEMORY BAR (Part II) === */
+  .mem-bar {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin: 18px 0;
+    height: 36px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .mem-bar div {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+  }
+
+  /* === PART DIVIDER === */
+  .part-div {
+    text-align: center;
+    padding: 48px 28px 12px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: var(--accent);
+    border-top: 3px double var(--border);
+  }
+  .part-div h2 {
+    font-family: 'Newsreader', serif;
+    font-size: clamp(22px, 3.5vw, 34px);
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    color: var(--ink);
+    margin-top: 8px;
+    text-transform: none;
+  }
+
+  /* === NAV BAR === */
+  .nav-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(250, 248, 245, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-light);
+    font-family: 'Outfit', sans-serif;
+    font-size: 12.5px;
+  }
+  .nav-arrow {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 32px;
+    text-align: center;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  .nav-arrow:hover { background: rgba(0,0,0,0.05); }
+  .nav-arrow.disabled {
+    color: var(--muted);
+    pointer-events: none;
+    opacity: 0.35;
+  }
+  .nav-tabs {
+    display: flex;
+    gap: 1px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .nav-tab:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--ink);
+  }
+  .nav-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav-bar">
+  <a href="sandbox.html" class="nav-arrow">&larr;</a>
+  <div class="nav-tabs">
+    <a href="index.html" class="nav-tab">Hub</a>
+    <a href="core-domain-model.html" class="nav-tab">Domain</a>
+    <a href="tool-system.html" class="nav-tab">Tools</a>
+    <a href="sandbox.html" class="nav-tab">Sandbox</a>
+    <a href="media-backend.html" class="nav-tab active">Media</a>
+    <a href="file-coordination.html" class="nav-tab">Files</a>
+    <a href="planned-systems.html" class="nav-tab">Planned</a>
+  </div>
+  <a href="file-coordination.html" class="nav-arrow">&rarr;</a>
+</nav>
+
+<header class="hero">
+  <span class="icon">📂</span>
+  <h1>Where <em>Bytes</em> Live</h1>
+  <p class="sub">Developer Diary — Designing a Media Backend for an Agentic AI System</p>
+</header>
+
+<div class="part-div">
+  Part I
+  <h2>From Hardcoded Paths to Pluggable Storage</h2>
+</div>
+
+<div class="content">
+
+<!-- ================================================================ -->
+<!-- PROLOGUE                                                        -->
+<!-- ================================================================ -->
+<section class="entry">
+  <div class="entry-tag">The Setup</div>
+  <h2>Why Files in an Agentic System Are Uniquely Hard</h2>
+
+  <p>In a normal web app, file uploads are straightforward — accept the file, put it on S3, return a URL. But an agentic AI system has a constellation of consumers that all need the same file in different forms, at different times, through different channels.</p>
+
+  <p>A user uploads a PDF. The LLM provider adapter needs it as base64 bytes in the API request. The conversation history needs a lightweight reference for the database. The frontend needs a URL to render a preview. The tool execution sandbox might need it as a local file path. A sub-agent might need to pass it to another LLM with different format requirements. And if you're streaming the agent's work to the frontend in real time, you need to send image references <em>before</em> the agent turn is complete.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "This isn't a file upload problem. It's a reference management problem. The file itself is just bytes sitting somewhere. What matters is having a stable identity for those bytes and being able to resolve that identity into whatever representation each consumer needs."
+  </div>
+
+  <p>Let's start where every project starts — with the simplest thing that works — and watch the pain accumulate until it forces an architecture.</p>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 1: THE NAIVE VERSION                                   -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 1 — The Naive Version</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Day 1</div>
+  <h2>Just Save the Bytes, Figure It Out Later</h2>
+
+  <p>Day one, you write the most direct code possible. When a user uploads an image, save it to disk. When the LLM needs it, read it back. When the frontend needs it, serve it from the same disk path.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">file_utils.py</span>
+      <span class="tg tg-bad">V1 — Hardcoded</span>
+    </div>
+    <pre><span class="k">import</span> os, base64, uuid
+
+<span class="c"># Just... save the file somewhere</span>
+UPLOAD_DIR = <span class="s">"/tmp/agent_uploads"</span>
+
+<span class="k">def</span> <span class="f">save_upload</span>(<span class="p">filename</span>: str, <span class="p">data</span>: bytes) -> str:
+    <span class="s">"""Save a file. Return the path."""</span>
+    file_id = <span class="k">f</span><span class="s">"{uuid.uuid4().hex[:12]}_{filename}"</span>
+    path = os.path.join(UPLOAD_DIR, file_id)
+    os.makedirs(UPLOAD_DIR, exist_ok=<span class="k">True</span>)
+    <span class="k">with</span> open(path, <span class="s">"wb"</span>) <span class="k">as</span> f:
+        f.write(data)
+    <span class="k">return</span> path
+
+<span class="k">def</span> <span class="f">load_as_base64</span>(<span class="p">path</span>: str) -> str:
+    <span class="s">"""Read a file back as base64 for the LLM API."""</span>
+    <span class="k">with</span> open(path, <span class="s">"rb"</span>) <span class="k">as</span> f:
+        <span class="k">return</span> base64.standard_b64encode(f.read()).decode()
+
+<span class="k">def</span> <span class="f">get_serve_url</span>(<span class="p">path</span>: str) -> str:
+    <span class="s">"""Build a URL for the frontend. Hope the path matches the static mount."""</span>
+    filename = os.path.basename(path)
+    <span class="k">return</span> <span class="k">f</span><span class="s">"/static/uploads/{filename}"</span>   <span class="c"># 🤞 fingers crossed</span></pre>
+  </div>
+
+  <p>This works on your laptop. Then three things happen in the same week, and each one breaks it in a different way.</p>
+
+  <!-- The three breakages -->
+  <div class="dw">
+    <svg viewBox="0 0 760 220" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">THREE BREAKAGES IN ONE WEEK</text>
+
+      <rect x="20" y="42" width="220" height="160" rx="8" fill="#9f1239" opacity="0.06" stroke="#9f1239" stroke-width="1.5"/>
+      <text x="130" y="68" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#9f1239" letter-spacing="1.5">MONDAY</text>
+      <text x="130" y="92" text-anchor="middle" font-family="Newsreader, serif" font-size="14" fill="#1c1917" font-weight="600">Deploy to Staging</text>
+      <text x="130" y="116" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">/tmp gets wiped on</text>
+      <text x="130" y="134" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">container restart.</text>
+      <text x="130" y="158" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">All files vanish.</text>
+      <text x="130" y="185" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#9f1239">FileNotFoundError</text>
+
+      <rect x="270" y="42" width="220" height="160" rx="8" fill="#b45309" opacity="0.06" stroke="#b45309" stroke-width="1.5"/>
+      <text x="380" y="68" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#b45309" letter-spacing="1.5">WEDNESDAY</text>
+      <text x="380" y="92" text-anchor="middle" font-family="Newsreader, serif" font-size="14" fill="#1c1917" font-weight="600">Scale to 3 Replicas</text>
+      <text x="380" y="116" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Replica A saves the</text>
+      <text x="380" y="134" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">file. Replica B tries</text>
+      <text x="380" y="158" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">to serve it. File</text>
+      <text x="380" y="176" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">doesn't exist there.</text>
+      <text x="380" y="192" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#b45309">404 Not Found</text>
+
+      <rect x="520" y="42" width="220" height="160" rx="8" fill="#6d28d9" opacity="0.06" stroke="#6d28d9" stroke-width="1.5"/>
+      <text x="630" y="68" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#6d28d9" letter-spacing="1.5">FRIDAY</text>
+      <text x="630" y="92" text-anchor="middle" font-family="Newsreader, serif" font-size="14" fill="#1c1917" font-weight="600">Enterprise Client</text>
+      <text x="630" y="116" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">"We need files</text>
+      <text x="630" y="134" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">stored on our own</text>
+      <text x="630" y="158" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">S3 bucket for</text>
+      <text x="630" y="176" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">compliance."</text>
+      <text x="630" y="192" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#6d28d9">🤔 How?</text>
+    </svg>
+    <div class="dc">Fig 1 — Three failures that expose three separate coupling points</div>
+  </div>
+
+  <div class="ins red">
+    <span class="il">🚨 The Core Realization</span>
+    <p>Your code has three separate concerns welded together: <strong>where bytes live</strong> (local filesystem path), <strong>how bytes are identified</strong> (filesystem path is the ID), and <strong>how bytes are accessed</strong> (direct filesystem read, static URL path). Changing any one of these forces changes in the other two. A senior developer recognizes this as a classic case for the Repository pattern — abstract storage behind a stable identity scheme, and resolve access format at the boundary.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 2: THE FILE IDENTITY MODEL                             -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 2 — Identity First</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Key Architectural Decision</div>
+  <h2>A File's Identity Must Be Independent of Its Location</h2>
+
+  <p>Before writing any storage code, we need to get one thing right: how files are identified. This is the decision that everything else hangs on, and getting it wrong creates pain that propagates through every layer of the system.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "In the naive version, a file's identity was its filesystem path. That's why scaling broke — the path only works on the machine that wrote the file. I need an identity that's location-independent. A UUID-based file_id that's generated at upload time, stored in the database alongside the file's metadata, and used everywhere internally. The actual bytes could be on local disk, S3, GCS, or Mars — nobody cares, because they reference the file by its abstract ID."
+  </div>
+
+  <p>The file metadata record is the anchor of the entire system. It's what gets stored in the database. Every other operation — storage, retrieval, URL generation — starts from this record.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">models.py</span>
+      <span class="tg tg-abs">Identity Model</span>
+    </div>
+    <pre><span class="k">from</span> dataclasses <span class="k">import</span> dataclass, field
+<span class="k">from</span> datetime <span class="k">import</span> datetime, timezone
+<span class="k">import</span> uuid
+
+<span class="d">@dataclass</span>
+<span class="k">class</span> <span class="t">FileMetadata</span>:
+    <span class="s">"""The identity record for a file in the system.
+    
+    This is what gets persisted in the database. It describes the file
+    without containing the file. The actual bytes live in whatever storage
+    backend is configured.
+    """</span>
+
+    <span class="c"># ── Identity (immutable once created) ──</span>
+<span class="hl">    file_id: str = field(default_factory=<span class="k">lambda</span>: <span class="k">f</span><span class="s">"file_{uuid.uuid4().hex[:16]}"</span>)</span>
+    filename: str = <span class="s">""</span>           <span class="c"># Original user-supplied filename</span>
+    mime_type: str = <span class="s">""</span>          <span class="c"># MIME type (image/png, application/pdf, etc.)</span>
+    size_bytes: int = 0          <span class="c"># File size in bytes</span>
+    checksum: str = <span class="s">""</span>           <span class="c"># SHA-256 content hash for integrity/dedup</span>
+
+    <span class="c"># ── Ownership ──</span>
+    agent_uuid: str = <span class="s">""</span>         <span class="c"># Which agent session this file belongs to</span>
+    uploaded_by: str = <span class="s">""</span>        <span class="c"># "user" | "tool:{tool_name}" | "agent"</span>
+    
+    <span class="c"># ── Storage location (set by the backend after storing) ──</span>
+<span class="hl">    storage_backend: str = <span class="s">""</span>    <span class="c"># "local" | "s3" | "gcs" | "azure" — which backend holds the bytes</span></span>
+<span class="hl">    storage_key: str = <span class="s">""</span>        <span class="c"># Backend-specific locator (filesystem path, S3 key, blob name)</span></span>
+<span class="hl">    storage_bucket: str = <span class="s">""</span>     <span class="c"># For object stores: the bucket/container name</span></span>
+
+    <span class="c"># ── Lifecycle ──</span>
+    created_at: str = field(
+        default_factory=<span class="k">lambda</span>: datetime.now(timezone.utc).isoformat()
+    )
+    expires_at: str | <span class="k">None</span> = <span class="k">None</span>   <span class="c"># TTL for auto-cleanup (None = permanent)</span>
+    is_deleted: bool = <span class="k">False</span>         <span class="c"># Soft delete flag</span>
+
+    <span class="c"># ── Extension point ──</span>
+    extras: dict = field(default_factory=dict)  <span class="c"># Tags, labels, custom metadata</span>
+
+    <span class="k">def</span> <span class="f">to_dict</span>(<span class="p">self</span>) -> dict:
+        <span class="k">return</span> {
+            <span class="s">"file_id"</span>: self.file_id,
+            <span class="s">"filename"</span>: self.filename,
+            <span class="s">"mime_type"</span>: self.mime_type,
+            <span class="s">"size_bytes"</span>: self.size_bytes,
+            <span class="s">"checksum"</span>: self.checksum,
+            <span class="s">"agent_uuid"</span>: self.agent_uuid,
+            <span class="s">"uploaded_by"</span>: self.uploaded_by,
+            <span class="s">"storage_backend"</span>: self.storage_backend,
+            <span class="s">"storage_key"</span>: self.storage_key,
+            <span class="s">"storage_bucket"</span>: self.storage_bucket,
+            <span class="s">"created_at"</span>: self.created_at,
+            <span class="s">"expires_at"</span>: self.expires_at,
+            <span class="s">"is_deleted"</span>: self.is_deleted,
+            <span class="s">"extras"</span>: self.extras,
+        }</pre>
+  </div>
+
+  <div class="ins teal">
+    <span class="il">🧩 The Separation of Identity from Location</span>
+    <p>Notice the split: <code>file_id</code> is the stable identity that everything else in the system references. <code>storage_backend</code> + <code>storage_key</code> + <code>storage_bucket</code> are the location details that only the storage backend cares about. The rest of the system — canonical content blocks, conversation history, tool results — only ever stores <code>file_id</code>. This is the same principle as a database primary key: the ID is stable, the physical storage location is an implementation detail.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 3: THE STORAGE BACKEND CONTRACT                        -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 3 — The Repository</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Abstract Contract</div>
+  <h2>FileStorageBackend — Where Bytes Go To Live</h2>
+
+  <p>Now we define what it means to "store a file" and "retrieve a file" in the abstract. This is the Repository pattern applied to binary objects. The interface says <em>what</em> operations are available; the implementations decide <em>where</em> and <em>how</em>.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "I need five operations: store, retrieve, delete, check-exists, and generate a URL. That last one is important — URL generation is backend-specific. A local backend returns a path-based URL served by your API. An S3 backend returns a presigned URL. A GCS backend returns a signed URL. The URL shape is fundamentally tied to the storage backend, so it belongs on this interface, not on a separate service."
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">storage/base.py</span>
+      <span class="tg tg-abs">Abstract Contract</span>
+    </div>
+    <pre><span class="k">from</span> abc <span class="k">import</span> ABC, abstractmethod
+
+
+<span class="k">class</span> <span class="t">FileStorageBackend</span>(ABC):
+    <span class="s">"""Abstract repository for binary file storage.
+    
+    Implementors handle the actual byte persistence — local disk, S3,
+    GCS, Azure Blob, etc. The rest of the system interacts with files
+    only through file_id references and this interface.
+    
+    Contract guarantees:
+      - store() returns FileMetadata with storage_* fields populated
+      - retrieve() returns raw bytes given a file_id
+      - get_url() returns a consumer-ready URL (presigned if needed)
+      - All operations are async for I/O-bound backends
+    """</span>
+
+    <span class="c"># ─── Core Operations ───</span>
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">store</span>(
+        <span class="p">self</span>,
+        <span class="p">file_id</span>: str,
+        <span class="p">filename</span>: str,
+        <span class="p">content</span>: bytes,
+        <span class="p">agent_uuid</span>: str,
+        <span class="p">mime_type</span>: str = <span class="s">""</span>,
+    ) -> <span class="t">FileMetadata</span>:
+        <span class="s">"""Store file bytes. Return metadata with storage location populated.
+        
+        The backend decides the storage_key (path/object name) internally.
+        The caller provides the file_id — it is the stable identity.
+        """</span>
+        ...
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">retrieve</span>(<span class="p">self</span>, <span class="p">file_id</span>: str, <span class="p">agent_uuid</span>: str) -> bytes:
+        <span class="s">"""Retrieve raw file bytes by file_id.
+        
+        Raises FileNotFoundError if the file doesn't exist.
+        """</span>
+        ...
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">delete</span>(<span class="p">self</span>, <span class="p">file_id</span>: str, <span class="p">agent_uuid</span>: str) -> bool:
+        <span class="s">"""Delete a file's bytes from storage. Return True if deleted."""</span>
+        ...
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">exists</span>(<span class="p">self</span>, <span class="p">file_id</span>: str, <span class="p">agent_uuid</span>: str) -> bool:
+        <span class="s">"""Check whether a file exists in this backend."""</span>
+        ...
+
+    <span class="c"># ─── URL Generation (backend-specific) ───</span>
+
+<span class="hl">    <span class="d">@abstractmethod</span></span>
+<span class="hl">    <span class="k">async def</span> <span class="f">get_url</span>(</span>
+<span class="hl">        <span class="p">self</span>,</span>
+<span class="hl">        <span class="p">file_id</span>: str,</span>
+<span class="hl">        <span class="p">agent_uuid</span>: str,</span>
+<span class="hl">        <span class="p">expires_in</span>: int = 3600,</span>
+<span class="hl">    ) -> str:</span>
+        <span class="s">"""Generate a consumer-ready URL for this file.
+        
+        For local backends: returns an API-served path like /files/{file_id}
+        For S3: returns a presigned URL valid for `expires_in` seconds
+        For GCS: returns a signed URL
+        
+        This is the one method that turns the abstract file_id into
+        something the frontend or another service can actually fetch.
+        """</span>
+        ...
+
+    <span class="c"># ─── Lifecycle Helpers (optional overrides) ───</span>
+
+    <span class="k">async def</span> <span class="f">cleanup_expired</span>(<span class="p">self</span>, <span class="p">agent_uuid</span>: str) -> int:
+        <span class="s">"""Delete files past their expiry. Return count deleted.
+        Default: no-op (override for backends that support TTL).
+        """</span>
+        <span class="k">return</span> 0
+
+    <span class="k">async def</span> <span class="f">cleanup_agent</span>(<span class="p">self</span>, <span class="p">agent_uuid</span>: str) -> int:
+        <span class="s">"""Delete ALL files for an agent session. Return count deleted.
+        Called when an agent session is terminated/archived.
+        """</span>
+        <span class="k">return</span> 0</pre>
+  </div>
+
+  <p>Two design decisions here are worth calling out explicitly.</p>
+
+  <p>First, <code>get_url()</code> lives on the backend, not on a separate "URL service." The reason is that URL shape is inextricably tied to storage type. A local backend's URL goes through your own API server. An S3 URL is a presigned Amazon URL. A GCS URL is a Google signed URL. No amount of abstraction can make these identical — the backend <em>is</em> the authority on how to generate its own URLs. Trying to put URL generation elsewhere just creates a second class that needs to know which backend is active, duplicating the dispatch logic.</p>
+
+  <p>Second, <code>agent_uuid</code> appears on every method. Files are namespaced to agent sessions. This is critical for cleanup (when a session ends, you can delete all its files), for security (an agent can't access another agent's files), and for storage layout (each agent's files can live in a separate prefix/directory).</p>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 4: CONCRETE BACKENDS                                   -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 4 — Implementations</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Concrete Backends</div>
+  <h2>Local Disk and S3 — Same Interface, Different Worlds</h2>
+
+  <h3>Implementation A: Local Filesystem</h3>
+
+  <p>The local backend is the simplest. It's what you use in development and single-server deployments. Files go into a directory, organized by agent UUID.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">storage/local.py</span>
+      <span class="tg tg-impl">Local Backend</span>
+    </div>
+    <pre><span class="k">import</span> hashlib, os, aiofiles
+
+<span class="k">class</span> <span class="t">LocalFileBackend</span>(<span class="t">FileStorageBackend</span>):
+    <span class="s">"""Stores files on the local filesystem.
+    
+    Layout: {base_dir}/{agent_uuid}/{file_id}/{filename}
+    This nested layout makes per-agent cleanup a simple rmtree.
+    """</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>, <span class="p">base_dir</span>: str, <span class="p">serve_url_prefix</span>: str = <span class="s">"/api/files"</span>):
+        self.base_dir = base_dir
+        self.serve_url_prefix = serve_url_prefix
+
+    <span class="k">def</span> <span class="f">_path</span>(<span class="p">self</span>, <span class="p">agent_uuid</span>: str, <span class="p">file_id</span>: str, <span class="p">filename</span>: str = <span class="s">""</span>) -> str:
+        <span class="k">return</span> os.path.join(self.base_dir, agent_uuid, file_id, filename)
+
+    <span class="k">async def</span> <span class="f">store</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">filename</span>, <span class="p">content</span>, <span class="p">agent_uuid</span>, <span class="p">mime_type</span>=<span class="s">""</span>) -> <span class="t">FileMetadata</span>:
+        dir_path = self._path(agent_uuid, file_id)
+        os.makedirs(dir_path, exist_ok=<span class="k">True</span>)
+
+        file_path = os.path.join(dir_path, filename)
+        <span class="k">async with</span> aiofiles.open(file_path, <span class="s">"wb"</span>) <span class="k">as</span> f:
+            <span class="k">await</span> f.write(content)
+
+        <span class="k">return</span> FileMetadata(
+            file_id=file_id,
+            filename=filename,
+            mime_type=mime_type,
+            size_bytes=len(content),
+            checksum=hashlib.sha256(content).hexdigest(),
+            agent_uuid=agent_uuid,
+<span class="hl">            storage_backend=<span class="s">"local"</span>,</span>
+<span class="hl">            storage_key=file_path,  <span class="c"># Full filesystem path</span></span>
+        )
+
+    <span class="k">async def</span> <span class="f">retrieve</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>) -> bytes:
+        <span class="c"># Find the file in the file_id directory</span>
+        dir_path = self._path(agent_uuid, file_id)
+        <span class="k">if not</span> os.path.isdir(dir_path):
+            <span class="k">raise</span> FileNotFoundError(<span class="k">f</span><span class="s">"No file with id {file_id}"</span>)
+        entries = os.listdir(dir_path)
+        <span class="k">if not</span> entries:
+            <span class="k">raise</span> FileNotFoundError(<span class="k">f</span><span class="s">"Empty directory for {file_id}"</span>)
+        <span class="k">async with</span> aiofiles.open(os.path.join(dir_path, entries[0]), <span class="s">"rb"</span>) <span class="k">as</span> f:
+            <span class="k">return await</span> f.read()
+
+<span class="hl">    <span class="k">async def</span> <span class="f">get_url</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>, <span class="p">expires_in</span>=3600) -> str:</span>
+<span class="hl">        <span class="c"># Local: route through the API server's file-serving endpoint</span></span>
+<span class="hl">        <span class="k">return</span> <span class="k">f</span><span class="s">"{self.serve_url_prefix}/{agent_uuid}/{file_id}"</span></span>
+
+    <span class="k">async def</span> <span class="f">delete</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>) -> bool:
+        <span class="k">import</span> shutil
+        dir_path = self._path(agent_uuid, file_id)
+        <span class="k">if</span> os.path.isdir(dir_path):
+            shutil.rmtree(dir_path)
+            <span class="k">return True</span>
+        <span class="k">return False</span>
+
+    <span class="k">async def</span> <span class="f">exists</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>) -> bool:
+        <span class="k">return</span> os.path.isdir(self._path(agent_uuid, file_id))
+
+    <span class="k">async def</span> <span class="f">cleanup_agent</span>(<span class="p">self</span>, <span class="p">agent_uuid</span>) -> int:
+        <span class="k">import</span> shutil
+        agent_dir = os.path.join(self.base_dir, agent_uuid)
+        <span class="k">if</span> os.path.isdir(agent_dir):
+            count = len(os.listdir(agent_dir))
+            shutil.rmtree(agent_dir)
+            <span class="k">return</span> count
+        <span class="k">return</span> 0</pre>
+  </div>
+
+  <h3>Implementation B: Amazon S3</h3>
+
+  <p>The S3 backend is what you use in production and multi-replica deployments. Files are objects in a bucket, and URLs are presigned for time-limited access.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">storage/s3.py</span>
+      <span class="tg tg-impl">S3 Backend</span>
+    </div>
+    <pre><span class="k">import</span> hashlib
+<span class="k">from</span> aiobotocore.session <span class="k">import</span> get_session
+
+<span class="k">class</span> <span class="t">S3FileBackend</span>(<span class="t">FileStorageBackend</span>):
+    <span class="s">"""Stores files in an S3 bucket.
+    
+    Object key layout: {prefix}/{agent_uuid}/{file_id}/{filename}
+    This mirrors the local layout for consistency.
+    """</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(
+        <span class="p">self</span>,
+        <span class="p">bucket</span>: str,
+        <span class="p">prefix</span>: str = <span class="s">"agent-files"</span>,
+        <span class="p">region</span>: str = <span class="s">"us-east-1"</span>,
+    ):
+        self.bucket = bucket
+        self.prefix = prefix
+        self.region = region
+        self._session = get_session()
+
+    <span class="k">def</span> <span class="f">_key</span>(<span class="p">self</span>, <span class="p">agent_uuid</span>: str, <span class="p">file_id</span>: str, <span class="p">filename</span>: str) -> str:
+        <span class="k">return</span> <span class="k">f</span><span class="s">"{self.prefix}/{agent_uuid}/{file_id}/{filename}"</span>
+
+    <span class="k">async def</span> <span class="f">store</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">filename</span>, <span class="p">content</span>, <span class="p">agent_uuid</span>, <span class="p">mime_type</span>=<span class="s">""</span>) -> <span class="t">FileMetadata</span>:
+        key = self._key(agent_uuid, file_id, filename)
+        
+        <span class="k">async with</span> self._session.create_client(<span class="s">"s3"</span>, region_name=self.region) <span class="k">as</span> s3:
+            <span class="k">await</span> s3.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=content,
+                ContentType=mime_type <span class="k">or</span> <span class="s">"application/octet-stream"</span>,
+            )
+
+        <span class="k">return</span> FileMetadata(
+            file_id=file_id,
+            filename=filename,
+            mime_type=mime_type,
+            size_bytes=len(content),
+            checksum=hashlib.sha256(content).hexdigest(),
+            agent_uuid=agent_uuid,
+<span class="hl">            storage_backend=<span class="s">"s3"</span>,</span>
+<span class="hl">            storage_key=key,          <span class="c"># S3 object key</span></span>
+<span class="hl">            storage_bucket=self.bucket,</span>
+        )
+
+    <span class="k">async def</span> <span class="f">retrieve</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>) -> bytes:
+        <span class="c"># Look up the storage_key from metadata (or reconstruct from listing)</span>
+        <span class="k">async with</span> self._session.create_client(<span class="s">"s3"</span>, region_name=self.region) <span class="k">as</span> s3:
+            <span class="c"># List objects with the file_id prefix to find the filename</span>
+            prefix = <span class="k">f</span><span class="s">"{self.prefix}/{agent_uuid}/{file_id}/"</span>
+            resp = <span class="k">await</span> s3.list_objects_v2(Bucket=self.bucket, Prefix=prefix, MaxKeys=1)
+            contents = resp.get(<span class="s">"Contents"</span>, [])
+            <span class="k">if not</span> contents:
+                <span class="k">raise</span> FileNotFoundError(<span class="k">f</span><span class="s">"No S3 object for {file_id}"</span>)
+            obj = <span class="k">await</span> s3.get_object(Bucket=self.bucket, Key=contents[0][<span class="s">"Key"</span>])
+            <span class="k">return await</span> obj[<span class="s">"Body"</span>].read()
+
+<span class="hl">    <span class="k">async def</span> <span class="f">get_url</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>, <span class="p">expires_in</span>=3600) -> str:</span>
+<span class="hl">        <span class="c"># S3: generate a presigned URL — no auth needed by the consumer</span></span>
+<span class="hl">        prefix = <span class="k">f</span><span class="s">"{self.prefix}/{agent_uuid}/{file_id}/"</span></span>
+<span class="hl">        <span class="k">async with</span> self._session.create_client(<span class="s">"s3"</span>, region_name=self.region) <span class="k">as</span> s3:</span>
+<span class="hl">            resp = <span class="k">await</span> s3.list_objects_v2(Bucket=self.bucket, Prefix=prefix, MaxKeys=1)</span>
+<span class="hl">            key = resp[<span class="s">"Contents"</span>][0][<span class="s">"Key"</span>]</span>
+<span class="hl">            url = <span class="k">await</span> s3.generate_presigned_url(</span>
+<span class="hl">                <span class="s">"get_object"</span>,</span>
+<span class="hl">                Params={<span class="s">"Bucket"</span>: self.bucket, <span class="s">"Key"</span>: key},</span>
+<span class="hl">                ExpiresIn=expires_in,</span>
+<span class="hl">            )</span>
+<span class="hl">        <span class="k">return</span> url</span>
+
+    <span class="c"># ... delete, exists, cleanup_agent follow the same pattern ...</span></pre>
+  </div>
+
+  <!-- Backend comparison diagram -->
+  <div class="dw">
+    <svg viewBox="0 0 760 340" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">SAME INTERFACE, DIFFERENT STORAGE WORLDS</text>
+
+      <!-- Interface at top -->
+      <rect x="220" y="40" width="320" height="52" rx="8" fill="none" stroke="#1c1917" stroke-width="2" stroke-dasharray="8,4"/>
+      <text x="380" y="61" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#94a3b8" letter-spacing="1.5">«ABSTRACT»</text>
+      <text x="380" y="80" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="13" font-weight="600" fill="#1c1917">FileStorageBackend</text>
+
+      <!-- Arrows down -->
+      <line x1="290" y1="92" x2="150" y2="145" stroke="#0d6e6e" stroke-width="1.8"/>
+      <line x1="470" y1="92" x2="610" y2="145" stroke="#0d6e6e" stroke-width="1.8"/>
+      <text x="195" y="125" font-family="Outfit, sans-serif" font-size="9" fill="#0d6e6e" font-weight="600">implements</text>
+      <text x="540" y="125" font-family="Outfit, sans-serif" font-size="9" fill="#0d6e6e" font-weight="600">implements</text>
+
+      <!-- Local Backend -->
+      <rect x="30" y="148" width="240" height="170" rx="8" fill="#0d6e6e" opacity="0.06" stroke="#0d6e6e" stroke-width="1.5"/>
+      <text x="150" y="172" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#0d6e6e">LocalFileBackend</text>
+      <line x1="50" y1="183" x2="250" y2="183" stroke="#0d6e6e" stroke-width="0.5" opacity="0.3"/>
+      <text x="60" y="204" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#475569">store_key:</text>
+      <text x="60" y="222" font-family="JetBrains Mono, monospace" font-size="10" fill="#94a3b8">  /data/abc123/file.png</text>
+      <text x="60" y="248" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#475569">get_url() →</text>
+      <text x="60" y="266" font-family="JetBrains Mono, monospace" font-size="10" fill="#94a3b8">  /api/files/abc123/file_x</text>
+      <text x="60" y="292" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#475569">retrieve() →</text>
+      <text x="60" y="310" font-family="JetBrains Mono, monospace" font-size="10" fill="#94a3b8">  aiofiles.open(path, "rb")</text>
+
+      <!-- S3 Backend -->
+      <rect x="490" y="148" width="240" height="170" rx="8" fill="#6d28d9" opacity="0.06" stroke="#6d28d9" stroke-width="1.5"/>
+      <text x="610" y="172" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#6d28d9">S3FileBackend</text>
+      <line x1="510" y1="183" x2="710" y2="183" stroke="#6d28d9" stroke-width="0.5" opacity="0.3"/>
+      <text x="500" y="204" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#475569">store_key:</text>
+      <text x="500" y="222" font-family="JetBrains Mono, monospace" font-size="10" fill="#94a3b8">  agent-files/abc/file_x/f.png</text>
+      <text x="500" y="248" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#475569">get_url() →</text>
+      <text x="500" y="266" font-family="JetBrains Mono, monospace" font-size="10" fill="#94a3b8">  https://s3...?Sig=...&Exp=</text>
+      <text x="500" y="292" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#475569">retrieve() →</text>
+      <text x="500" y="310" font-family="JetBrains Mono, monospace" font-size="10" fill="#94a3b8">  s3.get_object(Bucket, Key)</text>
+
+      <!-- Center label -->
+      <text x="380" y="240" text-anchor="middle" font-family="Newsreader, serif" font-size="14" fill="#94a3b8" font-style="italic">Same file_id</text>
+      <text x="380" y="260" text-anchor="middle" font-family="Newsreader, serif" font-size="14" fill="#94a3b8" font-style="italic">Different worlds</text>
+    </svg>
+    <div class="dc">Fig 2 — The consumer says file_id; the backend decides where bytes live and how URLs work</div>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 5: THE MEDIA RESOLVER                                  -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 5 — The Resolver</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Bridge Between Identities and Consumers</div>
+  <h2>MediaResolver — Translating file_id Into What Each Consumer Needs</h2>
+
+  <p>We now have a storage backend that can persist and retrieve bytes, and a metadata model that gives files a stable identity. The missing piece is the <strong>resolver</strong> — the service that translates a <code>file_id</code> into whatever format a specific consumer needs. The LLM provider adapter needs base64. The frontend needs a URL. The tool sandbox needs a local path. The conversation log needs just the file_id plus some display metadata.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "This is the Adapter pattern applied to media references. Each consumer has a different 'plug shape' they expect, and the resolver is the travel adapter that converts the universal file_id into the right shape. But it's a thin layer — it delegates to the storage backend for the actual work. It's less of a service and more of a convenience facade."
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">media_resolver.py</span>
+      <span class="tg tg-wire">The Adapter Layer</span>
+    </div>
+    <pre><span class="k">import</span> base64
+
+<span class="k">class</span> <span class="t">MediaResolver</span>:
+    <span class="s">"""Resolves file_id references into consumer-specific formats.
+    
+    This is the single service that all consumers call when they need
+    a file in a specific representation. It knows about the storage
+    backend and the metadata store, and it adapts between them.
+    
+    It is NOT a storage system. It doesn't own bytes. It translates.
+    """</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(
+        <span class="p">self</span>,
+        <span class="p">storage</span>: <span class="t">FileStorageBackend</span>,
+        <span class="p">metadata_store</span>: <span class="t">FileMetadataStore</span>,    <span class="c"># Your DB repository for FileMetadata</span>
+    ):
+        self.storage = storage
+        self.metadata_store = metadata_store
+
+    <span class="c"># ── For the LLM provider adapter (Anthropic, OpenAI, etc.) ──</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">to_base64</span>(<span class="p">self</span>, <span class="p">file_id</span>: str, <span class="p">agent_uuid</span>: str) -> dict:</span>
+        <span class="s">"""Resolve file_id → base64 payload for LLM API requests.
+        
+        Returns a dict ready to be embedded in an API content block:
+          {"data": "iVBORw0K...", "media_type": "image/png"}
+        """</span>
+        meta = <span class="k">await</span> self.metadata_store.get(file_id)
+        raw_bytes = <span class="k">await</span> self.storage.retrieve(file_id, agent_uuid)
+        <span class="k">return</span> {
+            <span class="s">"data"</span>: base64.standard_b64encode(raw_bytes).decode(<span class="s">"utf-8"</span>),
+            <span class="s">"media_type"</span>: meta.mime_type,
+        }
+
+    <span class="c"># ── For the frontend / conversation history ──</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">to_url</span>(<span class="p">self</span>, <span class="p">file_id</span>: str, <span class="p">agent_uuid</span>: str, <span class="p">expires_in</span>: int = 3600) -> str:</span>
+        <span class="s">"""Resolve file_id → consumer-ready URL.
+        
+        Delegates to the storage backend's get_url() which knows whether
+        to return a presigned S3 URL or a local API path.
+        """</span>
+        <span class="k">return await</span> self.storage.get_url(file_id, agent_uuid, expires_in)
+
+    <span class="c"># ── For the conversation log (lightweight reference) ──</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">to_reference</span>(<span class="p">self</span>, <span class="p">file_id</span>: str) -> dict:</span>
+        <span class="s">"""Resolve file_id → display-safe reference for the conversation log.
+        
+        Returns metadata sufficient for the UI to render a preview card
+        without embedding the actual file bytes.
+        """</span>
+        meta = <span class="k">await</span> self.metadata_store.get(file_id)
+        <span class="k">return</span> {
+            <span class="s">"file_id"</span>: meta.file_id,
+            <span class="s">"filename"</span>: meta.filename,
+            <span class="s">"mime_type"</span>: meta.mime_type,
+            <span class="s">"size_bytes"</span>: meta.size_bytes,
+            <span class="s">"url"</span>: <span class="k">await</span> self.storage.get_url(file_id, meta.agent_uuid),
+        }
+
+    <span class="c"># ── Batch resolution (for messages with multiple media blocks) ──</span>
+
+    <span class="k">async def</span> <span class="f">resolve_content_blocks</span>(
+        <span class="p">self</span>,
+        <span class="p">blocks</span>: list,       <span class="c"># List of canonical ContentBlock instances</span>
+        <span class="p">agent_uuid</span>: str,
+        <span class="p">target</span>: str = <span class="s">"base64"</span>,  <span class="c"># "base64" for LLM, "url" for frontend</span>
+    ) -> list:
+        <span class="s">"""Walk a list of ContentBlocks and resolve all file_id references.
+        
+        This is the workhorse method that the LLM provider adapter calls
+        before building an API request, and that the conversation history
+        serializer calls before sending data to the frontend.
+        """</span>
+        resolved = []
+        <span class="k">for</span> block <span class="k">in</span> blocks:
+            <span class="k">if</span> <span class="k">hasattr</span>(block, <span class="s">"source_type"</span>) <span class="k">and</span> block.source_type == SourceType.FILE_ID:
+                <span class="k">if</span> target == <span class="s">"base64"</span>:
+                    payload = <span class="k">await</span> self.to_base64(block.data, agent_uuid)
+                    <span class="c"># Create a new block with resolved data</span>
+                    new_block = type(block)(
+                        source_type=SourceType.BASE64,
+                        media_type=payload[<span class="s">"media_type"</span>],
+                        data=payload[<span class="s">"data"</span>],
+                    )
+                    resolved.append(new_block)
+                <span class="k">elif</span> target == <span class="s">"url"</span>:
+                    url = <span class="k">await</span> self.to_url(block.data, agent_uuid)
+                    new_block = type(block)(
+                        source_type=SourceType.URL,
+                        media_type=block.media_type,
+                        data=url,
+                    )
+                    resolved.append(new_block)
+            <span class="k">else</span>:
+                resolved.append(block)  <span class="c"># Pass through non-media blocks</span>
+        <span class="k">return</span> resolved</pre>
+  </div>
+
+  <p>The key method is <code>resolve_content_blocks()</code>. It walks a list of canonical content blocks and resolves any <code>FILE_ID</code> references to the target format. The LLM provider adapter calls it with <code>target="base64"</code> right before building the API request. The conversation history serializer calls it with <code>target="url"</code> right before sending data to the frontend. The canonical content blocks themselves stay clean — they store <code>file_id</code> references, and resolution happens at the boundary.</p>
+
+  <!-- Full data flow diagram -->
+  <div class="dw">
+    <svg viewBox="0 0 760 420" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">THE COMPLETE FILE LIFECYCLE</text>
+
+      <!-- Row 1: Upload/Creation -->
+      <rect x="30" y="40" width="700" height="68" rx="8" fill="#0d6e6e" opacity="0.05" stroke="#0d6e6e" stroke-width="1" stroke-dasharray="6,4"/>
+      <text x="50" y="60" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#0d6e6e" letter-spacing="1.5">INGEST</text>
+
+      <rect x="50" y="70" width="130" height="28" rx="5" fill="#0d6e6e" opacity="0.12" stroke="#0d6e6e" stroke-width="1"/>
+      <text x="115" y="89" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#0d6e6e">User Upload</text>
+
+      <rect x="200" y="70" width="130" height="28" rx="5" fill="#0d6e6e" opacity="0.12" stroke="#0d6e6e" stroke-width="1"/>
+      <text x="265" y="89" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#0d6e6e">Tool Output</text>
+
+      <rect x="350" y="70" width="130" height="28" rx="5" fill="#0d6e6e" opacity="0.12" stroke="#0d6e6e" stroke-width="1"/>
+      <text x="415" y="89" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#0d6e6e">Sub-Agent File</text>
+
+      <text x="530" y="88" font-family="Outfit, sans-serif" font-size="14" fill="#aaa">→</text>
+
+      <rect x="560" y="65" width="150" height="36" rx="6" fill="#0d6e6e" opacity="0.15" stroke="#0d6e6e" stroke-width="1.5"/>
+      <text x="635" y="82" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600" fill="#0d6e6e">storage.store()</text>
+      <text x="635" y="95" text-anchor="middle" font-family="Newsreader, serif" font-size="10" fill="#475569">→ FileMetadata</text>
+
+      <!-- Row 2: Storage + Metadata -->
+      <rect x="30" y="124" width="700" height="75" rx="8" fill="#6d28d9" opacity="0.04" stroke="#6d28d9" stroke-width="1" stroke-dasharray="6,4"/>
+      <text x="50" y="144" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#6d28d9" letter-spacing="1.5">PERSIST</text>
+
+      <rect x="130" y="155" width="200" height="34" rx="6" fill="#6d28d9" opacity="0.1" stroke="#6d28d9" stroke-width="1.5"/>
+      <text x="230" y="177" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" font-weight="500" fill="#6d28d9">Storage Backend (bytes)</text>
+
+      <rect x="430" y="155" width="230" height="34" rx="6" fill="#6d28d9" opacity="0.1" stroke="#6d28d9" stroke-width="1.5"/>
+      <text x="545" y="177" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" font-weight="500" fill="#6d28d9">Metadata Store (DB record)</text>
+
+      <!-- Row 3: Canonical Reference -->
+      <rect x="30" y="215" width="700" height="55" rx="8" fill="#475569" opacity="0.04" stroke="#475569" stroke-width="1" stroke-dasharray="6,4"/>
+      <text x="50" y="235" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#475569" letter-spacing="1.5">REFERENCE</text>
+
+      <rect x="190" y="240" width="380" height="24" rx="5" fill="#475569" opacity="0.1"/>
+      <text x="380" y="257" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#475569">ImageContent(source_type=FILE_ID, data="file_abc123")</text>
+
+      <!-- Row 4: Resolution -->
+      <rect x="30" y="286" width="700" height="120" rx="8" fill="#b45309" opacity="0.04" stroke="#b45309" stroke-width="1" stroke-dasharray="6,4"/>
+      <text x="50" y="306" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#b45309" letter-spacing="1.5">RESOLVE (at the boundary)</text>
+
+      <rect x="50" y="316" width="200" height="76" rx="6" fill="#9f1239" opacity="0.06" stroke="#9f1239" stroke-width="1.2"/>
+      <text x="150" y="338" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#9f1239">LLM Provider Adapter</text>
+      <text x="150" y="357" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">resolver.to_base64()</text>
+      <text x="150" y="378" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#94a3b8" font-style="italic">→ inline bytes for API</text>
+
+      <rect x="280" y="316" width="200" height="76" rx="6" fill="#0d6e6e" opacity="0.06" stroke="#0d6e6e" stroke-width="1.2"/>
+      <text x="380" y="338" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#0d6e6e">Frontend Serializer</text>
+      <text x="380" y="357" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">resolver.to_url()</text>
+      <text x="380" y="378" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#94a3b8" font-style="italic">→ presigned/served URL</text>
+
+      <rect x="510" y="316" width="200" height="76" rx="6" fill="#6d28d9" opacity="0.06" stroke="#6d28d9" stroke-width="1.2"/>
+      <text x="610" y="338" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#6d28d9">Conversation Log</text>
+      <text x="610" y="357" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">resolver.to_reference()</text>
+      <text x="610" y="378" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#94a3b8" font-style="italic">→ lightweight metadata</text>
+    </svg>
+    <div class="dc">Fig 3 — Files are ingested once, stored once, referenced by file_id, resolved at the boundary</div>
+  </div>
+
+  <div class="ins violet">
+    <span class="il">💡 Why Resolution Happens at the Boundary</span>
+    <p>A common mistake is resolving file references eagerly — converting file_id to base64 the moment you create the content block. But that couples the canonical model to a specific consumer's format. If you resolve lazily at the boundary, the same <code>ImageContent(source_type=FILE_ID)</code> block can be projected into base64 for the LLM, a URL for the frontend, or a lightweight metadata dict for the conversation log, depending on who's consuming it and when. This is the same dual-projection insight from the tool result envelope pattern, applied to media references.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 6: WIRING IT TOGETHER                                  -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 6 — Composition</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Composition Root</div>
+  <h2>Wiring It All Together at Startup</h2>
+
+  <p>As with every pattern-based system, there is one place that knows about the concrete implementations and wires them together. This is the composition root — your <code>main.py</code> or dependency injection configuration.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">main.py</span>
+      <span class="tg tg-wire">Composition Root</span>
+    </div>
+    <pre><span class="k">from</span> config <span class="k">import</span> Settings
+
+<span class="k">def</span> <span class="f">create_file_system</span>(<span class="p">settings</span>: Settings):
+    <span class="s">"""Factory: build the entire file subsystem from config."""</span>
+
+    <span class="c"># ── Pick the storage backend from config ──</span>
+<span class="hl">    <span class="k">match</span> settings.file_storage_backend:</span>
+<span class="hl">        <span class="k">case</span> <span class="s">"local"</span>:</span>
+<span class="hl">            storage = LocalFileBackend(</span>
+<span class="hl">                base_dir=settings.local_storage_path,</span>
+<span class="hl">                serve_url_prefix=settings.file_serve_prefix,</span>
+<span class="hl">            )</span>
+<span class="hl">        <span class="k">case</span> <span class="s">"s3"</span>:</span>
+<span class="hl">            storage = S3FileBackend(</span>
+<span class="hl">                bucket=settings.s3_bucket,</span>
+<span class="hl">                prefix=settings.s3_prefix,</span>
+<span class="hl">                region=settings.s3_region,</span>
+<span class="hl">            )</span>
+<span class="hl">        <span class="k">case</span> _:</span>
+<span class="hl">            <span class="k">raise</span> ValueError(<span class="k">f</span><span class="s">"Unknown backend: {settings.file_storage_backend}"</span>)</span>
+
+    <span class="c"># ── Build the metadata store (always a DB, regardless of byte storage) ──</span>
+    metadata_store = PostgresFileMetadataStore(settings.database_url)
+
+    <span class="c"># ── Compose the resolver ──</span>
+    resolver = MediaResolver(storage=storage, metadata_store=metadata_store)
+
+    <span class="k">return</span> storage, metadata_store, resolver
+
+
+<span class="c"># ── In your .env or settings: ──</span>
+<span class="c"># FILE_STORAGE_BACKEND=local         # Development</span>
+<span class="c"># FILE_STORAGE_BACKEND=s3            # Production</span>
+<span class="c"># S3_BUCKET=my-client-bucket-eu      # Enterprise client's own bucket</span></pre>
+  </div>
+
+  <p>The enterprise compliance requirement from the Monday breakage? It's now a one-line config change. The client provides their S3 bucket name, you point the config at it, and their files never touch your infrastructure. The code doesn't change. The resolver doesn't change. The canonical model doesn't change. Only the bytes flow to a different location.</p>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 7: TESTING                                              -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 7 — Testing</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Payoff</div>
+  <h2>In-Memory Backend for Testing</h2>
+
+  <p>The pattern's real payoff is testability. You don't need Docker, S3 emulators, or temp directories. You write a <code>MemoryFileBackend</code> that stores bytes in a dictionary and run your entire test suite in milliseconds.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">storage/memory.py</span>
+      <span class="tg tg-test">Test Backend</span>
+    </div>
+    <pre><span class="k">class</span> <span class="t">MemoryFileBackend</span>(<span class="t">FileStorageBackend</span>):
+    <span class="s">"""In-memory backend for unit tests. No I/O, no cleanup."""</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>):
+        self._store: dict[str, bytes] = {}         <span class="c"># file_id → bytes</span>
+        self._meta: dict[str, FileMetadata] = {}   <span class="c"># file_id → metadata</span>
+
+    <span class="k">async def</span> <span class="f">store</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">filename</span>, <span class="p">content</span>, <span class="p">agent_uuid</span>, <span class="p">mime_type</span>=<span class="s">""</span>) -> <span class="t">FileMetadata</span>:
+        self._store[file_id] = content
+        meta = FileMetadata(
+            file_id=file_id, filename=filename, mime_type=mime_type,
+            size_bytes=len(content), agent_uuid=agent_uuid,
+            storage_backend=<span class="s">"memory"</span>, storage_key=file_id,
+        )
+        self._meta[file_id] = meta
+        <span class="k">return</span> meta
+
+    <span class="k">async def</span> <span class="f">retrieve</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>) -> bytes:
+        <span class="k">if</span> file_id <span class="k">not in</span> self._store:
+            <span class="k">raise</span> FileNotFoundError(file_id)
+        <span class="k">return</span> self._store[file_id]
+
+    <span class="k">async def</span> <span class="f">get_url</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>, <span class="p">expires_in</span>=3600) -> str:
+        <span class="k">return</span> <span class="k">f</span><span class="s">"memory://{file_id}"</span>   <span class="c"># Fake URL for assertions</span>
+
+    <span class="k">async def</span> <span class="f">exists</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>) -> bool:
+        <span class="k">return</span> file_id <span class="k">in</span> self._store
+
+    <span class="k">async def</span> <span class="f">delete</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>) -> bool:
+        <span class="k">return</span> self._store.pop(file_id, <span class="k">None</span>) <span class="k">is not None</span></pre>
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">test_media_flow.py</span>
+      <span class="tg tg-test">Unit Test</span>
+    </div>
+    <pre><span class="k">import</span> pytest
+
+<span class="d">@pytest.mark.asyncio</span>
+<span class="k">async def</span> <span class="f">test_store_and_resolve_to_base64</span>():
+    <span class="c"># No S3. No filesystem. No Docker. Just a dictionary.</span>
+    backend = MemoryFileBackend()
+    meta_store = MemoryMetadataStore()
+    resolver = MediaResolver(storage=backend, metadata_store=meta_store)
+
+    <span class="c"># Simulate a user uploading an image</span>
+    fake_png = <span class="k">b</span><span class="s">"\x89PNG\r\n\x1a\n"</span> + <span class="k">b</span><span class="s">"\x00"</span> * 100
+    meta = <span class="k">await</span> backend.store(
+        file_id=<span class="s">"file_test123"</span>, filename=<span class="s">"cat.png"</span>,
+        content=fake_png, agent_uuid=<span class="s">"agent_001"</span>, mime_type=<span class="s">"image/png"</span>,
+    )
+    <span class="k">await</span> meta_store.save(meta)
+
+<span class="hl">    <span class="c"># Resolve for the LLM — should get base64</span></span>
+<span class="hl">    b64_payload = <span class="k">await</span> resolver.to_base64(<span class="s">"file_test123"</span>, <span class="s">"agent_001"</span>)</span>
+<span class="hl">    <span class="k">assert</span> b64_payload[<span class="s">"media_type"</span>] == <span class="s">"image/png"</span></span>
+<span class="hl">    <span class="k">assert</span> len(b64_payload[<span class="s">"data"</span>]) > 0  <span class="c"># Base64-encoded bytes</span></span>
+
+<span class="hl">    <span class="c"># Resolve for the frontend — should get a URL</span></span>
+<span class="hl">    url = <span class="k">await</span> resolver.to_url(<span class="s">"file_test123"</span>, <span class="s">"agent_001"</span>)</span>
+<span class="hl">    <span class="k">assert</span> <span class="s">"file_test123"</span> <span class="k">in</span> url</span>
+
+    <span class="c"># Same file, same identity, different representations ✓</span></pre>
+  </div>
+
+  <div class="ins teal">
+    <span class="il">✅ The Litmus Test</span>
+    <p>Three questions to verify the factoring is right. <em>"If I add a new storage backend (GCS), how many files do I touch?"</em> One — the new backend implementation. <em>"If I add a new consumer format (e.g., a thumbnail URL), how many files do I touch?"</em> One — add a method to <code>MediaResolver</code>. <em>"If I change the file identity scheme (e.g., content-addressed hashing), how many files do I touch?"</em> One — the <code>FileMetadata</code> model and the ID generation logic. Each axis of change is isolated.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- EPILOGUE                                                        -->
+<!-- ================================================================ -->
+<div class="chap"><span>Interlude — The Architecture So Far</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Reflection</div>
+  <h2>Naming the Patterns We Discovered</h2>
+
+  <p>As before, we didn't start with patterns — we started with three breakages in one week. The patterns emerged from resolving the specific tensions. Let's name them.</p>
+
+  <table class="ctbl">
+    <thead>
+      <tr>
+        <th>Pattern</th>
+        <th>Where</th>
+        <th>What It Resolves</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Repository</strong></td>
+        <td><code>FileStorageBackend</code></td>
+        <td>Abstracts where bytes live. Local disk, S3, GCS, memory — the rest of the system doesn't know or care.</td>
+      </tr>
+      <tr>
+        <td><strong>Identity Map</strong></td>
+        <td><code>FileMetadata</code> + <code>file_id</code></td>
+        <td>Separates a file's stable identity from its physical location. The same file_id works regardless of which backend stores the bytes.</td>
+      </tr>
+      <tr>
+        <td><strong>Adapter / Resolver</strong></td>
+        <td><code>MediaResolver</code></td>
+        <td>Translates the universal file_id reference into consumer-specific formats (base64, URL, metadata dict). Each consumer gets its own "plug shape."</td>
+      </tr>
+      <tr>
+        <td><strong>Lazy Resolution</strong></td>
+        <td><code>source_type=FILE_ID</code> in content blocks</td>
+        <td>Content blocks store abstract references, not concrete data. Resolution to base64/URL happens at the boundary when a specific consumer needs it, not at creation time.</td>
+      </tr>
+      <tr>
+        <td><strong>Composition Root</strong></td>
+        <td><code>create_file_system()</code></td>
+        <td>One function that wires the concrete backend choice from config. Change storage for an entire deployment with one environment variable.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="ins amber">
+    <span class="il">🔑 The Unifying Insight</span>
+    <p>Everything in this system flows from one principle: <strong>separate identity from location from representation</strong>. The <code>file_id</code> is the identity — immutable, universal, stored everywhere. The storage backend manages the location — where bytes physically sit. The resolver manages the representation — how each consumer sees the file. These three concerns change for different reasons, at different times, triggered by different events. Braiding them together (as the naive version did) means every change affects everything. Separating them means each change is local.</p>
+  </div>
+</section>
+
+</div>
+
+
+<!-- ================================================================ -->
+<!-- PART II                                                         -->
+<!-- ================================================================ -->
+
+<div class="part-div">
+  Part II
+  <h2>Streams &amp; Caches</h2>
+</div>
+
+<div class="content">
+
+<!-- ================================================================ -->
+<!-- PROLOGUE: TWO CRASHES                                          -->
+<!-- ================================================================ -->
+<section class="entry">
+  <div class="entry-tag">The Incident Report</div>
+  <h2>Monday Morning: Two Problems Wearing the Same Disguise</h2>
+
+  <p>Your media backend from Part I works beautifully for profile pictures, small tool screenshots, and short documents. Then a user uploads a 340MB engineering schematic PDF, and a separate user's agent tries to <code>grep</code> through a 50MB log file stored on S3. Both operations fail, but for completely different reasons that expose two latent weaknesses in the architecture.</p>
+
+  <p>The PDF upload crashes the API server. Your <code>store()</code> method accepts <code>bytes</code>, which means the entire 340MB file must sit in Python process memory at once. The ASGI server reads the upload body into RAM, your endpoint reads it again into a bytes object, and you pass that to the storage backend which reads it <em>again</em> to compute the SHA-256 checksum. For a brief, catastrophic moment, you have three copies of a 340MB file in memory — over a gigabyte of RAM consumed by a single upload. The OOM killer intervenes.</p>
+
+  <div class="mem-bar">
+    <div style="width:30%; background: #0d6e6e;">Upload body (340MB)</div>
+    <div style="width:30%; background: #6d28d9;">bytes object (340MB)</div>
+    <div style="width:30%; background: #9f1239;">checksum buffer (340MB)</div>
+    <div style="width:10%; background: #1c1917; color: #f87171;">OOM</div>
+  </div>
+
+  <p>The grep operation doesn't crash — it just takes 12 seconds. The <code>file_read</code> tool calls <code>storage.retrieve(file_id)</code>, which downloads the entire 50MB from S3 into memory, writes it to a temp file, then <code>grep</code> reads that file. Next tool call: <code>file_read</code> on the same file — another 12-second download. The agent does this eight times during a single turn, spending 96 seconds on I/O for a file it already downloaded on the first call.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "These are two separate problems. The upload crash is about memory pressure — I'm holding entire files in memory as bytes objects, which doesn't scale. The grep latency is about I/O locality — tools need files to be locally available, but my storage backend might be in another datacenter. The first problem needs streaming. The second needs caching. Let me tackle them separately."
+  </div>
+
+  <div class="ins red">
+    <span class="il">The Two Problems</span>
+    <p><strong>Problem 1 (Memory):</strong> The <code>store(content: bytes)</code> signature forces the entire file into process memory. For large files, this means multiple copies in RAM simultaneously, leading to OOM crashes. We need a streaming interface that never holds the full file in memory. <strong>Problem 2 (Latency):</strong> Tools that operate on files (read, write, grep, patch) need filesystem-level access. When storage is remote (S3), every tool invocation pays the full download cost, even for files already downloaded seconds ago. We need a local cache that materializes remote files on first access and serves them from disk on subsequent accesses.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 8: UNDERSTANDING THE BYTES PROBLEM                     -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 8 — The Bytes Problem</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Reasoning About Memory</div>
+  <h2>Why <code>bytes</code> Works Until It Doesn't</h2>
+
+  <p>Before we jump to solutions, let's understand exactly what Python gives us to work with. The standard library has a hierarchy of file-like abstractions, and knowing the trade-offs between them is what separates a fix that works from a fix that's appropriate.</p>
+
+  <p><code>bytes</code> is the simplest — an immutable blob in memory. It's perfect when the entire content fits comfortably in RAM (say, under 10MB). Your tool result screenshots, small CSVs, and agent-generated code files are all fine as bytes. The problem only appears when a single file's size becomes a meaningful fraction of your process memory.</p>
+
+  <p><code>BinaryIO</code> is Python's protocol for anything that looks like an open file — it has <code>.read()</code>, <code>.write()</code>, <code>.seek()</code>. It doesn't promise where the bytes live. The backing store could be RAM (via <code>BytesIO</code>), a real file on disk, a network socket, or a temporary file. When you accept <code>BinaryIO</code> instead of <code>bytes</code>, you gain the ability to process data in chunks without holding it all in memory at once.</p>
+
+  <p><code>SpooledTemporaryFile</code> is Python's built-in hybrid. It starts as an in-memory buffer (like <code>BytesIO</code>) and automatically "spills" to a real temp file on disk once it exceeds a configured size threshold. This is clever because small files get the speed of RAM, and large files get the safety of disk, with the crossover happening transparently.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "SpooledTemporaryFile sounds perfect, but I need to think about what I'm actually optimizing for. My concern isn't just 'don't crash on large files.' It's that the upload data arrives as a stream from the HTTP body, gets stored into a backend that might also want a stream (S3's put_object can accept streaming bodies), and gets checksummed along the way. The ideal architecture is a pipeline where bytes flow from source to destination, being checksummed as they pass through, with nothing ever holding the complete file. SpooledTemporaryFile is a buffer, not a pipeline. It's useful, but it's a building block, not the whole solution."
+  </div>
+
+  <!-- Memory comparison diagram -->
+  <div class="dw">
+    <svg viewBox="0 0 760 310" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">MEMORY PROFILES: THREE APPROACHES TO A 340MB FILE</text>
+
+      <!-- Approach A: bytes (all in memory) -->
+      <rect x="20" y="42" width="220" height="250" rx="8" fill="#9f1239" opacity="0.05" stroke="#9f1239" stroke-width="1.5"/>
+      <text x="130" y="66" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#9f1239" letter-spacing="1.5">A: BYTES (current)</text>
+
+      <rect x="40" y="82" width="180" height="20" rx="3" fill="#9f1239" opacity="0.7"/>
+      <text x="130" y="96" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="white">upload body: 340MB</text>
+      <rect x="40" y="108" width="180" height="20" rx="3" fill="#9f1239" opacity="0.5"/>
+      <text x="130" y="122" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="white">bytes obj: 340MB</text>
+      <rect x="40" y="134" width="180" height="20" rx="3" fill="#9f1239" opacity="0.3"/>
+      <text x="130" y="148" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="white">checksum buf: 340MB</text>
+
+      <text x="130" y="180" text-anchor="middle" font-family="Outfit, sans-serif" font-size="12" font-weight="700" fill="#9f1239">Peak: ~1 GB</text>
+      <text x="130" y="200" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Entire file in RAM.</text>
+      <text x="130" y="220" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">OOM on large files.</text>
+      <text x="130" y="248" text-anchor="middle" font-family="Newsreader, serif" font-size="15" fill="#9f1239">Production-unsafe</text>
+
+      <!-- Approach B: SpooledTemporaryFile -->
+      <rect x="270" y="42" width="220" height="250" rx="8" fill="#b45309" opacity="0.05" stroke="#b45309" stroke-width="1.5"/>
+      <text x="380" y="66" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#b45309" letter-spacing="1.5">B: SPOOLED TEMP FILE</text>
+
+      <rect x="290" y="82" width="60" height="20" rx="3" fill="#b45309" opacity="0.7"/>
+      <text x="320" y="96" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="white">10MB</text>
+      <text x="366" y="96" font-family="Newsreader, serif" font-size="11" fill="#475569">in-memory phase</text>
+      <rect x="290" y="108" width="20" height="20" rx="3" fill="#b45309" opacity="0.4"/>
+      <text x="326" y="122" font-family="Newsreader, serif" font-size="11" fill="#475569">spills to disk at 10MB</text>
+      <rect x="290" y="134" width="180" height="14" rx="3" fill="#0d6e6e" opacity="0.2"/>
+      <text x="380" y="145" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="#0d6e6e">disk: 340MB temp file</text>
+
+      <text x="380" y="180" text-anchor="middle" font-family="Outfit, sans-serif" font-size="12" font-weight="700" fill="#b45309">Peak: ~10 MB RAM</text>
+      <text x="380" y="200" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Safe but still buffers</text>
+      <text x="380" y="220" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">the whole file on disk.</text>
+      <text x="380" y="248" text-anchor="middle" font-family="Newsreader, serif" font-size="15" fill="#b45309">Acceptable</text>
+
+      <!-- Approach C: Streaming pipeline -->
+      <rect x="520" y="42" width="220" height="250" rx="8" fill="#0d6e6e" opacity="0.05" stroke="#0d6e6e" stroke-width="1.5"/>
+      <text x="630" y="66" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#0d6e6e" letter-spacing="1.5">C: STREAMING PIPELINE</text>
+
+      <rect x="540" y="82" width="30" height="20" rx="3" fill="#0d6e6e" opacity="0.7"/>
+      <text x="586" y="96" font-family="Newsreader, serif" font-size="11" fill="#475569">64KB chunk buffer</text>
+      <text x="630" y="122" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#475569">source &rarr; checksum &rarr; dest</text>
+      <text x="630" y="142" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#475569">chunk by chunk</text>
+
+      <text x="630" y="180" text-anchor="middle" font-family="Outfit, sans-serif" font-size="12" font-weight="700" fill="#0d6e6e">Peak: ~64 KB RAM</text>
+      <text x="630" y="200" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Constant memory.</text>
+      <text x="630" y="220" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Bytes flow through,</text>
+      <text x="630" y="238" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">never accumulate.</text>
+      <text x="630" y="263" text-anchor="middle" font-family="Newsreader, serif" font-size="15" fill="#0d6e6e">Ideal</text>
+    </svg>
+    <div class="dc">Fig 4 — Memory profiles for three approaches to a 340MB upload</div>
+  </div>
+
+  <div class="ins amber">
+    <span class="il">The Insight: Buffer vs Pipeline</span>
+    <p><code>SpooledTemporaryFile</code> is a <strong>buffer</strong> — it accumulates the entire file (in RAM or on disk) before you can do anything with it. A streaming pipeline is a <strong>flow</strong> — bytes pass through from source to destination, being processed (checksummed, compressed, encrypted) as they move, with only a small chunk in memory at any instant. For the storage backend, we want the pipeline. For the local tool cache (Problem 2), the SpooledTemporaryFile actually turns out to be the perfect building block because we <em>do</em> want the complete file on disk for tools to read from.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 9: THE STREAMING STORAGE INTERFACE                     -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 9 — Streaming Storage</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Evolving the Contract</div>
+  <h2>Updating FileStorageBackend for Streaming I/O</h2>
+
+  <p>The key design decision is that we don't <em>replace</em> the bytes-based interface — we <em>augment</em> it. Small files (tool screenshots, generated code) should still be passable as bytes for convenience. But large files should be passable as streams. The interface accepts a union type and the backend handles both cases internally.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "I need to be careful about the type hierarchy here. In async Python, I can't just use BinaryIO because file reads are blocking. I need an async iteration protocol — something I can `async for chunk in source`. The ASGI request body is already an async iterator of chunks. S3's put_object can accept an async readable body in some clients, or I can use multipart upload with chunked writes. The abstraction I need is: 'something I can read chunks from asynchronously.'"
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">storage/types.py</span>
+      <span class="tg tg-abs">Type Definitions</span>
+    </div>
+    <pre><span class="k">from</span> typing <span class="k">import</span> AsyncIterator, Protocol, Union, runtime_checkable
+
+<span class="c"># The type that represents "something we can read bytes from in chunks"</span>
+<span class="c"># This matches what ASGI gives us, what aiofiles gives us, and what</span>
+<span class="c"># httpx/aiohttp response bodies give us.</span>
+
+<span class="d">@runtime_checkable</span>
+<span class="k">class</span> <span class="t">AsyncByteStream</span>(Protocol):
+    <span class="s">"""Anything that yields bytes chunks asynchronously."""</span>
+    <span class="k">def</span> <span class="f">__aiter__</span>(<span class="p">self</span>) -> <span class="t">AsyncIterator</span>[bytes]: ...
+    <span class="k">async def</span> <span class="f">__anext__</span>(<span class="p">self</span>) -> bytes: ...
+
+<span class="c"># What store() accepts: either complete bytes or an async stream of chunks</span>
+<span class="hl"><span class="t">FileContent</span> = Union[bytes, <span class="t">AsyncByteStream</span>]</span>
+
+<span class="c"># Default chunk size for streaming operations</span>
+<span class="n">DEFAULT_CHUNK_SIZE</span> = 64 * 1024  <span class="c"># 64KB — sweet spot for I/O throughput vs memory</span></pre>
+  </div>
+
+  <p>Now we update the abstract backend to accept <code>FileContent</code> instead of just <code>bytes</code>, and add a streaming retrieval method alongside the existing one.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">storage/base.py</span>
+      <span class="tg tg-v2">Updated Contract</span>
+    </div>
+    <pre><span class="k">class</span> <span class="t">FileStorageBackend</span>(ABC):
+
+    <span class="c"># ─── Store: now accepts bytes OR async stream ───</span>
+
+    <span class="d">@abstractmethod</span>
+<span class="hl">    <span class="k">async def</span> <span class="f">store</span>(</span>
+<span class="hl">        <span class="p">self</span>,</span>
+<span class="hl">        <span class="p">file_id</span>: str,</span>
+<span class="hl">        <span class="p">filename</span>: str,</span>
+<span class="hl">        <span class="p">content</span>: <span class="t">FileContent</span>,          <span class="c"># was: bytes</span></span>
+<span class="hl">        <span class="p">agent_uuid</span>: str,</span>
+<span class="hl">        <span class="p">mime_type</span>: str = <span class="s">""</span>,</span>
+<span class="hl">        <span class="p">size_hint</span>: int | <span class="k">None</span> = <span class="k">None</span>,  <span class="c"># optional: total size if known</span></span>
+<span class="hl">    ) -> <span class="t">FileMetadata</span>:</span>
+        <span class="s">"""Store file content. Accepts bytes (small files) or async stream (large files).
+
+        When content is bytes, the backend can process it directly.
+        When content is an AsyncByteStream, the backend must consume it
+        chunk by chunk, never loading the full content into memory.
+        """</span>
+        ...
+
+    <span class="c"># ─── Retrieve: full bytes (small files) ───</span>
+
+    <span class="d">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">retrieve</span>(<span class="p">self</span>, <span class="p">file_id</span>: str, <span class="p">agent_uuid</span>: str) -> bytes:
+        <span class="s">"""Retrieve full file content. Fine for files &lt; 50MB.
+        For larger files, use retrieve_stream().
+        """</span>
+        ...
+
+    <span class="c"># ─── Retrieve stream: chunked async iteration (large files) ───</span>
+
+<span class="hl">    <span class="d">@abstractmethod</span></span>
+<span class="hl">    <span class="k">async def</span> <span class="f">retrieve_stream</span>(</span>
+<span class="hl">        <span class="p">self</span>, <span class="p">file_id</span>: str, <span class="p">agent_uuid</span>: str, <span class="p">chunk_size</span>: int = DEFAULT_CHUNK_SIZE,</span>
+<span class="hl">    ) -> <span class="t">AsyncIterator</span>[bytes]:</span>
+        <span class="s">"""Retrieve file content as an async stream of chunks.
+
+        The caller iterates: `async for chunk in backend.retrieve_stream(...):`
+        Each chunk is at most chunk_size bytes. Memory usage is O(chunk_size).
+        """</span>
+        ...
+
+    <span class="c"># ... get_url, delete, exists, cleanup — unchanged ...</span></pre>
+  </div>
+
+  <p>The implementation in the local backend shows how the streaming store works in practice. The critical insight is the <strong>tee pattern</strong> — as chunks flow from the source to the destination file, they're simultaneously fed to the SHA-256 hasher, so the checksum is computed in the same pass without ever accumulating the full file in memory.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">storage/local.py</span>
+      <span class="tg tg-impl">Streaming Store</span>
+    </div>
+    <pre><span class="k">class</span> <span class="t">LocalFileBackend</span>(<span class="t">FileStorageBackend</span>):
+
+    <span class="k">async def</span> <span class="f">store</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">filename</span>, <span class="p">content</span>, <span class="p">agent_uuid</span>, <span class="p">mime_type</span>=<span class="s">""</span>, <span class="p">size_hint</span>=<span class="k">None</span>):
+        dir_path = self._path(agent_uuid, file_id)
+        os.makedirs(dir_path, exist_ok=<span class="k">True</span>)
+        file_path = os.path.join(dir_path, filename)
+
+        hasher = hashlib.sha256()
+        total_bytes = 0
+
+<span class="hl">        <span class="k">if isinstance</span>(content, bytes):</span>
+<span class="hl">            <span class="c"># Small file: write in one shot (the common case for tool outputs)</span></span>
+<span class="hl">            hasher.update(content)</span>
+<span class="hl">            total_bytes = len(content)</span>
+<span class="hl">            <span class="k">async with</span> aiofiles.open(file_path, <span class="s">"wb"</span>) <span class="k">as</span> f:</span>
+<span class="hl">                <span class="k">await</span> f.write(content)</span>
+        <span class="k">else</span>:
+            <span class="c"># Large file: stream chunk by chunk. The tee pattern —</span>
+            <span class="c"># each chunk is written to disk AND fed to the hasher</span>
+            <span class="c"># in the same pass. Peak memory: one chunk (~64KB).</span>
+<span class="hl">            <span class="k">async with</span> aiofiles.open(file_path, <span class="s">"wb"</span>) <span class="k">as</span> f:</span>
+<span class="hl">                <span class="k">async for</span> chunk <span class="k">in</span> content:</span>
+<span class="hl">                    hasher.update(chunk)</span>
+<span class="hl">                    total_bytes += len(chunk)</span>
+<span class="hl">                    <span class="k">await</span> f.write(chunk)</span>
+
+        <span class="k">return</span> FileMetadata(
+            file_id=file_id, filename=filename, mime_type=mime_type,
+            size_bytes=total_bytes, checksum=hasher.hexdigest(),
+            agent_uuid=agent_uuid,
+            storage_backend=<span class="s">"local"</span>, storage_key=file_path,
+        )
+
+<span class="hl">    <span class="k">async def</span> <span class="f">retrieve_stream</span>(<span class="p">self</span>, <span class="p">file_id</span>, <span class="p">agent_uuid</span>, <span class="p">chunk_size</span>=DEFAULT_CHUNK_SIZE):</span>
+        <span class="c"># yield chunks from disk — never loads the whole file into memory</span>
+        dir_path = self._path(agent_uuid, file_id)
+        entries = os.listdir(dir_path)
+        <span class="k">if not</span> entries:
+            <span class="k">raise</span> FileNotFoundError(file_id)
+        <span class="k">async with</span> aiofiles.open(os.path.join(dir_path, entries[0]), <span class="s">"rb"</span>) <span class="k">as</span> f:
+            <span class="k">while</span> <span class="k">True</span>:
+                chunk = <span class="k">await</span> f.read(chunk_size)
+                <span class="k">if not</span> chunk:
+                    <span class="k">break</span>
+                <span class="k">yield</span> chunk</pre>
+  </div>
+
+  <div class="ins teal">
+    <span class="il">The Tee Pattern</span>
+    <p>The name comes from the Unix <code>tee</code> command, which reads stdin and writes it to both stdout <em>and</em> a file simultaneously. Here, each chunk of the upload stream is simultaneously written to disk and fed to the SHA-256 hasher. This means that by the time the last byte is written, the checksum is already computed — no second pass over the data required. This same pattern applies to the S3 backend, where chunks can be fed into a multipart upload while being hashed, and to any future backend that supports streaming writes.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 10: THE UPLOAD ENDPOINT                                -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 10 — End-to-End Streaming</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Connecting the Pipeline</div>
+  <h2>From HTTP Body to Storage Backend Without Buffering</h2>
+
+  <p>The streaming backend is only useful if the data actually flows through as a stream from end to end. If your FastAPI endpoint reads the entire request body into memory first, you've defeated the purpose. Here's how to wire the ASGI request body directly into the streaming store.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">routes/upload.py</span>
+      <span class="tg tg-impl">FastAPI Endpoint</span>
+    </div>
+    <pre><span class="k">from</span> starlette.requests <span class="k">import</span> Request
+
+<span class="d">@router.post</span>(<span class="s">"/agent/{agent_uuid}/files"</span>)
+<span class="k">async def</span> <span class="f">upload_file</span>(<span class="p">agent_uuid</span>: str, <span class="p">request</span>: Request):
+    <span class="s">"""Stream-through upload: ASGI body -> storage backend.
+
+    We do NOT use UploadFile here because it buffers the entire body
+    via SpooledTemporaryFile internally. Instead, we read the raw ASGI
+    request body as an async stream and pipe it directly to the backend.
+    """</span>
+    content_type = request.headers.get(<span class="s">"content-type"</span>, <span class="s">""</span>)
+    filename = request.headers.get(<span class="s">"x-filename"</span>, <span class="s">"upload"</span>)
+    file_id = <span class="k">f</span><span class="s">"file_{uuid.uuid4().hex[:16]}"</span>
+
+    <span class="c"># The request body IS an async iterator of bytes chunks.</span>
+    <span class="c"># We can pass it directly to the streaming store.</span>
+<span class="hl">    <span class="k">async def</span> <span class="f">body_stream</span>():</span>
+<span class="hl">        <span class="k">async for</span> chunk <span class="k">in</span> request.stream():</span>
+<span class="hl">            <span class="k">yield</span> chunk</span>
+
+    <span class="c"># Pass the async stream directly to storage — no buffering</span>
+    meta = <span class="k">await</span> storage.store(
+        file_id=file_id,
+        filename=filename,
+<span class="hl">        content=body_stream(),  <span class="c"># async generator, NOT bytes</span></span>
+        agent_uuid=agent_uuid,
+        mime_type=content_type,
+        size_hint=int(request.headers.get(<span class="s">"content-length"</span>, 0)) <span class="k">or</span> <span class="k">None</span>,
+    )
+
+    <span class="c"># Save metadata to DB</span>
+    <span class="k">await</span> metadata_store.save(meta)
+
+    <span class="k">return</span> {<span class="s">"file_id"</span>: meta.file_id, <span class="s">"size"</span>: meta.size_bytes}
+
+
+<span class="c"># For small files from tool results, the simple bytes path still works:</span>
+
+<span class="k">async def</span> <span class="f">store_tool_output</span>(<span class="p">file_bytes</span>: bytes, <span class="p">filename</span>: str, <span class="p">agent_uuid</span>: str):
+    <span class="s">"""Store a small file from a tool result. Uses the bytes path."""</span>
+    file_id = <span class="k">f</span><span class="s">"file_{uuid.uuid4().hex[:16]}"</span>
+    meta = <span class="k">await</span> storage.store(
+        file_id=file_id, filename=filename,
+        content=file_bytes,  <span class="c"># plain bytes, the backend handles it</span>
+        agent_uuid=agent_uuid,
+    )
+    <span class="k">await</span> metadata_store.save(meta)
+    <span class="k">return</span> meta</pre>
+  </div>
+
+  <p>A subtle but important point: we're <em>not</em> using FastAPI's <code>UploadFile</code> parameter here. FastAPI's <code>UploadFile</code> internally uses <code>SpooledTemporaryFile</code>, which means the framework buffers the entire request body before your handler even runs. By dropping down to the raw Starlette <code>Request</code>, we get direct access to the ASGI body stream and can pipe it straight through to the storage backend. For a 340MB file, this is the difference between using ~64KB of RAM and using ~340MB of RAM.</p>
+
+  <div class="th blue">
+    <span class="tl">A caveat worth noting</span>
+    "There's a trade-off here. Using the raw request stream means I can't easily retry the upload if the storage backend fails partway through — the bytes have already been consumed from the network socket and they're gone. For mission-critical uploads, I might want a SpooledTemporaryFile as a local staging buffer after all, especially if the destination is S3 and network errors are likely. The right answer depends on whether I'm optimizing for memory safety (raw stream) or reliability (staged buffer). For most agentic workloads where files are under 100MB, SpooledTemporaryFile with a 10MB threshold is the pragmatic middle ground. For genuinely large files (1GB+), the raw stream with retry-at-the-application-level is the only option."
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 11: THE LOCAL FILE CACHE                                -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 11 — The Local Cache</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Problem 2: Tool Latency</div>
+  <h2>LocalFileCache — Materializing Remote Files for Tool Access</h2>
+
+  <p>Now let's tackle the second problem. Tools like <code>file_read</code>, <code>file_write</code>, <code>grep</code>, and <code>apply_patch</code> need files to exist as real files on the local filesystem. They can't work with S3 object keys or async streams — they need a <code>/path/to/file</code> that they can open, seek, and modify. When your storage backend is remote, you need a caching layer that downloads files on first access and serves them from the local disk on subsequent accesses.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "This is conceptually a read-through cache. The first time a tool asks for a file, the cache downloads it from the storage backend and writes it to a local directory. Every subsequent access within the same agent session returns the local path instantly. The tricky parts are: what happens when a tool <em>modifies</em> a file (write-back to the backend), what happens when the agent session ends (cleanup), and how to handle concurrent access from tools that might be running in parallel."
+  </div>
+
+  <p>The cache is <strong>not</strong> a storage backend. It's a separate layer that sits between tools and the storage backend. Tools interact with the cache to get local filesystem paths. The cache interacts with the storage backend to fetch and sync bytes. This separation is important because the cache has a completely different lifecycle (ephemeral, per-session) and different semantics (read-through, write-back) from the storage backend (durable, shared).</p>
+
+  <div class="dw">
+    <svg viewBox="0 0 760 260" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">WHERE THE LOCAL CACHE SITS IN THE ARCHITECTURE</text>
+
+      <!-- Tool -->
+      <rect x="30" y="50" width="140" height="55" rx="8" fill="#9f1239" opacity="0.1" stroke="#9f1239" stroke-width="1.5"/>
+      <text x="100" y="73" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#9f1239">file_read</text>
+      <text x="100" y="93" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#475569">needs: /path/to/file</text>
+
+      <rect x="30" y="115" width="140" height="55" rx="8" fill="#9f1239" opacity="0.1" stroke="#9f1239" stroke-width="1.5"/>
+      <text x="100" y="138" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#9f1239">grep</text>
+      <text x="100" y="158" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#475569">needs: /path/to/file</text>
+
+      <rect x="30" y="180" width="140" height="55" rx="8" fill="#9f1239" opacity="0.1" stroke="#9f1239" stroke-width="1.5"/>
+      <text x="100" y="203" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#9f1239">apply_patch</text>
+      <text x="100" y="223" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#475569">needs: /path/to/file</text>
+
+      <!-- Arrow: tools -> cache -->
+      <line x1="170" y1="145" x2="250" y2="145" stroke="#be185d" stroke-width="2" marker-end="url(#arrR)"/>
+      <defs>
+        <marker id="arrR" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#be185d"/></marker>
+        <marker id="arrT" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#0d6e6e"/></marker>
+      </defs>
+      <text x="210" y="138" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#be185d">.get_path()</text>
+
+      <!-- Cache -->
+      <rect x="255" y="85" width="210" height="120" rx="10" fill="#be185d" opacity="0.08" stroke="#be185d" stroke-width="2.5"/>
+      <text x="360" y="113" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#be185d" letter-spacing="1.5">LOCAL FILE CACHE</text>
+      <text x="360" y="136" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#1c1917">Read-through</text>
+      <text x="360" y="156" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#1c1917">Write-back</text>
+      <text x="360" y="180" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#475569" font-style="italic">Ephemeral, per-session</text>
+
+      <!-- Arrow: cache -> backend -->
+      <line x1="465" y1="145" x2="545" y2="145" stroke="#0d6e6e" stroke-width="2" marker-end="url(#arrT)"/>
+      <text x="505" y="136" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#0d6e6e">.retrieve()</text>
+      <text x="505" y="160" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#0d6e6e">.store()</text>
+
+      <!-- Backend -->
+      <rect x="550" y="85" width="180" height="120" rx="10" fill="#0d6e6e" opacity="0.08" stroke="#0d6e6e" stroke-width="2"/>
+      <text x="640" y="113" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#0d6e6e" letter-spacing="1.5">STORAGE BACKEND</text>
+      <text x="640" y="140" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="12" fill="#1c1917">S3 / GCS / Local</text>
+      <text x="640" y="180" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#475569" font-style="italic">Durable, shared</text>
+    </svg>
+    <div class="dc">Fig 5 — Tools talk to the cache; the cache talks to the storage backend</div>
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">cache/local_file_cache.py</span>
+      <span class="tg tg-fix">The Cache Layer</span>
+    </div>
+    <pre><span class="k">import</span> asyncio, os, hashlib, shutil, time
+<span class="k">from</span> pathlib <span class="k">import</span> Path
+<span class="k">from</span> dataclasses <span class="k">import</span> dataclass, field
+
+<span class="d">@dataclass</span>
+<span class="k">class</span> <span class="t">CacheEntry</span>:
+    <span class="s">"""Tracks state for a single cached file."""</span>
+    file_id: str
+    local_path: Path
+    is_dirty: bool = <span class="k">False</span>      <span class="c"># True if modified locally since download</span>
+    last_accessed: float = 0.0  <span class="c"># For LRU eviction</span>
+    size_bytes: int = 0
+
+
+<span class="k">class</span> <span class="t">LocalFileCache</span>:
+    <span class="s">"""Read-through, write-back cache that materializes remote files locally.
+
+    Lifecycle:
+      1. Tool calls get_path(file_id) -- cache downloads on first access
+      2. Tool reads/modifies the file at the returned path
+      3. Tool calls mark_dirty(file_id) if it modified the file
+      4. Agent loop calls flush() to write dirty files back to storage
+      5. Agent session end calls cleanup() to delete the cache directory
+
+    Concurrency: Uses asyncio.Lock per file_id to prevent duplicate downloads
+    when multiple tools request the same file simultaneously.
+    """</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(
+        <span class="p">self</span>,
+        <span class="p">storage</span>: <span class="t">FileStorageBackend</span>,
+        <span class="p">metadata_store</span>: <span class="t">FileMetadataStore</span>,
+        <span class="p">cache_dir</span>: str = <span class="s">"/tmp/agent-cache"</span>,
+        <span class="p">max_cache_bytes</span>: int = 2 * 1024**3,  <span class="c"># 2GB default</span>
+    ):
+        self.storage = storage
+        self.metadata_store = metadata_store
+        self.cache_dir = Path(cache_dir)
+        self.max_cache_bytes = max_cache_bytes
+
+        <span class="c"># Internal state</span>
+        self._entries: dict[str, CacheEntry] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._total_bytes: int = 0
+
+    <span class="c"># ─── The primary interface for tools ───</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">get_path</span>(<span class="p">self</span>, <span class="p">file_id</span>: str, <span class="p">agent_uuid</span>: str) -> Path:</span>
+        <span class="s">"""Get a local filesystem path for a file.
+
+        If the file is already cached, returns the path immediately.
+        If not, downloads it from the storage backend first.
+        """</span>
+        <span class="c"># Fast path: already cached</span>
+<span class="hl">        <span class="k">if</span> file_id <span class="k">in</span> self._entries:</span>
+<span class="hl">            entry = self._entries[file_id]</span>
+<span class="hl">            entry.last_accessed = time.monotonic()</span>
+<span class="hl">            <span class="k">return</span> entry.local_path</span>
+
+        <span class="c"># Slow path: need to download. Lock per file_id prevents</span>
+        <span class="c"># duplicate downloads when two tools request the same file.</span>
+        lock = self._locks.setdefault(file_id, asyncio.Lock())
+        <span class="k">async with</span> lock:
+            <span class="c"># Double-check after acquiring lock</span>
+            <span class="k">if</span> file_id <span class="k">in</span> self._entries:
+                <span class="k">return</span> self._entries[file_id].local_path
+
+            <span class="k">return await</span> self._download(file_id, agent_uuid)
+
+    <span class="c"># ─── Internal: download from backend to local cache ───</span>
+
+    <span class="k">async def</span> <span class="f">_download</span>(<span class="p">self</span>, <span class="p">file_id</span>: str, <span class="p">agent_uuid</span>: str) -> Path:
+        <span class="s">"""Download a file from the storage backend into the cache."""</span>
+        meta = <span class="k">await</span> self.metadata_store.get(file_id)
+
+        <span class="c"># Evict old entries if approaching size limit</span>
+        <span class="k">if</span> meta.size_bytes + self._total_bytes > self.max_cache_bytes:
+            <span class="k">await</span> self._evict(meta.size_bytes)
+
+        local_dir = self.cache_dir / agent_uuid / file_id
+        local_dir.mkdir(parents=<span class="k">True</span>, exist_ok=<span class="k">True</span>)
+        local_path = local_dir / meta.filename
+
+        <span class="c"># Stream from backend to local file</span>
+<span class="hl">        <span class="k">async with</span> aiofiles.open(local_path, <span class="s">"wb"</span>) <span class="k">as</span> f:</span>
+<span class="hl">            <span class="k">async for</span> chunk <span class="k">in</span> self.storage.retrieve_stream(file_id, agent_uuid):</span>
+<span class="hl">                <span class="k">await</span> f.write(chunk)</span>
+
+        entry = CacheEntry(
+            file_id=file_id, local_path=local_path,
+            last_accessed=time.monotonic(), size_bytes=meta.size_bytes,
+        )
+        self._entries[file_id] = entry
+        self._total_bytes += meta.size_bytes
+        <span class="k">return</span> local_path
+
+    <span class="c"># ─── Write-back: sync modified files to the backend ───</span>
+
+<span class="hl">    <span class="k">def</span> <span class="f">mark_dirty</span>(<span class="p">self</span>, <span class="p">file_id</span>: str):</span>
+        <span class="s">"""Mark a cached file as modified."""</span>
+        <span class="k">if</span> file_id <span class="k">in</span> self._entries:
+            self._entries[file_id].is_dirty = <span class="k">True</span>
+
+<span class="hl">    <span class="k">async def</span> <span class="f">flush</span>(<span class="p">self</span>, <span class="p">agent_uuid</span>: str):</span>
+        <span class="s">"""Write all dirty files back to the storage backend."""</span>
+        <span class="k">for</span> entry <span class="k">in</span> self._entries.values():
+            <span class="k">if not</span> entry.is_dirty:
+                <span class="k">continue</span>
+
+            <span class="k">async def</span> <span class="f">file_stream</span>():
+                <span class="k">async with</span> aiofiles.open(entry.local_path, <span class="s">"rb"</span>) <span class="k">as</span> f:
+                    <span class="k">while</span> chunk := <span class="k">await</span> f.read(DEFAULT_CHUNK_SIZE):
+                        <span class="k">yield</span> chunk
+
+            <span class="k">await</span> self.storage.store(
+                file_id=entry.file_id, filename=entry.local_path.name,
+                content=file_stream(), agent_uuid=agent_uuid,
+            )
+            entry.is_dirty = <span class="k">False</span>
+
+    <span class="c"># ─── Eviction and cleanup ───</span>
+
+    <span class="k">async def</span> <span class="f">_evict</span>(<span class="p">self</span>, <span class="p">needed_bytes</span>: int):
+        <span class="s">"""Evict least-recently-accessed non-dirty entries."""</span>
+        candidates = sorted(
+            [(fid, e) <span class="k">for</span> fid, e <span class="k">in</span> self._entries.items() <span class="k">if not</span> e.is_dirty],
+            key=<span class="k">lambda</span> x: x[1].last_accessed,
+        )
+        freed = 0
+        <span class="k">for</span> fid, entry <span class="k">in</span> candidates:
+            <span class="k">if</span> freed >= needed_bytes:
+                <span class="k">break</span>
+            <span class="k">if</span> entry.local_path.exists():
+                shutil.rmtree(entry.local_path.parent)
+            freed += entry.size_bytes
+            self._total_bytes -= entry.size_bytes
+            <span class="k">del</span> self._entries[fid]
+
+    <span class="k">async def</span> <span class="f">cleanup</span>(<span class="p">self</span>, <span class="p">agent_uuid</span>: str):
+        <span class="s">"""Flush dirty files, then delete the entire cache."""</span>
+        <span class="k">await</span> self.flush(agent_uuid)
+        agent_cache = self.cache_dir / agent_uuid
+        <span class="k">if</span> agent_cache.exists():
+            shutil.rmtree(agent_cache)</pre>
+  </div>
+
+  <div class="ins rose">
+    <span class="il">Read-Through + Write-Back: The Two-Phase Cache</span>
+    <p>The cache has two complementary behaviors. <strong>Read-through</strong>: when a tool calls <code>get_path()</code> for a file that isn't cached, the cache transparently downloads it from the storage backend, saves it locally, and returns the local path. The tool never knows a download happened. <strong>Write-back</strong>: when a tool modifies a file, it calls <code>mark_dirty()</code>. The agentic loop calls <code>flush()</code> at turn boundaries to sync modified files back to the storage backend. The tool never explicitly uploads — the cache handles it. This means tools can be written as if every file is local, even when the storage backend is S3 in another region.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 12: TOOLS CONSUME THE CACHE                            -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 12 — Tool Integration</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Connecting to the Tool System</div>
+  <h2>How Tools Use the Cache</h2>
+
+  <p>The beauty of the cache abstraction is that tools become extremely simple. They don't think about storage backends, downloads, or uploads. They ask for a path, do their work, and mark the file dirty if they changed it.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">tools/file_tools.py</span>
+      <span class="tg tg-impl">Tool Implementations</span>
+    </div>
+    <pre><span class="k">class</span> <span class="t">FileReadTool</span>(<span class="t">ConfigurableToolBase</span>):
+    <span class="s">"""Read file contents. The tool sees local paths; the cache handles remote files."""</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>, <span class="p">cache</span>: <span class="t">LocalFileCache</span>, <span class="p">agent_uuid</span>: str, **kwargs):
+        <span class="k">super</span>().__init__(**kwargs)
+        self.cache = cache
+        self.agent_uuid = agent_uuid
+
+    <span class="k">def</span> <span class="f">get_tool</span>(<span class="p">self</span>):
+        cache = self.cache
+        agent_uuid = self.agent_uuid
+
+        <span class="k">async def</span> <span class="f">file_read</span>(<span class="p">file_id</span>: str, <span class="p">offset</span>: int = 0, <span class="p">limit</span>: int | <span class="k">None</span> = <span class="k">None</span>) -> str:
+            <span class="s">"""Read the contents of a file."""</span>
+            <span class="c"># Instant if cached; transparently downloads on first access.</span>
+<span class="hl">            path = <span class="k">await</span> cache.get_path(file_id, agent_uuid)</span>
+
+            <span class="k">async with</span> aiofiles.open(path, <span class="s">"r"</span>) <span class="k">as</span> f:
+                lines = <span class="k">await</span> f.readlines()
+
+            <span class="k">if</span> limit:
+                lines = lines[offset:offset + limit]
+            <span class="k">else</span>:
+                lines = lines[offset:]
+
+            <span class="k">return</span> <span class="s">""</span>.join(lines)
+
+        <span class="k">return</span> self._apply_schema(file_read)
+
+
+<span class="k">class</span> <span class="t">FileWriteTool</span>(<span class="t">ConfigurableToolBase</span>):
+
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>, <span class="p">cache</span>: <span class="t">LocalFileCache</span>, <span class="p">agent_uuid</span>: str, **kwargs):
+        <span class="k">super</span>().__init__(**kwargs)
+        self.cache = cache
+        self.agent_uuid = agent_uuid
+
+    <span class="k">def</span> <span class="f">get_tool</span>(<span class="p">self</span>):
+        cache = self.cache
+        agent_uuid = self.agent_uuid
+
+        <span class="k">async def</span> <span class="f">file_write</span>(<span class="p">file_id</span>: str, <span class="p">content</span>: str) -> str:
+            <span class="s">"""Write content to a file."""</span>
+<span class="hl">            path = <span class="k">await</span> cache.get_path(file_id, agent_uuid)</span>
+
+            <span class="k">async with</span> aiofiles.open(path, <span class="s">"w"</span>) <span class="k">as</span> f:
+                <span class="k">await</span> f.write(content)
+
+            <span class="c"># Tell the cache this file was modified</span>
+<span class="hl">            cache.mark_dirty(file_id)</span>
+
+            <span class="k">return</span> <span class="k">f</span><span class="s">"Wrote {len(content)} chars to {file_id}"</span>
+
+        <span class="k">return</span> self._apply_schema(file_write)</pre>
+  </div>
+
+  <p>And in the agentic loop, the cache is flushed at the right points to maintain consistency.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">agent_loop.py</span>
+      <span class="tg tg-wire">Integration Points</span>
+    </div>
+    <pre><span class="k">class</span> <span class="t">AgentLoop</span>:
+    <span class="k">async def</span> <span class="f">run</span>(<span class="p">self</span>):
+        <span class="k">try</span>:
+            <span class="k">while</span> <span class="k">not</span> self.should_stop():
+                <span class="c"># 1. Call the LLM</span>
+                response = <span class="k">await</span> self.call_llm()
+
+                <span class="c"># 2. Process tool calls</span>
+                <span class="k">for</span> tool_call <span class="k">in</span> response.tool_calls:
+                    envelope = <span class="k">await</span> self.execute_tool(tool_call)
+                    <span class="k">await</span> self.handle_tool_result(tool_call, envelope)
+
+                <span class="c"># 3. After tool execution: flush modified files</span>
+<span class="hl">                <span class="k">await</span> self.file_cache.flush(self.agent_uuid)</span>
+
+        <span class="k">finally</span>:
+            <span class="c"># 4. Session end: final flush + cleanup</span>
+<span class="hl">            <span class="k">await</span> self.file_cache.cleanup(self.agent_uuid)</span></pre>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- EPILOGUE: THE COMPLETE PICTURE                                 -->
+<!-- ================================================================ -->
+<div class="chap"><span>Epilogue — The Complete Architecture</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Reflection</div>
+  <h2>How Both Solutions Compose</h2>
+
+  <p>Let's step back and see the complete system. The two solutions — streaming I/O and the local file cache — address different problems but compose cleanly because they both build on the same abstraction: the <code>FileStorageBackend</code> interface with its streaming methods.</p>
+
+  <div class="dw">
+    <svg viewBox="0 0 760 380" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">THE COMPLETE FILE ARCHITECTURE</text>
+
+      <!-- TOP: Ingest -->
+      <rect x="25" y="42" width="345" height="55" rx="8" fill="#0d6e6e" opacity="0.06" stroke="#0d6e6e" stroke-width="1.5"/>
+      <text x="197" y="63" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#0d6e6e" letter-spacing="1">STREAMING INGEST (Problem 1)</text>
+      <text x="197" y="83" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#475569">ASGI body &rarr; async chunks &rarr; backend.store(stream)</text>
+
+      <!-- TOP RIGHT: Direct bytes -->
+      <rect x="390" y="42" width="345" height="55" rx="8" fill="#6d28d9" opacity="0.06" stroke="#6d28d9" stroke-width="1.5"/>
+      <text x="562" y="63" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#6d28d9" letter-spacing="1">SMALL FILE INGEST (unchanged)</text>
+      <text x="562" y="83" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#475569">tool output bytes &rarr; backend.store(bytes)</text>
+
+      <!-- MIDDLE: Storage backend -->
+      <rect x="200" y="120" width="360" height="52" rx="8" fill="#0d6e6e" opacity="0.1" stroke="#0d6e6e" stroke-width="2.5"/>
+      <text x="380" y="143" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="13" font-weight="600" fill="#0d6e6e">FileStorageBackend</text>
+      <text x="380" y="163" text-anchor="middle" font-family="Newsreader, serif" font-size="12" fill="#475569">store(stream|bytes) &middot; retrieve() &middot; retrieve_stream() &middot; get_url()</text>
+
+      <!-- Arrows down from ingest to backend -->
+      <line x1="197" y1="97" x2="310" y2="120" stroke="#0d6e6e" stroke-width="1.5"/>
+      <line x1="562" y1="97" x2="450" y2="120" stroke="#6d28d9" stroke-width="1.5"/>
+
+      <!-- BOTTOM LEFT: MediaResolver -->
+      <rect x="25" y="210" width="230" height="90" rx="8" fill="#b45309" opacity="0.06" stroke="#b45309" stroke-width="1.5"/>
+      <text x="140" y="233" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#b45309" letter-spacing="1">MEDIA RESOLVER</text>
+      <text x="140" y="256" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">to_base64() &rarr; LLM API</text>
+      <text x="140" y="275" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">to_url() &rarr; Frontend</text>
+      <text x="140" y="292" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">to_reference() &rarr; Conv. log</text>
+
+      <line x1="270" y1="172" x2="180" y2="210" stroke="#b45309" stroke-width="1.5"/>
+
+      <!-- BOTTOM RIGHT: Local File Cache -->
+      <rect x="505" y="210" width="230" height="90" rx="8" fill="#be185d" opacity="0.06" stroke="#be185d" stroke-width="1.5"/>
+      <text x="620" y="233" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#be185d" letter-spacing="1">LOCAL FILE CACHE (Problem 2)</text>
+      <text x="620" y="256" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">get_path() &rarr; /local/path</text>
+      <text x="620" y="275" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">mark_dirty() + flush()</text>
+      <text x="620" y="292" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">LRU eviction + cleanup</text>
+
+      <line x1="490" y1="172" x2="580" y2="210" stroke="#be185d" stroke-width="1.5"/>
+
+      <!-- BOTTOM: Consumers -->
+      <rect x="25" y="328" width="100" height="36" rx="5" fill="#1c1917"/>
+      <text x="75" y="350" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" fill="#d4d4d8">LLM API</text>
+
+      <rect x="140" y="328" width="100" height="36" rx="5" fill="#1c1917"/>
+      <text x="190" y="350" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" fill="#d4d4d8">Frontend UI</text>
+
+      <rect x="505" y="328" width="100" height="36" rx="5" fill="#1c1917"/>
+      <text x="555" y="350" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" fill="#d4d4d8">file_read</text>
+
+      <rect x="620" y="328" width="100" height="36" rx="5" fill="#1c1917"/>
+      <text x="670" y="350" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" fill="#d4d4d8">grep / patch</text>
+
+      <line x1="75" y1="300" x2="75" y2="328" stroke="#b45309" stroke-width="1" stroke-dasharray="4,3"/>
+      <line x1="190" y1="300" x2="190" y2="328" stroke="#b45309" stroke-width="1" stroke-dasharray="4,3"/>
+      <line x1="555" y1="300" x2="555" y2="328" stroke="#be185d" stroke-width="1" stroke-dasharray="4,3"/>
+      <line x1="670" y1="300" x2="670" y2="328" stroke="#be185d" stroke-width="1" stroke-dasharray="4,3"/>
+    </svg>
+    <div class="dc">Fig 6 — Streaming ingest, pluggable storage, dual consumers (resolver + cache)</div>
+  </div>
+
+  <h3>The Complete Pattern Catalog</h3>
+
+  <table class="ctbl">
+    <thead>
+      <tr>
+        <th>Pattern</th>
+        <th>Where</th>
+        <th>What It Resolves</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Repository</strong></td>
+        <td><code>FileStorageBackend</code></td>
+        <td>Abstracts where bytes live. Local disk, S3, GCS, memory — the rest of the system doesn't know or care.</td>
+      </tr>
+      <tr>
+        <td><strong>Identity Map</strong></td>
+        <td><code>FileMetadata</code> + <code>file_id</code></td>
+        <td>Separates a file's stable identity from its physical location. The same file_id works regardless of which backend stores the bytes.</td>
+      </tr>
+      <tr>
+        <td><strong>Adapter / Resolver</strong></td>
+        <td><code>MediaResolver</code></td>
+        <td>Translates the universal file_id reference into consumer-specific formats (base64, URL, metadata dict).</td>
+      </tr>
+      <tr>
+        <td><strong>Lazy Resolution</strong></td>
+        <td><code>source_type=FILE_ID</code> in content blocks</td>
+        <td>Content blocks store abstract references, not concrete data. Resolution happens at the boundary.</td>
+      </tr>
+      <tr>
+        <td><strong>Composition Root</strong></td>
+        <td><code>create_file_system()</code></td>
+        <td>One function that wires the concrete backend choice from config.</td>
+      </tr>
+      <tr>
+        <td><strong>Streaming Pipeline (Tee)</strong></td>
+        <td><code>store(stream)</code> with inline checksumming</td>
+        <td>Large file uploads without holding bytes in memory. Source &rarr; checksum &rarr; destination in a single pass.</td>
+      </tr>
+      <tr>
+        <td><strong>Read-Through Cache</strong></td>
+        <td><code>LocalFileCache.get_path()</code></td>
+        <td>Tools get instant local file access. First call downloads transparently; subsequent calls return cached path.</td>
+      </tr>
+      <tr>
+        <td><strong>Write-Back Cache</strong></td>
+        <td><code>mark_dirty()</code> + <code>flush()</code></td>
+        <td>Tools modify files locally; changes are synced to durable storage at turn boundaries.</td>
+      </tr>
+      <tr>
+        <td><strong>Double-Checked Locking</strong></td>
+        <td><code>get_path()</code> lock-per-file_id</td>
+        <td>Prevents duplicate downloads when concurrent tools request the same file.</td>
+      </tr>
+      <tr>
+        <td><strong>Dual Interface</strong></td>
+        <td><code>FileContent = bytes | AsyncByteStream</code></td>
+        <td>Small files keep bytes convenience. Large files get streaming safety. Backend handles both.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="ins amber">
+    <span class="il">The Unifying Insight</span>
+    <p>Everything flows from one principle: <strong>separate identity from location from representation</strong>. The <code>file_id</code> is the identity — immutable, universal. The storage backend manages the location — where bytes sit. The resolver manages the representation — how each consumer sees the file. The cache manages the proximity — making remote bytes locally available. And streaming manages the flow — ensuring bytes move without accumulating. These five concerns change for different reasons, at different times. Braiding them together means every change affects everything. Separating them means each change is local.</p>
+  </div>
+</section>
+
+</div>
+
+<footer class="footer">
+  <p>Bytes should be close to the thing that needs them,<br>
+  and nowhere else. Every copy in memory is a liability.<br>
+  Every round-trip to remote storage is a tax on your agent's reasoning speed.</p>
+</footer>
+
+<script>
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('vis'); });
+}, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.entry').forEach(el => obs.observe(el));
+</script>
+
+</body>
+</html>
