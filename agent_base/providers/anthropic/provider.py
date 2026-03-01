@@ -88,8 +88,12 @@ class AnthropicProvider(Provider):
                     continue
 
                 # Upload to Anthropic Files API
-                content_bytes = await media_backend.retrieve(block.media_id, agent_uuid)
-                if content_bytes is None:
+                try:
+                    chunks: list[bytes] = []
+                    async for chunk in media_backend.retrieve(block.media_id, agent_uuid):
+                        chunks.append(chunk)
+                    content_bytes = b"".join(chunks)
+                except FileNotFoundError:
                     logger.warning(
                         "attachment_media_not_found",
                         media_id=block.media_id,

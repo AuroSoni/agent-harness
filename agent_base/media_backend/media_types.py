@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import os
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agent_base.sandbox.sandbox_types import Sandbox
+    from agent_base.sandbox.sandbox_types import ExportedFileMetadata, Sandbox
+
+MEDIA_READ_CHUNK_SIZE: int = 64 * 1024  # 64KB
+"""Chunk size for streaming media reads/writes."""
 
 
 @dataclass
@@ -97,24 +102,25 @@ class MediaBackend(ABC):
     @abstractmethod
     async def store(
         self,
-        content: bytes,
+        content: AsyncIterator[bytes],
         filename: str,
         mime_type: str,
         agent_uuid: str,
     ) -> MediaMetadata:
-        """Store media bytes and return metadata with a generated media_id.
+        """Store a media byte stream and return metadata with a generated media_id.
 
         The backend generates a new media_id (uuid4 hex) and persists
         the bytes at a backend-specific location.
 
         Args:
-            content: Raw file bytes.
+            content: Async iterator yielding byte chunks.
             filename: Original filename (e.g. "photo.png").
             mime_type: MIME type (e.g. "image/png").
             agent_uuid: Agent session UUID for namespacing.
 
         Returns:
-            MediaMetadata with all fields populated.
+            MediaMetadata with all fields populated (media_size computed
+            from the consumed stream).
         """
         ...
 
@@ -123,17 +129,21 @@ class MediaBackend(ABC):
         self,
         media_id: str,
         agent_uuid: str,
-    ) -> bytes | None:
-        """Retrieve media bytes by media_id.
+    ) -> AsyncIterator[bytes]:
+        """Retrieve media as a byte stream by media_id.
 
         Args:
             media_id: The media identifier returned by store().
             agent_uuid: Agent session UUID.
 
-        Returns:
-            Raw bytes if found, None if not found.
+        Yields:
+            Byte chunks of up to MEDIA_READ_CHUNK_SIZE bytes.
+
+        Raises:
+            FileNotFoundError: If the media_id does not exist.
         """
         ...
+        yield b""  # pragma: no cover
 
     @abstractmethod
     async def delete(
@@ -157,15 +167,16 @@ class MediaBackend(ABC):
         self,
         media_id: str,
         agent_uuid: str,
-    ) -> bool:
-        """Check whether media exists without fetching bytes.
+    ) -> tuple[bool, MediaMetadata | None]:
+        """Check whether media exists, optionally returning metadata.
 
         Args:
             media_id: The media identifier.
             agent_uuid: Agent session UUID.
 
         Returns:
-            True if the media exists, False otherwise.
+            (True, MediaMetadata) if the media exists.
+            (False, None) if the media does not exist.
         """
         ...
 
@@ -215,15 +226,16 @@ class MediaBackend(ABC):
         self,
         media_id: str,
         agent_uuid: str,
-    ) -> dict[str, str]:
-        """Project media as base64-encoded data for LLM provider adapters.
+    ) -> dict[bytes, str]:
+        #TODO: Error on large file reads.
+        """Project media as raw bytes payload for provider adapters.
 
         Args:
             media_id: The media identifier.
             agent_uuid: Agent session UUID.
 
         Returns:
-            {"data": "<base64-encoded-string>", "media_type": "<mime-type>"}
+            {"content": b"<raw-bytes>", "mime_type": "<mime-type>"}
 
         Raises:
             FileNotFoundError: If the media_id does not exist.
@@ -284,18 +296,91 @@ class MediaBackend(ABC):
     def attach_sandbox(self, sandbox: Sandbox) -> None:
         """Store a reference to the active sandbox.
 
-        Must be called before materialize() or flush_exports().
+        Must be called before materialize(), flush_exports(), or user_upload().
 
         Args:
             sandbox: The sandbox instance for this agent session.
         """
         self._sandbox = sandbox
 
-    async def materialize(self, media_id: str, agent_uuid: str) -> str:
-        """Retrieve a file from storage and import it into the sandbox.
+    # ─── Stream helpers ────────────────────────────────────────────
 
-        Repeated calls overwrite the imported file content for the same
-        media_id + filename path.
+    async def _tee_stream(
+        self,
+        source: AsyncIterator[bytes],
+        queue: asyncio.Queue[bytes | None],
+    ) -> AsyncIterator[bytes]:
+        """Tee a byte stream: yield each chunk AND put it on a queue.
+
+        Used by user_upload() to simultaneously feed the backend store
+        and the sandbox import from a single source stream.
+
+        The sentinel ``None`` is put on the queue after the source is
+        exhausted (or on error) so the consumer knows to stop.
+        """
+        try:
+            async for chunk in source:
+                await queue.put(chunk)
+                yield chunk
+        finally:
+            await queue.put(None)
+
+    # ─── Sandbox integration ───────────────────────────────────────
+
+    async def user_upload(
+        self,
+        content: AsyncIterator[bytes],
+        filename: str,
+        mime_type: str,
+        agent_uuid: str,
+    ) -> tuple[MediaMetadata, str]:
+        """Upload a file to both backend storage and the sandbox simultaneously.
+
+        Streams the file content through a queue-based tee so the entire
+        file is never buffered in memory. One consumer feeds backend
+        store(), the other feeds sandbox import_file().
+
+        Args:
+            content: Async iterator yielding byte chunks of the file.
+            filename: Original filename (e.g. "photo.png").
+            mime_type: MIME type (e.g. "image/png").
+            agent_uuid: Agent session UUID for namespacing.
+
+        Returns:
+            Tuple of (MediaMetadata from store, sandbox path from import_file).
+
+        Raises:
+            RuntimeError: If no sandbox is attached.
+        """
+        if self._sandbox is None:
+            raise RuntimeError(
+                "No sandbox attached. Call attach_sandbox() before user_upload()."
+            )
+
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=4)
+
+        async def _queue_to_iter() -> AsyncIterator[bytes]:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+
+        store_task = asyncio.create_task(
+            self.store(self._tee_stream(content, queue), filename, mime_type, agent_uuid)
+        )
+        sandbox_task = asyncio.create_task(
+            self._sandbox.import_file(filename, _queue_to_iter())
+        )
+
+        metadata, sandbox_path = await asyncio.gather(store_task, sandbox_task)
+        return metadata, sandbox_path
+
+    async def materialize(self, media_id: str, agent_uuid: str) -> str:
+        """Retrieve a file from storage and stream it into the sandbox.
+
+        Uses streaming retrieve() piped directly to sandbox.import_file().
+        No intermediate bytes buffer.
 
         Args:
             media_id: The media identifier in the backend.
@@ -320,25 +405,24 @@ class MediaBackend(ABC):
                 f"for agent_uuid={agent_uuid!r}"
             )
 
-        content = await self.retrieve(media_id, agent_uuid)
-        if content is None:
-            raise FileNotFoundError(
-                f"Cannot materialize: media_id={media_id!r} not found "
-                f"for agent_uuid={agent_uuid!r}"
-            )
-
         return await self._sandbox.import_file(
-            media_id, metadata.media_filename, content
+            metadata.media_filename, self.retrieve(media_id, agent_uuid)
         )
 
-    async def flush_exports(self, agent_uuid: str) -> list[MediaMetadata]:
+    async def flush_exports(
+        self,
+        agent_uuid: str,
+        max_concurrent: int = 4,
+    ) -> list[MediaMetadata]:
         """Collect files from the sandbox exports area and store them.
 
-        Lists exported files, then streams and stores each one individually
-        so that only one file's bytes are in memory at a time.
+        Uses get_exported_file_metadata() to enumerate exports, then
+        streams each file directly into store() with bounded concurrency
+        via asyncio.Semaphore.
 
         Args:
             agent_uuid: Agent session UUID.
+            max_concurrent: Maximum number of concurrent store operations.
 
         Returns:
             List of MediaMetadata for each stored file.
@@ -351,22 +435,35 @@ class MediaBackend(ABC):
                 "No sandbox attached. Call attach_sandbox() before flush_exports()."
             )
 
-        paths = await self._sandbox.list_exported_files()
-        results: list[MediaMetadata] = []
+        export_metas: list[ExportedFileMetadata] = (
+            await self._sandbox.get_exported_file_metadata()
+        )
+        if not export_metas:
+            return []
 
-        for rel_path in paths:
-            chunks: list[bytes] = []
-            async for chunk in self._sandbox.get_exported_file(rel_path):
-                chunks.append(chunk)
-            content = b"".join(chunks)
+        semaphore = asyncio.Semaphore(max_concurrent)
+        results: list[MediaMetadata | None] = [None] * len(export_metas)
 
-            basename = os.path.basename(rel_path)
-            mime_type = (
-                mimetypes.guess_type(basename)[0] or "application/octet-stream"
-            )
-            metadata = await self.store(content, basename, mime_type, agent_uuid)
-            if rel_path != basename:
-                metadata.extras["export_path"] = rel_path
-            results.append(metadata)
+        async def _store_one(index: int, emeta: ExportedFileMetadata) -> None:
+            async with semaphore:
+                mime_type = (
+                    mimetypes.guess_type(emeta.filename)[0]
+                    or "application/octet-stream"
+                )
+                metadata = await self.store(
+                    self._sandbox.get_exported_file(emeta.path),
+                    emeta.filename,
+                    mime_type,
+                    agent_uuid,
+                )
+                if emeta.path != emeta.filename:
+                    metadata.extras["export_path"] = emeta.path
+                metadata.extras["blake3_hash"] = emeta.blake3_hash
+                results[index] = metadata
 
-        return results
+        await asyncio.gather(*[
+            asyncio.create_task(_store_one(i, em))
+            for i, em in enumerate(export_metas)
+        ])
+
+        return [r for r in results if r is not None]

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import base64
 import json
 import mimetypes
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import aiofiles
 
-from .media_types import MediaBackend, MediaMetadata
+from .media_types import MEDIA_READ_CHUNK_SIZE, MediaBackend, MediaMetadata
 
 class LocalMediaBackend(MediaBackend):
     """Filesystem-backed media storage.
@@ -113,7 +113,7 @@ class LocalMediaBackend(MediaBackend):
 
     async def store(
         self,
-        content: bytes,
+        content: AsyncIterator[bytes],
         filename: str,
         mime_type: str,
         agent_uuid: str,
@@ -123,14 +123,17 @@ class LocalMediaBackend(MediaBackend):
         agent_dir.mkdir(parents=True, exist_ok=True)
 
         file_path = self._file_path(agent_uuid, media_id, filename)
+        size = 0
         async with aiofiles.open(file_path, "wb") as f:
-            await f.write(content)
+            async for chunk in content:
+                await f.write(chunk)
+                size += len(chunk)
 
         return self._build_metadata(
             media_id=media_id,
             filename=filename,
             mime_type=mime_type,
-            size=len(content),
+            size=size,
             path=file_path,
         )
 
@@ -138,13 +141,19 @@ class LocalMediaBackend(MediaBackend):
         self,
         media_id: str,
         agent_uuid: str,
-    ) -> bytes | None:
+    ) -> AsyncIterator[bytes]:
         path = self._find_file(agent_uuid, media_id)
         if path is None:
-            return None
+            raise FileNotFoundError(
+                f"Media not found: media_id={media_id!r}, agent_uuid={agent_uuid!r}"
+            )
 
         async with aiofiles.open(path, "rb") as f:
-            return await f.read()
+            while True:
+                chunk = await f.read(MEDIA_READ_CHUNK_SIZE)
+                if not chunk:
+                    break
+                yield chunk
 
     async def delete(
         self,
@@ -161,14 +170,31 @@ class LocalMediaBackend(MediaBackend):
         self,
         media_id: str,
         agent_uuid: str,
-    ) -> bool:
-        return self._find_file(agent_uuid, media_id) is not None
+    ) -> tuple[bool, MediaMetadata | None]:
+        path = self._find_file(agent_uuid, media_id)
+        if path is None:
+            return (False, None)
+
+        filename = self._extract_filename(path, media_id)
+        mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        size = path.stat().st_size
+
+        metadata = self._build_metadata(
+            media_id=media_id,
+            filename=filename,
+            mime_type=mime_type,
+            size=size,
+            path=path,
+        )
+        metadata.extras = await self._load_extras(agent_uuid, media_id)
+        return (True, metadata)
 
     async def get_metadata(
         self,
         media_id: str,
         agent_uuid: str,
     ) -> MediaMetadata | None:
+        #TODO: Introduce file url also in metadata.
         path = self._find_file(agent_uuid, media_id)
         if path is None:
             return None
@@ -208,20 +234,19 @@ class LocalMediaBackend(MediaBackend):
         self,
         media_id: str,
         agent_uuid: str,
-    ) -> dict[str, str]:
-        content = await self.retrieve(media_id, agent_uuid)
-        if content is None:
-            raise FileNotFoundError(
-                f"Media not found: media_id={media_id!r}, agent_uuid={agent_uuid!r}"
-            )
+    ) -> dict[bytes, str]:
+        #TODO: Error on large file reads.
+        chunks: list[bytes] = []
+        async for chunk in self.retrieve(media_id, agent_uuid):
+            chunks.append(chunk)
+        content = b"".join(chunks)
 
         metadata = await self.get_metadata(media_id, agent_uuid)
         assert metadata is not None  # retrieve succeeded, so file exists
 
-        encoded = base64.standard_b64encode(content).decode("ascii")
         return {
-            "data": encoded,
-            "media_type": metadata.media_mime_type,
+            "content": content,
+            "mime_type": metadata.media_mime_type,
         }
 
     async def to_url(
@@ -229,6 +254,8 @@ class LocalMediaBackend(MediaBackend):
         media_id: str,
         agent_uuid: str,
     ) -> str:
+        # TODO: Provide a path to the server's media dir base at MediaBackend init.
+        # Move the file there if it's not there already. Provide the url accordingly (relative to base path).
         path = self._find_file(agent_uuid, media_id)
         if path is None:
             raise FileNotFoundError(
