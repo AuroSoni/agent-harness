@@ -28,6 +28,9 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BASE_DELAY = 1.0
+
 
 class AnthropicProvider(Provider):
     """Concrete Provider implementation for Anthropic's Claude API.
@@ -123,8 +126,8 @@ class AnthropicProvider(Provider):
         tool_schemas: list[ToolSchema],
         llm_config: LLMConfig,
         model: str,
-        max_retries: int,
-        base_delay: float,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        base_delay: float = DEFAULT_BASE_DELAY,
         agent_uuid: str = "",
         media_backend: MediaBackend | None = None,
     ) -> Message:
