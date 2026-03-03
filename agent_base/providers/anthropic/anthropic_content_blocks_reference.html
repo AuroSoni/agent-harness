@@ -1,0 +1,1469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Anthropic Beta SDK — Content Block Reference</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #242836;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #7c8aff;
+    --accent-dim: #5a65cc;
+    --green: #4ade80;
+    --green-dim: #166534;
+    --red: #f87171;
+    --red-dim: #7f1d1d;
+    --yellow: #fbbf24;
+    --yellow-dim: #713f12;
+    --orange: #fb923c;
+    --cyan: #22d3ee;
+    --pink: #f472b6;
+    --type-kw: #c084fc;
+    --type-str: #86efac;
+    --type-lit: #fda4af;
+    --type-num: #93c5fd;
+    --mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', Consolas, monospace;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 0;
+  }
+
+  /* Layout */
+  .page-wrapper { display: flex; min-height: 100vh; }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: 280px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 24px 16px;
+    z-index: 100;
+  }
+  .sidebar h2 { font-size: 14px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 16px; }
+  .sidebar .section-group { margin-bottom: 20px; }
+  .sidebar .section-label {
+    font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.1em;
+    margin-bottom: 6px; padding-left: 8px;
+  }
+  .sidebar a {
+    display: block; color: var(--text-dim); text-decoration: none;
+    font-size: 13px; padding: 4px 8px; border-radius: 4px;
+    transition: all 0.15s;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .sidebar a:hover { color: var(--text); background: var(--surface2); }
+  .sidebar a .badge {
+    display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    margin-left: 4px; vertical-align: middle; font-family: var(--sans); letter-spacing: 0.02em;
+  }
+  .badge-resp { background: var(--green-dim); color: var(--green); }
+  .badge-req { background: var(--accent-dim); color: #bbc4ff; }
+  .badge-input { background: var(--yellow-dim); color: var(--yellow); }
+  .badge-round { background: #1e3a5f; color: #7dd3fc; }
+
+  .main-content {
+    margin-left: 280px; padding: 40px 48px; max-width: 1100px; width: 100%;
+  }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  h1 + .subtitle { color: var(--text-dim); font-size: 15px; margin-bottom: 32px; }
+
+  /* Section */
+  .block-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 28px;
+    overflow: hidden;
+  }
+  .block-header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 20px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+  }
+  .block-header h2 {
+    font-size: 18px; font-weight: 600; margin: 0;
+    font-family: var(--mono);
+  }
+  .block-header .type-tag {
+    font-family: var(--mono); font-size: 13px; padding: 3px 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+    color: var(--accent);
+  }
+  .block-body { padding: 20px; }
+  .block-body > .notes {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: var(--text-dim);
+  }
+  .block-body > .notes strong { color: var(--text); }
+
+  /* Comparison table */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .compare-col { min-width: 0; }
+  .compare-col h3 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--text-dim); margin-bottom: 8px; padding-left: 4px;
+  }
+  .compare-col h3 .label-sdk { color: var(--green); }
+  .compare-col h3 .label-api { color: var(--accent); }
+
+  /* Code block */
+  pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.65;
+    overflow-x: auto;
+    color: var(--text);
+  }
+  pre .kw { color: var(--type-kw); }
+  pre .str { color: var(--type-str); }
+  pre .lit { color: var(--type-lit); }
+  pre .num { color: var(--type-num); }
+  pre .cmt { color: var(--text-dim); font-style: italic; }
+  pre .field { color: var(--orange); }
+  pre .type { color: var(--cyan); }
+  pre .opt { color: var(--text-dim); }
+  pre .req { color: var(--pink); }
+
+  /* Legend */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 16px;
+    padding: 16px 20px; margin-bottom: 28px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    font-size: 13px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch {
+    width: 12px; height: 12px; border-radius: 3px;
+  }
+
+  /* Summary table */
+  .summary-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-bottom: 0;
+  }
+  .summary-table th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim); padding: 8px 12px;
+    border-bottom: 2px solid var(--border);
+    background: var(--surface2);
+  }
+  .summary-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .summary-table tr:last-child td { border-bottom: none; }
+  .summary-table code {
+    font-family: var(--mono); font-size: 12px;
+    background: var(--bg); padding: 2px 5px; border-radius: 3px;
+  }
+  .yes { color: var(--green); }
+  .no { color: var(--red); }
+  .roundtrip { color: #7dd3fc; }
+
+  /* Category headers inside sidebar */
+  .cat-header {
+    font-size: 13px; font-weight: 600; color: var(--text);
+    padding: 12px 0 6px 8px; margin-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .cat-header:first-child { border-top: none; margin-top: 0; }
+  
+  /* Divider */
+  hr.section-divider {
+    border: none; border-top: 1px solid var(--border); margin: 36px 0;
+  }
+
+  /* Full-width pre for single-column blocks */
+  .full-width pre { margin: 0; }
+</style>
+</head>
+<body>
+<div class="page-wrapper">
+
+<!-- ==================== SIDEBAR ==================== -->
+<nav class="sidebar">
+  <h2>Content Blocks</h2>
+
+  <div class="cat-header">Overview</div>
+  <a href="#summary">Summary Table</a>
+  <a href="#legend">Legend &amp; Conventions</a>
+
+  <div class="cat-header">Model Output</div>
+  <a href="#text">text <span class="badge badge-round">RT</span></a>
+  <a href="#thinking">thinking <span class="badge badge-round">RT</span></a>
+  <a href="#redacted_thinking">redacted_thinking <span class="badge badge-round">RT</span></a>
+  <a href="#tool_use">tool_use <span class="badge badge-round">RT</span></a>
+  <a href="#server_tool_use">server_tool_use <span class="badge badge-round">RT</span></a>
+  <a href="#mcp_tool_use">mcp_tool_use <span class="badge badge-round">RT</span></a>
+  <a href="#compaction">compaction <span class="badge badge-round">RT</span></a>
+
+  <div class="cat-header">Server Tool Results</div>
+  <a href="#web_search_tool_result">web_search_tool_result <span class="badge badge-round">RT</span></a>
+  <a href="#web_fetch_tool_result">web_fetch_tool_result <span class="badge badge-round">RT</span></a>
+  <a href="#code_execution_tool_result">code_execution_tool_result <span class="badge badge-round">RT</span></a>
+  <a href="#bash_code_execution_tool_result">bash_code_execution_… <span class="badge badge-round">RT</span></a>
+  <a href="#text_editor_code_execution_tool_result">text_editor_code_… <span class="badge badge-round">RT</span></a>
+  <a href="#tool_search_tool_result">tool_search_tool_result <span class="badge badge-round">RT</span></a>
+  <a href="#mcp_tool_result">mcp_tool_result <span class="badge badge-round">RT</span></a>
+  <a href="#container_upload">container_upload <span class="badge badge-round">RT</span></a>
+
+  <div class="cat-header">Input-Only</div>
+  <a href="#image">image <span class="badge badge-input">IN</span></a>
+  <a href="#document">document <span class="badge badge-input">IN</span></a>
+  <a href="#search_result">search_result <span class="badge badge-input">IN</span></a>
+  <a href="#tool_result">tool_result <span class="badge badge-input">IN</span></a>
+
+  <div class="cat-header">Shared Types</div>
+  <a href="#tool_reference">tool_reference</a>
+  <a href="#caller">Caller</a>
+  <a href="#cache_control">cache_control</a>
+</nav>
+
+<!-- ==================== MAIN ==================== -->
+<main class="main-content">
+
+<h1>Anthropic Beta SDK — Content Block Reference</h1>
+<p class="subtitle">
+  SDK response models vs. API wire-format params &middot;
+  Complete type decomposition to primitives &middot;
+  Generated from <code>anthropic</code> Python SDK source
+</p>
+
+<!-- ==================== LEGEND ==================== -->
+<div id="legend" class="legend">
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--orange)"></span> <strong>field</strong> — field name</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--cyan)"></span> <strong>Type</strong> — type name</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--type-lit)"></span> <strong>"literal"</strong> — literal value</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--pink)"></span> <strong>Required</strong> — required marker</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--text-dim)"></span> <strong>optional</strong> — optional field</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:var(--type-kw)"></span> <strong>keyword</strong> — Python keyword / Union / Literal</div>
+</div>
+
+<!-- ==================== SUMMARY TABLE ==================== -->
+<div id="summary" class="block-section">
+  <div class="block-header"><h2>Summary Table</h2></div>
+  <div class="block-body" style="padding:0;overflow-x:auto;">
+    <table class="summary-table">
+      <thead>
+        <tr>
+          <th>type discriminator</th>
+          <th>SDK Response Class</th>
+          <th>SDK Param Class</th>
+          <th>Direction</th>
+          <th>Must Round-Trip?</th>
+          <th>Param adds <code>cache_control</code>?</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>"text"</code></td><td><code>BetaTextBlock</code></td><td><code>BetaTextBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"thinking"</code></td><td><code>BetaThinkingBlock</code></td><td><code>BetaThinkingBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes (exact)</td><td class="no">No</td></tr>
+        <tr><td><code>"redacted_thinking"</code></td><td><code>BetaRedactedThinkingBlock</code></td><td><code>BetaRedactedThinkingBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes (opaque)</td><td class="no">No</td></tr>
+        <tr><td><code>"tool_use"</code></td><td><code>BetaToolUseBlock</code></td><td><code>BetaToolUseBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"tool_result"</code></td><td>—</td><td><code>BetaToolResultBlockParam</code></td><td>Request only</td><td>—</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"server_tool_use"</code></td><td><code>BetaServerToolUseBlock</code></td><td><code>BetaServerToolUseBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"web_search_tool_result"</code></td><td><code>BetaWebSearchToolResultBlock</code></td><td><code>BetaWebSearchToolResultBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"web_fetch_tool_result"</code></td><td><code>BetaWebFetchToolResultBlock</code></td><td><code>BetaWebFetchToolResultBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"code_execution_tool_result"</code></td><td><code>BetaCodeExecutionToolResultBlock</code></td><td><code>BetaCodeExecutionToolResultBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"bash_code_execution_tool_result"</code></td><td><code>BetaBashCodeExecution­ToolResultBlock</code></td><td><code>BetaBashCodeExecution­ToolResultBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"text_editor_code_execution_tool_result"</code></td><td><code>BetaTextEditorCode­ExecutionToolResultBlock</code></td><td><code>BetaTextEditorCode­ExecutionToolResultBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"tool_search_tool_result"</code></td><td><code>BetaToolSearchToolResultBlock</code></td><td><code>BetaToolSearchToolResultBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"mcp_tool_use"</code></td><td><code>BetaMCPToolUseBlock</code></td><td><code>BetaMCPToolUseBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"mcp_tool_result"</code></td><td><code>BetaMCPToolResultBlock</code></td><td><code>BetaRequestMCPToolResultBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"container_upload"</code></td><td><code>BetaContainerUploadBlock</code></td><td><code>BetaContainerUploadBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"compaction"</code></td><td><code>BetaCompactionBlock</code></td><td><code>BetaCompactionBlockParam</code></td><td>Response &amp; Request</td><td class="roundtrip">Yes</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"image"</code></td><td>—</td><td><code>BetaImageBlockParam</code></td><td>Request only</td><td>—</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"document"</code></td><td>—</td><td><code>BetaRequestDocumentBlockParam</code></td><td>Request only</td><td>—</td><td class="yes">Yes</td></tr>
+        <tr><td><code>"search_result"</code></td><td>—</td><td><code>BetaSearchResultBlockParam</code></td><td>Request only</td><td>—</td><td class="yes">Yes</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ==================== TEXT ==================== -->
+<div id="text" class="block-section">
+  <div class="block-header">
+    <h2>"text"</h2>
+    <span class="type-tag">BetaTextBlock / BetaTextBlockParam</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Send back exactly as received.
+      The SDK response includes <code>citations</code> as parsed pydantic objects;
+      the API wire format expects them as raw dicts. <code>cache_control</code> is param-only (never returned).
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span> — BetaTextBlock (BaseModel)</h3>
+<pre>
+{
+  <span class="field">type</span>:      <span class="kw">Literal</span>[<span class="lit">"text"</span>],
+  <span class="field">text</span>:      <span class="type">str</span>,
+  <span class="field">citations</span>: <span class="kw">Optional</span>[<span class="kw">List</span>[<span class="type">BetaTextCitation</span>]]  <span class="cmt"># = None</span>
+}
+
+<span class="cmt">// BetaTextCitation = Union of:</span>
+<span class="cmt">//   BetaCitationCharLocation</span>
+<span class="cmt">//     { type: "char_location",</span>
+<span class="cmt">//       cited_text: str, document_index: int,</span>
+<span class="cmt">//       start_char_index: int, end_char_index: int,</span>
+<span class="cmt">//       document_title: Optional[str],</span>
+<span class="cmt">//       file_id: Optional[str] }</span>
+<span class="cmt">//   BetaCitationPageLocation</span>
+<span class="cmt">//     { type: "page_location",</span>
+<span class="cmt">//       cited_text: str, document_index: int,</span>
+<span class="cmt">//       start_page_number: int, end_page_number: int,</span>
+<span class="cmt">//       document_title: Optional[str],</span>
+<span class="cmt">//       file_id: Optional[str] }</span>
+<span class="cmt">//   BetaCitationContentBlockLocation</span>
+<span class="cmt">//     { type: "content_block_location",</span>
+<span class="cmt">//       cited_text: str, document_index: int,</span>
+<span class="cmt">//       start_block_index: int, end_block_index: int,</span>
+<span class="cmt">//       document_title: Optional[str],</span>
+<span class="cmt">//       file_id: Optional[str] }</span>
+<span class="cmt">//   BetaCitationsWebSearchResultLocation</span>
+<span class="cmt">//     { type: "web_search_result_location",</span>
+<span class="cmt">//       cited_text: str, encrypted_index: str,</span>
+<span class="cmt">//       title: Optional[str], url: Optional[str] }</span>
+<span class="cmt">//   BetaCitationSearchResultLocation</span>
+<span class="cmt">//     { type: "search_result_location",</span>
+<span class="cmt">//       cited_text: str, search_result_index: int,</span>
+<span class="cmt">//       source: str, start_block_index: int,</span>
+<span class="cmt">//       end_block_index: int,</span>
+<span class="cmt">//       title: Optional[str] }</span>
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span> — BetaTextBlockParam (TypedDict)</h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"text"</span>]],
+  <span class="field">text</span>:          <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">citations</span>:     <span class="opt">Optional[Iterable[BetaTextCitationParam]]</span>,
+  <span class="field">cache_control</span>: <span class="opt">Optional[BetaCacheControlEphemeralParam]</span>
+}
+
+<span class="cmt">// BetaTextCitationParam — same union of citation</span>
+<span class="cmt">// dicts as the response, but as TypedDicts</span>
+<span class="cmt">// (identical wire shape).</span>
+<span class="cmt">//</span>
+<span class="cmt">// BetaCacheControlEphemeralParam:</span>
+<span class="cmt">//   { type: Required["ephemeral"],</span>
+<span class="cmt">//     ttl: Optional["5m" | "1h"] }</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== THINKING ==================== -->
+<div id="thinking" class="block-section">
+  <div class="block-header">
+    <h2>"thinking"</h2>
+    <span class="type-tag">BetaThinkingBlock / BetaThinkingBlockParam</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Must send back <code>thinking</code> and <code>signature</code> exactly as received.
+      The signature is a cryptographic proof — altering it causes API rejection.
+      <strong>No <code>cache_control</code></strong> is accepted on thinking blocks.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span> — BetaThinkingBlock</h3>
+<pre>
+{
+  <span class="field">type</span>:      <span class="kw">Literal</span>[<span class="lit">"thinking"</span>],
+  <span class="field">thinking</span>:  <span class="type">str</span>,
+  <span class="field">signature</span>: <span class="type">str</span>
+}
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span> — BetaThinkingBlockParam</h3>
+<pre>
+{
+  <span class="field">type</span>:      <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"thinking"</span>]],
+  <span class="field">thinking</span>:  <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">signature</span>: <span class="req">Required</span>[<span class="type">str</span>]
+}
+<span class="cmt">// Identical shape. No cache_control.</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== REDACTED THINKING ==================== -->
+<div id="redacted_thinking" class="block-section">
+  <div class="block-header">
+    <h2>"redacted_thinking"</h2>
+    <span class="type-tag">BetaRedactedThinkingBlock / BetaRedactedThinkingBlockParam</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Must send back the opaque <code>data</code> blob exactly as received.
+      You cannot read or modify it — it is encrypted. <strong>No <code>cache_control</code>.</strong>
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span> — BetaRedactedThinkingBlock</h3>
+<pre>
+{
+  <span class="field">type</span>: <span class="kw">Literal</span>[<span class="lit">"redacted_thinking"</span>],
+  <span class="field">data</span>: <span class="type">str</span>
+}
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span> — BetaRedactedThinkingBlockParam</h3>
+<pre>
+{
+  <span class="field">type</span>: <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"redacted_thinking"</span>]],
+  <span class="field">data</span>: <span class="req">Required</span>[<span class="type">str</span>]
+}
+<span class="cmt">// Identical shape. No cache_control.</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== TOOL USE ==================== -->
+<div id="tool_use" class="block-section">
+  <div class="block-header">
+    <h2>"tool_use"</h2>
+    <span class="type-tag">BetaToolUseBlock / BetaToolUseBlockParam</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Send back in assistant turn so the model knows what it called.
+      The user must follow this with a <code>tool_result</code> block referencing the same <code>id</code>.
+      <code>caller</code> indicates who initiated the call (model directly, or a server tool).
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span> — BetaToolUseBlock</h3>
+<pre>
+{
+  <span class="field">type</span>:   <span class="kw">Literal</span>[<span class="lit">"tool_use"</span>],
+  <span class="field">id</span>:     <span class="type">str</span>,
+  <span class="field">name</span>:   <span class="type">str</span>,
+  <span class="field">input</span>:  <span class="type">Dict[str, object]</span>,
+  <span class="field">caller</span>: <span class="kw">Optional</span>[<span class="type">Caller</span>]  <span class="cmt"># = None</span>
+}
+
+<span class="cmt">// Caller = Union of:</span>
+<span class="cmt">//   BetaDirectCaller</span>
+<span class="cmt">//     { type: "direct" }</span>
+<span class="cmt">//   BetaServerToolCaller</span>
+<span class="cmt">//     { type: "code_execution_20250825",</span>
+<span class="cmt">//       tool_id: str }</span>
+<span class="cmt">//   BetaServerToolCaller20260120</span>
+<span class="cmt">//     { type: "code_execution_20260120",</span>
+<span class="cmt">//       tool_id: str }</span>
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span> — BetaToolUseBlockParam</h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"tool_use"</span>]],
+  <span class="field">id</span>:            <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">name</span>:          <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">input</span>:         <span class="req">Required</span>[<span class="type">Dict[str, object]</span>],
+  <span class="field">caller</span>:        <span class="opt">Optional[CallerParam]</span>,
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+<span class="cmt">// CallerParam — same shape as response Caller.</span>
+<span class="cmt">// cache_control added for param only.</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== TOOL RESULT ==================== -->
+<div id="tool_result" class="block-section">
+  <div class="block-header">
+    <h2>"tool_result"</h2>
+    <span class="type-tag">BetaToolResultBlockParam (input-only)</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Input-only:</strong> Never returned by the API. You construct this to send back the result of a <code>tool_use</code> block.
+      <code>content</code> can be a plain string or a list of rich content blocks.
+      <br><br>
+      <strong>Allowed content block types inside <code>tool_result</code>:</strong>
+      <code>text</code> (most common), <code>image</code> (return images from tool execution),
+      <code>document</code> (return documents), <code>search_result</code> (return structured search results with citation support),
+      and <code>tool_reference</code> (associate this result with a specific tool by name — used in multi-tool
+      scenarios, particularly with deferred tools from tool search; see the
+      <a href="#tool_search_tool_result" style="color:var(--accent)">tool_search_tool_result</a> section for the full flow).
+    </div>
+    <div class="full-width">
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"tool_result"</span>]],
+  <span class="field">tool_use_id</span>:   <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">content</span>:       <span class="opt">Optional[Union[str, Iterable[ContentUnion]]]</span>,
+  <span class="field">is_error</span>:      <span class="opt">Optional[bool]</span>,
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+
+<span class="cmt">// ContentUnion = Union of:</span>
+<span class="cmt">//   BetaTextBlockParam</span>
+<span class="cmt">//   BetaImageBlockParam</span>
+<span class="cmt">//   BetaSearchResultBlockParam</span>
+<span class="cmt">//   BetaRequestDocumentBlockParam</span>
+<span class="cmt">//   BetaToolReferenceBlockParam</span>
+<span class="cmt">//     { type: Required["tool_reference"],</span>
+<span class="cmt">//       tool_name: Required[str],</span>
+<span class="cmt">//       cache_control: Optional[CacheControlParam] }</span>
+</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== SERVER TOOL USE ==================== -->
+<div id="server_tool_use" class="block-section">
+  <div class="block-header">
+    <h2>"server_tool_use"</h2>
+    <span class="type-tag">BetaServerToolUseBlock / BetaServerToolUseBlockParam</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Server tool invocations are executed by Anthropic's servers.
+      <code>name</code> is a closed enum of known server tools. You must round-trip these blocks
+      so the model can see the tool it invoked.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span> — BetaServerToolUseBlock</h3>
+<pre>
+{
+  <span class="field">type</span>:   <span class="kw">Literal</span>[<span class="lit">"server_tool_use"</span>],
+  <span class="field">id</span>:     <span class="type">str</span>,
+  <span class="field">name</span>:   <span class="kw">Literal</span>[
+            <span class="lit">"web_search"</span>,
+            <span class="lit">"web_fetch"</span>,
+            <span class="lit">"code_execution"</span>,
+            <span class="lit">"bash_code_execution"</span>,
+            <span class="lit">"text_editor_code_execution"</span>,
+            <span class="lit">"tool_search_tool_regex"</span>,
+            <span class="lit">"tool_search_tool_bm25"</span>
+          ],
+  <span class="field">input</span>:  <span class="type">Dict[str, object]</span>,
+  <span class="field">caller</span>: <span class="kw">Optional</span>[<span class="type">Caller</span>]  <span class="cmt"># = None</span>
+}
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span> — BetaServerToolUseBlockParam</h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"server_tool_use"</span>]],
+  <span class="field">id</span>:            <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">name</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[…same enum…]],
+  <span class="field">input</span>:         <span class="req">Required</span>[<span class="type">Dict[str, object]</span>],
+  <span class="field">caller</span>:        <span class="opt">Optional[CallerParam]</span>,
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+<span class="cmt">// Identical required fields.</span>
+<span class="cmt">// cache_control added for param only.</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== WEB SEARCH TOOL RESULT ==================== -->
+<div id="web_search_tool_result" class="block-section">
+  <div class="block-header">
+    <h2>"web_search_tool_result"</h2>
+    <span class="type-tag">BetaWebSearchToolResultBlock / …Param</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Contains encrypted search results. Must be sent back as-is.
+      <code>content</code> is either an error or a list of individual search result blocks.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span></h3>
+<pre>
+{
+  <span class="field">type</span>:        <span class="kw">Literal</span>[<span class="lit">"web_search_tool_result"</span>],
+  <span class="field">tool_use_id</span>: <span class="type">str</span>,
+  <span class="field">content</span>:     <span class="kw">Union</span>[
+    <span class="type">BetaWebSearchToolResultError</span>,
+    <span class="kw">List</span>[<span class="type">BetaWebSearchResultBlock</span>]
+  ],
+  <span class="field">caller</span>:      <span class="kw">Optional</span>[<span class="type">Caller</span>]
+}
+
+<span class="cmt">// BetaWebSearchToolResultError:</span>
+<span class="cmt">//   { type: "web_search_tool_result_error",</span>
+<span class="cmt">//     error_code: "invalid_tool_input"</span>
+<span class="cmt">//       | "unavailable" | "max_uses_exceeded"</span>
+<span class="cmt">//       | "too_many_requests" | "query_too_long"</span>
+<span class="cmt">//       | "request_too_large" }</span>
+<span class="cmt">//</span>
+<span class="cmt">// BetaWebSearchResultBlock:</span>
+<span class="cmt">//   { type: "web_search_result",</span>
+<span class="cmt">//     title: str,</span>
+<span class="cmt">//     url: str,</span>
+<span class="cmt">//     encrypted_content: str,</span>
+<span class="cmt">//     page_age: Optional[str] }</span>
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span></h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"web_search_tool_result"</span>]],
+  <span class="field">tool_use_id</span>:   <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">content</span>:       <span class="req">Required</span>[<span class="kw">Union</span>[
+    <span class="type">Iterable[WebSearchResultBlockParam]</span>,
+    <span class="type">WebSearchToolRequestErrorParam</span>
+  ]],
+  <span class="field">caller</span>:        <span class="opt">Optional[CallerParam]</span>,
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+
+<span class="cmt">// WebSearchResultBlockParam:</span>
+<span class="cmt">//   { type: Required["web_search_result"],</span>
+<span class="cmt">//     title: Required[str],</span>
+<span class="cmt">//     url: Required[str],</span>
+<span class="cmt">//     encrypted_content: Required[str],</span>
+<span class="cmt">//     page_age: Optional[str] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// WebSearchToolRequestErrorParam:</span>
+<span class="cmt">//   { type: Required["web_search_tool_result_error"],</span>
+<span class="cmt">//     error_code: Required[same enum] }</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== WEB FETCH TOOL RESULT ==================== -->
+<div id="web_fetch_tool_result" class="block-section">
+  <div class="block-header">
+    <h2>"web_fetch_tool_result"</h2>
+    <span class="type-tag">BetaWebFetchToolResultBlock / …Param</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Content is either an error or a fetched document.
+      The success path nests a full <code>document</code> block inside <code>web_fetch_result</code>.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span></h3>
+<pre>
+{
+  <span class="field">type</span>:        <span class="kw">Literal</span>[<span class="lit">"web_fetch_tool_result"</span>],
+  <span class="field">tool_use_id</span>: <span class="type">str</span>,
+  <span class="field">content</span>:     <span class="kw">Union</span>[
+    <span class="type">BetaWebFetchToolResultErrorBlock</span>,
+    <span class="type">BetaWebFetchBlock</span>
+  ],
+  <span class="field">caller</span>:      <span class="kw">Optional</span>[<span class="type">Caller</span>]
+}
+
+<span class="cmt">// BetaWebFetchToolResultErrorBlock:</span>
+<span class="cmt">//   { type: "web_fetch_tool_result_error",</span>
+<span class="cmt">//     error_code: "invalid_tool_input"</span>
+<span class="cmt">//       | "url_too_long" | "url_not_allowed"</span>
+<span class="cmt">//       | "url_not_accessible"</span>
+<span class="cmt">//       | "unsupported_content_type"</span>
+<span class="cmt">//       | "too_many_requests"</span>
+<span class="cmt">//       | "max_uses_exceeded" | "unavailable" }</span>
+<span class="cmt">//</span>
+<span class="cmt">// BetaWebFetchBlock (success):</span>
+<span class="cmt">//   { type: "web_fetch_result",</span>
+<span class="cmt">//     url: str,</span>
+<span class="cmt">//     retrieved_at: Optional[str],  // ISO 8601</span>
+<span class="cmt">//     content: BetaDocumentBlock }</span>
+<span class="cmt">//       ↳ { type: "document",</span>
+<span class="cmt">//           source: Union[Base64PDFSource, PlainTextSource],</span>
+<span class="cmt">//           title: Optional[str],</span>
+<span class="cmt">//           citations: Optional[CitationConfig] }</span>
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span></h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"web_fetch_tool_result"</span>]],
+  <span class="field">tool_use_id</span>:   <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">content</span>:       <span class="req">Required</span>[<span class="kw">Union</span>[
+    <span class="type">WebFetchToolResultErrorBlockParam</span>,
+    <span class="type">WebFetchBlockParam</span>
+  ]],
+  <span class="field">caller</span>:        <span class="opt">Optional[CallerParam]</span>,
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+
+<span class="cmt">// WebFetchBlockParam:</span>
+<span class="cmt">//   { type: Required["web_fetch_result"],</span>
+<span class="cmt">//     url: Required[str],</span>
+<span class="cmt">//     retrieved_at: Optional[str],</span>
+<span class="cmt">//     content: Required[RequestDocumentBlockParam] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// Note: content nests a full document param block</span>
+<span class="cmt">// which supports all 5 source types (base64, text,</span>
+<span class="cmt">// content, url, file) — see "document" section.</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== CODE EXECUTION TOOL RESULT ==================== -->
+<div id="code_execution_tool_result" class="block-section">
+  <div class="block-header">
+    <h2>"code_execution_tool_result"</h2>
+    <span class="type-tag">BetaCodeExecutionToolResultBlock / …Param</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Content has 3 variants: error, plaintext result, or encrypted result
+      (when combined with web_search, stdout is encrypted).
+      Output files are referenced by <code>file_id</code>.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span></h3>
+<pre>
+{
+  <span class="field">type</span>:        <span class="kw">Literal</span>[<span class="lit">"code_execution_tool_result"</span>],
+  <span class="field">tool_use_id</span>: <span class="type">str</span>,
+  <span class="field">content</span>:     <span class="kw">Union</span>[
+    <span class="type">BetaCodeExecutionToolResultError</span>,
+    <span class="type">BetaCodeExecutionResultBlock</span>,
+    <span class="type">BetaEncryptedCodeExecutionResultBlock</span>
+  ]
+}
+
+<span class="cmt">// Error:</span>
+<span class="cmt">//   { type: "code_execution_tool_result_error",</span>
+<span class="cmt">//     error_code: "invalid_tool_input"</span>
+<span class="cmt">//       | "unavailable" | "too_many_requests"</span>
+<span class="cmt">//       | "execution_time_exceeded" }</span>
+<span class="cmt">//</span>
+<span class="cmt">// Plain result:</span>
+<span class="cmt">//   { type: "code_execution_result",</span>
+<span class="cmt">//     stdout: str, stderr: str,</span>
+<span class="cmt">//     return_code: int,</span>
+<span class="cmt">//     content: List[{ type: "code_execution_output",</span>
+<span class="cmt">//                      file_id: str }] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// Encrypted result:</span>
+<span class="cmt">//   { type: "encrypted_code_execution_result",</span>
+<span class="cmt">//     encrypted_stdout: str, stderr: str,</span>
+<span class="cmt">//     return_code: int,</span>
+<span class="cmt">//     content: List[{ type: "code_execution_output",</span>
+<span class="cmt">//                      file_id: str }] }</span>
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span></h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"code_execution_tool_result"</span>]],
+  <span class="field">tool_use_id</span>:   <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">content</span>:       <span class="req">Required</span>[<span class="kw">Union</span>[
+    <span class="type">ErrorParam</span>,
+    <span class="type">ResultBlockParam</span>,
+    <span class="type">EncryptedResultBlockParam</span>
+  ]],
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+
+<span class="cmt">// ResultBlockParam:</span>
+<span class="cmt">//   { type: Required["code_execution_result"],</span>
+<span class="cmt">//     stdout: Required[str],</span>
+<span class="cmt">//     stderr: Required[str],</span>
+<span class="cmt">//     return_code: Required[int],</span>
+<span class="cmt">//     content: Required[Iterable[</span>
+<span class="cmt">//       { type: Required["code_execution_output"],</span>
+<span class="cmt">//         file_id: Required[str] } ]] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// EncryptedResultBlockParam:</span>
+<span class="cmt">//   { type: Required["encrypted_code_execution_result"],</span>
+<span class="cmt">//     encrypted_stdout: Required[str],</span>
+<span class="cmt">//     stderr: Required[str],</span>
+<span class="cmt">//     return_code: Required[int],</span>
+<span class="cmt">//     content: Required[Iterable[…same…]] }</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== BASH CODE EXECUTION TOOL RESULT ==================== -->
+<div id="bash_code_execution_tool_result" class="block-section">
+  <div class="block-header">
+    <h2>"bash_code_execution_tool_result"</h2>
+    <span class="type-tag">BetaBashCodeExecutionToolResultBlock / …Param</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Same pattern as code_execution but for bash.
+      Error codes include <code>"output_file_too_large"</code> which is unique to bash execution.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span></h3>
+<pre>
+{
+  <span class="field">type</span>:        <span class="kw">Literal</span>[<span class="lit">"bash_code_execution_tool_result"</span>],
+  <span class="field">tool_use_id</span>: <span class="type">str</span>,
+  <span class="field">content</span>:     <span class="kw">Union</span>[
+    <span class="type">BetaBashCodeExecutionToolResultError</span>,
+    <span class="type">BetaBashCodeExecutionResultBlock</span>
+  ]
+}
+
+<span class="cmt">// Error:</span>
+<span class="cmt">//   { type: "bash_code_execution_tool_result_error",</span>
+<span class="cmt">//     error_code: "invalid_tool_input"</span>
+<span class="cmt">//       | "unavailable" | "too_many_requests"</span>
+<span class="cmt">//       | "execution_time_exceeded"</span>
+<span class="cmt">//       | "output_file_too_large" }</span>
+<span class="cmt">//</span>
+<span class="cmt">// Result:</span>
+<span class="cmt">//   { type: "bash_code_execution_result",</span>
+<span class="cmt">//     stdout: str, stderr: str,</span>
+<span class="cmt">//     return_code: int,</span>
+<span class="cmt">//     content: List[</span>
+<span class="cmt">//       { type: "bash_code_execution_output",</span>
+<span class="cmt">//         file_id: str }] }</span>
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span></h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"bash_code_execution_tool_result"</span>]],
+  <span class="field">tool_use_id</span>:   <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">content</span>:       <span class="req">Required</span>[<span class="kw">Union</span>[
+    <span class="type">ErrorParam</span>,
+    <span class="type">ResultBlockParam</span>
+  ]],
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+
+<span class="cmt">// ResultBlockParam:</span>
+<span class="cmt">//   { type: Required["bash_code_execution_result"],</span>
+<span class="cmt">//     stdout: Required[str],</span>
+<span class="cmt">//     stderr: Required[str],</span>
+<span class="cmt">//     return_code: Required[int],</span>
+<span class="cmt">//     content: Required[Iterable[</span>
+<span class="cmt">//       { type: Required["bash_code_execution_output"],</span>
+<span class="cmt">//         file_id: Required[str] }]] }</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== TEXT EDITOR CODE EXECUTION TOOL RESULT ==================== -->
+<div id="text_editor_code_execution_tool_result" class="block-section">
+  <div class="block-header">
+    <h2>"text_editor_code_execution_tool_result"</h2>
+    <span class="type-tag">BetaTextEditorCodeExecutionToolResultBlock / …Param</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Most complex result type — content is one of 4 variants:
+      error, view result, create result, or str_replace result. Error codes include <code>"file_not_found"</code>
+      (unique to text_editor). The error variant also carries an optional <code>error_message</code>.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span></h3>
+<pre>
+{
+  <span class="field">type</span>:        <span class="kw">Literal</span>[<span class="lit">"text_editor_code_execution_tool_result"</span>],
+  <span class="field">tool_use_id</span>: <span class="type">str</span>,
+  <span class="field">content</span>:     <span class="kw">Union</span>[
+    <span class="type">…ToolResultError</span>,
+    <span class="type">…ViewResultBlock</span>,
+    <span class="type">…CreateResultBlock</span>,
+    <span class="type">…StrReplaceResultBlock</span>
+  ]
+}
+
+<span class="cmt">// Error:</span>
+<span class="cmt">//   { type: "…_tool_result_error",</span>
+<span class="cmt">//     error_code: "invalid_tool_input"</span>
+<span class="cmt">//       | "unavailable" | "too_many_requests"</span>
+<span class="cmt">//       | "execution_time_exceeded"</span>
+<span class="cmt">//       | "file_not_found",</span>
+<span class="cmt">//     error_message: Optional[str] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// View result:</span>
+<span class="cmt">//   { type: "…_view_result",</span>
+<span class="cmt">//     content: str,</span>
+<span class="cmt">//     file_type: "text" | "image" | "pdf",</span>
+<span class="cmt">//     num_lines: Optional[int],</span>
+<span class="cmt">//     start_line: Optional[int],</span>
+<span class="cmt">//     total_lines: Optional[int] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// Create result:</span>
+<span class="cmt">//   { type: "…_create_result",</span>
+<span class="cmt">//     is_file_update: bool }</span>
+<span class="cmt">//</span>
+<span class="cmt">// Str-replace result:</span>
+<span class="cmt">//   { type: "…_str_replace_result",</span>
+<span class="cmt">//     lines: Optional[List[str]],</span>
+<span class="cmt">//     new_lines: Optional[int],</span>
+<span class="cmt">//     new_start: Optional[int],</span>
+<span class="cmt">//     old_lines: Optional[int],</span>
+<span class="cmt">//     old_start: Optional[int] }</span>
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span></h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"text_editor_code_execution_tool_result"</span>]],
+  <span class="field">tool_use_id</span>:   <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">content</span>:       <span class="req">Required</span>[<span class="kw">Union</span>[
+    <span class="type">ErrorParam</span>, <span class="type">ViewParam</span>,
+    <span class="type">CreateParam</span>, <span class="type">StrReplaceParam</span>
+  ]],
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+
+<span class="cmt">// ErrorParam:</span>
+<span class="cmt">//   { type: Required["…_tool_result_error"],</span>
+<span class="cmt">//     error_code: Required[same enum],</span>
+<span class="cmt">//     error_message: Optional[str] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// ViewParam:</span>
+<span class="cmt">//   { type: Required["…_view_result"],</span>
+<span class="cmt">//     content: Required[str],</span>
+<span class="cmt">//     file_type: Required["text"|"image"|"pdf"],</span>
+<span class="cmt">//     num_lines: Optional[int],</span>
+<span class="cmt">//     start_line: Optional[int],</span>
+<span class="cmt">//     total_lines: Optional[int] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// CreateParam:</span>
+<span class="cmt">//   { type: Required["…_create_result"],</span>
+<span class="cmt">//     is_file_update: Required[bool] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// StrReplaceParam:</span>
+<span class="cmt">//   { type: Required["…_str_replace_result"],</span>
+<span class="cmt">//     lines: Optional[List[str]],</span>
+<span class="cmt">//     new_lines: Optional[int],</span>
+<span class="cmt">//     new_start: Optional[int],</span>
+<span class="cmt">//     old_lines: Optional[int],</span>
+<span class="cmt">//     old_start: Optional[int] }</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== TOOL SEARCH TOOL RESULT ==================== -->
+<div id="tool_search_tool_result" class="block-section">
+  <div class="block-header">
+    <h2>"tool_search_tool_result"</h2>
+    <span class="type-tag">BetaToolSearchToolResultBlock / …Param</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Result of a <strong>tool search</strong> server tool invocation.
+      Used with the <code>tool_search_tool_regex</code> / <code>tool_search_tool_bm25</code> server tools, which allow
+      the model to search through registered tools instead of loading all tools into the system prompt at once.
+      <br><br>
+      <strong>Tool Search Flow:</strong>
+      <strong>1.</strong> Register tools with <code>defer_loading: true</code> — these tools are <em>not</em> included in the initial system prompt.
+      <strong>2.</strong> The model invokes a <code>server_tool_use</code> with <code>name: "tool_search_tool_regex"</code> (or <code>bm25</code>).
+      <strong>3.</strong> The API returns this <code>tool_search_tool_result</code> block, whose success content is a list of
+      <code>tool_reference</code> items — each one is simply <code>{"type": "tool_reference", "tool_name": "my_deferred_tool"}</code>,
+      telling the model which deferred tools matched the search.
+      <strong>4.</strong> The model can now call the matched deferred tools via normal <code>tool_use</code> blocks.
+      <br><br>
+      <strong>About <code>tool_reference</code>:</strong> A <code>tool_reference</code> is a minimal pointer to a tool by name.
+      It appears here in tool search results, and can also appear inside <code>tool_result</code> content
+      to associate a tool result with a specific tool in multi-tool scenarios.
+      Its structure is just <code>{"type": "tool_reference", "tool_name": str}</code>.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span></h3>
+<pre>
+{
+  <span class="field">type</span>:        <span class="kw">Literal</span>[<span class="lit">"tool_search_tool_result"</span>],
+  <span class="field">tool_use_id</span>: <span class="type">str</span>,
+  <span class="field">content</span>:     <span class="kw">Union</span>[
+    <span class="type">BetaToolSearchToolResultError</span>,
+    <span class="type">BetaToolSearchToolSearchResultBlock</span>
+  ]
+}
+
+<span class="cmt">// Error:</span>
+<span class="cmt">//   { type: "tool_search_tool_result_error",</span>
+<span class="cmt">//     error_code: "invalid_tool_input"</span>
+<span class="cmt">//       | "unavailable" | "too_many_requests"</span>
+<span class="cmt">//       | "execution_time_exceeded",</span>
+<span class="cmt">//     error_message: Optional[str] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// Success:</span>
+<span class="cmt">//   { type: "tool_search_tool_search_result",</span>
+<span class="cmt">//     tool_references: List[</span>
+<span class="cmt">//       { type: "tool_reference",</span>
+<span class="cmt">//         tool_name: str }] }</span>
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span></h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"tool_search_tool_result"</span>]],
+  <span class="field">tool_use_id</span>:   <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">content</span>:       <span class="req">Required</span>[<span class="kw">Union</span>[
+    <span class="type">ErrorParam</span>,
+    <span class="type">SearchResultBlockParam</span>
+  ]],
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+
+<span class="cmt">// ErrorParam:</span>
+<span class="cmt">//   { type: Required["tool_search_tool_result_error"],</span>
+<span class="cmt">//     error_code: Required[same enum] }</span>
+<span class="cmt">//   Note: error_message NOT in param (response-only)</span>
+<span class="cmt">//</span>
+<span class="cmt">// SearchResultBlockParam:</span>
+<span class="cmt">//   { type: Required["tool_search_tool_search_result"],</span>
+<span class="cmt">//     tool_references: Required[Iterable[</span>
+<span class="cmt">//       { type: Required["tool_reference"],</span>
+<span class="cmt">//         tool_name: Required[str],</span>
+<span class="cmt">//         cache_control: Optional[CacheControlParam] }]] }</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== MCP TOOL USE ==================== -->
+<div id="mcp_tool_use" class="block-section">
+  <div class="block-header">
+    <h2>"mcp_tool_use"</h2>
+    <span class="type-tag">BetaMCPToolUseBlock / BetaMCPToolUseBlockParam</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> MCP tool invocations include <code>server_name</code> (unique to MCP).
+      No <code>caller</code> field — MCP invocations are always direct from the model.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span> — BetaMCPToolUseBlock</h3>
+<pre>
+{
+  <span class="field">type</span>:        <span class="kw">Literal</span>[<span class="lit">"mcp_tool_use"</span>],
+  <span class="field">id</span>:          <span class="type">str</span>,
+  <span class="field">name</span>:        <span class="type">str</span>,
+  <span class="field">server_name</span>: <span class="type">str</span>,
+  <span class="field">input</span>:       <span class="type">Dict[str, object]</span>
+}
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span> — BetaMCPToolUseBlockParam</h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"mcp_tool_use"</span>]],
+  <span class="field">id</span>:            <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">name</span>:          <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">server_name</span>:   <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">input</span>:         <span class="req">Required</span>[<span class="type">Dict[str, object]</span>],
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+<span class="cmt">// Identical required fields. cache_control added.</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== MCP TOOL RESULT ==================== -->
+<div id="mcp_tool_result" class="block-section">
+  <div class="block-header">
+    <h2>"mcp_tool_result"</h2>
+    <span class="type-tag">BetaMCPToolResultBlock / BetaRequestMCPToolResultBlockParam</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Note the <strong>asymmetric naming</strong> — the response class is
+      <code>BetaMCPToolResultBlock</code> but the param class is <code>BetaRequest­MCPToolResultBlockParam</code>.
+      Content can be a plain string or a list of text blocks.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span> — BetaMCPToolResultBlock</h3>
+<pre>
+{
+  <span class="field">type</span>:        <span class="kw">Literal</span>[<span class="lit">"mcp_tool_result"</span>],
+  <span class="field">tool_use_id</span>: <span class="type">str</span>,
+  <span class="field">is_error</span>:    <span class="type">bool</span>,
+  <span class="field">content</span>:     <span class="kw">Union</span>[<span class="type">str</span>, <span class="kw">List</span>[<span class="type">BetaTextBlock</span>]]
+}
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span> — BetaRequestMCPToolResultBlockParam</h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"mcp_tool_result"</span>]],
+  <span class="field">tool_use_id</span>:   <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">content</span>:       <span class="opt">Optional[Union[str, Iterable[BetaTextBlockParam]]]</span>,
+  <span class="field">is_error</span>:      <span class="opt">Optional[bool]</span>,
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+<span class="cmt">// Key difference: content and is_error are</span>
+<span class="cmt">// Optional in the param but Required in response.</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== CONTAINER UPLOAD ==================== -->
+<div id="container_upload" class="block-section">
+  <div class="block-header">
+    <h2>"container_upload"</h2>
+    <span class="type-tag">BetaContainerUploadBlock / BetaContainerUploadBlockParam</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip / Input:</strong> References a file uploaded to the container by <code>file_id</code>.
+      Simplest block type — just a type discriminator and a file reference.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span></h3>
+<pre>
+{
+  <span class="field">type</span>:    <span class="kw">Literal</span>[<span class="lit">"container_upload"</span>],
+  <span class="field">file_id</span>: <span class="type">str</span>
+}
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span></h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"container_upload"</span>]],
+  <span class="field">file_id</span>:       <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== COMPACTION ==================== -->
+<div id="compaction" class="block-section">
+  <div class="block-header">
+    <h2>"compaction"</h2>
+    <span class="type-tag">BetaCompactionBlock / BetaCompactionBlockParam</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Round-trip:</strong> Returned when autocompact triggers. <code>content</code> is the
+      summary of compacted context, or <code>null</code> if compaction failed (treated as no-op by server).
+      Empty strings are not allowed — must be non-empty string or null.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span></h3>
+<pre>
+{
+  <span class="field">type</span>:    <span class="kw">Literal</span>[<span class="lit">"compaction"</span>],
+  <span class="field">content</span>: <span class="kw">Optional</span>[<span class="type">str</span>]  <span class="cmt"># = None</span>
+}
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span></h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"compaction"</span>]],
+  <span class="field">content</span>:       <span class="req">Required</span>[<span class="kw">Optional</span>[<span class="type">str</span>]],
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+<span class="cmt">// content is Required but its value can be null.</span>
+<span class="cmt">// (Required[Optional[str]] means "must be present</span>
+<span class="cmt">// in the dict, but value may be None").</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="section-divider">
+
+<!-- ==================== IMAGE (INPUT-ONLY) ==================== -->
+<div id="image" class="block-section">
+  <div class="block-header">
+    <h2>"image"</h2>
+    <span class="type-tag">BetaImageBlockParam (input-only)</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Input-only:</strong> Never returned by the API in response content.
+      Three source variants for providing image data.
+    </div>
+    <div class="full-width">
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"image"</span>]],
+  <span class="field">source</span>:        <span class="req">Required</span>[<span class="kw">Union</span>[
+    <span class="type">BetaBase64ImageSourceParam</span>,
+    <span class="type">BetaURLImageSourceParam</span>,
+    <span class="type">BetaFileImageSourceParam</span>
+  ]],
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+
+<span class="cmt">// BetaBase64ImageSourceParam:</span>
+<span class="cmt">//   { type: Required["base64"],</span>
+<span class="cmt">//     media_type: Required["image/jpeg" | "image/png" | "image/gif" | "image/webp"],</span>
+<span class="cmt">//     data: Required[str]  // base64-encoded }</span>
+<span class="cmt">//</span>
+<span class="cmt">// BetaURLImageSourceParam:</span>
+<span class="cmt">//   { type: Required["url"],</span>
+<span class="cmt">//     url: Required[str] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// BetaFileImageSourceParam:</span>
+<span class="cmt">//   { type: Required["file"],</span>
+<span class="cmt">//     file_id: Required[str] }</span>
+</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== DOCUMENT (INPUT-ONLY) ==================== -->
+<div id="document" class="block-section">
+  <div class="block-header">
+    <h2>"document"</h2>
+    <span class="type-tag">BetaRequestDocumentBlockParam (input-only)</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Input-only:</strong> Never returned by the API in top-level response content.
+      (Though it <em>does</em> appear nested inside <code>web_fetch_tool_result</code> responses as <code>BetaDocumentBlock</code>.)
+      Five source variants covering all document input methods.
+    </div>
+    <div class="full-width">
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"document"</span>]],
+  <span class="field">source</span>:        <span class="req">Required</span>[<span class="kw">Union</span>[
+    <span class="type">BetaBase64PDFSourceParam</span>,
+    <span class="type">BetaPlainTextSourceParam</span>,
+    <span class="type">BetaContentBlockSourceParam</span>,
+    <span class="type">BetaURLPDFSourceParam</span>,
+    <span class="type">BetaFileDocumentSourceParam</span>
+  ]],
+  <span class="field">title</span>:         <span class="opt">Optional[str]</span>,
+  <span class="field">context</span>:       <span class="opt">Optional[str]</span>,
+  <span class="field">citations</span>:     <span class="opt">Optional[BetaCitationsConfigParam]</span>,
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+
+<span class="cmt">// BetaBase64PDFSourceParam:</span>
+<span class="cmt">//   { type: Required["base64"],</span>
+<span class="cmt">//     media_type: Required["application/pdf"],</span>
+<span class="cmt">//     data: Required[str] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// BetaPlainTextSourceParam:</span>
+<span class="cmt">//   { type: Required["text"],</span>
+<span class="cmt">//     media_type: Required["text/plain"],</span>
+<span class="cmt">//     data: Required[str] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// BetaContentBlockSourceParam:</span>
+<span class="cmt">//   { type: Required["content"],</span>
+<span class="cmt">//     content: Required[Union[str, Iterable[ContentBlockSourceContentParam]]] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// BetaURLPDFSourceParam:</span>
+<span class="cmt">//   { type: Required["url"],</span>
+<span class="cmt">//     url: Required[str] }</span>
+<span class="cmt">//</span>
+<span class="cmt">// BetaFileDocumentSourceParam:</span>
+<span class="cmt">//   { type: Required["file"],</span>
+<span class="cmt">//     file_id: Required[str] }</span>
+</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== SEARCH RESULT (INPUT-ONLY) ==================== -->
+<div id="search_result" class="block-section">
+  <div class="block-header">
+    <h2>"search_result"</h2>
+    <span class="type-tag">BetaSearchResultBlockParam (input-only)</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Input-only:</strong> Never returned by the API. Used to pass <strong>your own external search results</strong>
+      (e.g. from your own RAG pipeline, Elasticsearch, vector DB, etc.) to the model as structured input.
+      <br><br>
+      <strong>Not the same as <code>web_search_tool_result</code></strong> — that is a server-executed web search
+      performed by Anthropic's servers. <code>search_result</code> is for <em>your</em> search results.
+      <br><br>
+      <strong>Why use it?</strong> Instead of dumping search results as raw text into a user message, wrapping them
+      in <code>search_result</code> blocks lets the model:
+      <strong>(a)</strong> understand they are structured search results with a source URL and title, and
+      <strong>(b)</strong> optionally generate <strong>citations</strong> pointing back to them. When <code>citations: {"enabled": true}</code>
+      is set and the model references content from these blocks, the response <code>text</code> blocks will contain
+      <code>BetaCitationSearchResultLocation</code> citations (type <code>"search_result_location"</code>) pointing back
+      to the specific <code>search_result</code> block by index.
+    </div>
+    <div class="full-width">
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"search_result"</span>]],
+  <span class="field">source</span>:        <span class="req">Required</span>[<span class="type">str</span>],         <span class="cmt">// URL or source identifier</span>
+  <span class="field">title</span>:         <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">content</span>:       <span class="req">Required</span>[<span class="kw">Iterable</span>[<span class="type">BetaTextBlockParam</span>]],
+  <span class="field">citations</span>:     <span class="opt">Optional[BetaCitationsConfigParam]</span>,
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+</pre>
+    </div>
+  </div>
+</div>
+
+<hr class="section-divider">
+
+<!-- ==================== SHARED: TOOL REFERENCE ==================== -->
+<div id="tool_reference" class="block-section">
+  <div class="block-header">
+    <h2>Shared Type: tool_reference</h2>
+    <span class="type-tag">BetaToolReferenceBlock / BetaToolReferenceBlockParam</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Not a top-level content block.</strong> Appears in two contexts:
+      <br><br>
+      <strong>1. Inside <code>tool_search_tool_result</code> responses</strong> — the API returns a list of
+      <code>tool_reference</code> items indicating which deferred tools matched a tool search query.
+      This is part of the <strong>tool search</strong> feature that allows tools to be registered with
+      <code>defer_loading: true</code> so they aren't loaded into the system prompt until the model
+      searches for and finds them. See <a href="#tool_search_tool_result" style="color:var(--accent)">tool_search_tool_result</a> for the full flow.
+      <br><br>
+      <strong>2. Inside <code>tool_result</code> content</strong> — you can include <code>tool_reference</code> blocks
+      alongside text/image/document blocks in a <code>tool_result</code>'s content array to associate
+      the result with a specific tool by name.
+    </div>
+    <div class="compare">
+      <div class="compare-col">
+        <h3><span class="label-sdk">SDK Response</span> — BetaToolReferenceBlock</h3>
+<pre>
+{
+  <span class="field">type</span>:      <span class="kw">Literal</span>[<span class="lit">"tool_reference"</span>],
+  <span class="field">tool_name</span>: <span class="type">str</span>
+}
+</pre>
+      </div>
+      <div class="compare-col">
+        <h3><span class="label-api">API Wire Param</span> — BetaToolReferenceBlockParam</h3>
+<pre>
+{
+  <span class="field">type</span>:          <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"tool_reference"</span>]],
+  <span class="field">tool_name</span>:     <span class="req">Required</span>[<span class="type">str</span>],
+  <span class="field">cache_control</span>: <span class="opt">Optional[CacheControlParam]</span>
+}
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== SHARED: CALLER ==================== -->
+<div id="caller" class="block-section">
+  <div class="block-header">
+    <h2>Shared Type: Caller</h2>
+    <span class="type-tag">discriminated union on "type"</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      Appears on <code>tool_use</code>, <code>server_tool_use</code>, <code>web_search_tool_result</code>,
+      and <code>web_fetch_tool_result</code>. Indicates who initiated the tool call.
+      The response and param shapes are identical.
+    </div>
+    <div class="full-width">
+<pre>
+<span class="type">Caller</span> = <span class="kw">Union</span>[
+
+  <span class="cmt">// Model invoked the tool directly</span>
+  { <span class="field">type</span>: <span class="kw">Literal</span>[<span class="lit">"direct"</span>] },
+
+  <span class="cmt">// A server tool (code_execution v1) invoked this tool</span>
+  { <span class="field">type</span>: <span class="kw">Literal</span>[<span class="lit">"code_execution_20250825"</span>],
+    <span class="field">tool_id</span>: <span class="type">str</span> },
+
+  <span class="cmt">// A server tool (code_execution v2) invoked this tool</span>
+  { <span class="field">type</span>: <span class="kw">Literal</span>[<span class="lit">"code_execution_20260120"</span>],
+    <span class="field">tool_id</span>: <span class="type">str</span> }
+]
+</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== SHARED: CACHE CONTROL ==================== -->
+<div id="cache_control" class="block-section">
+  <div class="block-header">
+    <h2>Shared Type: cache_control</h2>
+    <span class="type-tag">BetaCacheControlEphemeralParam (param-only)</span>
+  </div>
+  <div class="block-body">
+    <div class="notes">
+      <strong>Param-only:</strong> Never returned by the API. Added by the client to request caching
+      on specific content blocks. Anthropic limits cache_control to 4 blocks maximum per request.
+      <strong>Not supported</strong> on <code>thinking</code> or <code>redacted_thinking</code> blocks.
+    </div>
+    <div class="full-width">
+<pre>
+{
+  <span class="field">type</span>: <span class="req">Required</span>[<span class="kw">Literal</span>[<span class="lit">"ephemeral"</span>]],
+  <span class="field">ttl</span>:  <span class="opt">Optional[Literal[<span class="lit">"5m"</span>, <span class="lit">"1h"</span>]]</span>  <span class="cmt">// defaults to "5m"</span>
+}
+</pre>
+    </div>
+  </div>
+</div>
+
+</main>
+</div>
+</body>
+</html>

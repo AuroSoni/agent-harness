@@ -140,7 +140,7 @@ class MessageFormatter(ABC):
     Convert canonical tool schemas into the provider's wire format.
 
     The ToolRegistry returns schemas in the canonical form
-    (``name``, ``description``, ``input_schema``). Each provider
+    ToolSchema(``name``, ``description``, ``input_schema``). Each provider
     formatter converts them into whatever shape its API expects.
 
     Args:

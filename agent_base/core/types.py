@@ -164,27 +164,18 @@ class ThinkingContent(ContentBlock):
 class MediaContent(ContentBlock):
     """Represents a media content block. This is a base class for all media content blocks."""
     media_type: str = ""              # MIME type of the media (eg. "image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf")
-    media_id: str = ""                # ID of the media (eg. "img_123", "doc_123").
-    # NOTE: Media ID is the unique identifier for all types of media passed through the agent messages.
-    # It is used to retrieve appropriate media format for the transport layer (agent messages vs conversation history vs streaming).
-    # It is managed by the media backend (previously file backend).
-    
-    def __post_init__(self) -> None:
-        if not self.media_id:
-            raise ValueError(f"{type(self).__name__} requires a non-empty media_id")
 
 @dataclass
 class ImageContent(MediaContent):
     """Represents an image content block."""
     source_type: str = ""                     # Source type of the image (eg. "url", "base64", "file_id")
-    data: str = ""                            # URL or base64 string or file_id. Transient — not serialized by to_dict(). Resolve via media_id from the media backend.
+    data: str = ""                            # URL or base64 string or file_id. Transient — not serialized by to_dict().
     filename: Optional[str] = None            # Filename of the image
     content_block_type: ContentBlockType = field(default=ContentBlockType.IMAGE, init=False)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "media_type": self.media_type,
-            "media_id": self.media_id,  
             "source_type": self.source_type,
             "content_block_type": self.content_block_type.value,
             "filename": self.filename,
@@ -195,14 +186,13 @@ class ImageContent(MediaContent):
 class DocumentContent(MediaContent):
     """Represents a model-readable document content block (e.g. PDF)."""
     source_type: str = ""                     # Source type of the document (eg. "url", "base64", "file_id")
-    data: str = ""                             # URL or base64 string or file_id. Transient — not serialized by to_dict(). Resolve via media_id from the media backend.
+    data: str = ""                             # URL or base64 string or file_id. Transient — not serialized by to_dict().
     filename: Optional[str] = None             # Filename of the document
     content_block_type: ContentBlockType = field(default=ContentBlockType.DOCUMENT, init=False)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "media_type": self.media_type,
-            "media_id": self.media_id,  
             "content_block_type": self.content_block_type.value,
             "source_type": self.source_type,
             "filename": self.filename,
@@ -214,13 +204,12 @@ class AttachmentContent(MediaContent):
     """Represents an opaque attachment artifact (e.g. container uploads)."""
     filename: str = ""                                 # Filename of the attachment
     source_type: str = ""                              # Source type of the attachment (eg. "file", "url", "base64")
-    data: str = ""                                     # URL or base64 string or file_id. Transient — not serialized by to_dict(). Resolve via media_id from the media backend.
+    data: str = ""                                     # URL or base64 string or file_id. Transient — not serialized by to_dict().
     content_block_type: ContentBlockType = field(default=ContentBlockType.ATTACHMENT, init=False)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "media_type": self.media_type,
-            "media_id": self.media_id,  
             "content_block_type": self.content_block_type.value,
             "filename": self.filename,
             "source_type": self.source_type,
