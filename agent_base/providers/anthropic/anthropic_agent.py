@@ -24,6 +24,7 @@ from agent_base.storage.adapters.memory import (
 from agent_base.media_backend.local import LocalMediaBackend
 from agent_base.media_backend.media_types import MediaMetadata
 from agent_base.tools.registry import ToolCallInfo, ToolRegistry
+from agent_base.streaming.types import MetaDelta
 from agent_base.tools.tool_types import ToolResultEnvelope
 from .formatters import AnthropicMessageFormatter
 from .provider import AnthropicProvider
@@ -46,6 +47,30 @@ DEFAULT_BASE_DELAY = 1.0
 DEFAULT_MAX_STEPS = 50
 DEFAULT_STREAM_FORMATTER = "json"
 DEFAULT_MAX_TOOL_RESULT_TOKENS = 25000
+
+
+def _strip_binary_data(obj: Any) -> Any:
+    """Return a deep copy of *obj* with base64 data replaced by size placeholders."""
+    if isinstance(obj, list):
+        return [_strip_binary_data(item) for item in obj]
+    if isinstance(obj, dict):
+        source = obj.get("source")
+        if (
+            isinstance(source, dict)
+            and source.get("type") == "base64"
+            and "data" in source
+        ):
+            b64_len = len(source["data"]) if isinstance(source["data"], str) else 0
+            byte_size = b64_len * 3 / 4
+            if byte_size >= 1024 * 1024:
+                size_label = f"{byte_size / (1024 * 1024):.1f} MB"
+            else:
+                size_label = f"{byte_size / 1024:.1f} KB"
+            new_source = {k: v for k, v in source.items() if k != "data"}
+            new_source["data"] = f"[base64, {size_label}]"
+            return {**obj, "source": new_source}
+        return {k: _strip_binary_data(v) for k, v in obj.items()}
+    return obj
 
 
 @dataclass
@@ -359,6 +384,12 @@ class AnthropicAgent(Agent):
         self.agent_config.context_messages.append(prompt)
         self.agent_config.conversation_history.append(prompt)
 
+        # Resolve formatter and emit meta_init before the loop.
+        if isinstance(stream_formatter, str):
+            from agent_base.streaming import get_formatter
+            stream_formatter = get_formatter(stream_formatter)
+        await self._emit_meta_init(prompt, queue, stream_formatter)
+
         # Agent Loop
         return await self._resume_loop(queue, stream_formatter)
 
@@ -396,6 +427,13 @@ class AnthropicAgent(Agent):
 
         # Clear pending relay.
         self.agent_config.pending_relay = None
+
+        # Emit meta_init for the resumed stream.
+        if queue and stream_formatter:
+            if isinstance(stream_formatter, str):
+                from agent_base.streaming import get_formatter
+                stream_formatter = get_formatter(stream_formatter)
+            await self._emit_meta_init(combined_message, queue, stream_formatter)
 
         # Resume the agent loop.
         return await self._resume_loop(queue, stream_formatter)
@@ -532,11 +570,11 @@ class AnthropicAgent(Agent):
                             )
                             continue
 
-                    return await self._finalize_run(response_message, "end_turn")
+                    return await self._finalize_run(response_message, "end_turn", queue, stream_formatter)
 
             # Max steps reached.
             last_message = response_message if 'response_message' in dir() else Message.assistant("Max steps reached.")
-            return await self._finalize_run(last_message, "max_steps")
+            return await self._finalize_run(last_message, "max_steps", queue, stream_formatter)
         finally:
             # Always clear subagent context to avoid stale references.
             self._inject_subagent_context(None, None)
@@ -757,6 +795,8 @@ class AnthropicAgent(Agent):
         self,
         response_message: Message,
         stop_reason: str,
+        queue: asyncio.Queue | None = None,
+        stream_formatter: StreamFormatter | None = None,
     ) -> AgentResult:
         """Finalize the run: flush exports, update memory, persist, return result."""
         now = datetime.now(timezone.utc).isoformat()
@@ -795,6 +835,12 @@ class AnthropicAgent(Agent):
 
         result = self._build_agent_result(response_message, stop_reason)
         result.generated_files = generated_files
+
+        # Emit meta events to the stream.
+        if queue and stream_formatter:
+            await self._emit_meta_files(generated_files, queue, stream_formatter)
+            await self._emit_meta_final(result, queue, stream_formatter)
+
         return result
 
     async def _persist_state(self) -> None:
@@ -813,3 +859,87 @@ class AnthropicAgent(Agent):
                 self._run_id,
                 self._run_logs,
             )
+
+    # ─── Meta Event Emission ─────────────────────────────────────────
+
+    async def _emit_meta_init(
+        self,
+        prompt: Message,
+        queue: asyncio.Queue,
+        stream_formatter: StreamFormatter,
+    ) -> None:
+        """Emit meta_init at stream start with run metadata."""
+        # Extract user query text for the payload.
+        text_parts = [b.text for b in prompt.content if isinstance(b, TextContent)]
+        user_query = " ".join(text_parts) if text_parts else json.dumps(
+            _strip_binary_data(prompt.to_dict()), ensure_ascii=False
+        )
+
+        payload: dict[str, Any] = {
+            "format": "json",
+            "user_query": user_query,
+            "agent_uuid": self.agent_config.agent_uuid,
+            "parent_agent_uuid": self._parent_agent_uuid,
+            "model": self.agent_config.model,
+        }
+
+        if self.stream_meta_history_and_tool_results:
+            payload["message_history"] = _strip_binary_data(
+                [m.to_dict() for m in self.agent_config.conversation_history]
+            )
+
+        delta = MetaDelta(
+            agent_uuid=self.agent_config.agent_uuid,
+            type="meta_init",
+            payload=payload,
+            is_final=True,
+        )
+        await stream_formatter.format_delta(delta, queue)
+
+    async def _emit_meta_final(
+        self,
+        result: AgentResult,
+        queue: asyncio.Queue,
+        stream_formatter: StreamFormatter,
+    ) -> None:
+        """Emit meta_final at stream end (only when stream_meta_history_and_tool_results is True)."""
+        if not self.stream_meta_history_and_tool_results:
+            return
+
+        payload: dict[str, Any] = {
+            "stop_reason": result.stop_reason,
+            "total_steps": result.total_steps,
+            "generated_files": [f.to_dict() for f in result.generated_files] if result.generated_files else None,
+            "cost": result.cost,
+            "cumulative_usage": result.cumulative_usage.to_dict() if result.cumulative_usage else None,
+        }
+
+        payload["conversation_history"] = _strip_binary_data(
+            [m.to_dict() for m in result.conversation_history]
+        )
+
+        delta = MetaDelta(
+            agent_uuid=self.agent_config.agent_uuid,
+            type="meta_final",
+            payload=payload,
+            is_final=True,
+        )
+        await stream_formatter.format_delta(delta, queue)
+
+    async def _emit_meta_files(
+        self,
+        generated_files: list[MediaMetadata],
+        queue: asyncio.Queue,
+        stream_formatter: StreamFormatter,
+    ) -> None:
+        """Emit meta_files with generated file metadata."""
+        if not generated_files:
+            return
+
+        delta = MetaDelta(
+            agent_uuid=self.agent_config.agent_uuid,
+            type="meta_files",
+            payload={"files": [f.to_dict() for f in generated_files]},
+            is_final=True,
+        )
+        await stream_formatter.format_delta(delta, queue)
