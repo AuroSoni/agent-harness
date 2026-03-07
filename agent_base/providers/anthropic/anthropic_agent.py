@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from agent_base.core.agent_base import Agent
-from agent_base.core.config import AgentConfig, Conversation, LLMConfig, PendingToolRelay
+from agent_base.core.config import AgentConfig, Conversation, CostBreakdown, LLMConfig, PendingToolRelay
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import AgentResult, LogEntry
 from agent_base.core.types import ContentBlock, ServerToolResultContent, TextContent, ToolUseBase, ToolResultContent
@@ -713,8 +713,13 @@ class AnthropicAgent(Agent):
             total_steps=self.agent_config.current_step,
             agent_logs=self._run_logs if self._run_logs else None,
             generated_files=None,
-            cost=None,
+            cost=self._compute_cost(),
         )
+
+    def _compute_cost(self) -> CostBreakdown | None:
+        """Compute cost from cumulative usage and model pricing."""
+        from agent_base.pricing import calculate_cost
+        return calculate_cost(self._cumulative_usage, self.agent_config.model)
 
     def _collect_file_ids(self, obj: Any, file_ids: set[str]) -> None:
         """Recursively collect Anthropic file_ids from serialized tool result content."""
@@ -821,6 +826,9 @@ class AnthropicAgent(Agent):
                 conversation_history=self.conversation.messages if self.conversation else [],
             )
 
+        # Compute cost before persisting so it's saved with the conversation.
+        cost = self._compute_cost()
+
         # Finalize conversation record.
         if self.conversation:
             self.conversation.final_response = response_message
@@ -828,6 +836,7 @@ class AnthropicAgent(Agent):
             self.conversation.total_steps = self.agent_config.current_step
             self.conversation.usage = self._cumulative_usage
             self.conversation.generated_files = generated_files
+            self.conversation.cost = cost
             self.conversation.completed_at = now
 
         # Persist state.
@@ -835,6 +844,7 @@ class AnthropicAgent(Agent):
 
         result = self._build_agent_result(response_message, stop_reason)
         result.generated_files = generated_files
+        result.cost = cost
 
         # Emit meta events to the stream.
         if queue and stream_formatter:

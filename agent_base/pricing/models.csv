@@ -1,0 +1,10 @@
+model_id,display_name,input_per_mtok,cache_write_5m_per_mtok,cache_write_1h_per_mtok,cache_read_per_mtok,output_per_mtok,long_context_input_multiplier,long_context_output_multiplier,long_context_threshold
+claude-opus-4-6,Claude Opus 4.6,5.00,6.25,10.00,0.50,25.00,2.0,1.5,200000
+claude-opus-4-5,Claude Opus 4.5,5.00,6.25,10.00,0.50,25.00,1.0,1.0,0
+claude-opus-4-1,Claude Opus 4.1,15.00,18.75,30.00,1.50,75.00,1.0,1.0,0
+claude-opus-4,Claude Opus 4,15.00,18.75,30.00,1.50,75.00,1.0,1.0,0
+claude-sonnet-4-5,Claude Sonnet 4.5,3.00,3.75,6.00,0.30,15.00,2.0,1.5,200000
+claude-sonnet-4,Claude Sonnet 4,3.00,3.75,6.00,0.30,15.00,2.0,1.5,200000
+claude-haiku-4-5,Claude Haiku 4.5,1.00,1.25,2.00,0.10,5.00,1.0,1.0,0
+claude-3-5-haiku,Claude Haiku 3.5,0.80,1.00,1.60,0.08,4.00,1.0,1.0,0
+claude-3-haiku,Claude Haiku 3,0.25,0.30,0.50,0.03,1.25,1.0,1.0,0
