@@ -35,6 +35,10 @@ packages = ["agent_base"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-m 'not integration'"
+markers = [
+    "integration: marks tests as integration tests (deselected by default)",
+]
 
 [tool.uv.workspace]
 members = [
