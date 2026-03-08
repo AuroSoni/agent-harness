@@ -2,14 +2,14 @@
 
 from .calculator import (
     ModelPricing,
-    calculate_cost,
+    calculate_step_cost,
     load_pricing,
     resolve_model_pricing,
 )
 
 __all__ = [
     "ModelPricing",
-    "calculate_cost",
+    "calculate_step_cost",
     "load_pricing",
     "resolve_model_pricing",
 ]

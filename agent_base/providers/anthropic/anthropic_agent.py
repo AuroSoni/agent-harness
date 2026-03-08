@@ -89,6 +89,9 @@ class AnthropicLLMConfig(LLMConfig):
     container_id: str | None = None
     enable_caching: bool = True
     context_management: dict[str, Any] | None = None
+    inference_geo: Optional[str] = None
+    speed: Optional[str] = None
+    service_tier: Optional[str] = None
     api_kwargs: dict[str, Any] | None = None
 
 class AnthropicAgent(Agent):
@@ -331,6 +334,7 @@ class AnthropicAgent(Agent):
         self._run_id = run_id
         self._run_logs = []
         self._cumulative_usage = Usage()
+        self._cumulative_cost = CostBreakdown()
 
     async def run(self, prompt: str | Message) -> AgentResult:
         if not self._initialized:
@@ -676,7 +680,7 @@ class AnthropicAgent(Agent):
         return "".join(parts)
 
     def _accumulate_usage(self, step_usage: Usage | None) -> None:
-        """Add step usage to cumulative tracking."""
+        """Add step usage to cumulative tracking and compute per-step cost."""
         if step_usage is None:
             return
         self._cumulative_usage.input_tokens += step_usage.input_tokens
@@ -693,6 +697,17 @@ class AnthropicAgent(Agent):
             self._cumulative_usage.thinking_tokens = (
                 (self._cumulative_usage.thinking_tokens or 0) + step_usage.thinking_tokens
             )
+
+        from agent_base.pricing import calculate_step_cost
+        step_cost = calculate_step_cost(step_usage, self.agent_config.model)
+        if step_cost:
+            self._cumulative_cost.total_cost = round(
+                self._cumulative_cost.total_cost + step_cost.total_cost, 6
+            )
+            for k, v in step_cost.breakdown.items():
+                self._cumulative_cost.breakdown[k] = round(
+                    self._cumulative_cost.breakdown.get(k, 0.0) + v, 6
+                )
 
     def _build_agent_result(
         self,
@@ -718,9 +733,10 @@ class AnthropicAgent(Agent):
         )
 
     def _compute_cost(self) -> CostBreakdown | None:
-        """Compute cost from cumulative usage and model pricing."""
-        from agent_base.pricing import calculate_cost
-        return calculate_cost(self._cumulative_usage, self.agent_config.model)
+        """Return the accumulated per-step cost breakdown."""
+        if self._cumulative_cost.total_cost == 0.0 and not self._cumulative_cost.breakdown:
+            return None
+        return self._cumulative_cost
 
     def _collect_file_ids(self, obj: Any, file_ids: set[str]) -> None:
         """Recursively collect Anthropic file_ids from serialized tool result content."""

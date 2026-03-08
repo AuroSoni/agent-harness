@@ -263,8 +263,15 @@ class AnthropicProvider(Provider):
         if llm_config and llm_config.context_management:
             request_params["context_management"] = llm_config.context_management
 
-        # TODO: llm_config may contain arbitrary api_kwargs.
-        # Add api_kwargs to the request params.
+        if llm_config:
+            for key in ("inference_geo", "speed", "service_tier"):
+                val = getattr(llm_config, key, None)
+                if val is not None:
+                    request_params[key] = val
+
+            if llm_config.api_kwargs:
+                request_params.update(llm_config.api_kwargs)
+
         return request_params
 
     def _build_response_message(
@@ -289,10 +296,13 @@ class AnthropicProvider(Provider):
                     if v is not None
                 },
             )
-        # TODO: Extract other kinds of usage like tool uses, etc. Check the anthropic developer docs
-        # and inspect the anthropic sdk to see what is available.
-
         usage_kwargs: dict[str, Any] = {}
+        if raw_usage:
+            for key in ("inference_geo", "service_tier", "speed"):
+                val = getattr(raw_usage, key, None)
+                if val is not None:
+                    usage_kwargs[key] = val
+
         raw_context_management = getattr(raw_response, "context_management", None)
         if raw_context_management:
             usage_kwargs["context_management"] = (
