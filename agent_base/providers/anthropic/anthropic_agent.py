@@ -412,6 +412,12 @@ class AnthropicAgent(Agent):
         if pending is None:
             raise RuntimeError("No pending relay to resume. Call run() first.")
 
+        # Initialize per-run tracking state for the resumed run.
+        self._run_id = pending.run_id or str(uuid.uuid4())
+        self._run_logs = []
+        self._cumulative_usage = Usage()
+        self._cumulative_cost = CostBreakdown()
+
         # Build a tool result message combining:
         # 1. Backend results that were already computed
         # 2. Incoming relay results from frontend/user
@@ -552,6 +558,21 @@ class AnthropicAgent(Agent):
 
                         # Persist state before pausing.
                         await self._persist_state()
+
+                        # Emit awaiting_frontend_tools event to notify the frontend.
+                        if queue is not None:
+                            fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
+                            pending_tools = [
+                                {"tool_use_id": tc.tool_id, "name": tc.name, "input": tc.input}
+                                for tc in (*classification.frontend_calls, *classification.confirmation_calls)
+                            ]
+                            delta = MetaDelta(
+                                agent_uuid=self.agent_config.agent_uuid,
+                                type="awaiting_frontend_tools",
+                                payload={"tools": pending_tools},
+                                is_final=True,
+                            )
+                            await fmt.format_delta(delta, queue)
 
                         return self._build_agent_result(response_message, "relay")
 
