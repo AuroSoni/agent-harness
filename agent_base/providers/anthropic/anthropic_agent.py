@@ -13,7 +13,7 @@ from agent_base.core.agent_base import Agent
 from agent_base.core.config import AgentConfig, Conversation, CostBreakdown, LLMConfig, PendingToolRelay
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import AgentResult, LogEntry
-from agent_base.core.types import ContentBlock, ServerToolResultContent, TextContent, ToolUseBase, ToolResultContent
+from agent_base.core.types import ContentBlock, ServerToolResultContent, TextContent, ToolResultBase, ToolUseBase, ToolResultContent
 from agent_base.compaction.strategies import NoOpCompactor
 from agent_base.memory.stores import NoOpMemoryStore
 from agent_base.sandbox.local import LocalSandbox
@@ -430,6 +430,16 @@ class AnthropicAgent(Agent):
         if self.conversation:
             self.conversation.messages.append(combined_message)
 
+        # Fire on_relay_result hook for each relay result before resuming.
+        for block in relay_results:
+            if isinstance(block, ToolResultBase):
+                tool_input = self._get_relay_tool_input(block.tool_id, pending)
+                await self.on_relay_result(
+                    tool_name=block.tool_name,
+                    tool_input=tool_input,
+                    result=block,
+                )
+
         # Clear pending relay.
         self.agent_config.pending_relay = None
 
@@ -601,6 +611,87 @@ class AnthropicAgent(Agent):
                 set_uuid_method = getattr(tool_instance, 'set_agent_uuid', None)
                 if callable(set_uuid_method):
                     set_uuid_method(self.agent_uuid)
+
+    # ─── Mid-Run Reconfiguration ──────────────────────────────────────
+
+    def reconfigure(
+        self,
+        tools: list[Callable] | None = None,
+        frontend_tools: list[Callable] | None = None,
+        system_prompt: str | None = None,
+    ) -> None:
+        """Swap tools and/or system prompt mid-run.
+
+        Builds a fresh ``ToolRegistry`` when tools are provided, preserving
+        the other tool type (backend/frontend) when only one is specified.
+        Updates ``agent_config`` so the next LLM call picks up the changes.
+
+        Args:
+            tools: New backend tools. ``None`` keeps current backend tools.
+                An empty list removes all backend tools.
+            frontend_tools: New frontend/confirmation tools. ``None`` keeps
+                current frontend tools. An empty list removes all.
+            system_prompt: New system prompt. ``None`` keeps current prompt.
+        """
+        if tools is not None or frontend_tools is not None:
+            old_registry = self.tool_registry
+            new_registry = ToolRegistry()
+
+            if tools is not None:
+                new_registry.register_tools(tools)
+            else:
+                for rt in old_registry._tools.values():
+                    if rt.executor == "backend":
+                        new_registry.register(rt.name, rt.func, rt.schema)
+
+            if frontend_tools is not None:
+                new_registry.register_tools(frontend_tools)
+            else:
+                for rt in old_registry._tools.values():
+                    if rt.executor == "frontend" or rt.needs_confirmation:
+                        new_registry.register(rt.name, rt.func, rt.schema)
+
+            self.tool_registry = new_registry
+            if self._sandbox is not None:
+                self.tool_registry.attach_sandbox(self._sandbox)
+            self._inject_agent_uuid_to_tools()
+            self.agent_config.tool_schemas = self.tool_registry.get_schemas()
+            self.agent_config.tool_names = [
+                s.name for s in self.agent_config.tool_schemas
+            ]
+
+        if system_prompt is not None:
+            self.system_prompt = system_prompt
+            self.agent_config.system_prompt = system_prompt
+
+    async def on_relay_result(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        result: ContentBlock,
+    ) -> None:
+        """Lifecycle hook fired after each frontend/confirmation tool result.
+
+        Called once per relay result in ``resume_with_relay_results()``, after
+        results are combined into the context but before ``_resume_loop()``
+        resumes. Override in subclasses to trigger ``reconfigure()`` or
+        perform side-effects.
+
+        Args:
+            tool_name: Name of the tool that produced this result.
+            tool_input: Original input dict from the tool call.
+            result: The ``ToolResultContent`` block from the relay.
+        """
+        pass
+
+    def _get_relay_tool_input(
+        self, tool_id: str, pending: PendingToolRelay
+    ) -> dict[str, Any]:
+        """Look up the original tool_input for a relay tool call by tool_id."""
+        for call_info in (*pending.frontend_calls, *pending.confirmation_calls):
+            if call_info.tool_id == tool_id:
+                return call_info.input
+        return {}
 
     def _inject_subagent_context(
         self,
