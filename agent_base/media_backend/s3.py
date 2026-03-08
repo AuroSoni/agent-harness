@@ -146,6 +146,10 @@ class S3MediaBackend(MediaBackend):
         key: str,
     ) -> MediaMetadata:
         """Construct a MediaMetadata from components."""
+        if self.endpoint_url:
+            url = f"{self.endpoint_url.rstrip('/')}/{self.bucket}/{key}"
+        else:
+            url = f"https://{self.bucket}.s3.{self.region}.amazonaws.com/{key}"
         return MediaMetadata(
             media_id=media_id,
             media_mime_type=mime_type,
@@ -154,6 +158,7 @@ class S3MediaBackend(MediaBackend):
             media_size=size,
             storage_type="s3",
             storage_location=f"s3://{self.bucket}/{key}",
+            url=url,
             extras={"s3_bucket": self.bucket, "s3_key": key},
         )
 

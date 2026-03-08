@@ -27,6 +27,8 @@ class MediaMetadata:
     storage_type: str  # Backend type (e.g. "local", "s3", "cloudflare_r2")
     storage_location: str  # Backend-specific location (file path, S3 URL, etc.)
 
+    url: str | None = None  # Resolved URL for frontend/consumer access
+
     extras: dict[str, Any] = field(default_factory=dict)
     """Backend-specific extension point (must be JSON serializable)."""
 
@@ -39,6 +41,7 @@ class MediaMetadata:
             "media_size": self.media_size,
             "storage_type": self.storage_type,
             "storage_location": self.storage_location,
+            "url": self.url,
             "extras": self.extras,
         }
 
