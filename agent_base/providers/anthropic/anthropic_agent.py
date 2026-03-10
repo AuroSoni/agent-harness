@@ -27,7 +27,10 @@ from agent_base.media_backend.media_types import MediaMetadata
 from agent_base.tools.registry import ToolCallInfo, ToolRegistry
 from agent_base.streaming.types import MetaDelta
 from agent_base.tools.tool_types import ToolResultEnvelope
+from agent_base.logging import get_logger
 from .formatters import AnthropicMessageFormatter
+
+logger = get_logger(__name__)
 from .provider import AnthropicProvider
 
 if TYPE_CHECKING:
@@ -268,6 +271,15 @@ class AnthropicAgent(Agent):
                     loaded_config.llm_config.to_dict()
                 )
             self.agent_config = loaded_config
+
+            logger.debug(
+                "loaded_agent_config",
+                agent_uuid=self._agent_uuid,
+                conversation_history_len=len(loaded_config.conversation_history),
+                context_messages_len=len(loaded_config.context_messages),
+                has_pending_relay=loaded_config.pending_relay is not None,
+                last_msg_roles=[m.role.value for m in loaded_config.conversation_history[-3:]],
+            )
 
             # If a relay is pending, restore the partial Conversation
             # from the interrupted run so resumption can continue tracking.
@@ -963,6 +975,11 @@ class AnthropicAgent(Agent):
             self.conversation.cost = cost
             self.conversation.completed_at = now
 
+        # Validate tool_use / tool_result pairing in context_messages before
+        # persisting.  An orphaned tool_use without a subsequent tool_result will
+        # cause the Anthropic API to reject the next request in this session.
+        self._warn_orphaned_tool_uses(self.agent_config.context_messages)
+
         # Persist state.
         await self._persist_state()
 
@@ -982,6 +999,15 @@ class AnthropicAgent(Agent):
         now = datetime.now(timezone.utc).isoformat()
         self.agent_config.updated_at = now
 
+        logger.debug(
+            "persisting_state",
+            agent_uuid=self.agent_config.agent_uuid,
+            conversation_history_len=len(self.agent_config.conversation_history),
+            context_messages_len=len(self.agent_config.context_messages),
+            has_pending_relay=self.agent_config.pending_relay is not None,
+            last_msg_roles=[m.role.value for m in self.agent_config.conversation_history[-3:]],
+        )
+
         await self.config_adapter.save(self.agent_config)
 
         if self.conversation:
@@ -992,6 +1018,34 @@ class AnthropicAgent(Agent):
                 self.agent_config.agent_uuid,
                 self._run_id,
                 self._run_logs,
+            )
+
+    def _warn_orphaned_tool_uses(self, messages: list[Message]) -> None:
+        """Log a warning if any tool_use block lacks a matching tool_result.
+
+        Scans *messages* for assistant tool_use ids and checks that each one
+        has a corresponding tool_result in a subsequent user message.  This is
+        a diagnostic aid — the Anthropic API requires strict pairing and will
+        reject a request where the invariant is violated.
+        """
+        pending_tool_ids: set[str] = set()
+        for msg in messages:
+            for block in msg.content:
+                if isinstance(block, ToolUseBase):
+                    pending_tool_ids.add(block.tool_id)
+                elif isinstance(block, ToolResultBase):
+                    pending_tool_ids.discard(block.tool_id)
+        if pending_tool_ids:
+            logger.warning(
+                "orphaned_tool_use_detected",
+                agent_uuid=self.agent_config.agent_uuid,
+                orphaned_ids=list(pending_tool_ids),
+                context_messages_len=len(messages),
+                msg=(
+                    "context_messages contains tool_use blocks without "
+                    "matching tool_result blocks — the next API call will "
+                    "be rejected by the Anthropic API"
+                ),
             )
 
     # ─── Meta Event Emission ─────────────────────────────────────────

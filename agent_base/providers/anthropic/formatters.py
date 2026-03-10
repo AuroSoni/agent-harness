@@ -187,6 +187,10 @@ class AnthropicMessageFormatter(MessageFormatter):
                         "type": "compaction",
                         "content": content,
                     }
+                # The API rejects empty text content blocks.  Citation-only
+                # response blocks may have text="" — drop them on round-trip.
+                if not block.text:
+                    return None
                 d: dict[str, Any] = {"type": "text", "text": block.text}
                 # Round-trip citations (stored as raw wire dicts in kwargs).
                 if block.kwargs.get("citations"):
@@ -361,6 +365,8 @@ class AnthropicMessageFormatter(MessageFormatter):
                     canonical_citations: list[ContentBlock] = []
                     for cit in raw_citations:
                         cit_dict = cit.model_dump() if hasattr(cit, "model_dump") else cit
+                        # Strip response-only fields that the API won't accept on input.
+                        cit_dict.pop("file_id", None)
                         wire_citations.append(cit_dict)
                         parsed_cit = self._parse_citation(cit)
                         if parsed_cit:
