@@ -4,7 +4,7 @@ from __future__ import annotations
 import functools
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING, Self
 
 from .decorators import tool
 from .tool_types import ToolSchema
@@ -103,7 +103,7 @@ class ConfigurableToolBase(ABC):
         self._schema_override = schema_override
         self._sandbox: Sandbox | None = None
 
-    def set_sandbox(self, sandbox: "Sandbox") -> "ConfigurableToolBase":
+    def set_sandbox(self, sandbox: "Sandbox") -> Self:
         """Inject the sandbox for file and command I/O.
 
         Called by ToolRegistry.attach_sandbox() during agent initialization.
