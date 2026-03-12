@@ -103,7 +103,7 @@ class ConfigurableToolBase(ABC):
         self._schema_override = schema_override
         self._sandbox: Sandbox | None = None
 
-    def set_sandbox(self, sandbox: "Sandbox") -> None:
+    def set_sandbox(self, sandbox: "Sandbox") -> "ConfigurableToolBase":
         """Inject the sandbox for file and command I/O.
 
         Called by ToolRegistry.attach_sandbox() during agent initialization.
@@ -113,6 +113,7 @@ class ConfigurableToolBase(ABC):
             sandbox: The sandbox instance to use for all I/O operations.
         """
         self._sandbox = sandbox
+        return self
 
     def _get_template_context(self) -> Dict[str, Any]:
         """Return a dict of {placeholder: value} for docstring template substitution.

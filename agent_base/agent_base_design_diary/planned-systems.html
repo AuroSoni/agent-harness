@@ -188,6 +188,14 @@
     background: var(--amber-soft);
     color: var(--amber);
   }
+  .status-impl {
+    background: var(--emerald-soft);
+    color: var(--emerald);
+  }
+  .status-plan {
+    background: var(--amber-soft);
+    color: var(--amber);
+  }
 
   /* ─── Thought callouts ─── */
   .thought {
@@ -383,7 +391,7 @@
 <body>
 
 <nav class="nav-bar">
-  <a href="storage.html" class="nav-arrow">&larr;</a>
+  <a href="providers.html" class="nav-arrow">&larr;</a>
   <div class="nav-tabs">
     <a href="index.html" class="nav-tab">Hub</a>
     <a href="core-domain-model.html" class="nav-tab">Domain</a>
@@ -392,6 +400,8 @@
     <a href="media-backend.html" class="nav-tab">Media</a>
     <a href="file-coordination.html" class="nav-tab">Files</a>
     <a href="storage.html" class="nav-tab">Storage</a>
+    <a href="streaming.html" class="nav-tab">Streaming</a>
+    <a href="providers.html" class="nav-tab">Providers</a>
     <a href="planned-systems.html" class="nav-tab active">Planned</a>
   </div>
   <span class="nav-arrow disabled">&rarr;</span>
@@ -401,10 +411,10 @@
 <div class="hero">
   <span class="icon">🗺️</span>
   <h1>The Road <em>Ahead</em></h1>
-  <div class="sub">Developer Diary &middot; Planned Systems</div>
+  <div class="sub">Developer Diary &middot; Systems Status</div>
   <p class="tagline">
-    Designs that are settled but not yet fully implemented in agent_base.
-    The ABCs are defined, the patterns are chosen &mdash; the work is wiring them up.
+    Systems that were once planned are now implemented. This page tracks the
+    evolution from design to production &mdash; and what remains on the horizon.
   </p>
 </div>
 
@@ -412,7 +422,7 @@
 
 <!-- ━━━━━━━━━━ COMPACTION & MEMORY ━━━━━━━━━━ -->
 <section class="section" id="compaction">
-  <div class="section-tag"><span class="status">Planned</span> Context Management</div>
+  <div class="section-tag"><span class="status status-impl">Implemented</span> Context Management</div>
   <h2>Compaction &amp; Memory &mdash; Two Time Scales</h2>
 
   <p>
@@ -509,7 +519,7 @@
 
 <!-- ━━━━━━━━━━ STORAGE ADAPTERS ━━━━━━━━━━ -->
 <section class="section" id="storage">
-  <div class="section-tag"><span class="status">Planned</span> Persistence</div>
+  <div class="section-tag"><span class="status status-impl">Implemented</span> Persistence</div>
   <h2>Storage Adapters &mdash; Three Independent Axes</h2>
 
   <p>
@@ -548,6 +558,20 @@
     Factory: <code>create_adapters(backend_type, **kwargs)</code>.
   </p>
 
+  <h3>Recent Enhancements (March 2026)</h3>
+  <p>
+    The Postgres adapter gained several new capabilities to support the relay system
+    and improved conversation management:
+  </p>
+  <ul>
+    <li><code>load_by_run_id()</code> &mdash; Load a conversation by run_id (for relay state restoration)</li>
+    <li><code>upsert_conversation()</code> &mdash; Insert or update conversations</li>
+    <li>Per-agent sequence numbering for pagination</li>
+    <li>Relay state serialization &mdash; <code>PendingToolRelay</code> persisted with tool call info and pre-computed backend results</li>
+    <li>Cost breakdown persistence &mdash; <code>CostBreakdown</code> stored per conversation</li>
+    <li>Media registry sync &mdash; <code>MediaMetadata</code> index stored alongside config</li>
+  </ul>
+
   <div class="thought">
     <span class="label">Design Decision</span>
     Each adapter is truly independent. You can run <code>AgentConfigAdapter</code> on Postgres
@@ -559,12 +583,14 @@
 
 <!-- ━━━━━━━━━━ PROVIDERS ━━━━━━━━━━ -->
 <section class="section" id="providers">
-  <div class="section-tag"><span class="status">Planned</span> Providers</div>
+  <div class="section-tag"><span class="status status-impl">Implemented</span> Providers</div>
   <h2>Provider Implementations</h2>
 
   <p>
     Each provider directory contains exactly four files &mdash; each owning one concern.
-    Currently, only the Anthropic provider is implemented. OpenAI and LiteLLM are planned.
+    The Anthropic provider is now fully implemented with streaming, retry, cache control,
+    relay/pause, and cost tracking. See the <a href="providers.html">Provider Layer diary</a>
+    for the full design narrative. OpenAI and LiteLLM providers remain planned.
   </p>
 
   <div class="table-wrap">
@@ -618,7 +644,7 @@
 
 <!-- ━━━━━━━━━━ COMPOSITION & WIRING ━━━━━━━━━━ -->
 <section class="section" id="composition">
-  <div class="section-tag"><span class="status">Planned</span> Assembly</div>
+  <div class="section-tag"><span class="status status-impl">Implemented</span> Assembly</div>
   <h2>Composition &amp; Wiring</h2>
 
   <h3>Agent Construction</h3>
@@ -669,21 +695,95 @@ await agent.run(prompt)
        │
        ├── append assistant message
        │
+       ├── pricing.calculate_step_cost(usage) &rarr; cumulative cost
+       │
        └── match stop_reason:
             │
             ├── "pause_turn" &rarr; continue
             │
             ├── "tool_use":
-            │    envelopes = tool_registry.execute_tools(tool_calls)
-            │    for envelope:
-            │      .for_context_window() &rarr; agent_config.messages
-            │      .for_conversation_log() &rarr; conversation
-            │    continue
+            │    classify tool calls &rarr; backend vs frontend vs confirmation
+            │    │
+            │    ├── backend tools:
+            │    │    envelopes = tool_registry.execute_tools(backend_calls)
+            │    │    for envelope:
+            │    │      .for_context_window() &rarr; agent_config.messages
+            │    │      .for_conversation_log() &rarr; conversation
+            │    │
+            │    └── if relay_calls exist:
+            │         PendingToolRelay(frontend_calls, confirmation_calls,
+            │                          completed_results)
+            │         &rarr; persist to config_adapter
+            │         &rarr; return AgentResult(stop_reason="relay")
+            │         ... later ...
+            │         resume_with_relay_results(relay_results)
+            │           on_relay_result() hook per result
+            │           continue loop
+            │
+            │    else: continue
             │
             └── "end_turn":
                  memory_store.update()
-                 build AgentResult &rarr; return</pre>
+                 build AgentResult(cost=cumulative) &rarr; return</pre>
     <div class="caption">The agentic loop &mdash; from prompt to result</div>
+  </div>
+</section>
+
+<!-- ━━━━━━━━━━ STILL PLANNED ━━━━━━━━━━ -->
+<section class="section" id="planned">
+  <div class="section-tag"><span class="status status-plan">Planned</span> Still on the Roadmap</div>
+  <h2>What Remains</h2>
+
+  <p>
+    With the Anthropic provider, streaming, relay, and pricing all implemented, the remaining
+    planned work focuses on provider breadth and operational maturity:
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>System</th><th>Status</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>providers/openai/</code></td>
+          <td>Planned</td>
+          <td>OpenAI provider &mdash; same 4-file pattern, different wire format</td>
+        </tr>
+        <tr>
+          <td><code>providers/litellm/</code></td>
+          <td>Planned</td>
+          <td>LiteLLM provider for multi-provider proxy routing</td>
+        </tr>
+        <tr>
+          <td><code>sandbox/docker.py</code></td>
+          <td>Interface defined</td>
+          <td>DockerSandbox container lifecycle &mdash; ABC exists, implementation stubbed</td>
+        </tr>
+        <tr>
+          <td><code>sandbox/e2b.py</code></td>
+          <td>Interface defined</td>
+          <td>E2B cloud sandbox &mdash; ABC exists, implementation stubbed</td>
+        </tr>
+        <tr>
+          <td>WebSocket StreamFormatter</td>
+          <td>Planned</td>
+          <td>Alternative transport for bi-directional streaming</td>
+        </tr>
+        <tr>
+          <td>Advanced memory stores</td>
+          <td>Planned</td>
+          <td>Vector-backed, graph-backed cross-session memory implementations</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="thought">
+    <span class="label">Design Decision</span>
+    The architecture was designed so that each planned system slots into an existing
+    extension point. Adding OpenAI touches <code>providers/openai/</code> only. Adding
+    DockerSandbox touches <code>sandbox/docker.py</code> only. No core changes required.
   </div>
 </section>
 
@@ -691,7 +791,7 @@ await agent.run(prompt)
 
 <div class="footer">
   <div class="mark">agent_base</div>
-  <div class="note">Planned Systems &middot; February 2026</div>
+  <div class="note">Systems Status &middot; March 2026</div>
 </div>
 
 </body>

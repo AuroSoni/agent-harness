@@ -592,6 +592,8 @@
     <a href="media-backend.html" class="nav-tab">Media</a>
     <a href="file-coordination.html" class="nav-tab">Files</a>
     <a href="storage.html" class="nav-tab">Storage</a>
+    <a href="streaming.html" class="nav-tab">Streaming</a>
+    <a href="providers.html" class="nav-tab">Providers</a>
     <a href="planned-systems.html" class="nav-tab">Planned</a>
   </div>
   <a href="core-domain-model.html" class="nav-arrow">&rarr;</a>
@@ -815,7 +817,7 @@
       </div>
       <div class="card-footer">
         <span class="card-link">Read the diary &rarr;</span>
-        <span class="status status-plan">Planned</span>
+        <span class="status status-impl">Implemented</span>
       </div>
     </a>
 
@@ -832,16 +834,29 @@
       </div>
     </a>
 
-    <a class="module-card" href="planned-systems.html#providers">
-      <span class="card-icon">🔌</span>
-      <div class="card-title">Provider Implementations</div>
+    <a class="module-card" href="streaming.html">
+      <span class="card-icon">📡</span>
+      <div class="card-title">Streaming Pipeline</div>
       <div class="card-desc">
-        Each provider directory owns four files and four concerns: orchestration,
-        transport, wire format, and provider-specific config.
+        Provider-agnostic real-time event architecture. StreamDelta hierarchy,
+        transport-independent formatting, UTF-8-safe chunking, and multiplexed sub-agent streams.
       </div>
       <div class="card-footer">
         <span class="card-link">Read the diary &rarr;</span>
-        <span class="status status-plan">Planned</span>
+        <span class="status status-impl">Implemented</span>
+      </div>
+    </a>
+
+    <a class="module-card" href="providers.html">
+      <span class="card-icon">🔌</span>
+      <div class="card-title">Provider Layer</div>
+      <div class="card-desc">
+        Provider ABC to Anthropic implementation. Relay/pause system, cost tracking,
+        retry with backoff, cache control, and the full agent loop.
+      </div>
+      <div class="card-footer">
+        <span class="card-link">Read the diary &rarr;</span>
+        <span class="status status-impl">Implemented</span>
       </div>
     </a>
   </div>
@@ -859,30 +874,30 @@
                     │  (orchestration)  │
                     └────────┬──────────┘
                              │ uses
-          ┌──────────────────┼──────────────────┐
-          │                  │                  │
-    ┌─────▼─────┐    ┌──────▼──────┐    ┌──────▼──────┐
-    │  Provider  │    │ToolRegistry │    │  Compactor  │
-    │ (LLM API) │    │ (dispatch)  │    │ (ctx mgmt)  │
-    └─────┬─────┘    └──────┬──────┘    └─────────────┘
-          │                 │
-    ┌─────▼──────┐   ┌──────▼──────┐
-    │ Formatter  │   │   Sandbox   │
-    │(wire fmt)  │   │ (isolation) │
-    └─────┬──────┘   └──────┬──────┘
-          │                 ^
-          │                 │ attach_sandbox()
-          └─────────►┌──────┴──────┐
-                     │MediaBackend │
-                     │(store+resolve+
-                     │ materialize+
-                     │ flush_exports)
-                     └──────┬──────┘
-                            │
-                     ┌──────▼──────┐
-                     │  FileCache  │
-                     │(read-through)
-                     └─────────────┘
+      ┌──────────┬───────────┼───────────┬──────────┐
+      │          │           │           │          │
+┌─────▼─────┐ ┌──▼───────┐ ┌▼──────────┐ ┌▼────────┐ ┌▼─────────┐
+│  Provider  │ │ Stream   │ │ToolRegist.│ │Compactor│ │ Pricing  │
+│ (LLM API) │ │Formatter │ │(dispatch) │ │(ctx mgt)│ │(cost/$)  │
+└─────┬─────┘ │(SSE/WS)  │ └─────┬─────┘ └────────┘ └──────────┘
+      │        └──────────┘       │
+┌─────▼──────┐             ┌──────▼──────┐
+│ Formatter  │             │   Sandbox   │
+│(wire fmt)  │             │ (isolation) │
+└─────┬──────┘             └──────┬──────┘
+      │                           ^
+      │                           │ attach_sandbox()
+      └───────────────►┌──────────┴──┐
+                       │MediaBackend │
+                       │(store+resolve+
+                       │ materialize+
+                       │ flush_exports)
+                       └──────┬──────┘
+                              │
+                       ┌──────▼──────┐
+                       │  FileCache  │
+                       │(read-through)
+                       └─────────────┘
 
     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
     │ConfigAdapter│  │ConvAdapter  │  │ RunAdapter  │
@@ -950,6 +965,12 @@
           <td>1 file</td>
         </tr>
         <tr>
+          <td><strong>Stream Transport</strong></td>
+          <td>SSE, WebSocket, CLI output</td>
+          <td><code>streaming/formatters.py</code></td>
+          <td>1 file</td>
+        </tr>
+        <tr>
           <td><strong>Content Block Type</strong></td>
           <td>New canonical content type</td>
           <td><code>core/types.py</code> + formatters</td>
@@ -1006,15 +1027,25 @@
 │   └── ...
 │
 ├── <span class="n">sandbox/</span>                       <span class="c"># Sandbox infrastructure (isolation layer)</span>
-│   ├── types.py                   <span class="c"># Sandbox ABC, ExecResult</span>
+│   ├── sandbox_types.py           <span class="c"># Sandbox ABC, ExecResult, FileEntry, SandboxConfig</span>
 │   ├── local.py                   <span class="c"># LocalSandbox (~1ms setup)</span>
 │   ├── docker.py                  <span class="c"># DockerSandbox (2–5s setup)</span>
 │   └── e2b.py                     <span class="c"># E2BSandbox (5–15s setup)</span>
 │
 ├── <span class="t">media_backend/</span>                 <span class="c"># Media storage + resolution</span>
-│   ├── types.py                   <span class="c"># MediaMetadata dataclass, MediaBackend ABC</span>
+│   ├── media_types.py             <span class="c"># MediaMetadata dataclass, MediaBackend ABC</span>
 │   ├── local.py / s3.py / memory.py
 │   └── cache.py                   <span class="c"># LocalFileCache (read-through + write-back)</span>
+│
+├── <span class="s">streaming/</span>                     <span class="c"># Real-time event architecture</span>
+│   ├── types.py                   <span class="c"># StreamDelta hierarchy (Text, Thinking, ToolCall, etc.)</span>
+│   ├── base.py                    <span class="c"># StreamFormatter ABC</span>
+│   ├── formatters.py              <span class="c"># JsonStreamFormatter (SSE/chunked)</span>
+│   └── utils.py                   <span class="c"># UTF-8-safe chunking, envelope builders</span>
+│
+├── <span class="f">pricing/</span>                       <span class="c"># Cost calculation</span>
+│   ├── calculator.py              <span class="c"># ModelPricing, calculate_step_cost(), multiplier stacking</span>
+│   └── models.csv                 <span class="c"># Per-model pricing table</span>
 │
 ├── <span class="r">compaction/</span>                    <span class="c"># Context window management</span>
 │   ├── base.py                    <span class="c"># Compactor ABC</span>
@@ -1064,7 +1095,7 @@
         </tr>
         <tr>
           <td><strong>New</strong></td>
-          <td>Sandbox system (3 isolation levels + file coordination), <code>MediaBackend</code> (storage + resolution + orchestration), <code>Provider</code> ABC, framework-level <code>StreamDelta</code> types, three-zone sandbox layout</td>
+          <td>Sandbox system (3 isolation levels + file coordination), <code>MediaBackend</code> (storage + resolution + orchestration + S3 backend), <code>Provider</code> ABC + Anthropic implementation, <code>StreamDelta</code> hierarchy + <code>StreamFormatter</code>, relay/pause system (<code>PendingToolRelay</code>), pricing module (per-step cost tracking), <code>AnthropicMessageFormatter</code> (citations, compaction blocks, media resolution), retry with exponential backoff, sub-agent tool with multiplexed streaming</td>
         </tr>
       </tbody>
     </table>
@@ -1076,7 +1107,7 @@
 <!-- ━━━━━━━━━━ FOOTER ━━━━━━━━━━ -->
 <div class="footer">
   <div class="mark">agent_base</div>
-  <div class="note">Framework Design Diary &middot; February 2026</div>
+  <div class="note">Framework Design Diary &middot; March 2026</div>
 </div>
 
 <!-- ━━━━━━━━━━ JAVASCRIPT ━━━━━━━━━━ -->
