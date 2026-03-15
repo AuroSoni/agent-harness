@@ -16,6 +16,7 @@ from agent_base.core.result import AgentResult, LogEntry
 from agent_base.core.types import ContentBlock, ServerToolResultContent, TextContent, ToolResultBase, ToolUseBase, ToolResultContent
 from agent_base.compaction.strategies import NoOpCompactor
 from agent_base.memory.stores import NoOpMemoryStore
+from agent_base.sandbox import sandbox_from_config
 from agent_base.sandbox.local import LocalSandbox
 from agent_base.storage.adapters.memory import (
     MemoryAgentConfigAdapter,
@@ -119,6 +120,7 @@ class AnthropicAgent(Agent):
         compactor: Compactor | None = None,
         memory_store: MemoryStore | None = None,
         sandbox: Sandbox | None = None,
+        sandbox_factory: Callable[[str], Sandbox] | None = None,
         final_answer_check: Optional[Callable[[str], tuple[bool, str]]] = None,
         agent_uuid: str | None = None,
         # Storage and Media Adapter Configurations.
@@ -152,6 +154,7 @@ class AnthropicAgent(Agent):
 
         # Sandbox configuration — created lazily in initialize() when UUID is known.
         self._sandbox = sandbox
+        self._sandbox_factory = sandbox_factory
 
         # Final answer validation checker. Cannot be loaded from database.
         self.final_answer_check = final_answer_check
@@ -235,6 +238,34 @@ class AnthropicAgent(Agent):
     def agent_uuid(self, value: str | None) -> None:
         self._agent_uuid = value
 
+    def _default_sandbox_factory(self, agent_uuid: str) -> Sandbox:
+        """Create the default LocalSandbox for an agent UUID."""
+        return LocalSandbox(sandbox_id=agent_uuid, base_dir="./sandbox_data")
+
+    def _get_or_create_sandbox(self, agent_uuid: str) -> Sandbox:
+        """Resolve the sandbox instance for this agent session."""
+        if self._sandbox is not None:
+            sandbox = self._sandbox
+        elif self.agent_config and self.agent_config.sandbox_config is not None:
+            sandbox = sandbox_from_config(self.agent_config.sandbox_config)
+        elif self._sandbox_factory is not None:
+            sandbox = self._sandbox_factory(agent_uuid)
+        else:
+            sandbox = self._default_sandbox_factory(agent_uuid)
+
+        self._sandbox = sandbox
+        if self.agent_config is not None:
+            self.agent_config.sandbox_config = sandbox.config
+        return sandbox
+
+    async def _initialize_sandbox(self, agent_uuid: str) -> None:
+        """Set up the sandbox and attach it to tools and media."""
+        sandbox = self._get_or_create_sandbox(agent_uuid)
+        await sandbox.setup()
+        self.tool_registry.attach_sandbox(sandbox)
+        self.media_backend.attach_sandbox(sandbox)
+        self._inject_agent_uuid_to_tools()
+
 
     async def initialize(self) -> tuple[AgentConfig, Conversation | None]:
         if self._initialized:
@@ -247,15 +278,7 @@ class AnthropicAgent(Agent):
             self.agent_config = AgentConfig(agent_uuid=self._agent_uuid)
             self.conversation = None  # Created per-run in initialize_run()
 
-            sandbox = self._sandbox or LocalSandbox(
-                sandbox_id=self._agent_uuid,
-                base_dir="./sandbox_data",
-            )
-            self._sandbox = sandbox
-            await sandbox.setup()
-            self.tool_registry.attach_sandbox(sandbox)
-            self.media_backend.attach_sandbox(sandbox)
-            self._inject_agent_uuid_to_tools()
+            await self._initialize_sandbox(self._agent_uuid)
 
             self._initialized = True
             return self.agent_config, self.conversation
@@ -295,15 +318,7 @@ class AnthropicAgent(Agent):
             else:
                 self.conversation = None  # Created per-run in initialize_run()
 
-            sandbox = self._sandbox or LocalSandbox(
-                sandbox_id=self._agent_uuid,
-                base_dir="./sandbox_data",
-            )
-            self._sandbox = sandbox
-            await sandbox.setup()
-            self.tool_registry.attach_sandbox(sandbox)
-            self.media_backend.attach_sandbox(sandbox)
-            self._inject_agent_uuid_to_tools()
+            await self._initialize_sandbox(self._agent_uuid)
 
             self._initialized = True
             return self.agent_config, self.conversation
@@ -998,6 +1013,8 @@ class AnthropicAgent(Agent):
         """Save agent config, conversation, and run logs to storage adapters."""
         now = datetime.now(timezone.utc).isoformat()
         self.agent_config.updated_at = now
+        if self._sandbox is not None:
+            self.agent_config.sandbox_config = self._sandbox.config
 
         logger.debug(
             "persisting_state",

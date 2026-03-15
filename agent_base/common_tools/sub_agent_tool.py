@@ -191,6 +191,7 @@ Args:
             compactor=template.compactor,
             memory_store=template.memory_store,
             sandbox=self._sandbox,  # share parent's sandbox
+            sandbox_factory=getattr(template, "_sandbox_factory", None),
             agent_uuid=resume_uuid,  # None → new session, str → resume
             config_adapter=template.config_adapter,
             conversation_adapter=template.conversation_adapter,

@@ -5,7 +5,7 @@ Complex nested objects (messages, tool_schemas, etc.) use JSONB columns
 while scalar fields use native SQL types.
 
 Tables:
-- agent_config: 27 typed columns for all AgentConfig fields
+- agent_config: 28 typed columns for all AgentConfig fields
 - conversation_history: 15 typed columns + auto sequence_number
 - agent_runs: one row per LogEntry with typed columns
 """
@@ -33,6 +33,7 @@ from ...core.config import (
 from ...core.messages import Message, Usage
 from ...core.result import LogEntry
 from ...media_backend.media_types import MediaMetadata
+from ...sandbox import deserialize_sandbox_config
 from ...tools.tool_types import ToolSchema
 from ...tools.registry import ToolCallInfo
 from ..exceptions import StorageConnectionError, StorageOperationError
@@ -150,6 +151,11 @@ def _config_to_row_values(config: AgentConfig) -> tuple:
         config.formatter,
         config.compactor_type,
         config.memory_store_type,
+        _to_jsonb(
+            config.sandbox_config.to_dict()
+            if config.sandbox_config is not None
+            else None
+        ),
         _to_jsonb({k: v.to_dict() for k, v in config.media_registry.items()}),
         config.last_known_input_tokens,
         config.last_known_output_tokens,
@@ -172,6 +178,7 @@ def _row_to_config(row: asyncpg.Record) -> AgentConfig:
     raw_history = _from_jsonb(row["conversation_history"]) or []
     raw_tools = _from_jsonb(row["tool_schemas"]) or []
     raw_llm = _from_jsonb(row["llm_config"]) or {}
+    raw_sandbox_config = _from_jsonb(row["sandbox_config"])
     raw_media = _from_jsonb(row["media_registry"]) or {}
     raw_relay = _from_jsonb(row["pending_relay"])
     raw_subagents = _from_jsonb(row["subagent_schemas"]) or []
@@ -191,6 +198,7 @@ def _row_to_config(row: asyncpg.Record) -> AgentConfig:
         formatter=row["formatter"],
         compactor_type=row["compactor_type"],
         memory_store_type=row["memory_store_type"],
+        sandbox_config=deserialize_sandbox_config(raw_sandbox_config),
         media_registry={k: MediaMetadata(**v) for k, v in raw_media.items()},
         last_known_input_tokens=row["last_known_input_tokens"] or 0,
         last_known_output_tokens=row["last_known_output_tokens"] or 0,
@@ -242,7 +250,7 @@ def _row_to_conversation(row: asyncpg.Record) -> Conversation:
 class PostgresAgentConfigAdapter(AgentConfigAdapter):
     """PostgreSQL adapter for agent configuration.
 
-    Uses a typed-column schema with 27 columns. Scalar fields map to
+    Uses a typed-column schema with 28 columns. Scalar fields map to
     native SQL types; complex nested objects use JSONB columns.
     """
 
@@ -300,15 +308,15 @@ class PostgresAgentConfigAdapter(AgentConfigAdapter):
                 agent_uuid, description, provider, model, max_steps,
                 system_prompt, context_messages, conversation_history,
                 tool_schemas, tool_names, llm_config, formatter,
-                compactor_type, memory_store_type, media_registry,
-                last_known_input_tokens, last_known_output_tokens,
-                pending_relay, current_step, parent_agent_uuid,
-                subagent_schemas, title, created_at, updated_at,
-                last_run_at, total_runs, extras
+                compactor_type, memory_store_type, sandbox_config,
+                media_registry, last_known_input_tokens,
+                last_known_output_tokens, pending_relay, current_step,
+                parent_agent_uuid, subagent_schemas, title, created_at,
+                updated_at, last_run_at, total_runs, extras
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                $21, $22, $23, $24, $25, $26, $27
+                $21, $22, $23, $24, $25, $26, $27, $28
             )
             ON CONFLICT (agent_uuid) DO UPDATE SET
                 description = EXCLUDED.description,
@@ -324,6 +332,7 @@ class PostgresAgentConfigAdapter(AgentConfigAdapter):
                 formatter = EXCLUDED.formatter,
                 compactor_type = EXCLUDED.compactor_type,
                 memory_store_type = EXCLUDED.memory_store_type,
+                sandbox_config = EXCLUDED.sandbox_config,
                 media_registry = EXCLUDED.media_registry,
                 last_known_input_tokens = EXCLUDED.last_known_input_tokens,
                 last_known_output_tokens = EXCLUDED.last_known_output_tokens,
@@ -358,11 +367,11 @@ class PostgresAgentConfigAdapter(AgentConfigAdapter):
                 agent_uuid, description, provider, model, max_steps,
                 system_prompt, context_messages, conversation_history,
                 tool_schemas, tool_names, llm_config, formatter,
-                compactor_type, memory_store_type, media_registry,
-                last_known_input_tokens, last_known_output_tokens,
-                pending_relay, current_step, parent_agent_uuid,
-                subagent_schemas, title, created_at, updated_at,
-                last_run_at, total_runs, extras
+                compactor_type, memory_store_type, sandbox_config,
+                media_registry, last_known_input_tokens,
+                last_known_output_tokens, pending_relay, current_step,
+                parent_agent_uuid, subagent_schemas, title, created_at,
+                updated_at, last_run_at, total_runs, extras
             FROM agent_config
             WHERE agent_uuid = $1
         """

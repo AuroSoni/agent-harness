@@ -20,6 +20,7 @@ from agent_base.media_backend.media_types import MediaMetadata
 from agent_base.tools.tool_types import ToolSchema
 
 if TYPE_CHECKING:
+    from agent_base.sandbox.sandbox_types import SandboxConfig
     from agent_base.tools.registry import ToolCallInfo
 
 
@@ -171,7 +172,7 @@ class AgentConfig:
     - **LLM context**: ``context_messages`` (compacted), ``conversation_history`` (unabridged per-run)
     - **Tools**: ``tool_schemas``, ``tool_names``, ``subagent_schemas``
     - **Provider config**: ``llm_config`` (provider-specific ``LLMConfig`` subclass)
-    - **Components**: ``formatter``, ``compactor_type``, ``memory_store_type``
+    - **Components**: ``formatter``, ``compactor_type``, ``memory_store_type``, ``sandbox_config``
     - **Media**: ``media_registry`` (keyed by ``media_id``)
     - **Relay**: ``pending_relay`` (non-None when paused for frontend/user)
     - **Hierarchy**: ``parent_agent_uuid``
@@ -216,6 +217,7 @@ class AgentConfig:
     formatter: str | None = None
     compactor_type: str | None = None
     memory_store_type: str | None = None
+    sandbox_config: SandboxConfig | None = None
 
     # --- Media registry ---
 

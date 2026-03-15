@@ -22,6 +22,7 @@ from agent_base.core.config import (
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import LogEntry
 from agent_base.media_backend.media_types import MediaMetadata
+from agent_base.sandbox import deserialize_sandbox_config
 from agent_base.tools.registry import ToolCallInfo
 from agent_base.tools.tool_types import ToolSchema
 
@@ -53,6 +54,11 @@ def serialize_config(config: AgentConfig) -> dict[str, Any]:
         "formatter": config.formatter,
         "compactor_type": config.compactor_type,
         "memory_store_type": config.memory_store_type,
+        "sandbox_config": (
+            config.sandbox_config.to_dict()
+            if config.sandbox_config is not None
+            else None
+        ),
         # Media
         "media_registry": {
             k: v.to_dict() for k, v in config.media_registry.items()
@@ -119,6 +125,7 @@ def deserialize_config(
         formatter=data.get("formatter"),
         compactor_type=data.get("compactor_type"),
         memory_store_type=data.get("memory_store_type"),
+        sandbox_config=deserialize_sandbox_config(data.get("sandbox_config")),
         # Media
         media_registry={
             k: MediaMetadata(**v)
