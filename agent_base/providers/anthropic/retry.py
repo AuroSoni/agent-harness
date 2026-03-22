@@ -100,7 +100,12 @@ async def anthropic_stream_with_backoff(
                             was_cancelled = True
                             break
 
-                accumulated = await stream.get_final_message()
+                if was_cancelled:
+                    # Use the partial snapshot — get_final_message() would
+                    # block until the API response completes, defeating abort.
+                    accumulated = stream.current_message_snapshot
+                else:
+                    accumulated = await stream.get_final_message()
                 return StreamResult(
                     message=accumulated,
                     completed_blocks=completed_blocks,

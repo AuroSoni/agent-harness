@@ -94,6 +94,7 @@ def ensure_chain_validity(messages: list[Message]) -> list[Message]:
     Fixes:
     - Trailing assistant messages with tool_use but no following
       tool_result → synthesize results
+    - Consecutive user messages → merge into one user message
     - tool_result blocks after text blocks in user messages
       → reorder content
     - Orphaned tool_result blocks with no matching tool_use
@@ -160,9 +161,20 @@ def ensure_chain_validity(messages: list[Message]) -> list[Message]:
             result.append(msg)
 
         elif msg.role.value == "user":
-            # Check if already handled by the assistant branch above
             if result and result[-1].role.value == "user":
-                # This message was already patched — skip duplicate
+                # Merge consecutive user messages so we preserve both the
+                # tool_result contract and any follow-up user text.
+                previous = result[-1]
+                merged_content = list(previous.content) + list(msg.content)
+                merged_content = _reorder_user_content(merged_content)
+                result[-1] = Msg(
+                    role=previous.role,
+                    content=merged_content,
+                    stop_reason=msg.stop_reason or previous.stop_reason,
+                    usage=msg.usage or previous.usage,
+                    provider=msg.provider or previous.provider,
+                    model=msg.model or previous.model,
+                )
                 continue
             # Reorder: tool_result blocks before text blocks
             reordered = _reorder_user_content(msg.content)

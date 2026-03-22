@@ -221,17 +221,8 @@ class ToolRegistry:
         if not tool_calls:
             return []
 
-        # Fast path: single call, no concurrency overhead
-        if len(tool_calls) == 1:
-            tc = tool_calls[0]
-            if cancellation_event and cancellation_event.is_set():
-                return [ToolResultEnvelope.error(
-                    tc.name, tc.tool_id, "Tool execution was cancelled by user.",
-                )]
-            result = await self.execute(tc.name, tc.tool_id, tc.input)
-            return [result]
-
-        # Parallel path with cancellation support
+        # Use the same cancellable task flow for single and multiple tool calls
+        # so an in-flight backend tool can be aborted promptly.
         semaphore = asyncio.Semaphore(max_parallel)
         results: dict[str, ToolResultEnvelope] = {}  # tool_id → result
 
@@ -240,11 +231,11 @@ class ToolRegistry:
                 envelope = await self.execute(tc.name, tc.tool_id, tc.input)
                 return tc.tool_id, envelope
 
-        # Create tasks and track tool_id for each
-        tasks: dict[asyncio.Task[tuple[str, ToolResultEnvelope]], str] = {}
+        # Create tasks and track full call info for each
+        tasks: dict[asyncio.Task[tuple[str, ToolResultEnvelope]], ToolCallInfo] = {}
         for tc in tool_calls:
             task = asyncio.create_task(_run_one(tc))
-            tasks[task] = tc.tool_id
+            tasks[task] = tc
 
         pending: set[asyncio.Task[Any]] = set(tasks.keys())
 
@@ -262,32 +253,39 @@ class ToolRegistry:
                 )
 
                 for task in done:
-                    if task is cancel_task:
-                        # Cancellation signalled — cancel remaining tool tasks
-                        for p in pending:
-                            p.cancel()
-                        # Wait for cancelled tasks to finish
-                        if pending:
-                            await asyncio.wait(pending)
-                        # Synthesize error results for any tools without results
-                        for t, tool_id in tasks.items():
-                            if tool_id not in results:
-                                results[tool_id] = ToolResultEnvelope.error(
-                                    tool_id, tool_id,
-                                    "Tool execution was cancelled by user.",
-                                )
-                        pending = set()
-                        break
-                    elif task in tasks:
+                    if task in tasks:
                         # Normal tool completion
                         try:
                             tool_id, envelope = task.result()
                             results[tool_id] = envelope
                         except Exception:
-                            tool_id = tasks[task]
-                            results[tool_id] = ToolResultEnvelope.error(
-                                tool_id, tool_id, "Tool execution failed.",
+                            tc = tasks[task]
+                            results[tc.tool_id] = ToolResultEnvelope.error(
+                                tc.name, tc.tool_id, "Tool execution failed.",
                             )
+
+                # All tool calls have finished; stop waiting on the cancellation sentinel.
+                if len(results) == len(tool_calls):
+                    break
+
+                for task in done:
+                    if task is cancel_task:
+                        # Cancellation signalled — cancel remaining tool tasks
+                        remaining_tool_tasks = {p for p in pending if p in tasks}
+                        for p in remaining_tool_tasks:
+                            p.cancel()
+                        # Wait for cancelled tasks to finish
+                        if remaining_tool_tasks:
+                            await asyncio.wait(remaining_tool_tasks)
+                        # Synthesize error results for any tools without results
+                        for tc in tasks.values():
+                            if tc.tool_id not in results:
+                                results[tc.tool_id] = ToolResultEnvelope.error(
+                                    tc.name, tc.tool_id,
+                                    "Tool execution was cancelled by user.",
+                                )
+                        pending = set()
+                        break
         finally:
             # Clean up cancel_task if it wasn't triggered
             if cancel_task and not cancel_task.done():

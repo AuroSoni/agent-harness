@@ -330,15 +330,18 @@ class AnthropicProvider(Provider):
 
         This is a safety net — if the message chain is already valid (the
         normal case), this is a no-op.  If it detects and repairs any
-        violations, it logs a warning so we can track down the root cause.
+        violations, it logs a warning so we can track down the root cause
+        and updates the caller's message list in place so the repair
+        persists for future turns.
         """
         from agent_base.providers.anthropic.message_sanitizer import (
             ensure_chain_validity,
         )
 
         sanitized = ensure_chain_validity(messages)
+        chain_repaired = len(sanitized) != len(messages)
 
-        if len(sanitized) != len(messages):
+        if chain_repaired:
             logger.warning(
                 "defensive_sanitize_repaired_chain",
                 original_count=len(messages),
@@ -347,13 +350,17 @@ class AnthropicProvider(Provider):
         else:
             for orig, fixed in zip(messages, sanitized):
                 if orig is not fixed:
+                    chain_repaired = True
                     logger.warning(
                         "defensive_sanitize_repaired_message",
                         role=orig.role.value,
                     )
                     break
 
-        return sanitized
+        if chain_repaired:
+            messages[:] = sanitized
+
+        return messages
 
     # -- Public API ---------------------------------------------------------
 
