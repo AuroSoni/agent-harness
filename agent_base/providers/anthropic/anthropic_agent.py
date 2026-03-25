@@ -528,8 +528,8 @@ class AnthropicAgent(Agent):
             self._cancellation_event = asyncio.Event()
         self._abort_completion = asyncio.Event()
 
-        # Inject parent's queue/formatter into SubAgentTool for SSE forwarding.
-        self._inject_subagent_context(queue, stream_formatter)
+        # Inject queue/formatter into tools that support streaming.
+        self._inject_stream_context_to_tools(queue, stream_formatter)
 
         try:
             while self.agent_config.current_step < self.max_steps:
@@ -707,8 +707,8 @@ class AnthropicAgent(Agent):
             return await self._finalize_run(last_message, "max_steps", queue, stream_formatter)
         finally:
             self._phase = AgentPhase.IDLE
-            # Always clear subagent context to avoid stale references.
-            self._inject_subagent_context(None, None)
+            # Always clear streaming context to avoid stale references.
+            self._inject_stream_context_to_tools(None, None)
 
     # ─── Abort / Steer ─────────────────────────────────────────────────
 
@@ -1044,18 +1044,26 @@ class AnthropicAgent(Agent):
                 return call_info.input
         return {}
 
-    def _inject_subagent_context(
+    def _inject_stream_context_to_tools(
         self,
         queue: asyncio.Queue | None,
         formatter: str | StreamFormatter | None,
     ) -> None:
-        """Inject or clear the parent's queue and formatter into the SubAgentTool.
+        """Inject or clear streaming context into tools that support it.
+
+        Iterates registered tools and calls ``set_run_context()`` on any tool
+        instance that implements this duck-typed method.  Used by tools like
+        ``SubAgentTool`` and ``TodoWriteTool`` for real-time streaming.
 
         Called at the start of ``_resume_loop()`` to share streaming context,
         and in its finally block to clear stale references.
         """
-        if self._sub_agent_tool is not None:
-            self._sub_agent_tool.set_run_context(queue, formatter)
+        for registered in self.tool_registry._tools.values():
+            tool_instance = getattr(registered.func, '__tool_instance__', None)
+            if tool_instance is not None:
+                set_ctx = getattr(tool_instance, 'set_run_context', None)
+                if callable(set_ctx):
+                    set_ctx(queue, formatter)
 
     def _extract_tool_calls(self, message: Message) -> list[ToolCallInfo]:
         """Extract ToolCallInfo objects from an assistant message's tool-use blocks."""
