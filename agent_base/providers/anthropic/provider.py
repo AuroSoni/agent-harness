@@ -21,6 +21,7 @@ from agent_base.logging import get_logger
 
 from .formatters import AnthropicMessageFormatter
 from .retry import anthropic_stream_with_backoff, retry_with_backoff
+from .token_estimation import AnthropicTokenEstimator
 
 if TYPE_CHECKING:
     from agent_base.core.config import LLMConfig
@@ -197,6 +198,7 @@ class AnthropicProvider(Provider):
     ) -> None:
         self.client = client or anthropic.AsyncAnthropic()
         self.formatter = formatter or AnthropicMessageFormatter()
+        self.token_estimator = AnthropicTokenEstimator(self.formatter)
         # TODO: No need to accept external client or formatter.
         # Just initialize internally.
         

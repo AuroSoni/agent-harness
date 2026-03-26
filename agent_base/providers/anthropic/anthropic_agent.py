@@ -15,7 +15,7 @@ from agent_base.core.agent_base import Agent
 from agent_base.core.config import AgentConfig, Conversation, CostBreakdown, LLMConfig, PendingToolRelay
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import AgentResult, LogEntry
-from agent_base.core.types import ContentBlock, ServerToolResultContent, TextContent, ToolResultBase, ToolUseBase, ToolResultContent
+from agent_base.core.types import ContentBlock, Role, ServerToolResultContent, TextContent, ToolResultBase, ToolUseBase, ToolResultContent
 from agent_base.memory.stores import NoOpMemoryStore
 from agent_base.sandbox import sandbox_from_config
 from agent_base.sandbox.local import LocalSandbox
@@ -1117,10 +1117,36 @@ class AnthropicAgent(Agent):
                 parts.append(block.text)
         return "".join(parts)
 
+    def _get_delta_messages(self) -> list[Message]:
+        """Return messages added after the last assistant response."""
+        messages = self.agent_config.context_messages
+        for idx in range(len(messages) - 1, -1, -1):
+            if messages[idx].role == Role.ASSISTANT:
+                return messages[idx + 1:]
+        return messages
+
+    def estimate_current_context_tokens(self) -> int:
+        """Estimate current input-context tokens using the last known token baseline."""
+        last_input_tokens = self.agent_config.last_known_input_tokens
+        last_output_tokens = self.agent_config.last_known_output_tokens
+
+        if last_input_tokens > 0:
+            delta_messages = self._get_delta_messages()
+            delta_tokens = self.provider.token_estimator.estimate_messages(
+                delta_messages
+            )
+            return last_input_tokens + last_output_tokens + delta_tokens
+
+        return self.provider.token_estimator.estimate_messages(
+            self.agent_config.context_messages
+        )
+
     def _accumulate_usage(self, step_usage: Usage | None) -> None:
         """Add step usage to cumulative tracking and compute per-step cost."""
         if step_usage is None:
             return
+        self.agent_config.last_known_input_tokens = step_usage.input_tokens
+        self.agent_config.last_known_output_tokens = step_usage.output_tokens
         self._cumulative_usage.input_tokens += step_usage.input_tokens
         self._cumulative_usage.output_tokens += step_usage.output_tokens
         if step_usage.cache_write_tokens:
