@@ -12,7 +12,14 @@ from dataclasses import dataclass, field
 from posixpath import normpath as _posix_normpath
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
-from ..tools.base import ConfigurableToolBase
+from agent_base.tools import ConfigurableToolBase
+
+from .utils.filesystem_path_helpers import (
+    build_access_denied_message,
+    is_allowed_sandbox_path,
+    normalize_allowed_roots,
+    resolve_agent_path,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -152,7 +159,6 @@ def _make_success_response(
     hunks_applied: int,
     lines_added: int,
     lines_removed: int,
-    dry_run: bool,
     fuzz_level: int = 0,
     moved_from: Optional[str] = None,
 ) -> str:
@@ -163,7 +169,6 @@ def _make_success_response(
         "hunks_applied": hunks_applied,
         "lines_added": lines_added,
         "lines_removed": lines_removed,
-        "dry_run": dry_run,
     }
     if fuzz_level > 0:
         result["fuzz_level"] = fuzz_level
@@ -681,6 +686,26 @@ def _apply_hunks(content: str, hunks: List[Hunk], file_path: str) -> Tuple[str, 
     return line_ending.join(lines), max_fuzz
 
 
+async def _read_all_bytes(sandbox, path: str) -> bytes:
+    chunks: list[bytes] = []
+    async for chunk in sandbox.read_file_bytes(path):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _write_all_bytes(sandbox, path: str, data: bytes) -> None:
+    async def _iter():
+        yield data
+
+    await sandbox.write_file_bytes(path, _iter())
+
+
+def _exists_result_to_bool(value: Any) -> bool:
+    if isinstance(value, tuple):
+        return bool(value[0])
+    return bool(value)
+
+
 # ---------------------------------------------------------------------------
 # Class-based tool implementation
 # ---------------------------------------------------------------------------
@@ -709,8 +734,6 @@ Patch Format:
 
 Args:
     patch: Complete patch text with Begin/End markers.
-    dry_run: If True, validate without writing.
-    strict: If False, allows patches without Begin/End markers.
 
 Returns:
     JSON with result:
@@ -722,12 +745,22 @@ Returns:
         self,
         max_patch_size_bytes: int = MAX_PATCH_SIZE_BYTES,
         max_file_size_bytes: int = MAX_FILE_SIZE_BYTES,
+        allowed_base_dirs: list[str] | None = None,
+        blocked_base_dirs: list[str] | None = None,
+        allowed_ops: list[str] | None = None,
+        blocked_ops: list[str] | None = None,
+        mode: str = "allow",
         docstring_template: Optional[str] = None,
         schema_override: Optional[dict] = None,
     ):
         super().__init__(docstring_template=docstring_template, schema_override=schema_override)
         self.max_patch_size = int(max_patch_size_bytes)
         self.max_file_size = int(max_file_size_bytes)
+        self.allowed_base_dirs = normalize_allowed_roots(allowed_base_dirs)
+        self.blocked_base_dirs = normalize_allowed_roots(blocked_base_dirs)
+        self.allowed_ops = set(allowed_ops) if allowed_ops is not None else None
+        self.blocked_ops = set(blocked_ops or [])
+        self.mode = mode
 
     def _get_template_context(self) -> Dict[str, Any]:
         return {
@@ -738,7 +771,33 @@ Returns:
     def get_tool(self) -> Callable:
         instance = self
 
-        async def apply_patch(patch: str, dry_run: bool = False, strict: bool = True) -> str:
+        def _resolve_for_patch(agent_path: str) -> tuple[str, str] | tuple[None, str]:
+            try:
+                resolved = resolve_agent_path(agent_path, allowed_roots=instance.allowed_base_dirs)
+            except Exception as exc:
+                return None, _make_error_response(f"Invalid path: {agent_path}", hint=str(exc))
+            sandbox_path = resolved.sandbox_path
+            canonical_path = resolved.canonical_path
+            if not is_allowed_sandbox_path(sandbox_path, instance.allowed_base_dirs):
+                return None, _make_error_response(
+                    build_access_denied_message(sandbox_path, instance.allowed_base_dirs),
+                    path=canonical_path,
+                )
+            if instance.blocked_base_dirs and is_allowed_sandbox_path(sandbox_path, instance.blocked_base_dirs):
+                return None, _make_error_response(
+                    f"Access denied: {canonical_path} is inside a blocked directory.",
+                    path=canonical_path,
+                )
+            return sandbox_path, canonical_path
+
+        def _op_allowed(op: str) -> bool:
+            if instance.allowed_ops is not None and op not in instance.allowed_ops:
+                return False
+            if op in instance.blocked_ops:
+                return False
+            return True
+
+        async def apply_patch(patch: str) -> str:
             """Placeholder docstring - replaced by template."""
 
             # Size / binary checks for the incoming patch text.
@@ -756,27 +815,35 @@ Returns:
 
             # Parse patch.
             try:
-                parsed = _parse_patch(patch, strict=strict)
+                parsed = _parse_patch(patch)
             except PatchError as e:
                 return _make_error_response(e.error, e.path, e.hint)
 
-            # Validate paths.
-            try:
-                _validate_rel_path(parsed.path)
-                if parsed.move_to is not None:
-                    _validate_rel_path(parsed.move_to)
-            except PatchError as e:
-                return _make_error_response(e.error, e.path, e.hint)
+            if not _op_allowed(parsed.op):
+                return _make_error_response(
+                    f"Operation '{parsed.op}' is not permitted in the current apply_patch configuration."
+                )
 
-            file_path = parsed.path
+            file_path, display_path_or_error = _resolve_for_patch(parsed.path)
+            if file_path is None:
+                return display_path_or_error
+            display_path = display_path_or_error
+
+            move_to_path: Optional[str] = None
+            display_move_to: Optional[str] = None
+            if parsed.move_to is not None:
+                move_to_path, display_move_to_or_error = _resolve_for_patch(parsed.move_to)
+                if move_to_path is None:
+                    return display_move_to_or_error
+                display_move_to = display_move_to_or_error
 
             # Add file.
             if parsed.op == "add":
-                exists = await instance._sandbox.file_exists(file_path)
+                exists = _exists_result_to_bool(await instance._sandbox.file_exists(file_path))
                 if exists:
                     return _make_error_response(
                         "Cannot add file: already exists",
-                        path=file_path,
+                        path=display_path,
                         hint="Use '*** Update File:' to modify existing files",
                     )
 
@@ -790,77 +857,73 @@ Returns:
 
                 lines_added = content.count("\n") + (1 if content else 0)
 
-                if not dry_run:
-                    try:
-                        await instance._sandbox.write_file_bytes(file_path, content.encode("utf-8"))
-                    except Exception as e:
-                        return _make_error_response(f"Failed to create file: {e}", path=file_path)
+                try:
+                    await _write_all_bytes(instance._sandbox, file_path, content.encode("utf-8"))
+                except Exception as e:
+                    return _make_error_response(f"Failed to create file: {e}", path=display_path)
 
                 return _make_success_response(
                     op="add",
-                    path=file_path,
+                    path=display_path,
                     hunks_applied=0,
                     lines_added=lines_added,
                     lines_removed=0,
-                    dry_run=dry_run,
                 )
 
             # Delete file.
             if parsed.op == "delete":
-                exists = await instance._sandbox.file_exists(file_path)
+                exists = _exists_result_to_bool(await instance._sandbox.file_exists(file_path))
                 if not exists:
                     return _make_error_response(
                         "Cannot delete file: does not exist",
-                        path=file_path,
+                        path=display_path,
                         hint="File may have already been deleted",
                     )
 
                 lines_removed = 0
                 try:
-                    data = await instance._sandbox.read_file_bytes(file_path)
+                    data = await _read_all_bytes(instance._sandbox, file_path)
                     if _contains_null_bytes_bytes(data):
                         return _make_error_response(
                             "Cannot delete: file appears to be binary (contains NUL bytes)",
-                            path=file_path,
+                            path=display_path,
                         )
                     txt, _ = _decode_utf8_preserve_bom(data)
                     lines_removed = txt.count("\n") + (1 if txt else 0)
                 except Exception:
                     lines_removed = 0
 
-                if not dry_run:
-                    try:
-                        await instance._sandbox.delete(file_path)
-                    except Exception as e:
-                        return _make_error_response(f"Failed to delete file: {e}", path=file_path)
+                try:
+                    await instance._sandbox.delete(file_path)
+                except Exception as e:
+                    return _make_error_response(f"Failed to delete file: {e}", path=display_path)
 
                 return _make_success_response(
                     op="delete",
-                    path=file_path,
+                    path=display_path,
                     hunks_applied=0,
                     lines_added=0,
                     lines_removed=lines_removed,
-                    dry_run=dry_run,
                 )
 
             # Update file.
-            exists = await instance._sandbox.file_exists(file_path)
+            exists = _exists_result_to_bool(await instance._sandbox.file_exists(file_path))
             if not exists:
                 return _make_error_response(
                     "Cannot update file: does not exist",
-                    path=file_path,
+                    path=display_path,
                     hint="Use '*** Add File:' to create new files",
                 )
 
             try:
-                raw = await instance._sandbox.read_file_bytes(file_path)
+                raw = await _read_all_bytes(instance._sandbox, file_path)
             except Exception as e:
-                return _make_error_response(f"Cannot read file: {e}", path=file_path)
+                return _make_error_response(f"Cannot read file: {e}", path=display_path)
 
             if _contains_null_bytes_bytes(raw):
                 return _make_error_response(
                     "Cannot read file: appears to be binary (contains NUL bytes)",
-                    path=file_path,
+                    path=display_path,
                     hint="This tool only supports UTF-8 text files",
                 )
 
@@ -869,7 +932,7 @@ Returns:
             except UnicodeDecodeError:
                 return _make_error_response(
                     "Cannot read file: not valid UTF-8 text",
-                    path=file_path,
+                    path=display_path,
                     hint="This tool only supports UTF-8 text files",
                 )
 
@@ -882,48 +945,43 @@ Returns:
             if len(new_content.encode("utf-8")) > instance.max_file_size:
                 return _make_error_response(
                     f"Result exceeds maximum file size ({instance.max_file_size // 1024 // 1024} MB)",
-                    path=file_path,
+                    path=display_path,
                 )
 
             total_added = sum(h.lines_added for h in parsed.hunks)
             total_removed = sum(h.lines_removed for h in parsed.hunks)
 
             # Determine destination.
-            target_path = file_path
+            target_path = display_path
             moved_from: Optional[str] = None
 
             if parsed.move_to:
-                move_to_path = parsed.move_to
-                target_path = move_to_path
-                moved_from = file_path
+                assert move_to_path is not None
+                target_path = display_move_to or display_path
+                moved_from = display_path
+                try:
+                    await _write_all_bytes(instance._sandbox, move_to_path, bom + new_content.encode("utf-8"))
+                except Exception as e:
+                    return _make_error_response(f"Failed to write move target: {e}", path=display_move_to or display_path)
 
-                if not dry_run:
+                if move_to_path != file_path:
                     try:
-                        await instance._sandbox.write_file_bytes(move_to_path, bom + new_content.encode("utf-8"))
+                        await instance._sandbox.delete(file_path)
                     except Exception as e:
-                        return _make_error_response(f"Failed to write move target: {e}", path=move_to_path)
-
-                    # Remove original if different.
-                    if move_to_path != file_path:
                         try:
-                            await instance._sandbox.delete(file_path)
-                        except Exception as e:
-                            # Best effort rollback
-                            try:
-                                await instance._sandbox.delete(move_to_path)
-                            except Exception:
-                                pass
-                            return _make_error_response(
-                                f"Failed to remove original file after move: {e}",
-                                path=file_path,
-                                hint="No changes were committed if rollback succeeded; otherwise both files may exist.",
-                            )
+                            await instance._sandbox.delete(move_to_path)
+                        except Exception:
+                            pass
+                        return _make_error_response(
+                            f"Failed to remove original file after move: {e}",
+                            path=display_path,
+                            hint="No changes were committed if rollback succeeded; otherwise both files may exist.",
+                        )
             else:
-                if not dry_run:
-                    try:
-                        await instance._sandbox.write_file_bytes(file_path, bom + new_content.encode("utf-8"))
-                    except Exception as e:
-                        return _make_error_response(f"Failed to write file: {e}", path=file_path)
+                try:
+                    await _write_all_bytes(instance._sandbox, file_path, bom + new_content.encode("utf-8"))
+                except Exception as e:
+                    return _make_error_response(f"Failed to write file: {e}", path=display_path)
 
             return _make_success_response(
                 op="update",
@@ -931,7 +989,6 @@ Returns:
                 hunks_applied=len(parsed.hunks),
                 lines_added=total_added,
                 lines_removed=total_removed,
-                dry_run=dry_run,
                 fuzz_level=fuzz_level,
                 moved_from=moved_from,
             )

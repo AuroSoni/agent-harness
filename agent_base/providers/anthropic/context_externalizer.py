@@ -228,7 +228,7 @@ class ContextExternalizer:
         """Return the inline reference text for an externalized prompt."""
         return (
             f"Content externalized to {path}. "
-            "Use read_file to access the full content."
+            f"Use read_file with path='{path}' to access the full content."
         )
 
     @staticmethod
@@ -236,5 +236,5 @@ class ContextExternalizer:
         """Return the inline reference text for an externalized tool result."""
         return (
             f"Tool result externalized to {path}. "
-            "Use read_file to access the full content."
+            f"Use read_file with path='{path}' to access the full content."
         )

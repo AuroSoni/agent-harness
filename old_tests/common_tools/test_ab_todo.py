@@ -1,10 +1,8 @@
-"""Tests for agent_base.common_tools.todo_tool."""
-
-import json
+"""Smoke tests for the agent_base todo tools."""
 
 import pytest
 
-from agent_base.common_tools.todo_tool import TodoWriteTool, CheckTodoTool
+from agent_base.common_tools import ReadTodosTool, TodoWriteTool
 from agent_base.sandbox.local import LocalSandbox
 
 
@@ -17,19 +15,16 @@ async def sandbox(tmp_path):
 
 @pytest.fixture()
 def write_tool(sandbox):
-    t = TodoWriteTool()
-    t.set_sandbox(sandbox)
-    return t
+    tool = TodoWriteTool()
+    tool.set_sandbox(sandbox)
+    return tool
 
 
 @pytest.fixture()
-def check_tool(sandbox):
-    t = CheckTodoTool()
-    t.set_sandbox(sandbox)
-    return t
-
-
-# ─── Registration ──────────────────────────────────────────────────
+def read_tool(sandbox):
+    tool = ReadTodosTool()
+    tool.set_sandbox(sandbox)
+    return tool
 
 
 def test_write_tool_has_schema(write_tool) -> None:
@@ -38,82 +33,45 @@ def test_write_tool_has_schema(write_tool) -> None:
     assert func.__tool_schema__.name == "todo_write"
 
 
-def test_check_tool_has_schema(check_tool) -> None:
-    func = check_tool.get_tool()
+def test_read_tool_has_schema(read_tool) -> None:
+    func = read_tool.get_tool()
     assert hasattr(func, "__tool_schema__")
-    assert func.__tool_schema__.name == "check_todo"
-
-
-# ─── Happy Path ────────────────────────────────────────────────────
+    assert func.__tool_schema__.name == "read_todos"
 
 
 @pytest.mark.asyncio
-async def test_write_and_check_todos(sandbox, write_tool, check_tool) -> None:
+async def test_create_and_read_todos(write_tool, read_tool) -> None:
     write_fn = write_tool.get_tool()
-    check_fn = check_tool.get_tool()
+    read_fn = read_tool.get_tool()
 
-    todos = json.dumps([
-        {"id": "task-1", "content": "Do something", "status": "pending", "activeForm": "Doing something"},
-        {"id": "task-2", "content": "Do more", "status": "in_progress", "activeForm": "Doing more"},
-    ])
+    create_result = await write_fn(
+        todos=[
+            {"todo_description": "Explore migration", "todo_status": "in_progress"},
+            {"todo_description": "Update docs", "todo_status": "not_started"},
+        ]
+    )
+    assert "Created todo #1" in create_result
+    assert "Created todo #2" in create_result
 
-    result = await write_fn(todos=todos)
-    assert "Saved 2 todo(s)" in result
-    assert "1 in progress" in result
-    assert "1 pending" in result
-
-    check_result = await check_fn()
-    assert "task-1" in check_result
-    assert "task-2" in check_result
-    assert "[ ]" in check_result  # pending
-    assert "[~]" in check_result  # in_progress
+    read_result = await read_fn()
+    assert "[~] 1: Explore migration (in_progress)" in read_result
+    assert "[ ] 2: Update docs (not_started)" in read_result
+    assert "[Summary:" in read_result
 
 
 @pytest.mark.asyncio
-async def test_check_empty_todos(sandbox, check_tool) -> None:
-    check_fn = check_tool.get_tool()
-    result = await check_fn()
-    assert "No todos found" in result
-
-
-# ─── Error Cases ──────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_write_invalid_json(sandbox, write_tool) -> None:
+async def test_update_and_delete_todos(write_tool, read_tool) -> None:
     write_fn = write_tool.get_tool()
-    result = await write_fn(todos="not json")
-    assert "Error" in result
-    assert "parse" in result.lower()
+    read_fn = read_tool.get_tool()
 
+    await write_fn(todos=[{"todo_description": "Initial task"}])
+    update_result = await write_fn(
+        todos=[{"todo_id": 1, "todo_description": "Updated task", "todo_status": "completed"}]
+    )
+    assert "Updated todo #1" in update_result
 
-@pytest.mark.asyncio
-async def test_write_invalid_status(sandbox, write_tool) -> None:
-    write_fn = write_tool.get_tool()
-    todos = json.dumps([
-        {"id": "t1", "content": "Task", "status": "invalid_status", "activeForm": "Tasking"},
-    ])
-    result = await write_fn(todos=todos)
-    assert "Error" in result
-    assert "invalid_status" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_write_missing_fields(sandbox, write_tool) -> None:
-    write_fn = write_tool.get_tool()
-    todos = json.dumps([{"id": "t1"}])
-    result = await write_fn(todos=todos)
-    assert "Error" in result
-    assert "missing" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_write_duplicate_ids(sandbox, write_tool) -> None:
-    write_fn = write_tool.get_tool()
-    todos = json.dumps([
-        {"id": "dup", "content": "First", "status": "pending", "activeForm": "First"},
-        {"id": "dup", "content": "Second", "status": "pending", "activeForm": "Second"},
-    ])
-    result = await write_fn(todos=todos)
-    assert "Error" in result
-    assert "Duplicate" in result
+    delete_result = await write_fn(
+        todos=[{"todo_id": 1, "todo_description": "Updated task", "delete": True}]
+    )
+    assert "Deleted todo #1" in delete_result
+    assert await read_fn() == "No todos found."
