@@ -57,7 +57,7 @@ from .grep_search import GrepSearchTool
 from .list_dir_tree import ListDirTreeTool
 from .read_file import ReadFileTool
 from .read_todos import ReadTodosTool
-from .sub_agent_tool import SubAgentTool
+from .sub_agent_tool import SubAgentEnvelope, SubAgentSpec, SubAgentTool
 from .todo_write import TodoWriteTool
 
 __all__ = [
@@ -72,5 +72,7 @@ __all__ = [
     "TodoWriteTool",
     "ReadTodosTool",
     "CodeExecutionTool",
+    "SubAgentEnvelope",
+    "SubAgentSpec",
     "SubAgentTool",
 ]

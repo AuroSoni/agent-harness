@@ -12,6 +12,14 @@ their respective modules to avoid circular imports:
 """
 
 from .types import ContentBlock, Role, ContentBlockType
+from .conversation_log import (
+    AgentDescriptor,
+    ConversationLog,
+    ConversationLogEntry,
+    MessageLogEntry,
+    ToolLogProjection,
+    ToolResultLogEntry,
+)
 from .messages import Message, Usage, MessageFormatter
 from .provider import Provider
 
@@ -20,6 +28,13 @@ __all__ = [
     "ContentBlock",
     "Role",
     "ContentBlockType",
+    # Conversation log
+    "AgentDescriptor",
+    "ConversationLog",
+    "ConversationLogEntry",
+    "MessageLogEntry",
+    "ToolLogProjection",
+    "ToolResultLogEntry",
     # Messages
     "Message",
     "Usage",

@@ -1,16 +1,149 @@
-"""Dispatch work to registered subagents."""
+"""Dispatch work to registered subagents using typed specs and logs."""
 from __future__ import annotations
 
 import asyncio
 import copy
-from typing import Any, Awaitable, Callable, Dict, Optional, TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Optional, TYPE_CHECKING
 
+from agent_base.core.conversation_log import ConversationLog, ToolLogProjection
+from agent_base.core.types import ContentBlock, TextContent
 from agent_base.tools import ConfigurableToolBase
+from agent_base.tools.tool_types import ToolResultEnvelope
 
 if TYPE_CHECKING:
     from agent_base.core.result import AgentResult
     from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
     from agent_base.streaming.base import StreamFormatter
+    from agent_base.storage.base import (
+        AgentConfigAdapter,
+        AgentRunAdapter,
+        ConversationAdapter,
+    )
+    from agent_base.media_backend.media_types import MediaBackend
+    from agent_base.memory.base import MemoryStore
+    from agent_base.sandbox.sandbox_types import Sandbox
+
+
+@dataclass
+class SubAgentSpec:
+    """Static specification for a subagent."""
+
+    name: str | None = None
+    system_prompt: str | None = None
+    description: str | None = None
+    model: str | None = None
+    config: Any = None
+    compaction_config: Any = None
+    externalization_config: Any = None
+    max_steps: int | None = None
+    tools: list[Callable[..., Any]] | None = None
+    frontend_tools: list[Callable[..., Any]] | None = None
+    subagents: dict[str, "SubAgentSpec"] | None = None
+    max_retries: int = 5
+    base_delay: float = 1.0
+    max_parallel_tool_calls: int = 5
+    max_tool_result_tokens: int = 25_000
+    memory_store: "MemoryStore | None" = None
+
+    @classmethod
+    def from_template_agent(
+        cls,
+        name: str,
+        agent: "AnthropicAgent",
+    ) -> "SubAgentSpec":
+        nested_specs: dict[str, SubAgentSpec] | None = None
+        subagent_tool = getattr(agent, "_sub_agent_tool", None)
+        if subagent_tool is not None and getattr(subagent_tool, "specs", None):
+            nested_specs = {
+                sub_name: copy.deepcopy(spec)
+                for sub_name, spec in subagent_tool.specs.items()
+            }
+
+        compaction_config = getattr(agent, "_compaction_config", None)
+        externalization_config = getattr(agent, "_externalization_config", None)
+
+        return cls(
+            name=name,
+            system_prompt=agent.system_prompt,
+            description=agent.description,
+            model=agent.model,
+            config=copy.copy(agent.config),
+            compaction_config=copy.copy(compaction_config),
+            externalization_config=copy.copy(externalization_config),
+            max_steps=(
+                int(agent.max_steps)
+                if getattr(agent, "max_steps", None) not in (None, float("inf"))
+                else None
+            ),
+            tools=list(agent._constructor_tools or []),
+            frontend_tools=None,
+            subagents=nested_specs,
+            max_retries=agent.max_retries,
+            base_delay=agent.base_delay,
+            max_parallel_tool_calls=agent.max_parallel_tool_calls,
+            max_tool_result_tokens=agent.max_tool_result_tokens,
+            memory_store=agent.memory_store,
+        )
+
+
+@dataclass
+class SubAgentParentContext:
+    parent_agent_uuid: str | None = None
+    queue: asyncio.Queue | None = None
+    formatter: str | "StreamFormatter" | None = None
+    config_adapter: "AgentConfigAdapter | None" = None
+    conversation_adapter: "ConversationAdapter | None" = None
+    run_adapter: "AgentRunAdapter | None" = None
+    media_backend: "MediaBackend | None" = None
+    sandbox: "Sandbox | None" = None
+    sandbox_factory: Callable[[str], "Sandbox"] | None = None
+    memory_store: "MemoryStore | None" = None
+
+
+@dataclass
+class SubAgentEnvelope(ToolResultEnvelope):
+    """Rich result from a subagent execution."""
+
+    agent_name: str = ""
+    child_agent_uuid: str = ""
+    final_answer: str = ""
+    stop_reason: str = ""
+    total_steps: int = 0
+    child_model: str = ""
+    child_provider: str = ""
+    nested_conversation: ConversationLog = field(default_factory=ConversationLog)
+
+    def for_context_window(self) -> list[ContentBlock]:
+        text = self.final_answer or "(No final answer extracted)"
+        return [TextContent(text=text)]
+
+    def for_conversation_log(self) -> ToolLogProjection:
+        summary = self.final_answer[:200] if self.final_answer else f"Subagent '{self.agent_name}' completed"
+        return ToolLogProjection(
+            tool_name=self.tool_name,
+            tool_id=self.tool_id,
+            is_error=self.is_error,
+            summary=summary,
+            content_blocks=self.for_context_window(),
+            duration_ms=self.duration_ms,
+            details={
+                "agent_name": self.agent_name,
+                "child_agent_uuid": self.child_agent_uuid,
+                "final_answer": self.final_answer,
+                "stop_reason": self.stop_reason,
+                "total_steps": self.total_steps,
+                "child_model": self.child_model,
+                "child_provider": self.child_provider,
+            },
+            nested_conversation=self.nested_conversation,
+        )
+
+
+ChildAgentBuilder = Callable[
+    [SubAgentSpec, str | None, SubAgentParentContext],
+    "AnthropicAgent",
+]
 
 
 class SubAgentTool(ConfigurableToolBase):
@@ -32,133 +165,142 @@ Args:
 
     def __init__(
         self,
-        agents: Dict[str, "AnthropicAgent"],
-        docstring_template: Optional[str] = None,
-        schema_override: Optional[dict] = None,
+        agents: dict[str, SubAgentSpec | "AnthropicAgent"],
+        child_agent_builder: ChildAgentBuilder | None = None,
+        docstring_template: str | None = None,
+        schema_override: dict | None = None,
     ):
-        super().__init__(docstring_template=docstring_template, schema_override=schema_override)
-        for name, agent in agents.items():
-            if not getattr(agent, "description", None):
+        super().__init__(
+            docstring_template=docstring_template,
+            schema_override=schema_override,
+        )
+        self.specs = {
+            name: self._coerce_spec(name, agent_or_spec)
+            for name, agent_or_spec in agents.items()
+        }
+        for name, spec in self.specs.items():
+            if not spec.description:
                 raise ValueError(
                     f"Subagent '{name}' must have a non-empty `description` attribute."
                 )
-        self.agents = agents
-        self._current_queue: Optional[asyncio.Queue] = None
-        self._current_formatter: Optional[str | "StreamFormatter"] = None
-        self._parent_agent_uuid: Optional[str] = None
+        self._child_agent_builder = child_agent_builder or self._default_child_agent_builder
+        self._parent_context = SubAgentParentContext()
 
-    def _get_template_context(self) -> Dict[str, Any]:
+    @staticmethod
+    def _coerce_spec(
+        name: str,
+        agent_or_spec: SubAgentSpec | "AnthropicAgent",
+    ) -> SubAgentSpec:
+        if isinstance(agent_or_spec, SubAgentSpec):
+            return copy.deepcopy(agent_or_spec)
+        return SubAgentSpec.from_template_agent(name, agent_or_spec)
+
+    def _get_template_context(self) -> dict[str, Any]:
         lines = []
-        for name, agent in self.agents.items():
-            model = getattr(agent, "model", "unknown")
-            description = getattr(agent, "description", "") or "(no description)"
+        for name, spec in self.specs.items():
+            model = spec.model or "unknown"
+            description = spec.description or "(no description)"
             lines.append(f"- **{name}** ({model}): {description}")
         return {"agent_definitions": "\n".join(lines)}
 
     def set_run_context(
         self,
-        queue: Optional[asyncio.Queue],
-        formatter: Optional[str | "StreamFormatter"],
+        queue: asyncio.Queue | None,
+        formatter: str | "StreamFormatter" | None,
     ) -> None:
-        self._current_queue = queue
-        self._current_formatter = formatter
+        self._parent_context.queue = queue
+        self._parent_context.formatter = formatter
 
     def set_agent_uuid(self, parent_uuid: str) -> None:
-        self._parent_agent_uuid = parent_uuid
+        self._parent_context.parent_agent_uuid = parent_uuid
 
-    def _create_child_agent(
+    def set_parent_context(self, context: SubAgentParentContext) -> None:
+        self._parent_context = context
+
+    def _default_child_agent_builder(
         self,
-        template: "AnthropicAgent",
-        resume_uuid: Optional[str] = None,
+        spec: SubAgentSpec,
+        resume_uuid: str | None,
+        parent_context: SubAgentParentContext,
     ) -> "AnthropicAgent":
         from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
-        from agent_base.providers.anthropic.context_externalizer import ExternalizationConfig
-
-        def _template_state(name: str) -> Any:
-            template_dict = getattr(template, "__dict__", None)
-            if isinstance(template_dict, dict) and name in template_dict:
-                return template_dict[name]
-            return None
-
-        template_agent_config = _template_state("agent_config")
-
-        compaction_config = _template_state("_compaction_config")
-        if compaction_config is None and template_agent_config is not None:
-            compaction_config = getattr(template_agent_config, "compaction_config", None)
-
-        externalization_config = _template_state("_externalization_config")
-        if externalization_config is None and template_agent_config is not None:
-            extras = getattr(template_agent_config, "extras", {})
-            raw_config = extras.get("externalization_config")
-            if isinstance(raw_config, dict):
-                externalization_config = ExternalizationConfig.from_dict(raw_config)
-
-        shared_sandbox = getattr(self, "_sandbox", None) or _template_state("_sandbox")
-        sandbox_factory = _template_state("_sandbox_factory")
 
         child = AnthropicAgent(
-            system_prompt=template.system_prompt,
-            description=template.description,
-            model=template.model,
-            config=copy.copy(template.config),
-            compaction_config=copy.copy(compaction_config),
-            externalization_config=copy.copy(externalization_config),
-            max_steps=int(template.max_steps) if template.max_steps != float("inf") else None,
-            tools=template._constructor_tools,
-            subagents=template._sub_agent_tool.agents if template._sub_agent_tool else None,
-            max_retries=template.max_retries,
-            base_delay=template.base_delay,
-            max_parallel_tool_calls=template.max_parallel_tool_calls,
-            max_tool_result_tokens=template.max_tool_result_tokens,
-            memory_store=template.memory_store,
-            sandbox=shared_sandbox,
-            sandbox_factory=sandbox_factory,
+            system_prompt=spec.system_prompt,
+            description=spec.description,
+            model=spec.model,
+            config=copy.copy(spec.config),
+            compaction_config=copy.copy(spec.compaction_config),
+            externalization_config=copy.copy(spec.externalization_config),
+            max_steps=spec.max_steps,
+            tools=list(spec.tools or []),
+            frontend_tools=list(spec.frontend_tools or []),
+            subagents=copy.deepcopy(spec.subagents),
+            max_retries=spec.max_retries,
+            base_delay=spec.base_delay,
+            max_parallel_tool_calls=spec.max_parallel_tool_calls,
+            max_tool_result_tokens=spec.max_tool_result_tokens,
+            memory_store=spec.memory_store or parent_context.memory_store,
+            sandbox=parent_context.sandbox,
+            sandbox_factory=parent_context.sandbox_factory,
             agent_uuid=resume_uuid,
-            config_adapter=template.config_adapter,
-            conversation_adapter=template.conversation_adapter,
-            run_adapter=template.run_adapter,
-            media_backend=template.media_backend,
+            config_adapter=parent_context.config_adapter,
+            conversation_adapter=parent_context.conversation_adapter,
+            run_adapter=parent_context.run_adapter,
+            media_backend=parent_context.media_backend,
         )
-        child._parent_agent_uuid = self._parent_agent_uuid or "unknown"
+        child._parent_agent_uuid = parent_context.parent_agent_uuid or "unknown"
         return child
 
-    @staticmethod
-    def _format_result(agent_name: str, agent_uuid: str, result: "AgentResult") -> str:
-        parts = [f"[Subagent '{agent_name}' completed]"]
-        parts.append(f"Agent UUID: {agent_uuid}")
-        if result.final_answer:
-            parts.append(f"\n{result.final_answer}")
-        else:
-            parts.append("\n(No final answer extracted)")
-        parts.append(f"\n[stop_reason={result.stop_reason}, steps={result.total_steps}]")
-        return "\n".join(parts)
-
-    def get_tool(self) -> Callable[..., Awaitable[str]]:
+    def get_tool(self) -> Callable[..., Awaitable[ToolResultEnvelope]]:
         instance = self
 
         async def spawn_subagent(
             agent_name: str,
             task: str,
             resume_agent_uuid: str | None = None,
-        ) -> str:
-            """Placeholder docstring - replaced by template."""
-            if agent_name not in instance.agents:
-                available = ", ".join(instance.agents.keys())
-                return f"Error: Unknown agent '{agent_name}'. Available: {available}"
+        ) -> ToolResultEnvelope:
+            if agent_name not in instance.specs:
+                available = ", ".join(instance.specs.keys())
+                return ToolResultEnvelope.error(
+                    "spawn_subagent",
+                    "",
+                    f"Unknown agent '{agent_name}'. Available: {available}",
+                )
 
-            child = instance._create_child_agent(instance.agents[agent_name], resume_agent_uuid)
+            spec = instance.specs[agent_name]
+            child = instance._child_agent_builder(
+                spec,
+                resume_agent_uuid,
+                instance._parent_context,
+            )
+
             try:
-                if instance._current_queue is not None:
+                if instance._parent_context.queue is not None:
                     result = await child.run_stream(
                         prompt=task,
-                        queue=instance._current_queue,
-                        stream_formatter=instance._current_formatter or "json",
+                        queue=instance._parent_context.queue,
+                        stream_formatter=instance._parent_context.formatter or "json",
                     )
                 else:
                     result = await child.run(prompt=task)
-                return instance._format_result(agent_name, child.agent_uuid, result)
             except Exception as exc:
-                return f"Subagent '{agent_name}' error: {type(exc).__name__}: {exc}"
+                return ToolResultEnvelope.error(
+                    "spawn_subagent",
+                    "",
+                    f"Subagent '{agent_name}' error: {type(exc).__name__}: {exc}",
+                )
+
+            return SubAgentEnvelope(
+                agent_name=agent_name,
+                child_agent_uuid=child.agent_uuid or "",
+                final_answer=result.final_answer,
+                stop_reason=result.stop_reason,
+                total_steps=result.total_steps,
+                child_model=result.model,
+                child_provider=result.provider,
+                nested_conversation=result.conversation_log,
+            )
 
         spawn_subagent.__tool_instance__ = instance
         return self._apply_schema(spawn_subagent)

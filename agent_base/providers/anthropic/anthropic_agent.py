@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import json
 import mimetypes
@@ -12,6 +13,7 @@ from typing import Any, Callable, Optional, TYPE_CHECKING
 import anthropic
 
 from agent_base.core.abort_types import AgentPhase, STREAM_ABORT_TEXT
+from agent_base.core.conversation_log import ConversationLog, ToolLogProjection
 from agent_base.providers.anthropic.abort_types import StreamResult
 from agent_base.core.agent_base import Agent
 from agent_base.core.config import AgentConfig, Conversation, CostBreakdown, LLMConfig, PendingToolRelay
@@ -174,6 +176,7 @@ class AnthropicAgent(Agent):
 
         # Store original tool callables for child agent cloning (SubAgentTool).
         self._constructor_tools: list[Callable[..., Any]] | None = tools
+        self._constructor_frontend_tools: list[Callable[..., Any]] | None = frontend_tools
 
         # Tools (backend and frontend) - registry takes care of how to execute tools.
         self.tool_registry: ToolRegistry = ToolRegistry()
@@ -327,10 +330,12 @@ class AnthropicAgent(Agent):
             logger.debug(
                 "loaded_agent_config",
                 agent_uuid=self._agent_uuid,
-                conversation_history_len=len(loaded_config.conversation_history),
+                conversation_log_entries=len(loaded_config.conversation_log.entries),
                 context_messages_len=len(loaded_config.context_messages),
                 has_pending_relay=loaded_config.pending_relay is not None,
-                last_msg_roles=[m.role.value for m in loaded_config.conversation_history[-3:]],
+                last_log_entry_types=[
+                    entry.entry_type for entry in loaded_config.conversation_log.entries[-3:]
+                ],
             )
 
             # If a relay is pending, restore the partial Conversation
@@ -366,7 +371,10 @@ class AnthropicAgent(Agent):
             run_id=run_id,
             started_at=now,
             user_message=prompt,
+            conversation_log=ConversationLog(),
         )
+        self.agent_config.conversation_log = ConversationLog()
+        self.agent_config.parent_agent_uuid = self._parent_agent_uuid
 
         # Reset step counter.
         self.agent_config.current_step = 0
@@ -396,6 +404,7 @@ class AnthropicAgent(Agent):
         self._run_logs = []
         self._run_cumulative_usage = Usage()
         self._cumulative_cost = CostBreakdown()
+        self._ensure_registered_agent()
 
     def _reset_cancellation_state(
         self,
@@ -481,9 +490,7 @@ class AnthropicAgent(Agent):
         """Append distinct context and history variants for the same logical message."""
         history_variant = history_message if history_message is not None else context_message
         self.agent_config.context_messages.append(context_message)
-        self.agent_config.conversation_history.append(history_variant)
-        if self.conversation:
-            self.conversation.messages.append(history_variant)
+        self._append_message_to_logs(history_variant)
 
     async def run(self, prompt: str | Message) -> AgentResult:
         if not self._initialized:
@@ -736,9 +743,7 @@ class AnthropicAgent(Agent):
                 self._accumulate_usage(response_message.usage)
 
                 self.agent_config.context_messages.append(response_message)
-                self.agent_config.conversation_history.append(response_message)
-                if self.conversation:
-                    self.conversation.messages.append(response_message)
+                self._append_message_to_logs(response_message)
 
                 stop_reason = response_message.stop_reason
 
@@ -856,10 +861,8 @@ class AnthropicAgent(Agent):
                             tool_result_message = self._build_tool_result_message(tool_results)
                             context_tool_result_message = tool_result_message
 
-                        self._append_message_variants(
-                            context_tool_result_message,
-                            tool_result_message,
-                        )
+                        self.agent_config.context_messages.append(context_tool_result_message)
+                        self._append_tool_results_to_logs(tool_results)
 
                         # Check if we were cancelled during tool execution (Scenario B)
                         if self._cancellation_event.is_set():
@@ -951,9 +954,7 @@ class AnthropicAgent(Agent):
         # Step 2: Build a user message with the new instruction
         steer_message = Message.user(new_instruction)
         self.agent_config.context_messages.append(steer_message)
-        self.agent_config.conversation_history.append(steer_message)
-        if self.conversation:
-            self.conversation.messages.append(steer_message)
+        self._append_message_to_logs(steer_message)
 
         # Step 3: Reset cancellation for the new run
         self._reset_cancellation_state(cancellation_event)
@@ -1054,7 +1055,7 @@ class AnthropicAgent(Agent):
         return AgentResult(
             final_message=last_msg,
             final_answer=final_text,
-            conversation_history=list(self.agent_config.conversation_history),
+            conversation_log=copy.deepcopy(self.agent_config.conversation_log),
             stop_reason="aborted",
             model=self.agent_config.model,
             provider="anthropic",
@@ -1068,13 +1069,115 @@ class AnthropicAgent(Agent):
 
     # ─── Private Helpers ──────────────────────────────────────────────
 
+    def _ensure_registered_agent(
+        self,
+        *,
+        completed: bool | None = None,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None:
+        agent_uuid = self.agent_uuid
+        if not agent_uuid or self.agent_config is None:
+            return
+
+        kwargs = {
+            "agent_uuid": agent_uuid,
+            "parent_agent_uuid": self._parent_agent_uuid,
+            "name": name,
+            "description": description if description is not None else self.description,
+            "model": self.agent_config.model,
+            "provider": self.agent_config.provider,
+            "completed": completed,
+        }
+        self.agent_config.conversation_log.ensure_agent(**kwargs)
+        if self.conversation:
+            self.conversation.conversation_log.ensure_agent(**kwargs)
+
+    def _append_message_to_logs(
+        self,
+        message: Message,
+        *,
+        agent_uuid: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        effective_agent_uuid = agent_uuid or self.agent_uuid
+        if not effective_agent_uuid:
+            return
+
+        if effective_agent_uuid == self.agent_uuid:
+            self._ensure_registered_agent()
+        else:
+            self.agent_config.conversation_log.ensure_agent(agent_uuid=effective_agent_uuid)
+            if self.conversation:
+                self.conversation.conversation_log.ensure_agent(agent_uuid=effective_agent_uuid)
+
+        self.agent_config.conversation_log.add_message(
+            message,
+            agent_uuid=effective_agent_uuid,
+            timestamp=timestamp,
+        )
+        if self.conversation:
+            self.conversation.conversation_log.add_message(
+                message,
+                agent_uuid=effective_agent_uuid,
+                timestamp=timestamp,
+            )
+
+    def _append_tool_results_to_logs(
+        self,
+        envelopes: list[ToolResultEnvelope],
+        *,
+        agent_uuid: str | None = None,
+    ) -> None:
+        effective_agent_uuid = agent_uuid or self.agent_uuid
+        if not effective_agent_uuid:
+            return
+
+        self._ensure_registered_agent()
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        for envelope in envelopes:
+            projection = envelope.for_conversation_log()
+            child_agent_uuid = projection.details.get("child_agent_uuid")
+            if projection.nested_conversation is not None and child_agent_uuid:
+                child_descriptor = projection.nested_conversation.agents.get(child_agent_uuid)
+                self.agent_config.conversation_log.ensure_agent(
+                    agent_uuid=child_agent_uuid,
+                    parent_agent_uuid=child_descriptor.parent_agent_uuid if child_descriptor else effective_agent_uuid,
+                    name=projection.details.get("agent_name") or (child_descriptor.name if child_descriptor else None),
+                    description=child_descriptor.description if child_descriptor else None,
+                    model=child_descriptor.model if child_descriptor else projection.details.get("child_model"),
+                    provider=child_descriptor.provider if child_descriptor else projection.details.get("child_provider"),
+                    completed=True,
+                )
+                if self.conversation:
+                    self.conversation.conversation_log.ensure_agent(
+                        agent_uuid=child_agent_uuid,
+                        parent_agent_uuid=child_descriptor.parent_agent_uuid if child_descriptor else effective_agent_uuid,
+                        name=projection.details.get("agent_name") or (child_descriptor.name if child_descriptor else None),
+                        description=child_descriptor.description if child_descriptor else None,
+                        model=child_descriptor.model if child_descriptor else projection.details.get("child_model"),
+                        provider=child_descriptor.provider if child_descriptor else projection.details.get("child_provider"),
+                        completed=True,
+                    )
+
+            self.agent_config.conversation_log.add_tool_result(
+                projection,
+                agent_uuid=effective_agent_uuid,
+                timestamp=timestamp,
+            )
+            if self.conversation:
+                self.conversation.conversation_log.add_tool_result(
+                    projection,
+                    agent_uuid=effective_agent_uuid,
+                    timestamp=timestamp,
+                )
+
     def _append_messages_to_histories(self, messages: list[Message]) -> None:
-        """Append persisted messages to all conversation history views."""
+        """Append persisted messages to context and conversation logs."""
         for message in messages:
             self.agent_config.context_messages.append(message)
-            self.agent_config.conversation_history.append(message)
-            if self.conversation:
-                self.conversation.messages.append(message)
+            self._append_message_to_logs(message)
 
     def _inject_agent_uuid_to_tools(self) -> None:
         """Inject agent UUID into tools that need it.
@@ -1091,6 +1194,20 @@ class AnthropicAgent(Agent):
                 set_uuid_method = getattr(tool_instance, 'set_agent_uuid', None)
                 if callable(set_uuid_method):
                     set_uuid_method(self.agent_uuid)
+                set_parent_context = getattr(tool_instance, 'set_parent_context', None)
+                if callable(set_parent_context):
+                    from agent_base.common_tools.sub_agent_tool import SubAgentParentContext
+
+                    set_parent_context(SubAgentParentContext(
+                        parent_agent_uuid=self.agent_uuid,
+                        config_adapter=self.config_adapter,
+                        conversation_adapter=self.conversation_adapter,
+                        run_adapter=self.run_adapter,
+                        media_backend=self.media_backend,
+                        sandbox=self._sandbox,
+                        sandbox_factory=self._sandbox_factory,
+                        memory_store=self.memory_store,
+                    ))
 
     # ─── Mid-Run Reconfiguration ──────────────────────────────────────
 
@@ -1281,7 +1398,7 @@ class AnthropicAgent(Agent):
                 tool_name=envelope.tool_name,
                 tool_id=envelope.tool_id,
                 result_content=result_content,
-                envelope_log=envelope.for_conversation_log(),
+                envelope_log=envelope.for_conversation_log().to_dict(),
                 is_server_tool=False,
                 is_final=True,
             )
@@ -1393,7 +1510,11 @@ class AnthropicAgent(Agent):
         return AgentResult(
             final_message=response_message,
             final_answer=final_answer,
-            conversation_history=self.conversation.messages if self.conversation else [],
+            conversation_log=copy.deepcopy(
+                self.conversation.conversation_log
+                if self.conversation
+                else self.agent_config.conversation_log
+            ),
             stop_reason=stop_reason,
             model=self.agent_config.model,
             provider="anthropic",
@@ -1435,9 +1556,7 @@ class AnthropicAgent(Agent):
         """
         # Collect all file_ids from current conversation messages.
         file_ids: set[str] = set()
-        messages = (
-            self.conversation.messages if self.conversation else self.agent_config.conversation_history
-        )
+        messages = self.agent_config.context_messages
         for message in messages:
             for block in message.content:
                 if isinstance(block, ServerToolResultContent):
@@ -1508,7 +1627,11 @@ class AnthropicAgent(Agent):
         if self.memory_store:
             await self.memory_store.update(
                 messages=self.agent_config.context_messages,
-                conversation_history=self.conversation.messages if self.conversation else [],
+                conversation_log=(
+                    self.conversation.conversation_log
+                    if self.conversation
+                    else self.agent_config.conversation_log
+                ),
             )
 
         # Compute cost before persisting so it's saved with the conversation.
@@ -1523,6 +1646,9 @@ class AnthropicAgent(Agent):
             self.conversation.generated_files = generated_files
             self.conversation.cost = cost
             self.conversation.completed_at = now
+            self.conversation.conversation_log.mark_agent_completed(self.agent_uuid)
+
+        self.agent_config.conversation_log.mark_agent_completed(self.agent_uuid)
 
         # Validate tool_use / tool_result pairing in context_messages before
         # persisting.  An orphaned tool_use without a subsequent tool_result will
@@ -1591,10 +1717,12 @@ class AnthropicAgent(Agent):
         logger.debug(
             "persisting_state",
             agent_uuid=self.agent_config.agent_uuid,
-            conversation_history_len=len(self.agent_config.conversation_history),
+            conversation_log_entries=len(self.agent_config.conversation_log.entries),
             context_messages_len=len(self.agent_config.context_messages),
             has_pending_relay=self.agent_config.pending_relay is not None,
-            last_msg_roles=[m.role.value for m in self.agent_config.conversation_history[-3:]],
+            last_log_entry_types=[
+                entry.entry_type for entry in self.agent_config.conversation_log.entries[-3:]
+            ],
         )
 
         await self.config_adapter.save(self.agent_config)
@@ -1661,8 +1789,8 @@ class AnthropicAgent(Agent):
         }
 
         if self.stream_meta_history_and_tool_results:
-            payload["message_history"] = _strip_binary_data(
-                [m.to_dict() for m in self.agent_config.conversation_history]
+            payload["conversation_log"] = _strip_binary_data(
+                self.agent_config.conversation_log.to_dict()
             )
 
         delta = MetaDelta(
@@ -1691,8 +1819,8 @@ class AnthropicAgent(Agent):
             "cumulative_usage": result.cumulative_usage.to_dict() if result.cumulative_usage else None,
         }
 
-        payload["conversation_history"] = _strip_binary_data(
-            [m.to_dict() for m in result.conversation_history]
+        payload["conversation_log"] = _strip_binary_data(
+            result.conversation_log.to_dict()
         )
 
         delta = MetaDelta(

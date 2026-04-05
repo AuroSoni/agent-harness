@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import json
 import uuid
@@ -11,6 +12,7 @@ import litellm
 
 from agent_base.core.abort_types import AgentPhase, STREAM_ABORT_TEXT
 from agent_base.core.config import AgentConfig, Conversation, CostBreakdown, PendingToolRelay
+from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import AgentResult, LogEntry
 from agent_base.core.types import ContentBlock, Role, TextContent, ToolResultBase, ToolUseContent
@@ -114,6 +116,7 @@ class LiteLLMAgent(AnthropicAgent):
         self._sandbox_factory = sandbox_factory
         self.final_answer_check = final_answer_check
         self._constructor_tools: list[Callable[..., Any]] | None = tools
+        self._constructor_frontend_tools: list[Callable[..., Any]] | None = frontend_tools
         self.tool_registry: ToolRegistry = ToolRegistry()
 
         if tools:
@@ -249,7 +252,10 @@ class LiteLLMAgent(AnthropicAgent):
             run_id=run_id,
             started_at=now,
             user_message=prompt,
+            conversation_log=ConversationLog(),
         )
+        self.agent_config.conversation_log = ConversationLog()
+        self.agent_config.parent_agent_uuid = self._parent_agent_uuid
 
         self.agent_config.current_step = 0
         self.agent_config.system_prompt = self.system_prompt
@@ -273,6 +279,7 @@ class LiteLLMAgent(AnthropicAgent):
         self._run_logs = []
         self._run_cumulative_usage = Usage()
         self._cumulative_cost = CostBreakdown()
+        self._ensure_registered_agent()
 
     def _configure_compaction_controller(self) -> None:
         if self.agent_config is None:
@@ -429,9 +436,7 @@ class LiteLLMAgent(AnthropicAgent):
                 self.agent_config.current_step += 1
                 self._accumulate_usage(response_message.usage)
                 self.agent_config.context_messages.append(response_message)
-                self.agent_config.conversation_history.append(response_message)
-                if self.conversation:
-                    self.conversation.messages.append(response_message)
+                self._append_message_to_logs(response_message)
 
                 stop_reason = response_message.stop_reason
 
@@ -524,7 +529,8 @@ class LiteLLMAgent(AnthropicAgent):
                         tool_result_message = self._build_tool_result_message(tool_results)
                         context_tool_result_message = tool_result_message
 
-                    self._append_message_variants(context_tool_result_message, tool_result_message)
+                    self.agent_config.context_messages.append(context_tool_result_message)
+                    self._append_tool_results_to_logs(tool_results)
 
                     if self._cancellation_event.is_set():
                         self._phase = AgentPhase.IDLE
@@ -648,7 +654,11 @@ class LiteLLMAgent(AnthropicAgent):
         return AgentResult(
             final_message=response_message,
             final_answer=final_answer,
-            conversation_history=self.conversation.messages if self.conversation else [],
+            conversation_log=copy.deepcopy(
+                self.conversation.conversation_log
+                if self.conversation
+                else self.agent_config.conversation_log
+            ),
             stop_reason=stop_reason,
             model=self.agent_config.model,
             provider="litellm",
@@ -673,7 +683,7 @@ class LiteLLMAgent(AnthropicAgent):
         return AgentResult(
             final_message=last_msg,
             final_answer=final_text,
-            conversation_history=list(self.agent_config.conversation_history),
+            conversation_log=copy.deepcopy(self.agent_config.conversation_log),
             stop_reason="aborted",
             model=self.agent_config.model,
             provider="litellm",
@@ -701,7 +711,11 @@ class LiteLLMAgent(AnthropicAgent):
         if self.memory_store:
             await self.memory_store.update(
                 messages=self.agent_config.context_messages,
-                conversation_history=self.conversation.messages if self.conversation else [],
+                conversation_log=(
+                    self.conversation.conversation_log
+                    if self.conversation
+                    else self.agent_config.conversation_log
+                ),
             )
 
         cost = self._compute_cost()
@@ -714,6 +728,9 @@ class LiteLLMAgent(AnthropicAgent):
             self.conversation.generated_files = generated_files
             self.conversation.cost = cost
             self.conversation.completed_at = now
+            self.conversation.conversation_log.mark_agent_completed(self.agent_uuid)
+
+        self.agent_config.conversation_log.mark_agent_completed(self.agent_uuid)
 
         self._warn_orphaned_tool_uses(self.agent_config.context_messages)
         await self._persist_state()
@@ -760,8 +777,8 @@ class LiteLLMAgent(AnthropicAgent):
             "model": self.agent_config.model,
         }
         if self.stream_meta_history_and_tool_results:
-            payload["message_history"] = _strip_binary_data(
-                [m.to_dict() for m in self.agent_config.conversation_history]
+            payload["conversation_log"] = _strip_binary_data(
+                self.agent_config.conversation_log.to_dict()
             )
 
         delta = MetaDelta(
@@ -787,7 +804,7 @@ class LiteLLMAgent(AnthropicAgent):
             "generated_files": [f.to_dict() for f in result.generated_files] if result.generated_files else None,
             "cost": dataclasses.asdict(result.cost) if result.cost else None,
             "cumulative_usage": result.cumulative_usage.to_dict() if result.cumulative_usage else None,
-            "conversation_history": _strip_binary_data([m.to_dict() for m in result.conversation_history]),
+            "conversation_log": _strip_binary_data(result.conversation_log.to_dict()),
         }
         delta = MetaDelta(
             agent_uuid=self.agent_config.agent_uuid,

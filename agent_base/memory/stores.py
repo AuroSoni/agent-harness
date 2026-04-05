@@ -10,6 +10,7 @@ from agent_base.logging import get_logger
 from .base import MemoryStore
 
 if TYPE_CHECKING:
+    from agent_base.core.conversation_log import ConversationLog
     from agent_base.core.messages import Message
     from agent_base.core.types import ContentBlock
 
@@ -43,7 +44,7 @@ class NoOpMemoryStore(MemoryStore):
     async def update(
         self,
         messages: list[Message],
-        conversation_history: list[Message],
+        conversation_log: ConversationLog,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Return empty metadata."""

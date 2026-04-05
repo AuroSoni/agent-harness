@@ -15,6 +15,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
+from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.messages import Message, Usage
 from agent_base.media_backend.media_types import MediaMetadata
 from agent_base.tools.tool_types import ToolSchema
@@ -170,7 +171,7 @@ class AgentConfig:
     Fields are grouped by concern:
 
     - **Identity**: ``agent_uuid``, ``description``, ``provider``, ``model``
-    - **LLM context**: ``context_messages`` (compacted), ``conversation_history`` (unabridged per-run)
+    - **LLM context**: ``context_messages`` (compacted), ``conversation_log`` (rich UI history)
     - **Tools**: ``tool_schemas``, ``tool_names``, ``subagent_schemas``
     - **Provider config**: ``llm_config`` (provider-specific ``LLMConfig`` subclass)
     - **Components**: ``formatter``, ``compaction_config``, ``memory_store_type``, ``sandbox_config``
@@ -197,9 +198,8 @@ class AgentConfig:
     # Managed by the compactor — may be shorter than the full conversation.
     context_messages: list[Message] = field(default_factory=list)
 
-    # The unabridged per-run conversation history.
-    # Not affected by compaction. Used for conversation logging and UI display.
-    conversation_history: list[Message] = field(default_factory=list)
+    # The rich per-run conversation log used for persistence and UI replay.
+    conversation_log: ConversationLog = field(default_factory=ConversationLog)
 
     # --- Tools ---
 
@@ -294,8 +294,8 @@ class Conversation:
     # The agent's final assistant response for this run.
     final_response: Message | None = None
 
-    # --- Full conversation for this run ---
-    messages: list[Message] = field(default_factory=list)
+    # --- Full conversation log for this run ---
+    conversation_log: ConversationLog = field(default_factory=ConversationLog)
 
     # --- Run outcome ---
     stop_reason: str | None = None

@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 from PIL import Image
 
+from agent_base.core.conversation_log import ToolLogProjection
 from agent_base.core.types import ContentBlock, ImageContent, SourceType, TextContent
 from agent_base.tools import ConfigurableToolBase
 from agent_base.tools.tool_types import ToolResultEnvelope
@@ -290,38 +291,44 @@ class ReadFileResultEnvelope(ToolResultEnvelope):
             ),
         ]
 
-    def for_conversation_log(self) -> dict[str, Any]:
+    def for_conversation_log(self) -> ToolLogProjection:
         if self.file_type == "text":
-            return {
-                "tool_name": self.tool_name,
-                "tool_id": self.tool_id,
-                "is_error": self.is_error,
-                "summary": f"Read {self.lines_read} lines from {self.file_path}",
-                "file_type": self.file_type,
-                "file_path": self.file_path,
-                "lines_read": self.lines_read,
-                "total_lines": self.total_lines,
-                "offset": self.offset,
-                "char_count": self.char_count,
-                "content_blocks": [TextContent(text=self.text_content[:500]).to_dict()],
-            }
+            return ToolLogProjection(
+                tool_name=self.tool_name,
+                tool_id=self.tool_id,
+                is_error=self.is_error,
+                summary=f"Read {self.lines_read} lines from {self.file_path}",
+                content_blocks=[TextContent(text=self.text_content[:500])],
+                details={
+                    "file_type": self.file_type,
+                    "file_path": self.file_path,
+                    "lines_read": self.lines_read,
+                    "total_lines": self.total_lines,
+                    "offset": self.offset,
+                    "char_count": self.char_count,
+                },
+                duration_ms=self.duration_ms,
+            )
         summary = (
             f"Read image {self.file_path} "
             f"({self.returned_dimensions[0]}x{self.returned_dimensions[1]}px)"
         )
-        return {
-            "tool_name": self.tool_name,
-            "tool_id": self.tool_id,
-            "is_error": self.is_error,
-            "summary": summary,
-            "file_type": self.file_type,
-            "file_path": self.file_path,
-            "original_dimensions": list(self.original_dimensions),
-            "returned_dimensions": list(self.returned_dimensions),
-            "crop_bbox": self.crop_bbox_used,
-            "file_size": self.image_file_size,
-            "content_blocks": [TextContent(text=summary).to_dict()],
-        }
+        return ToolLogProjection(
+            tool_name=self.tool_name,
+            tool_id=self.tool_id,
+            is_error=self.is_error,
+            summary=summary,
+            content_blocks=[TextContent(text=summary)],
+            details={
+                "file_type": self.file_type,
+                "file_path": self.file_path,
+                "original_dimensions": list(self.original_dimensions),
+                "returned_dimensions": list(self.returned_dimensions),
+                "crop_bbox": self.crop_bbox_used,
+                "file_size": self.image_file_size,
+            },
+            duration_ms=self.duration_ms,
+        )
 
 
 class ReadFileTool(ConfigurableToolBase):

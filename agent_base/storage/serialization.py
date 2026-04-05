@@ -19,6 +19,7 @@ from agent_base.core.config import (
     PendingToolRelay,
     SubAgentSchema,
 )
+from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import LogEntry
 from agent_base.media_backend.media_types import MediaMetadata
@@ -44,7 +45,7 @@ def serialize_config(config: AgentConfig) -> dict[str, Any]:
         "system_prompt": config.system_prompt,
         # LLM context
         "context_messages": [m.to_dict() for m in config.context_messages],
-        "conversation_history": [m.to_dict() for m in config.conversation_history],
+        "conversation_log": config.conversation_log.to_dict(),
         # Tools
         "tool_schemas": [dataclasses.asdict(ts) for ts in config.tool_schemas],
         "tool_names": config.tool_names,
@@ -117,9 +118,7 @@ def deserialize_config(
         context_messages=[
             Message.from_dict(m) for m in data.get("context_messages", [])
         ],
-        conversation_history=[
-            Message.from_dict(m) for m in data.get("conversation_history", [])
-        ],
+        conversation_log=ConversationLog.from_dict(data.get("conversation_log")),
         # Tools
         tool_schemas=[
             ToolSchema(**ts) for ts in data.get("tool_schemas", [])
@@ -179,7 +178,7 @@ def serialize_conversation(conv: Conversation) -> dict[str, Any]:
         "completed_at": conv.completed_at,
         "user_message": conv.user_message.to_dict() if conv.user_message else None,
         "final_response": conv.final_response.to_dict() if conv.final_response else None,
-        "messages": [m.to_dict() for m in conv.messages],
+        "conversation_log": conv.conversation_log.to_dict(),
         "stop_reason": conv.stop_reason,
         "total_steps": conv.total_steps,
         "usage": conv.usage.to_dict(),
@@ -205,7 +204,7 @@ def deserialize_conversation(data: dict[str, Any]) -> Conversation:
         completed_at=data.get("completed_at"),
         user_message=Message.from_dict(raw_user) if raw_user else None,
         final_response=Message.from_dict(raw_final) if raw_final else None,
-        messages=[Message.from_dict(m) for m in data.get("messages", [])],
+        conversation_log=ConversationLog.from_dict(data.get("conversation_log")),
         stop_reason=data.get("stop_reason"),
         total_steps=data.get("total_steps"),
         usage=Usage.from_dict(raw_usage) if raw_usage else Usage(),
