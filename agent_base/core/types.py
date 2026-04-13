@@ -49,6 +49,7 @@ class SourceType(str, Enum):
     URL = "url"
     BASE64 = "base64"
     FILE_ID = "file_id"
+    TEXT = "text"
 
 class CitationType(str, Enum):
     CHAR_LOCATION = "char_location"
@@ -169,7 +170,7 @@ class MediaContent(ContentBlock):
 class ImageContent(MediaContent):
     """Represents an image content block."""
     source_type: str = ""                     # Source type of the image (eg. "url", "base64", "file_id")
-    data: str = ""                            # URL or base64 string or file_id. Transient — not serialized by to_dict().
+    data: str = ""                            # URL, base64 string, or file_id.
     filename: Optional[str] = None            # Filename of the image
     content_block_type: ContentBlockType = field(default=ContentBlockType.IMAGE, init=False)
 
@@ -177,6 +178,7 @@ class ImageContent(MediaContent):
         return {
             "media_type": self.media_type,
             "source_type": self.source_type,
+            "data": self.data,
             "content_block_type": self.content_block_type.value,
             "filename": self.filename,
             "kwargs": self.kwargs,
@@ -186,7 +188,7 @@ class ImageContent(MediaContent):
 class DocumentContent(MediaContent):
     """Represents a model-readable document content block (e.g. PDF)."""
     source_type: str = ""                     # Source type of the document (eg. "url", "base64", "file_id")
-    data: str = ""                             # URL or base64 string or file_id. Transient — not serialized by to_dict().
+    data: str = ""                            # URL, base64 string, or file_id.
     filename: Optional[str] = None             # Filename of the document
     content_block_type: ContentBlockType = field(default=ContentBlockType.DOCUMENT, init=False)
 
@@ -195,6 +197,7 @@ class DocumentContent(MediaContent):
             "media_type": self.media_type,
             "content_block_type": self.content_block_type.value,
             "source_type": self.source_type,
+            "data": self.data,
             "filename": self.filename,
             "kwargs": self.kwargs,
         }
@@ -204,7 +207,7 @@ class AttachmentContent(MediaContent):
     """Represents an opaque attachment artifact (e.g. container uploads)."""
     filename: str = ""                                 # Filename of the attachment
     source_type: str = ""                              # Source type of the attachment (eg. "file", "url", "base64")
-    data: str = ""                                     # URL or base64 string or file_id. Transient — not serialized by to_dict().
+    data: str = ""                                     # URL, base64 string, or file_id.
     content_block_type: ContentBlockType = field(default=ContentBlockType.ATTACHMENT, init=False)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -213,6 +216,7 @@ class AttachmentContent(MediaContent):
             "content_block_type": self.content_block_type.value,
             "filename": self.filename,
             "source_type": self.source_type,
+            "data": self.data,
             "kwargs": self.kwargs,
         }
 
@@ -284,15 +288,15 @@ class ToolResultBase(ContentBlock):
     """Shared base for all tool result blocks."""
     tool_name: str = ""
     tool_id: str = ""
-    tool_result: Union[str, List[ContentBlock]] = ""
+    tool_result: Union[str, Dict[str, Any], List[Any]] = ""
     is_error: bool = False
 
     def __post_init__(self) -> None:
         if not self.tool_id:
             raise ValueError(f"{type(self).__name__} requires a non-empty tool_id for correlation")
 
-    def _serialize_tool_result(self) -> Union[str, List[Dict[str, Any]]]:
-        if isinstance(self.tool_result, str):
+    def _serialize_tool_result(self) -> Union[str, Dict[str, Any], List[Any]]:
+        if isinstance(self.tool_result, (str, dict)):
             return self.tool_result
         result = []
         for item in self.tool_result:
@@ -390,7 +394,6 @@ class CharCitation(CitationBase):
             "start_char_index": self.start_char_index,
             "end_char_index": self.end_char_index,
             "document_title": self.document_title,
-            "file_id": self.file_id,
         })
         return d
 
@@ -418,7 +421,6 @@ class PageCitation(CitationBase):
             "start_page_number": self.start_page_number,
             "end_page_number": self.end_page_number,
             "document_title": self.document_title,
-            "file_id": self.file_id,
         })
         return d
 
@@ -446,7 +448,6 @@ class ContentBlockCitation(CitationBase):
             "start_block_index": self.start_block_index,
             "end_block_index": self.end_block_index,
             "document_title": self.document_title,
-            "file_id": self.file_id,
         })
         return d
 
@@ -524,10 +525,17 @@ class ErrorContent(ContentBlock):
 # ==============================================================================
 
 def _rehydrate_tool_result(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert serialized tool_result dicts back to ContentBlock instances."""
+    """Convert serialized tool_result dicts back to ContentBlock instances.
+
+    Only rehydrates dicts that are canonical ContentBlock dicts (have a
+    ``content_block_type`` key).  Server tool results may contain opaque
+    provider data (e.g. ``model_dump()`` output from Anthropic SDK objects)
+    which lack this key and must be left as plain dicts.
+    """
     raw = data.get("tool_result")
     if isinstance(raw, list) and raw and isinstance(raw[0], dict):
-        return {**data, "tool_result": [ContentBlock.from_dict(b) for b in raw]}
+        if raw[0].get("content_block_type"):
+            return {**data, "tool_result": [ContentBlock.from_dict(b) for b in raw]}
     return data
 
 

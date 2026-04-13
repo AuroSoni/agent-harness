@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, TypeVar, TYPE_CHECKING
 
 import anthropic
 
+from agent_base.providers.anthropic.abort_types import StreamResult
 from agent_base.logging import get_logger
 from agent_base.streaming.types import (
     TextDelta,
@@ -34,6 +35,43 @@ logger = get_logger(__name__)
 
 T = TypeVar("T")
 
+_RETRYABLE_API_STATUS_ERROR_TYPES = {
+    "overloaded_error",
+    "rate_limit_error",
+}
+
+
+def _extract_api_status_error_type(error: anthropic.APIStatusError) -> str | None:
+    """Return Anthropic's structured error type when present."""
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error")
+        if isinstance(inner, dict):
+            err_type = inner.get("type")
+            if isinstance(err_type, str):
+                return err_type
+
+        err_type = body.get("type")
+        if isinstance(err_type, str):
+            return err_type
+
+    message = str(error).lower()
+    if "overloaded_error" in message or "'overloaded'" in message or '"overloaded"' in message:
+        return "overloaded_error"
+    if "rate_limit_error" in message:
+        return "rate_limit_error"
+    return None
+
+
+def _is_retryable_api_status_error(error: anthropic.APIStatusError) -> bool:
+    """Return True for transient API status failures that should be retried."""
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int) and status_code >= 500:
+        return True
+
+    error_type = _extract_api_status_error_type(error)
+    return error_type in _RETRYABLE_API_STATUS_ERROR_TYPES
+
 
 # ---------------------------------------------------------------------------
 # Streaming with backoff
@@ -49,7 +87,8 @@ async def anthropic_stream_with_backoff(
     stream_formatter: StreamFormatter | None = None,
     stream_tool_results: bool = True,
     agent_uuid: str = "",
-) -> Any:
+    cancellation_event: asyncio.Event | None = None,
+) -> StreamResult:
     """Execute Anthropic streaming with exponential backoff.
 
     Translates Anthropic stream events into ``StreamDelta`` objects and
@@ -73,22 +112,42 @@ async def anthropic_stream_with_backoff(
         stream_formatter: Formatter for serializing ``StreamDelta`` objects.
         stream_tool_results: Whether to stream server tool results.
         agent_uuid: Agent UUID stamped on every ``StreamDelta``.
+        cancellation_event: Optional event that, when set, signals the
+            stream to stop processing events and return partial state.
 
     Returns:
-        The raw ``BetaMessage`` from ``stream.get_final_message()``.
+        StreamResult containing the message, completed block indices,
+        and whether the stream was cancelled.
     """
     for attempt in range(max_retries):
         try:
             async with client.beta.messages.stream(**request_params) as stream:
+                completed_blocks: set[int] = set()
+                was_cancelled = False
+
                 if queue and stream_formatter:
-                    await _process_stream_events(
+                    completed_blocks, was_cancelled = await _process_stream_events(
                         stream, queue, stream_formatter,
                         stream_tool_results, agent_uuid,
+                        cancellation_event=cancellation_event,
                     )
                 else:
                     async for _event in stream:
-                        pass  # Consume without streaming
-                return await stream.get_final_message()
+                        if cancellation_event and cancellation_event.is_set():
+                            was_cancelled = True
+                            break
+
+                if was_cancelled:
+                    # Use the partial snapshot — get_final_message() would
+                    # block until the API response completes, defeating abort.
+                    accumulated = stream.current_message_snapshot
+                else:
+                    accumulated = await stream.get_final_message()
+                return StreamResult(
+                    message=accumulated,
+                    completed_blocks=completed_blocks,
+                    was_cancelled=was_cancelled,
+                )
 
         except (
             anthropic.RateLimitError,
@@ -114,12 +173,13 @@ async def anthropic_stream_with_backoff(
                 raise
 
         except anthropic.APIStatusError as e:
-            if e.status_code >= 500 and attempt < max_retries - 1:
+            if _is_retryable_api_status_error(e) and attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
                 logger.warning(
                     "server_error_retry",
                     attempt=attempt + 1,
-                    status_code=e.status_code,
+                    status_code=getattr(e, "status_code", None),
+                    error_type=_extract_api_status_error_type(e),
                     delay=f"{delay:.2f}s",
                 )
                 await asyncio.sleep(delay)
@@ -160,7 +220,8 @@ async def _process_stream_events(
     stream_formatter: StreamFormatter,
     stream_tool_results: bool,
     agent_uuid: str,
-) -> None:
+    cancellation_event: asyncio.Event | None = None,
+) -> tuple[set[int], bool]:
     """Translate Anthropic stream events into StreamDelta objects.
 
     Ported from ``json_formatter()`` in ``anthropic_agent/streaming/formatters.py``
@@ -173,11 +234,20 @@ async def _process_stream_events(
         - ``content_block_stop``: Emit final markers, tool calls, tool results, citations
         - ``error``: Emit ``ErrorDelta``
         - ``message_start/delta/stop``, ``ping``: Skipped
+
+    Returns:
+        (completed_blocks, was_cancelled) — the set of block indices that
+        received ``content_block_stop``, and whether the stream was
+        cancelled via the cancellation event.
     """
     block_types: dict[int, str] = {}
     tool_buffers: dict[int, dict[str, Any]] = {}
+    completed_blocks: set[int] = set()
 
     async for event in stream:
+        # Check cancellation at each event boundary
+        if cancellation_event and cancellation_event.is_set():
+            break
         event_type = event.type
 
         # Skip message-level events
@@ -248,6 +318,7 @@ async def _process_stream_events(
         # Content block stop
         if event_type == "content_block_stop":
             api_idx = event.index
+            completed_blocks.add(api_idx)
             bt = block_types.get(api_idx, "")
             if not bt:
                 continue
@@ -362,6 +433,9 @@ async def _process_stream_events(
                     tool_buffers.pop(api_idx, None)
             continue
 
+    was_cancelled = cancellation_event is not None and cancellation_event.is_set()
+    return completed_blocks, was_cancelled
+
 
 # ---------------------------------------------------------------------------
 # Non-streaming retry decorator
@@ -391,6 +465,36 @@ def retry_with_backoff(
             for attempt in range(max_retries):
                 try:
                     return await func(*args, **kwargs)
+                except anthropic.APIStatusError as e:
+                    if not _is_retryable_api_status_error(e):
+                        raise
+                    last_exc = e
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(
+                            "retry",
+                            func=func.__name__,
+                            attempt=attempt + 1,
+                            status_code=getattr(e, "status_code", None),
+                            error_type=_extract_api_status_error_type(e),
+                            delay=f"{delay:.2f}s",
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            "retries_exhausted",
+                            func=func.__name__,
+                            max_retries=max_retries,
+                        )
+                        raise
+                except (
+                    anthropic.BadRequestError,
+                    anthropic.AuthenticationError,
+                    anthropic.PermissionDeniedError,
+                    anthropic.NotFoundError,
+                    anthropic.UnprocessableEntityError,
+                ):
+                    raise
                 except Exception as e:
                     last_exc = e
                     if attempt < max_retries - 1:

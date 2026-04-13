@@ -7,8 +7,10 @@ LogEntry is a single step-level log entry.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
+from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.config import CostBreakdown
 from agent_base.core.messages import Message, Usage
 from agent_base.media_backend.media_types import MediaMetadata
@@ -27,7 +29,8 @@ class LogEntry:
         step: Loop iteration number (1-indexed).
         event_type: What happened. Standard values:
             ``"llm_call"``, ``"tool_execution"``, ``"compaction"``,
-            ``"memory_retrieval"``, ``"error"``, ``"relay_pause"``.
+            ``"memory_retrieval"``, ``"error"``, ``"tool_error"``,
+            ``"relay_pause"``.
         timestamp: ISO 8601 timestamp of when the event occurred.
         message: Human-readable description of the event.
         duration_ms: Wall-clock duration in milliseconds.
@@ -55,8 +58,8 @@ class AgentResult:
         final_message: The last assistant ``Message`` in this run.
         final_answer: Extracted text content from ``final_message``.
             Convenience field for consumers that only need the text.
-        conversation_history: The complete list of ``Message`` objects
-            exchanged during this run (user, assistant, tool results).
+        conversation_log: The complete persisted conversation log for
+            this run, including messages and rich tool results.
         stop_reason: Why the run ended. Common values:
             ``"end_turn"`` (natural completion),
             ``"max_steps"`` (step limit reached),
@@ -74,7 +77,7 @@ class AgentResult:
     """
     final_message: Message
     final_answer: str
-    conversation_history: list[Message]
+    conversation_log: ConversationLog
     stop_reason: str
     model: str
     provider: str
@@ -84,6 +87,8 @@ class AgentResult:
     agent_logs: list[LogEntry] | None = None
     generated_files: list[MediaMetadata] | None = None
     cost: CostBreakdown | None = None
+    was_aborted: bool = False
+    abort_phase: str | None = None
 
 
 @dataclass
@@ -104,3 +109,38 @@ class AgentRunLog:
     run_id: str
     logs: list[LogEntry] = field(default_factory=list)
     extras: dict[str, Any] = field(default_factory=dict)
+
+
+def create_tool_error_log(
+    agent_uuid: str,
+    run_id: str,
+    tool_use_id: str,
+    tool_name: str,
+    tool_input: dict[str, Any],
+    error: dict[str, Any],
+    step: int = 0,
+) -> AgentRunLog:
+    """Create an AgentRunLog with a single tool_error entry.
+
+    Args:
+        agent_uuid: The agent session this run belongs to.
+        run_id: Unique identifier for the run.
+        tool_use_id: The tool use ID that failed.
+        tool_name: Name of the tool that errored.
+        tool_input: The input passed to the tool.
+        error: Error details dict (e.g. error message, object state).
+        step: Loop iteration number (default 0).
+    """
+    entry = LogEntry(
+        step=step,
+        event_type="tool_error",
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        message=f"Tool error in {tool_name}",
+        extras={
+            "tool_use_id": tool_use_id,
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+            "error": error,
+        },
+    )
+    return AgentRunLog(agent_uuid=agent_uuid, run_id=run_id, logs=[entry])

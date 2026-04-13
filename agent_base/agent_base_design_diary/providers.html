@@ -1,0 +1,1624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Developer Diary — The Provider Layer</title>
+<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1a1a2e;
+    --paper: #f7f9fc;
+    --paper-warm: #edf1f8;
+    --accent: #2563eb;
+    --accent-soft: #2563eb18;
+    --teal: #0d6e6e;
+    --teal-soft: #0d6e6e18;
+    --slate: #475569;
+    --slate-soft: #47556918;
+    --amber: #b45309;
+    --amber-soft: #b4530918;
+    --violet: #7c3aed;
+    --violet-soft: #7c3aed18;
+    --rose: #be185d;
+    --rose-soft: #be185d18;
+    --crimson: #9f1239;
+    --crimson-soft: #9f123918;
+    --emerald: #047857;
+    --emerald-soft: #04785718;
+    --code-bg: #1e1e2e;
+    --code-fg: #cdd6f4;
+    --muted: #94a3b8;
+    --border: #c8d0e0;
+    --border-light: #dce3ef;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Lora', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 18.5px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* --- Navigation Bar --- */
+  .nav-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(247, 249, 252, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-light);
+    font-family: 'Inter', sans-serif;
+    font-size: 12.5px;
+  }
+  .nav-arrow {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 32px;
+    text-align: center;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  .nav-arrow:hover { background: rgba(0,0,0,0.05); }
+  .nav-arrow.disabled {
+    color: var(--muted);
+    pointer-events: none;
+    opacity: 0.35;
+  }
+  .nav-tabs {
+    display: flex;
+    gap: 1px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .nav-tab:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--ink);
+  }
+  .nav-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+  }
+
+  /* --- Hero --- */
+  .hero {
+    padding: 68px 40px 50px;
+    text-align: center;
+    border-bottom: 3px double var(--border);
+    background: linear-gradient(175deg, #dfe6f2 0%, var(--paper) 60%);
+  }
+  .hero .icon { font-size: 42px; margin-bottom: 12px; display: block; }
+  .hero h1 {
+    font-family: 'Lora', serif;
+    font-size: clamp(26px, 4.2vw, 44px);
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 1.18;
+    margin-bottom: 10px;
+  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero .sub {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    font-weight: 600;
+  }
+  .hero .tagline {
+    font-size: 17px;
+    color: var(--slate);
+    margin-top: 14px;
+    max-width: 620px;
+    margin-left: auto;
+    margin-right: auto;
+    font-style: italic;
+  }
+
+  /* --- Status badge --- */
+  .status {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 14px;
+    border-radius: 20px;
+    display: inline-block;
+    margin-top: 16px;
+  }
+  .status-impl { background: var(--emerald-soft); color: var(--emerald); }
+
+  /* --- Table of contents --- */
+  .toc {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 28px 28px 0;
+  }
+  .toc-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  .toc-list {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 6px;
+  }
+  .toc-list a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  .toc-list a:hover { background: var(--paper-warm); }
+  .toc-list .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+
+  /* --- Content --- */
+  .wrap { max-width: 820px; margin: 0 auto; padding: 0 28px; }
+
+  .entry {
+    padding: 44px 0;
+    border-bottom: 1px solid var(--border-light);
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .entry.vis { opacity: 1; transform: translateY(0); }
+
+  .entry-tag {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  h2 {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    line-height: 1.25;
+  }
+  h3 {
+    font-family: 'Inter', sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+    margin: 30px 0 12px;
+    color: var(--ink);
+  }
+  p { margin-bottom: 14px; }
+  p strong { color: var(--accent); font-weight: 700; }
+  ul, ol { margin: 0 0 14px 24px; }
+  li { margin-bottom: 4px; }
+
+  /* --- Chapter dividers --- */
+  .chap {
+    text-align: center;
+    padding: 36px 0 8px;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    color: var(--muted);
+    font-weight: 700;
+    border-top: 3px double var(--border);
+  }
+  .chap span {
+    background: var(--paper);
+    padding: 0 16px;
+  }
+
+  /* --- Thought bubbles --- */
+  .th {
+    background: var(--paper-warm);
+    border-left: 4px solid var(--accent);
+    padding: 16px 22px;
+    margin: 24px 0;
+    border-radius: 0 10px 10px 0;
+    font-style: italic;
+    position: relative;
+  }
+  .th::before {
+    content: '\1F4AD';
+    position: absolute;
+    top: -12px;
+    left: -14px;
+    font-size: 18px;
+    font-style: normal;
+  }
+  .tl {
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-style: normal;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 4px;
+    color: var(--accent);
+  }
+  .th.amber { border-left-color: var(--amber); }
+  .th.amber .tl { color: var(--amber); }
+  .th.amber::before { content: '\1F4A1'; }
+  .th.crimson { border-left-color: var(--crimson); }
+  .th.crimson .tl { color: var(--crimson); }
+  .th.crimson::before { content: '\26A0\FE0F'; }
+  .th.teal { border-left-color: var(--teal); }
+  .th.teal .tl { color: var(--teal); }
+  .th.teal::before { content: '\1F511'; }
+  .th.emerald { border-left-color: var(--emerald); }
+  .th.emerald .tl { color: var(--emerald); }
+  .th.emerald::before { content: '\2705'; }
+
+  /* --- Insight boxes --- */
+  .ins {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 28px 0;
+  }
+  .ins .il {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 8px;
+  }
+  .ins.amber { background: var(--amber-soft); border-color: var(--amber); }
+  .ins.emerald { background: var(--emerald-soft); border-color: var(--emerald); }
+  .ins.violet { background: var(--violet-soft); border-color: var(--violet); }
+
+  /* --- Code blocks --- */
+  .cw {
+    margin: 24px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+  }
+  .ch {
+    background: #24243a;
+    padding: 9px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .dt { display: flex; gap: 6px; }
+  .dt span { width: 10px; height: 10px; border-radius: 50%; }
+  .dt span:nth-child(1) { background: #ff5f56; }
+  .dt span:nth-child(2) { background: #ffbd2e; }
+  .dt span:nth-child(3) { background: #27c93f; }
+  .fn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #8888a8;
+    font-weight: 500;
+  }
+  .tg {
+    margin-left: auto;
+    font-family: 'Inter', sans-serif;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tg-abc { background: #7c3aed30; color: #c4b5fd; }
+  .tg-type { background: #0d948830; color: #5eead4; }
+  .tg-impl { background: #2563eb30; color: #93c5fd; }
+  .tg-schema { background: #d9770630; color: #fcd34d; }
+  .tg-data { background: #be185d30; color: #fda4af; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    tab-size: 4;
+  }
+  pre .c { color: #6c7086; font-style: italic; }
+  pre .k { color: #cba6f7; }
+  pre .t { color: #89b4fa; }
+  pre .s { color: #a6e3a1; }
+  pre .f { color: #f9e2af; }
+  pre .p { color: #89b4fa; }
+  pre .n { color: #fab387; }
+  pre .r { color: #f38ba8; }
+  pre .hl {
+    background: rgba(37, 99, 235, 0.06);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82em;
+    background: var(--paper-warm);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+
+  /* --- Tables --- */
+  .ctbl {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 24px 0;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+  }
+  .ctbl th {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 2px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--slate);
+    font-weight: 700;
+  }
+  .ctbl td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-light);
+    line-height: 1.5;
+  }
+
+  /* --- Diagram blocks --- */
+  .dw {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 24px 0;
+    overflow-x: auto;
+  }
+  .dc {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+  }
+
+  /* --- Separator --- */
+  .sep {
+    text-align: center;
+    padding: 20px 0;
+    color: var(--border);
+    font-size: 18px;
+    letter-spacing: 12px;
+  }
+
+  /* --- Footer --- */
+  .footer {
+    text-align: center;
+    padding: 44px 28px;
+    border-top: 3px double var(--border);
+    margin-top: 16px;
+    font-style: italic;
+    color: var(--slate);
+    font-size: 16px;
+    line-height: 1.8;
+  }
+
+  @media (max-width: 600px) {
+    .hero { padding: 46px 18px 36px; }
+    .wrap { padding: 0 16px; }
+    pre { font-size: 11.5px; padding: 14px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav-bar">
+  <a href="streaming.html" class="nav-arrow">&larr;</a>
+  <div class="nav-tabs">
+    <a href="index.html" class="nav-tab">Hub</a>
+    <a href="core-domain-model.html" class="nav-tab">Domain</a>
+    <a href="tool-system.html" class="nav-tab">Tools</a>
+    <a href="sandbox.html" class="nav-tab">Sandbox</a>
+    <a href="media-backend.html" class="nav-tab">Media</a>
+    <a href="file-coordination.html" class="nav-tab">Files</a>
+    <a href="storage.html" class="nav-tab">Storage</a>
+    <a href="streaming.html" class="nav-tab">Streaming</a>
+    <a href="providers.html" class="nav-tab active">Providers</a>
+    <a href="planned-systems.html" class="nav-tab">Planned</a>
+  </div>
+  <a href="planned-systems.html" class="nav-arrow">&rarr;</a>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <span class="icon">&#x1F50C;</span>
+  <h1>The <em>Provider Layer</em></h1>
+  <div class="sub">Developer Diary &middot; From ABC to Anthropic</div>
+  <p class="tagline">
+    Provider, Formatter, Retry, Relay, Pricing &mdash; the five subsystems that sit between
+    the agent loop and the raw LLM API. This is how we drew the boundary and what lives on each side.
+  </p>
+  <span class="status status-impl">Implemented</span>
+</div>
+
+<!-- TABLE OF CONTENTS -->
+<nav class="toc">
+  <div class="toc-title">Chapters</div>
+  <ul class="toc-list">
+    <li><a href="#ch1"><span class="num">1</span> Provider ABC</a></li>
+    <li><a href="#ch2"><span class="num">2</span> Anthropic Provider</a></li>
+    <li><a href="#ch3"><span class="num">3</span> The Formatter</a></li>
+    <li><a href="#ch4"><span class="num">4</span> Retry &amp; Backoff</a></li>
+    <li><a href="#ch5"><span class="num">5</span> The Relay System</a></li>
+    <li><a href="#ch6"><span class="num">6</span> Pricing &amp; Cost</a></li>
+    <li><a href="#ch7"><span class="num">7</span> AnthropicLLMConfig</a></li>
+    <li><a href="#ch8"><span class="num">8</span> The Agent Loop</a></li>
+  </ul>
+</nav>
+
+<div class="wrap">
+
+<!-- ================================================================ -->
+<!-- CHAPTER 1: PROVIDER ABC                                          -->
+<!-- ================================================================ -->
+<div class="chap" id="ch1"><span>Chapter 1 &mdash; Provider ABC</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Contract</div>
+  <h2>Provider as Boundary</h2>
+
+  <p>The Provider ABC is the seam between the agent orchestration loop and the LLM SDK. The agent owns the loop &mdash; step counting, tool dispatch, compaction, memory, relay handling. The provider owns the transport &mdash; authentication, request building, retry, response parsing, stream event translation.</p>
+
+  <p>This separation is deliberate. The orchestration logic is the same whether you talk to Anthropic, OpenAI, or a local model. The wire format, authentication, retry semantics, and streaming event shapes are not. The Provider ABC captures exactly the two operations the agent needs:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">core/provider.py</span>
+      <span class="tg tg-abc">ABC</span>
+    </div>
+<pre>
+<span class="k">class</span> <span class="t">Provider</span>(<span class="t">ABC</span>):
+    <span class="s">"""Abstract base class for LLM providers."""</span>
+
+    formatter: <span class="t">MessageFormatter</span>
+
+<span class="hl">    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">generate</span>(</span>
+<span class="hl">        <span class="p">self</span>,</span>
+<span class="hl">        system_prompt: <span class="t">str</span> | <span class="t">None</span>,</span>
+<span class="hl">        messages: <span class="t">list</span>[<span class="t">Message</span>],</span>
+<span class="hl">        tool_schemas: <span class="t">list</span>[<span class="t">ToolSchema</span>],</span>
+<span class="hl">        llm_config: <span class="t">LLMConfig</span>,</span>
+<span class="hl">        model: <span class="t">str</span>,</span>
+<span class="hl">        max_retries: <span class="t">int</span>,</span>
+<span class="hl">        base_delay: <span class="t">float</span>,</span>
+<span class="hl">        agent_uuid: <span class="t">str</span> = <span class="s">""</span>,</span>
+<span class="hl">    ) -> <span class="t">Message</span>: ...</span>
+
+<span class="hl">    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">generate_stream</span>(</span>
+<span class="hl">        <span class="p">self</span>,</span>
+<span class="hl">        ...,</span>
+<span class="hl">        queue: <span class="t">asyncio.Queue</span>,</span>
+<span class="hl">        stream_formatter: <span class="t">StreamFormatter</span>,</span>
+<span class="hl">        stream_tool_results: <span class="t">bool</span> = <span class="k">True</span>,</span>
+<span class="hl">    ) -> <span class="t">Message</span>: ...</span></pre>
+  </div>
+
+  <p>Both methods accept canonical types: <code>Message</code>, <code>ToolSchema</code>, <code>LLMConfig</code>. Both return a canonical <code>Message</code>. The agent never sees wire-format dicts, Anthropic SDK objects, or OpenAI response classes. The Provider is the translation layer.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "The <code>formatter</code> attribute on Provider is the key. It's a <code>MessageFormatter</code> &mdash; another ABC that handles canonical-to-wire and wire-to-canonical translation. The Provider uses it, but the agent can also access it for schema formatting. The Provider <em>has-a</em> Formatter; it doesn't <em>do</em> the formatting itself."
+  </div>
+
+  <h3>Separation of Concerns</h3>
+
+  <div class="dw">
+<pre style="background: transparent; color: var(--ink); font-size: 13px; line-height: 1.6;">
+  Agent (orchestration)          Provider (transport)          LLM API
+  =====================          ====================          =======
+
+  step counting                  authentication
+  tool dispatch        ------&gt;   request building     ------&gt;   HTTP
+  compaction           &lt;------   retry/backoff        &lt;------   Response
+  memory                         response parsing
+  relay handling                  stream event translation
+
+                                 MessageFormatter
+                                 ================
+                                 canonical &harr; wire format
+                                 (pure translation, no I/O)</pre>
+    <div class="dc">Provider as the boundary between orchestration and transport</div>
+  </div>
+
+  <div class="ins amber">
+    <span class="il">The Module Rule</span>
+    <p><code>core/provider.py</code> must NOT import any provider SDK. No <code>import anthropic</code>, no <code>import openai</code>. Provider-specific implementations live in <code>providers/&lt;name&gt;/</code>. This keeps the core layer SDK-agnostic and allows the agent to be instantiated without installing unused SDKs.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 2: THE ANTHROPIC PROVIDER                                -->
+<!-- ================================================================ -->
+<div class="chap" id="ch2"><span>Chapter 2 &mdash; The Anthropic Provider</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Concrete Implementation</div>
+  <h2>AnthropicProvider &mdash; Owning the Transport</h2>
+
+  <p>The <code>AnthropicProvider</code> is the concrete implementation that bridges the canonical world to Anthropic's Messages API. It owns four concerns: client lifecycle, request building, response parsing, and the cache control strategy.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/provider.py</span>
+      <span class="tg tg-impl">Implementation</span>
+    </div>
+<pre>
+<span class="k">class</span> <span class="t">AnthropicProvider</span>(<span class="t">Provider</span>):
+
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="p">self</span>,
+        client: <span class="t">anthropic.AsyncAnthropic</span> | <span class="t">None</span> = <span class="k">None</span>,
+        formatter: <span class="t">AnthropicMessageFormatter</span> | <span class="t">None</span> = <span class="k">None</span>,
+    ) -> <span class="t">None</span>:
+<span class="hl">        <span class="p">self</span>.client = client <span class="k">or</span> anthropic.<span class="f">AsyncAnthropic</span>()</span>
+<span class="hl">        <span class="p">self</span>.formatter = formatter <span class="k">or</span> <span class="f">AnthropicMessageFormatter</span>()</span></pre>
+  </div>
+
+  <p>The client is created lazily from <code>ANTHROPIC_API_KEY</code> if none is injected. The formatter defaults to <code>AnthropicMessageFormatter</code>. Both are injectable for testing.</p>
+
+  <h3>Cache Control: 4-Block Priority Strategy</h3>
+
+  <p>Anthropic limits <code>cache_control</code> to 4 blocks maximum. The provider implements a priority-based allocation strategy that picks the most impactful blocks to cache:</p>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th>Priority</th><th>Target</th><th>Rationale</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>1</code></td>
+        <td>System prompt</td>
+        <td>Stable across turns, often large. Requires &ge; min_tokens threshold.</td>
+      </tr>
+      <tr>
+        <td><code>2</code></td>
+        <td>Document/image blocks</td>
+        <td>Expensive to re-process. Likely to appear in first user message.</td>
+      </tr>
+      <tr>
+        <td><code>3</code></td>
+        <td>Large text blocks (by size desc.)</td>
+        <td>Biggest bang per cache slot. Sorted descending to fill remaining slots.</td>
+      </tr>
+      <tr>
+        <td><code>4</code></td>
+        <td>Recent message blocks (fallback)</td>
+        <td>Walk backwards from newest message. Skips thinking/redacted blocks.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/provider.py</span>
+      <span class="tg tg-impl">Cache</span>
+    </div>
+<pre>
+<span class="t">MAX_CACHE_BLOCKS</span> = <span class="n">4</span>
+<span class="t">MIN_CACHE_TOKENS_SONNET</span> = <span class="n">1024</span>
+<span class="t">MIN_CACHE_TOKENS_HAIKU</span> = <span class="n">2048</span>
+<span class="t">_NON_CACHEABLE_CACHE_CONTROL_TYPES</span> = {<span class="s">"thinking"</span>, <span class="s">"redacted_thinking"</span>}
+
+<span class="k">def</span> <span class="f">_apply_cache_control</span>(
+    messages: <span class="t">list</span>[<span class="t">dict</span>],
+    system: <span class="t">str</span> | <span class="t">None</span>,
+    model: <span class="t">str</span>,
+    enable: <span class="t">bool</span>,
+) -> <span class="t">tuple</span>[<span class="t">list</span>[<span class="t">dict</span>], ...]:
+    <span class="c"># Priority 1: System prompt (if large enough)</span>
+    <span class="c"># Priority 2: Document/image blocks</span>
+    <span class="c"># Priority 3: Large text blocks (sorted by size desc)</span>
+    <span class="c"># Priority 4: Recent message blocks (fallback)</span>
+    <span class="c"># Inject {"cache_control": {"type": "ephemeral"}}</span></pre>
+  </div>
+
+  <p>The minimum token threshold differs by model family &mdash; Haiku requires 2048 tokens (its blocks are smaller), Sonnet requires 1024. Token count is estimated as <code>len(text) // 4</code>.</p>
+
+  <div class="th teal">
+    <span class="tl">Key insight</span>
+    "Thinking and redacted_thinking blocks are never cacheable. The <code>_NON_CACHEABLE_CACHE_CONTROL_TYPES</code> set ensures the fallback pass skips them when walking recent messages backward. If you accidentally cache a thinking block, the API rejects it &mdash; better to prevent than to handle the error."
+  </div>
+
+  <h3>Request Building</h3>
+
+  <p>The <code>_build_request_params()</code> method assembles the complete API request dict. It handles a surprising amount of conditional logic:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">_build_request_params()</span>
+      <span class="tg tg-impl">Builder</span>
+    </div>
+<pre>
+<span class="c"># Always present</span>
+request_params = {
+    <span class="s">"model"</span>: model,
+    <span class="s">"max_tokens"</span>: llm_config.max_tokens <span class="k">or</span> <span class="n">16384</span>,
+    <span class="s">"messages"</span>: wire_messages,
+}
+
+<span class="c"># Conditional: system, thinking, tools, betas, container</span>
+<span class="k">if</span> llm_config.thinking_tokens:
+    request_params[<span class="s">"thinking"</span>] = {
+        <span class="s">"type"</span>: <span class="s">"enabled"</span>,
+        <span class="s">"budget_tokens"</span>: llm_config.thinking_tokens,
+    }
+
+<span class="c"># Merge client tools + server tools into one list</span>
+combined_tools = tool_schemas + (llm_config.server_tools <span class="k">or</span> [])
+
+<span class="c"># Container with optional skills</span>
+<span class="k">if</span> llm_config.container_id <span class="k">or</span> llm_config.skills:
+    request_params[<span class="s">"container"</span>] = {
+        <span class="s">"id"</span>: llm_config.container_id,
+        <span class="s">"skills"</span>: llm_config.skills,
+    }
+
+<span class="c"># Passthrough: inference_geo, speed, service_tier</span>
+<span class="k">for</span> key <span class="k">in</span> (<span class="s">"inference_geo"</span>, <span class="s">"speed"</span>, <span class="s">"service_tier"</span>):
+    val = <span class="f">getattr</span>(llm_config, key, <span class="k">None</span>)
+    <span class="k">if</span> val: request_params[key] = val</pre>
+  </div>
+
+  <h3>Response Parsing</h3>
+
+  <p>The <code>_build_response_message()</code> method extracts usage data &mdash; including the provider-specific fields like <code>context_management</code>, <code>inference_geo</code>, <code>service_tier</code>, and <code>speed</code> that Anthropic returns on the response usage object:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">_build_response_message()</span>
+      <span class="tg tg-type">Usage</span>
+    </div>
+<pre>
+usage = <span class="t">Usage</span>(
+    input_tokens=raw_usage.input_tokens,
+    output_tokens=raw_usage.output_tokens,
+<span class="hl">    cache_write_tokens=raw_usage.cache_creation_input_tokens,</span>
+<span class="hl">    cache_read_tokens=raw_usage.cache_read_input_tokens,</span>
+    raw_usage={k: v <span class="k">for</span> k, v <span class="k">in</span> raw_usage.<span class="f">model_dump</span>().items()
+               <span class="k">if</span> v <span class="k">is not</span> <span class="k">None</span>},
+)
+
+<span class="k">return</span> <span class="t">Message</span>(
+    role=<span class="t">Role</span>.ASSISTANT,
+    content=content_blocks,
+    stop_reason=raw_response.stop_reason,
+    usage=usage,
+    provider=<span class="s">"anthropic"</span>,
+    model=raw_response.model,
+)</pre>
+  </div>
+
+  <div class="th emerald">
+    <span class="tl">Developer's inner voice</span>
+    "The <code>raw_usage</code> dict is the escape hatch. We extract the canonical fields (input, output, cache) into typed attributes, but we also dump the entire usage object into <code>raw_usage</code>. The pricing calculator reads <code>raw_usage</code> to get cache TTL breakdowns and server tool counts &mdash; things that only Anthropic's API reports. New fields appear in <code>raw_usage</code> automatically without schema changes."
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 3: THE FORMATTER                                         -->
+<!-- ================================================================ -->
+<div class="chap" id="ch3"><span>Chapter 3 &mdash; The Formatter</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Wire Format Translation</div>
+  <h2>AnthropicMessageFormatter &mdash; The Rosetta Stone</h2>
+
+  <p>The formatter is a pure translator. No HTTP calls, no retries, no side effects. It has three public methods and a surprisingly deep private implementation.</p>
+
+  <div class="dw">
+<pre style="background: transparent; color: var(--ink); font-size: 13px; line-height: 1.6;">
+  Canonical World                      Anthropic Wire Format
+  ===============                      =====================
+
+  TextContent          &lt;---&gt;           {"type": "text", "text": "..."}
+  ThinkingContent      &lt;---&gt;           {"type": "thinking", ...} / {"type": "redacted_thinking", ...}
+  ImageContent         &lt;---&gt;           {"type": "image", "source": {...}}
+  DocumentContent      &lt;---&gt;           {"type": "document", "source": {...}}
+  AttachmentContent    &lt;---&gt;           {"type": "container_upload", "file_id": "..."}
+  ToolUseContent       &lt;---&gt;           {"type": "tool_use", "id": "...", ...}
+  ServerToolUseContent &lt;---&gt;           {"type": "server_tool_use", ...}
+  MCPToolUseContent    &lt;---&gt;           {"type": "mcp_tool_use", "server_name": "...", ...}
+  ToolResultContent    &lt;---&gt;           {"type": "tool_result", "content": [...]}
+  ServerToolResult...  &lt;---&gt;           {"type": "web_search_tool_result", ...}
+  MCPToolResultContent &lt;---&gt;           {"type": "mcp_tool_result", "content": [...]}
+  ErrorContent         &lt;---&gt;           {"type": "text", "text": "Error: ..."}
+
+  format_blocks_to_wire()              parse_wire_to_blocks()
+  format_tool_schemas()                _parse_citation()</pre>
+    <div class="dc">Canonical ContentBlock types and their Anthropic wire-format equivalents</div>
+  </div>
+
+  <h3>Source Resolution</h3>
+
+  <p>Images and documents have multiple source types &mdash; base64, URL, and file_id. The formatter resolves each to the correct Anthropic wire structure:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">formatters.py &mdash; _resolve_image_source()</span>
+      <span class="tg tg-impl">Resolver</span>
+    </div>
+<pre>
+<span class="k">@staticmethod</span>
+<span class="k">def</span> <span class="f">_resolve_image_source</span>(block: <span class="t">ImageContent</span>) -> <span class="t">dict</span>:
+    st = block.source_type <span class="k">or</span> <span class="t">SourceType</span>.BASE64
+<span class="hl">    <span class="k">if</span> st <span class="k">in</span> (<span class="t">SourceType</span>.URL, <span class="s">"url"</span>):</span>
+<span class="hl">        <span class="k">return</span> {<span class="s">"type"</span>: <span class="s">"url"</span>, <span class="s">"url"</span>: block.data}</span>
+<span class="hl">    <span class="k">if</span> st <span class="k">in</span> (<span class="t">SourceType</span>.FILE_ID, <span class="s">"file_id"</span>, <span class="t">SourceType</span>.FILE, <span class="s">"file"</span>):</span>
+<span class="hl">        <span class="k">return</span> {<span class="s">"type"</span>: <span class="s">"file"</span>, <span class="s">"file_id"</span>: block.data}</span>
+    <span class="c"># Default / base64</span>
+    <span class="k">return</span> {<span class="s">"type"</span>: <span class="s">"base64"</span>, <span class="s">"media_type"</span>: block.media_type,
+            <span class="s">"data"</span>: block.data}</pre>
+  </div>
+
+  <p>Documents add an extra wrinkle: <code>text/plain</code> content uses <code>{"type": "text"}</code> for the source, while PDFs and other binary formats use <code>{"type": "base64"}</code>. The formatter handles this silently.</p>
+
+  <h3>Citation Parsing: Five Types</h3>
+
+  <p>Anthropic's API returns five distinct citation types. The formatter's <code>_parse_citation()</code> method maps each to a canonical dataclass:</p>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th>Wire Type</th><th>Canonical Class</th><th>Key Fields</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>char_location</code></td>
+        <td><code>CharCitation</code></td>
+        <td>document_index, start/end char index</td>
+      </tr>
+      <tr>
+        <td><code>page_location</code></td>
+        <td><code>PageCitation</code></td>
+        <td>document_index, start/end page number</td>
+      </tr>
+      <tr>
+        <td><code>content_block_location</code></td>
+        <td><code>ContentBlockCitation</code></td>
+        <td>document_index, start/end block index</td>
+      </tr>
+      <tr>
+        <td><code>web_search_result_location</code></td>
+        <td><code>WebSearchResultCitation</code></td>
+        <td>url, title, encrypted_index</td>
+      </tr>
+      <tr>
+        <td><code>search_result_location</code></td>
+        <td><code>SearchResultCitation</code></td>
+        <td>search_result_index, source, title</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>Citations are stored in two forms on the canonical <code>TextContent</code>: the raw wire dicts in <code>kwargs["citations"]</code> for round-trip fidelity, and typed canonical objects in <code>kwargs["canonical_citations"]</code> for programmatic access. The wire dicts are stripped of response-only fields like <code>file_id</code> that the API rejects on input.</p>
+
+  <h3>Compaction Blocks &amp; Empty Block Filtering</h3>
+
+  <p>Two subtle behaviors in <code>_block_to_wire()</code> that prevent API errors:</p>
+
+  <ul>
+    <li><strong>Compaction blocks</strong>: A <code>TextContent</code> with <code>kwargs["compaction"] = True</code> becomes <code>{"type": "compaction", "content": ...}</code>. Whitespace-only content is converted to <code>null</code> for wire safety.</li>
+    <li><strong>Empty text filtering</strong>: Citation-only response blocks may have <code>text=""</code>. The API rejects empty text content blocks, so <code>_block_to_wire()</code> returns <code>None</code> for empty text, and the list comprehension in <code>format_blocks_to_wire()</code> filters them out.</li>
+  </ul>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">formatters.py &mdash; format_blocks_to_wire()</span>
+      <span class="tg tg-impl">Filter</span>
+    </div>
+<pre>
+<span class="k">def</span> <span class="f">format_blocks_to_wire</span>(<span class="p">self</span>, blocks: <span class="t">List</span>[<span class="t">ContentBlock</span>]) -> <span class="t">list</span>[<span class="t">dict</span>]:
+    <span class="s">"""Convert canonical ContentBlocks to Anthropic wire-format dicts."""</span>
+<span class="hl">    <span class="k">return</span> [</span>
+<span class="hl">        wire <span class="k">for</span> block <span class="k">in</span> blocks</span>
+<span class="hl">        <span class="k">if</span> (wire := <span class="p">self</span>.<span class="f">_block_to_wire</span>(block)) <span class="k">is not</span> <span class="k">None</span></span>
+<span class="hl">    ]</span></pre>
+  </div>
+
+  <h3>Thinking Block Graceful Degradation</h3>
+
+  <div class="th crimson">
+    <span class="tl">Edge case</span>
+    "Anthropic requires a <code>signature</code> on thinking blocks for round-trip. But what if we have thinking content without a signature? Maybe from deserialization of an older format. We degrade it to a text block wrapped in <code>&lt;thinking&gt;</code> tags. The content is preserved; the API doesn't reject it. Log a warning so we can investigate."
+  </div>
+
+  <h3>Server Tool Result Parsing</h3>
+
+  <p>The formatter handles a growing family of server tool result types: <code>web_search_tool_result</code>, <code>web_fetch_tool_result</code>, <code>code_execution_tool_result</code>, <code>bash_code_execution_tool_result</code>, <code>text_editor_code_execution_tool_result</code>, <code>tool_search_tool_result</code>. Rather than hardcoding each, it uses a pattern match with a generic fallback:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">formatters.py &mdash; _parse_block() fallback</span>
+      <span class="tg tg-impl">Forward Compat</span>
+    </div>
+<pre>
+<span class="c"># Explicit matches for known types</span>
+<span class="k">case</span> <span class="s">"web_search_tool_result"</span>:
+    <span class="k">return</span> <span class="p">self</span>.<span class="f">_parse_server_tool_result</span>(raw_block)
+<span class="k">case</span> <span class="s">"web_fetch_tool_result"</span>:
+    <span class="k">return</span> <span class="p">self</span>.<span class="f">_parse_server_tool_result</span>(raw_block)
+
+<span class="c"># Generic fallback for future server tools</span>
+<span class="hl"><span class="k">case</span> block_type <span class="k">if</span> block_type.<span class="f">endswith</span>(<span class="s">"_tool_result"</span>):</span>
+<span class="hl">    <span class="k">return</span> <span class="p">self</span>.<span class="f">_parse_server_tool_result</span>(raw_block)</span></pre>
+  </div>
+
+  <div class="ins emerald">
+    <span class="il">Forward Compatibility Pattern</span>
+    <p>Any new server tool result type that Anthropic adds will be caught by the <code>endswith("_tool_result")</code> fallback. The <code>_parse_server_tool_result()</code> method preserves the full content via <code>model_dump()</code>, so no data is lost even before we add explicit handling. The formatter degrades gracefully forward.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 4: RETRY & BACKOFF                                       -->
+<!-- ================================================================ -->
+<div class="chap" id="ch4"><span>Chapter 4 &mdash; Retry &amp; Backoff</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Resilience</div>
+  <h2>Exponential Backoff with Jitter</h2>
+
+  <p>The retry module provides two mechanisms: a decorator for non-streaming calls and a specialized function for streaming. Both use exponential backoff, but the streaming path has additional responsibilities &mdash; it must translate Anthropic stream events into canonical <code>StreamDelta</code> objects.</p>
+
+  <h3>Error Classification</h3>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th>Category</th><th>Error Types</th><th>Behavior</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Retryable</td>
+        <td><code>RateLimitError</code>, <code>APIConnectionError</code>, <code>APITimeoutError</code>, <code>InternalServerError</code>, 5xx <code>APIStatusError</code></td>
+        <td>Retry with backoff: <code>base_delay * 2^attempt + jitter</code></td>
+      </tr>
+      <tr>
+        <td>Non-retryable</td>
+        <td><code>BadRequestError</code>, <code>AuthenticationError</code>, <code>PermissionDeniedError</code>, <code>NotFoundError</code>, <code>UnprocessableEntityError</code></td>
+        <td>Raised immediately &mdash; no point retrying</td>
+      </tr>
+      <tr>
+        <td>Unexpected</td>
+        <td>Any other <code>Exception</code></td>
+        <td>Retry (may be transient network issue)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/retry.py</span>
+      <span class="tg tg-impl">Backoff</span>
+    </div>
+<pre>
+<span class="k">async def</span> <span class="f">anthropic_stream_with_backoff</span>(
+    client, request_params, queue,
+    max_retries=<span class="n">5</span>, base_delay=<span class="n">5.0</span>, ...
+) -> <span class="t">Any</span>:
+    <span class="k">for</span> attempt <span class="k">in</span> <span class="f">range</span>(max_retries):
+        <span class="k">try</span>:
+<span class="hl">            <span class="k">async with</span> client.beta.messages.<span class="f">stream</span>(**request_params) <span class="k">as</span> stream:</span>
+<span class="hl">                <span class="k">await</span> <span class="f">_process_stream_events</span>(stream, queue, ...)</span>
+<span class="hl">                <span class="k">return await</span> stream.<span class="f">get_final_message</span>()</span>
+
+        <span class="k">except</span> (<span class="t">RateLimitError</span>, <span class="t">APIConnectionError</span>, ...):
+            <span class="k">if</span> attempt &lt; max_retries - <span class="n">1</span>:
+                delay = base_delay * (<span class="n">2</span> ** attempt) + <span class="f">random.uniform</span>(<span class="n">0</span>, <span class="n">1</span>)
+                <span class="k">await</span> asyncio.<span class="f">sleep</span>(delay)
+            <span class="k">else</span>:
+                <span class="k">raise</span>
+
+        <span class="k">except</span> (<span class="t">BadRequestError</span>, <span class="t">AuthenticationError</span>, ...):
+            <span class="k">raise</span>  <span class="c"># Non-retryable</span></pre>
+  </div>
+
+  <h3>Stream Event Translation</h3>
+
+  <p>The <code>_process_stream_events()</code> function is where Anthropic's native stream events become canonical <code>StreamDelta</code> objects. It tracks per-index block types and buffers tool input JSON across delta events:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">retry.py &mdash; _process_stream_events()</span>
+      <span class="tg tg-impl">Translator</span>
+    </div>
+<pre>
+block_types: <span class="t">dict</span>[<span class="t">int</span>, <span class="t">str</span>] = {}    <span class="c"># index &rarr; "text"|"tool_use"|...</span>
+tool_buffers: <span class="t">dict</span>[<span class="t">int</span>, <span class="t">dict</span>] = {}  <span class="c"># index &rarr; {id, name, input_json}</span>
+
+<span class="k">async for</span> event <span class="k">in</span> stream:
+    <span class="k">match</span> event.type:
+        <span class="c"># content_block_start &rarr; track type, init buffer</span>
+        <span class="c"># content_block_delta &rarr; stream text/thinking, buffer tool JSON</span>
+        <span class="c"># content_block_stop  &rarr; emit finals, flush tool buffers</span>
+
+<span class="c"># Delta types produced:</span>
+<span class="c">#   TextDelta      &mdash; streamed character by character</span>
+<span class="c">#   ThinkingDelta  &mdash; streamed character by character</span>
+<span class="c">#   ToolCallDelta  &mdash; emitted once at block_stop (buffered)</span>
+<span class="c">#   ToolResultDelta&mdash; server tool results at block_stop</span>
+<span class="c">#   CitationDelta  &mdash; emitted after text block_stop</span>
+<span class="c">#   ErrorDelta     &mdash; on stream errors</span></pre>
+  </div>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "Text and thinking are streamed character by character &mdash; each delta goes straight to the formatter and onto the queue. Tool calls are different: we buffer the <code>input_json_delta</code> fragments and only emit a single <code>ToolCallDelta</code> at <code>content_block_stop</code> with the complete parsed JSON. Citations are emitted <em>after</em> the text final marker, so the client knows the text is complete before citations arrive."
+  </div>
+
+  <h3>The Non-Streaming Decorator</h3>
+
+  <p>For non-streaming calls, a simpler <code>retry_with_backoff</code> decorator wraps any async function:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">retry.py &mdash; retry_with_backoff</span>
+      <span class="tg tg-impl">Decorator</span>
+    </div>
+<pre>
+<span class="k">def</span> <span class="f">retry_with_backoff</span>(max_retries, base_delay):
+    <span class="k">def</span> <span class="f">decorator</span>(func):
+        <span class="k">async def</span> <span class="f">wrapper</span>(*args, **kwargs):
+            <span class="k">for</span> attempt <span class="k">in</span> <span class="f">range</span>(max_retries):
+                <span class="k">try</span>:
+                    <span class="k">return await</span> <span class="f">func</span>(*args, **kwargs)
+                <span class="k">except</span> <span class="t">Exception</span>:
+                    delay = base_delay * (<span class="n">2</span> ** attempt)
+                    <span class="k">await</span> asyncio.<span class="f">sleep</span>(delay)
+        <span class="k">return</span> wrapper
+    <span class="k">return</span> decorator
+
+<span class="c"># Used in AnthropicProvider.generate():</span>
+<span class="k">@</span><span class="f">retry_with_backoff</span>(max_retries=<span class="n">3</span>, base_delay=<span class="n">1.0</span>)
+<span class="k">async def</span> <span class="f">_create</span>():
+    <span class="k">return await</span> client.beta.messages.<span class="f">create</span>(**request_params)</pre>
+  </div>
+
+  <div class="ins">
+    <span class="il">Streaming vs Non-Streaming Retry</span>
+    <p>The non-streaming decorator retries on <em>any</em> exception. The streaming function discriminates &mdash; it has explicit non-retryable error handling because a failed stream attempt may have already pushed partial deltas onto the queue. The two paths serve different failure modes.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 5: THE RELAY SYSTEM                                      -->
+<!-- ================================================================ -->
+<div class="chap" id="ch5"><span>Chapter 5 &mdash; The Relay System</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Pausing for External Tools</div>
+  <h2>PendingToolRelay &mdash; How the Agent Pauses</h2>
+
+  <p>Some tool calls cannot be executed server-side. A UI-only tool like <code>EnterPlanMode</code> needs the frontend to execute. A destructive tool like <code>DeleteFile</code> needs user confirmation. The relay system handles this by <em>pausing</em> the agent loop and <em>resuming</em> when external results arrive.</p>
+
+  <h3>Tool Call Classification</h3>
+
+  <p>When the LLM returns <code>stop_reason: "tool_use"</code>, the agent extracts tool calls and classifies them through the <code>ToolRegistry</code>:</p>
+
+  <div class="dw">
+<pre style="background: transparent; color: var(--ink); font-size: 13px; line-height: 1.6;">
+  LLM Response (stop_reason: "tool_use")
+      |
+      v
+  _extract_tool_calls()  &rarr;  [ToolCallInfo, ToolCallInfo, ...]
+      |
+      v
+  tool_registry.classify_tool_calls()
+      |
+      +--&gt; ToolCallClassification
+           |
+           +-- backend_calls:      [...]   &larr; execute immediately
+           +-- frontend_calls:     [...]   &larr; send to client
+           +-- confirmation_calls: [...]   &larr; ask user first
+           +-- needs_relay:        bool    &larr; True if any frontend/confirmation</pre>
+    <div class="dc">Tool call classification flow</div>
+  </div>
+
+  <p>If <code>needs_relay</code> is <code>False</code>, all calls are backend &mdash; execute them in parallel and continue the loop. If <code>True</code>, the agent enters the relay path.</p>
+
+  <h3>The Relay Path</h3>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">anthropic_agent.py &mdash; relay path</span>
+      <span class="tg tg-impl">Pause</span>
+    </div>
+<pre>
+<span class="k">if</span> classification.needs_relay:
+    <span class="c"># 1. Execute backend calls immediately</span>
+<span class="hl">    backend_results = <span class="k">await</span> tool_registry.<span class="f">execute_tools</span>(</span>
+<span class="hl">        classification.backend_calls, max_parallel</span>
+<span class="hl">    )</span>
+
+    <span class="c"># 2. Store pending state</span>
+<span class="hl">    agent_config.pending_relay = <span class="t">PendingToolRelay</span>(</span>
+<span class="hl">        frontend_calls=classification.frontend_calls,</span>
+<span class="hl">        confirmation_calls=classification.confirmation_calls,</span>
+<span class="hl">        completed_results=completed_result_messages,</span>
+<span class="hl">        run_id=<span class="p">self</span>._run_id,</span>
+<span class="hl">    )</span>
+
+    <span class="c"># 3. Persist state before pausing</span>
+    <span class="k">await</span> <span class="p">self</span>.<span class="f">_persist_state</span>()
+
+    <span class="c"># 4. Notify frontend via SSE</span>
+    delta = <span class="t">MetaDelta</span>(
+        type=<span class="s">"awaiting_frontend_tools"</span>,
+        payload={<span class="s">"tools"</span>: pending_tools},
+    )
+
+    <span class="c"># 5. Return with stop_reason="relay"</span>
+    <span class="k">return</span> <span class="p">self</span>.<span class="f">_build_agent_result</span>(response, <span class="s">"relay"</span>)</pre>
+  </div>
+
+  <h3>The PendingToolRelay Dataclass</h3>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">core/config.py</span>
+      <span class="tg tg-type">Dataclass</span>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">PendingToolRelay</span>:
+    <span class="s">"""Persisted state when the agent loop is paused."""</span>
+<span class="hl">    frontend_calls: <span class="t">list</span>[<span class="t">ToolCallInfo</span>]      <span class="c"># sent to client</span></span>
+<span class="hl">    confirmation_calls: <span class="t">list</span>[<span class="t">ToolCallInfo</span>]  <span class="c"># need approval</span></span>
+<span class="hl">    completed_results: <span class="t">list</span>[<span class="t">Message</span>]       <span class="c"># backend results</span></span>
+    run_id: <span class="t">str</span> | <span class="t">None</span> = <span class="k">None</span></pre>
+  </div>
+
+  <h3>Resumption: resume_with_relay_results()</h3>
+
+  <p>When the frontend sends back tool results, the agent combines them with the already-computed backend results and re-enters the loop:</p>
+
+  <div class="dw">
+<pre style="background: transparent; color: var(--ink); font-size: 13px; line-height: 1.6;">
+  resume_with_relay_results(relay_results)
+      |
+      v
+  1. Load pending_relay from agent_config
+  2. Combine:
+     - pending.completed_results  (backend, already computed)
+     - relay_results              (frontend/user, just arrived)
+      |
+      v
+  3. Build combined Message (user role, ToolResultContent blocks)
+  4. Append to context_messages &amp; conversation_history
+      |
+      v
+  5. Fire on_relay_result() hook for each relay result
+     (subclass can call reconfigure() here)
+      |
+      v
+  6. Clear pending_relay
+  7. _resume_loop()  &mdash; continue where we left off</pre>
+    <div class="dc">The relay resumption flow</div>
+  </div>
+
+  <div class="th amber">
+    <span class="tl">Key design decision</span>
+    "The <code>on_relay_result()</code> hook fires <em>after</em> results are in context but <em>before</em> the loop resumes. This is the perfect injection point for mid-run reconfiguration. A subclass can inspect the relay result (e.g., the user chose plan B in <code>EnterPlanMode</code>) and call <code>reconfigure(tools=[...], system_prompt='...')</code> to swap tools and prompts for the next LLM turn. The loop never knows the rug was pulled."
+  </div>
+
+  <div class="ins violet">
+    <span class="il">Why Persist Before Pausing?</span>
+    <p>The <code>_persist_state()</code> call before returning ensures the relay survives server restarts. On resumption, <code>initialize()</code> detects <code>pending_relay</code> on the loaded config, restores the partial <code>Conversation</code> by <code>run_id</code>, and waits for <code>resume_with_relay_results()</code>. The agent is crash-safe across the pause boundary.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 6: PRICING & COST                                        -->
+<!-- ================================================================ -->
+<div class="chap" id="ch6"><span>Chapter 6 &mdash; Pricing &amp; Cost</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Cost Tracking</div>
+  <h2>From Token Counts to Dollar Amounts</h2>
+
+  <p>The pricing module computes per-step and cumulative costs from token usage and a bundled CSV of model pricing data. The design separates data (CSV), calculation (<code>calculate_step_cost</code>), and accumulation (<code>_accumulate_usage</code> on the agent).</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">pricing/calculator.py &mdash; ModelPricing</span>
+      <span class="tg tg-data">Data</span>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">ModelPricing</span>:
+    model_id: <span class="t">str</span>
+    display_name: <span class="t">str</span>
+    input_per_mtok: <span class="t">float</span>
+    output_per_mtok: <span class="t">float</span>
+<span class="hl">    cache_write_5m_per_mtok: <span class="t">float</span>   <span class="c"># 5-minute TTL</span></span>
+<span class="hl">    cache_write_1h_per_mtok: <span class="t">float</span>   <span class="c"># 1-hour TTL</span></span>
+    cache_read_per_mtok: <span class="t">float</span>
+    <span class="c"># Multipliers</span>
+    long_context_input_multiplier: <span class="t">float</span>
+    long_context_output_multiplier: <span class="t">float</span>
+    long_context_threshold: <span class="t">int</span>
+    batch_multiplier: <span class="t">float</span>
+    fast_mode_multiplier: <span class="t">float</span>
+    data_residency_multiplier: <span class="t">float</span>
+    <span class="c"># Server tool costs</span>
+    web_search_per_request: <span class="t">float</span>
+    web_fetch_per_request: <span class="t">float</span></pre>
+  </div>
+
+  <h3>Multiplier Stacking</h3>
+
+  <p>Anthropic's pricing has four conditional multipliers that stack multiplicatively on the base CSV rates:</p>
+
+  <div class="dw">
+<pre style="background: transparent; color: var(--ink); font-size: 13px; line-height: 1.6;">
+  effective_rate = base_rate * M_fast * M_longctx * M_batch * M_geo
+
+  M_fast     = fast_mode_multiplier   if speed == "fast"
+  M_longctx  = long_context_*_mult    if total_input > threshold AND NOT fast
+  M_batch    = batch_multiplier       if service_tier == "batch"
+  M_geo      = data_residency_mult    if inference_geo == "us"
+
+  Note: Fast mode and long context are mutually exclusive.
+  Fast mode covers the full context window with no additional charge.</pre>
+    <div class="dc">Pricing multiplier stacking rules</div>
+  </div>
+
+  <h3>Cache Write Breakdown</h3>
+
+  <p>Anthropic reports cache writes at two TTL tiers: 5-minute (ephemeral) and 1-hour (extended). The pricing differs, so the calculator extracts both from <code>usage.raw_usage</code>:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">pricing/calculator.py</span>
+      <span class="tg tg-impl">Extraction</span>
+    </div>
+<pre>
+<span class="k">def</span> <span class="f">_extract_cache_write_breakdown</span>(usage: <span class="t">Usage</span>) -> <span class="t">tuple</span>[<span class="t">int</span>, <span class="t">int</span>]:
+    <span class="s">"""Return (cache_write_5m_tokens, cache_write_1h_tokens)."""</span>
+    raw = usage.raw_usage <span class="k">or</span> {}
+    cache_creation = raw.get(<span class="s">"cache_creation"</span>)
+
+    <span class="k">if</span> <span class="f">isinstance</span>(cache_creation, <span class="t">dict</span>):
+<span class="hl">        <span class="k">return</span> (</span>
+<span class="hl">            cache_creation.get(<span class="s">"ephemeral_5m_input_tokens"</span>, <span class="n">0</span>),</span>
+<span class="hl">            cache_creation.get(<span class="s">"ephemeral_1h_input_tokens"</span>, <span class="n">0</span>),</span>
+<span class="hl">        )</span>
+
+    <span class="c"># Fallback: treat all cache_write_tokens as 5-minute TTL</span>
+    <span class="k">return</span> (usage.cache_write_tokens <span class="k">or</span> <span class="n">0</span>, <span class="n">0</span>)</pre>
+  </div>
+
+  <h3>Server Tool Costs</h3>
+
+  <p>Web search and web fetch have per-request costs, not per-token. The calculator extracts request counts from <code>usage.raw_usage["server_tool_use"]</code>:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">pricing/calculator.py</span>
+      <span class="tg tg-impl">Server Tools</span>
+    </div>
+<pre>
+<span class="k">def</span> <span class="f">_extract_server_tool_counts</span>(usage: <span class="t">Usage</span>) -> <span class="t">tuple</span>[<span class="t">int</span>, <span class="t">int</span>]:
+    <span class="s">"""Return (web_search_requests, web_fetch_requests)."""</span>
+    stu = (usage.raw_usage <span class="k">or</span> {}).get(<span class="s">"server_tool_use"</span>)
+    <span class="k">if</span> <span class="f">isinstance</span>(stu, <span class="t">dict</span>):
+        <span class="k">return</span> (
+            stu.get(<span class="s">"web_search_requests"</span>, <span class="n">0</span>),
+            stu.get(<span class="s">"web_fetch_requests"</span>, <span class="n">0</span>),
+        )
+    <span class="k">return</span> (<span class="n">0</span>, <span class="n">0</span>)
+
+<span class="c"># In calculate_step_cost():</span>
+web_search_cost = web_search_reqs * pricing.web_search_per_request
+web_fetch_cost = web_fetch_reqs * pricing.web_fetch_per_request</pre>
+  </div>
+
+  <h3>The CostBreakdown</h3>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">core/config.py &mdash; CostBreakdown</span>
+      <span class="tg tg-type">Dataclass</span>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">CostBreakdown</span>:
+    total_cost: <span class="t">float</span> = <span class="n">0.0</span>
+    breakdown: <span class="t">dict</span>[<span class="t">str</span>, <span class="t">float</span>] = <span class="f">field</span>(default_factory=<span class="t">dict</span>)
+
+<span class="c"># Breakdown keys from calculate_step_cost():</span>
+<span class="c">#   input_cost, output_cost,</span>
+<span class="c">#   cache_write_5m_cost, cache_write_1h_cost, cache_read_cost,</span>
+<span class="c">#   web_search_cost, web_fetch_cost</span></pre>
+  </div>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "The agent calls <code>calculate_step_cost()</code> after every LLM turn in <code>_accumulate_usage()</code>. Each step cost is added to <code>_cumulative_cost</code>. At the end of the run, the cumulative breakdown appears in <code>AgentResult.cost</code> and <code>Conversation.cost</code>. The user sees both per-category and total cost. All values are <code>round(x, 6)</code> to avoid floating-point noise."
+  </div>
+
+  <div class="ins">
+    <span class="il">Model Resolution</span>
+    <p><code>resolve_model_pricing()</code> handles versioned model names like <code>claude-sonnet-4-5-20250929</code> by trying an exact match first, then longest-substring matching against the CSV model IDs. This future-proofs the calculator against API model name changes without requiring CSV updates for every dated variant.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 7: ANTHROPIC LLM CONFIG                                  -->
+<!-- ================================================================ -->
+<div class="chap" id="ch7"><span>Chapter 7 &mdash; AnthropicLLMConfig</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Provider-Specific Configuration</div>
+  <h2>The Config That Knows Anthropic</h2>
+
+  <p>The base <code>LLMConfig</code> is deliberately empty &mdash; a type anchor for storage and the agent. <code>AnthropicLLMConfig</code> extends it with every knob the Anthropic API exposes:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/anthropic_agent.py</span>
+      <span class="tg tg-type">Config</span>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">AnthropicLLMConfig</span>(<span class="t">LLMConfig</span>):
+    thinking_tokens: <span class="t">int</span> | <span class="t">None</span> = <span class="k">None</span>       <span class="c"># extended thinking budget</span>
+    max_tokens: <span class="t">int</span> | <span class="t">None</span> = <span class="k">None</span>            <span class="c"># max output tokens</span>
+    server_tools: <span class="t">list</span>[<span class="t">dict</span>] | <span class="t">None</span> = <span class="k">None</span>  <span class="c"># web_search, code_exec, etc.</span>
+    skills: <span class="t">list</span>[<span class="t">dict</span>] | <span class="t">None</span> = <span class="k">None</span>        <span class="c"># container skills</span>
+    beta_headers: <span class="t">list</span>[<span class="t">str</span>] | <span class="t">None</span> = <span class="k">None</span>   <span class="c"># API beta features</span>
+    container_id: <span class="t">str</span> | <span class="t">None</span> = <span class="k">None</span>         <span class="c"># persistent container</span>
+    enable_caching: <span class="t">bool</span> = <span class="k">True</span>               <span class="c"># cache_control toggle</span>
+    context_management: <span class="t">dict</span> | <span class="t">None</span> = <span class="k">None</span>  <span class="c"># Anthropic context mgmt</span>
+    inference_geo: <span class="t">str</span> | <span class="t">None</span> = <span class="k">None</span>        <span class="c"># "us" for data residency</span>
+    speed: <span class="t">str</span> | <span class="t">None</span> = <span class="k">None</span>               <span class="c"># "fast" mode</span>
+    service_tier: <span class="t">str</span> | <span class="t">None</span> = <span class="k">None</span>        <span class="c"># "batch" tier</span>
+    api_kwargs: <span class="t">dict</span> | <span class="t">None</span> = <span class="k">None</span>          <span class="c"># escape hatch</span></pre>
+  </div>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th>Field</th><th>Effect</th><th>Where Used</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>thinking_tokens</code></td>
+        <td>Enables extended thinking with budget</td>
+        <td><code>_build_request_params()</code> &rarr; <code>thinking.budget_tokens</code></td>
+      </tr>
+      <tr>
+        <td><code>server_tools</code></td>
+        <td>Merged with client tools in request</td>
+        <td><code>_build_request_params()</code> &rarr; <code>tools[]</code></td>
+      </tr>
+      <tr>
+        <td><code>skills</code> + <code>container_id</code></td>
+        <td>Container-based code execution</td>
+        <td><code>_build_request_params()</code> &rarr; <code>container{}</code></td>
+      </tr>
+      <tr>
+        <td><code>beta_headers</code></td>
+        <td>Opt into unreleased API features</td>
+        <td><code>_build_request_params()</code> &rarr; <code>betas[]</code></td>
+      </tr>
+      <tr>
+        <td><code>speed</code> / <code>service_tier</code></td>
+        <td>Controls latency/cost tradeoff</td>
+        <td>Passthrough to API; affects pricing multipliers</td>
+      </tr>
+      <tr>
+        <td><code>inference_geo</code></td>
+        <td>Data residency (US-only)</td>
+        <td>Passthrough to API; activates data_residency_multiplier</td>
+      </tr>
+      <tr>
+        <td><code>api_kwargs</code></td>
+        <td>Escape hatch for new API params</td>
+        <td><code>request_params.update(llm_config.api_kwargs)</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="th emerald">
+    <span class="tl">Developer's inner voice</span>
+    "The <code>api_kwargs</code> field is the escape hatch. When Anthropic adds a new parameter that we haven't added a typed field for yet, callers can pass it through immediately without waiting for a library update. It's merged last, so it can override anything."
+  </div>
+
+  <h3>Serialization Round-Trip</h3>
+
+  <p>The base <code>LLMConfig</code> provides <code>to_dict()</code> / <code>from_dict()</code> using <code>dataclasses.asdict()</code> and field-filtered construction. Storage adapters check <code>AgentConfig.provider</code> to know which subclass to reconstruct:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">core/config.py &mdash; LLMConfig</span>
+      <span class="tg tg-abc">ABC</span>
+    </div>
+<pre>
+<span class="k">@classmethod</span>
+<span class="k">def</span> <span class="f">from_dict</span>(<span class="p">cls</span>, data: <span class="t">dict</span>) -> <span class="t">LLMConfig</span>:
+    <span class="s">"""Reconstruct, filtering to valid dataclass fields."""</span>
+<span class="hl">    valid_fields = {f.name <span class="k">for</span> f <span class="k">in</span> dataclasses.<span class="f">fields</span>(<span class="p">cls</span>)}</span>
+<span class="hl">    filtered = {k: v <span class="k">for</span> k, v <span class="k">in</span> data.items() <span class="k">if</span> k <span class="k">in</span> valid_fields}</span>
+<span class="hl">    <span class="k">return</span> <span class="p">cls</span>(**filtered)</span></pre>
+  </div>
+
+  <p>Unknown keys are silently ignored. This means adding a new field to <code>AnthropicLLMConfig</code> is backward-compatible &mdash; older serialized configs simply won't have the key, and the field gets its default value.</p>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 8: THE AGENT LOOP                                        -->
+<!-- ================================================================ -->
+<div class="chap" id="ch8"><span>Chapter 8 &mdash; The Agent Loop</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Orchestration</div>
+  <h2>AnthropicAgent._resume_loop() Deep Dive</h2>
+
+  <p>The agent loop is a <code>while</code> loop bounded by <code>max_steps</code>. Each iteration: compact, call the provider, process the stop reason. The loop supports both fresh starts (<code>run()</code>) and relay resumptions (<code>resume_with_relay_results()</code>).</p>
+
+  <div class="dw">
+<pre style="background: transparent; color: var(--ink); font-size: 13px; line-height: 1.6;">
+  _resume_loop(queue?, stream_formatter?)
+      |
+      v
+  while current_step &lt; max_steps:
+      |
+      +-- compactor.apply_compaction(agent_config)
+      |
+      +-- provider.generate_stream() or provider.generate()
+      |
+      +-- current_step += 1
+      +-- _accumulate_usage(response.usage)
+      +-- append response to context + conversation
+      |
+      +-- match stop_reason:
+      |     |
+      |     +-- "pause_turn"  &rarr; continue  (skills, long-running)
+      |     |
+      |     +-- "tool_use"    &rarr; classify tool calls
+      |     |     |
+      |     |     +-- needs_relay?
+      |     |     |   YES &rarr; execute backend, persist, return "relay"
+      |     |     |   NO  &rarr; execute all, append results, continue
+      |     |
+      |     +-- "end_turn"    &rarr; final_answer_check? &rarr; _finalize_run()
+      |
+      +-- (loop continues)
+      |
+      v
+  max_steps reached &rarr; _finalize_run("max_steps")</pre>
+    <div class="dc">The complete agent loop flow</div>
+  </div>
+
+  <h3>Initialization: Fresh vs Resume</h3>
+
+  <p>The <code>initialize()</code> method handles two paths. For a fresh agent (no UUID), it creates one, builds an empty <code>AgentConfig</code>, sets up the sandbox, and attaches tools. For a resuming agent, it loads state from the config adapter, re-parses <code>llm_config</code> as <code>AnthropicLLMConfig</code>, and restores the partial conversation if a relay is pending.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">anthropic_agent.py &mdash; initialize()</span>
+      <span class="tg tg-impl">Lifecycle</span>
+    </div>
+<pre>
+<span class="k">async def</span> <span class="f">initialize</span>(<span class="p">self</span>):
+    <span class="k">if</span> <span class="k">not</span> <span class="p">self</span>._agent_uuid:
+        <span class="c"># Fresh agent: generate UUID, empty config</span>
+        <span class="p">self</span>._agent_uuid = <span class="f">str</span>(uuid.<span class="f">uuid4</span>())
+        <span class="p">self</span>.agent_config = <span class="t">AgentConfig</span>(agent_uuid=...)
+    <span class="k">else</span>:
+        <span class="c"># Resuming: load from storage</span>
+<span class="hl">        loaded = <span class="k">await</span> <span class="p">self</span>.config_adapter.<span class="f">load</span>(<span class="p">self</span>._agent_uuid)</span>
+        <span class="c"># Re-parse llm_config as AnthropicLLMConfig</span>
+<span class="hl">        <span class="k">if not</span> <span class="f">isinstance</span>(loaded.llm_config, <span class="t">AnthropicLLMConfig</span>):</span>
+<span class="hl">            loaded.llm_config = <span class="t">AnthropicLLMConfig</span>.<span class="f">from_dict</span>(...)</span>
+        <span class="c"># Restore partial conversation if relay pending</span>
+        <span class="k">if</span> loaded.pending_relay:
+            <span class="p">self</span>.conversation = <span class="k">await</span> conv_adapter.<span class="f">load_by_run_id</span>(...)</pre>
+  </div>
+
+  <h3>Parallel Tool Execution</h3>
+
+  <p>Tool calls are executed in parallel, bounded by <code>max_parallel_tool_calls</code> (default 5). The <code>ToolRegistry.execute_tools()</code> method uses <code>asyncio.Semaphore</code> internally. Results come back as <code>ToolResultEnvelope</code> objects, which the agent converts to <code>ToolResultContent</code> blocks in a user-role <code>Message</code>.</p>
+
+  <h3>Sub-Agent Injection</h3>
+
+  <p>When the agent has subagents, the <code>SubAgentTool</code> needs the parent's streaming context (queue and formatter) to forward SSE events. The loop injects this at the start of <code>_resume_loop()</code> and clears it in the <code>finally</code> block:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">anthropic_agent.py</span>
+      <span class="tg tg-impl">Context</span>
+    </div>
+<pre>
+<span class="k">try</span>:
+    <span class="p">self</span>.<span class="f">_inject_subagent_context</span>(queue, stream_formatter)
+    <span class="k">while</span> ...:
+        ...
+<span class="k">finally</span>:
+    <span class="c"># Always clear to avoid stale references</span>
+<span class="hl">    <span class="p">self</span>.<span class="f">_inject_subagent_context</span>(<span class="k">None</span>, <span class="k">None</span>)</span></pre>
+  </div>
+
+  <h3>Logging with LogEntry</h3>
+
+  <p>Each significant event during the loop is recorded as a <code>LogEntry</code> in <code>_run_logs</code>. At run finalization, these are persisted via the <code>AgentRunAdapter</code>. The log captures LLM calls (with stripped binary data for readability), tool executions, errors, and timing.</p>
+
+  <div class="sep">&#183; &#183; &#183;</div>
+
+  <h3>The Full Module Layout</h3>
+
+  <div class="dw">
+<pre style="background: transparent; color: var(--ink); font-size: 13px; line-height: 1.6;">
+  core/
+  ├── provider.py            Provider ABC (generate, generate_stream)
+  ├── config.py              LLMConfig, PendingToolRelay, CostBreakdown,
+  │                          AgentConfig, Conversation, SubAgentSchema
+  └── messages.py            Message, Usage, MessageFormatter ABC
+
+  providers/anthropic/
+  ├── provider.py            AnthropicProvider (cache control, request/response)
+  ├── anthropic_agent.py     AnthropicAgent (loop, relay, init),
+  │                          AnthropicLLMConfig
+  ├── formatters.py          AnthropicMessageFormatter (wire translation)
+  └── retry.py               retry_with_backoff, anthropic_stream_with_backoff,
+                             _process_stream_events
+
+  pricing/
+  ├── calculator.py          ModelPricing, load_pricing(), calculate_step_cost()
+  └── models.csv             Bundled pricing data</pre>
+    <div class="dc">Provider layer module layout</div>
+  </div>
+
+  <table class="ctbl">
+    <thead>
+      <tr><th>Design Decision</th><th>Trade-off</th><th>Why We Chose It</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Provider ABC with two methods</td>
+        <td>Stream and non-stream share no code</td>
+        <td>Different retry semantics, different queue handling; forced sharing would be a lie</td>
+      </tr>
+      <tr>
+        <td>Formatter as a separate class</td>
+        <td>One more abstraction layer</td>
+        <td>Pure translation is testable in isolation; Provider stays focused on transport</td>
+      </tr>
+      <tr>
+        <td>Cache control in the Provider, not the Agent</td>
+        <td>Provider knows about Anthropic details</td>
+        <td>Cache control is a wire-format concern, not an orchestration concern</td>
+      </tr>
+      <tr>
+        <td>Relay persists before pausing</td>
+        <td>Extra storage write on every relay</td>
+        <td>Crash safety across the pause boundary; server restarts don't lose state</td>
+      </tr>
+      <tr>
+        <td>Pricing from bundled CSV</td>
+        <td>Requires manual updates for new models</td>
+        <td>No runtime API calls; works offline; substring matching handles versioned names</td>
+      </tr>
+      <tr>
+        <td><code>api_kwargs</code> escape hatch</td>
+        <td>No type safety for passthrough params</td>
+        <td>Immediate access to new API features without library updates</td>
+      </tr>
+    </tbody>
+  </table>
+
+</section>
+
+</div><!-- .wrap -->
+
+<footer class="footer">
+  <p>The provider is the translator, not the director.<br>
+  It speaks wire format so the agent doesn't have to &mdash;<br>
+  and the boundary between them is the architecture.</p>
+  <p style="margin-top: 12px; font-size: 14px; color: var(--muted);">Provider Architecture &middot; March 2026</p>
+</footer>
+
+<script>
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('vis'); });
+}, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.entry').forEach(el => obs.observe(el));
+</script>
+
+</body>
+</html>

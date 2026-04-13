@@ -5,11 +5,8 @@ at run boundaries only: ``retrieve()`` at the start of a run to inject
 relevant prior knowledge, and ``update()`` at the end to extract and
 persist new learnings for future runs.
 
-Memory stores never participate in context compaction. Compaction (shrinking
-the live message list to fit the model's token budget) is handled entirely
-by the ``Compactor`` in ``agent_base.compaction``. The two systems are
-independent: a compactor manages *within-session* context size, while a
-memory store manages *across-session* knowledge.
+Memory stores are independent of context compaction and manage
+*across-session* knowledge only.
 """
 from __future__ import annotations
 
@@ -17,6 +14,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from agent_base.core.conversation_log import ConversationLog
     from agent_base.core.messages import Message
     from agent_base.core.types import ContentBlock
 
@@ -63,7 +61,7 @@ class MemoryStore(ABC):
     async def update(
         self,
         messages: list[Message],
-        conversation_history: list[Message],
+        conversation_log: ConversationLog,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Update memory store with learnings from the completed run.
@@ -74,7 +72,7 @@ class MemoryStore(ABC):
 
         Args:
             messages: Compacted ``context_messages`` (what was sent to the LLM).
-            conversation_history: Full uncompacted conversation history.
+            conversation_log: Full persisted conversation log for the run.
             **kwargs: Additional context (e.g., model, tools).
 
         Returns:

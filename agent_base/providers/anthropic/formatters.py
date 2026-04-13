@@ -10,6 +10,7 @@ Responsibilities:
 """
 from __future__ import annotations
 
+import dataclasses
 from typing import Any, Dict, List, TYPE_CHECKING
 
 from agent_base.core.messages import MessageFormatter
@@ -37,6 +38,15 @@ from agent_base.core.types import (
 from agent_base.logging import get_logger
 from agent_base.tools.tool_types import ToolSchema
 
+
+def _serialize_obj(obj: Any) -> Any:
+    """Convert an object to a JSON-safe dict. Tries model_dump, then dataclasses.asdict."""
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
+    return obj
+
 if TYPE_CHECKING:
     from anthropic.types.beta import BetaContentBlock
 
@@ -51,7 +61,99 @@ logger = get_logger(__name__)
 class AnthropicMessageFormatter(MessageFormatter):
     """Translates canonical Messages to/from Anthropic API wire format."""
 
+    _WEB_FETCH_RESULT_KEYS = {"type", "url", "retrieved_at", "content"}
+    _WEB_FETCH_ERROR_KEYS = {"type", "error_code"}
+    _WEB_FETCH_ERROR_CODE = "invalid_tool_input"
+    _WEB_FETCH_DOCUMENT_KEYS = {
+        "type",
+        "source",
+        "title",
+        "context",
+        "citations",
+        "cache_control",
+    }
+
     # -- Source resolution helpers ------------------------------------------
+
+    @staticmethod
+    def _strip_none_values(obj: Any) -> Any:
+        """Recursively drop ``None`` values from provider payloads."""
+        if isinstance(obj, dict):
+            return {
+                key: AnthropicMessageFormatter._strip_none_values(value)
+                for key, value in obj.items()
+                if value is not None
+            }
+        if isinstance(obj, list):
+            return [
+                AnthropicMessageFormatter._strip_none_values(item)
+                for item in obj
+                if item is not None
+            ]
+        if hasattr(obj, "model_dump"):
+            return AnthropicMessageFormatter._strip_none_values(
+                obj.model_dump(exclude_none=True)
+            )
+        return obj
+
+    @classmethod
+    def _normalize_web_fetch_tool_result_content(cls, content: Any) -> Any:
+        """Coerce ``web_fetch_tool_result`` content into Anthropic's request shape."""
+        normalized = cls._strip_none_values(content)
+
+        if isinstance(normalized, list):
+            if len(normalized) == 1:
+                normalized = normalized[0]
+            else:
+                return cls._web_fetch_tool_result_error()
+
+        if not isinstance(normalized, dict):
+            return cls._web_fetch_tool_result_error()
+
+        block_type = normalized.get("type")
+        if block_type == "web_fetch_tool_result_error":
+            error_block = {
+                key: value
+                for key, value in normalized.items()
+                if key in cls._WEB_FETCH_ERROR_KEYS
+            }
+            if "error_code" not in error_block:
+                return cls._web_fetch_tool_result_error()
+            return error_block
+
+        if block_type == "web_fetch_result":
+            result = {
+                key: value
+                for key, value in normalized.items()
+                if key in cls._WEB_FETCH_RESULT_KEYS
+            }
+            document = result.get("content")
+            if isinstance(document, dict):
+                result["content"] = {
+                    key: value
+                    for key, value in document.items()
+                    if key in cls._WEB_FETCH_DOCUMENT_KEYS
+                }
+            else:
+                return cls._web_fetch_tool_result_error()
+
+            if (
+                not result.get("url")
+                or result["content"].get("type") != "document"
+                or not isinstance(result["content"].get("source"), dict)
+            ):
+                return cls._web_fetch_tool_result_error()
+            return result
+
+        return cls._web_fetch_tool_result_error()
+
+    @classmethod
+    def _web_fetch_tool_result_error(cls) -> dict[str, str]:
+        """Return a valid fallback error block for malformed replay payloads."""
+        return {
+            "type": "web_fetch_tool_result_error",
+            "error_code": cls._WEB_FETCH_ERROR_CODE,
+        }
 
     @staticmethod
     def _resolve_image_source(block: ImageContent) -> dict[str, Any]:
@@ -177,6 +279,10 @@ class AnthropicMessageFormatter(MessageFormatter):
                         "type": "compaction",
                         "content": content,
                     }
+                # The API rejects empty text content blocks.  Citation-only
+                # response blocks may have text="" — drop them on round-trip.
+                if not block.text:
+                    return None
                 d: dict[str, Any] = {"type": "text", "text": block.text}
                 # Round-trip citations (stored as raw wire dicts in kwargs).
                 if block.kwargs.get("citations"):
@@ -244,10 +350,15 @@ class AnthropicMessageFormatter(MessageFormatter):
 
             # -- Server tool results (assistant-side, NOT "tool_result") ----
             case ServerToolResultContent():
+                content = block.tool_result
+                if block.tool_name == "web_fetch_tool_result":
+                    content = self._normalize_web_fetch_tool_result_content(
+                        block.tool_result
+                    )
                 d: dict[str, Any] = {
                     "type": block.tool_name,
                     "tool_use_id": block.tool_id,
-                    "content": block.tool_result,
+                    "content": content,
                 }
                 if block.kwargs.get("caller"):
                     d["caller"] = block.kwargs["caller"]
@@ -351,14 +462,16 @@ class AnthropicMessageFormatter(MessageFormatter):
                     canonical_citations: list[ContentBlock] = []
                     for cit in raw_citations:
                         cit_dict = cit.model_dump() if hasattr(cit, "model_dump") else cit
+                        # Strip response-only fields that the API won't accept on input.
+                        cit_dict.pop("file_id", None)
                         wire_citations.append(cit_dict)
                         parsed_cit = self._parse_citation(cit)
                         if parsed_cit:
                             canonical_citations.append(parsed_cit)
                     # Raw wire dicts for round-trip via _block_to_wire
                     kwargs["citations"] = wire_citations
-                    # Typed canonical objects for programmatic access
-                    kwargs["canonical_citations"] = canonical_citations
+                    # Typed canonical objects for programmatic access (serialized for persistence)
+                    kwargs["canonical_citations"] = [c.to_dict() for c in canonical_citations]
                 return TextContent(text=raw_block.text, kwargs=kwargs, raw=raw_block)
 
             # -- Thinking --------------------------------------------------
@@ -383,7 +496,7 @@ class AnthropicMessageFormatter(MessageFormatter):
                 kwargs: dict[str, Any] = {}
                 caller = getattr(raw_block, "caller", None)
                 if caller:
-                    kwargs["caller"] = caller.model_dump() if hasattr(caller, "model_dump") else caller
+                    kwargs["caller"] = _serialize_obj(caller)
                 return ToolUseContent(
                     tool_name=raw_block.name,
                     tool_id=raw_block.id,
@@ -397,7 +510,7 @@ class AnthropicMessageFormatter(MessageFormatter):
                 kwargs: dict[str, Any] = {}
                 caller = getattr(raw_block, "caller", None)
                 if caller:
-                    kwargs["caller"] = caller.model_dump() if hasattr(caller, "model_dump") else caller
+                    kwargs["caller"] = _serialize_obj(caller)
                 return ServerToolUseContent(
                     tool_name=raw_block.name,
                     tool_id=raw_block.id,
@@ -500,7 +613,7 @@ class AnthropicMessageFormatter(MessageFormatter):
         kwargs: dict[str, Any] = {}
         caller = getattr(raw_block, "caller", None)
         if caller:
-            kwargs["caller"] = caller.model_dump() if hasattr(caller, "model_dump") else caller
+            kwargs["caller"] = _serialize_obj(caller)
 
         content = getattr(raw_block, "content", "")
         if isinstance(content, str):

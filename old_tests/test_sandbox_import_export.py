@@ -18,7 +18,7 @@ async def sandbox(tmp_path):
 
 
 async def test_setup_creates_imported_zone(sandbox):
-    assert await sandbox.file_exists(".imported")
+    assert await sandbox.file_exists("workspace/.imported")
 
 
 async def test_setup_creates_workspace_zone(sandbox):

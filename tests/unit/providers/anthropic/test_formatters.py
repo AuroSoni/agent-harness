@@ -761,9 +761,10 @@ class TestParseBlock:
         assert "citations" in result.kwargs
         assert len(result.kwargs["citations"]) == 1
         assert result.kwargs["citations"][0]["type"] == "char_location"
-        # Also has canonical citations
+        # Also has canonical citations (serialized as dicts)
         assert "canonical_citations" in result.kwargs
-        assert isinstance(result.kwargs["canonical_citations"][0], CharCitation)
+        assert result.kwargs["canonical_citations"][0]["content_block_type"] == "citation"
+        assert result.kwargs["canonical_citations"][0]["citation_type"] == "char_location"
 
     def test_text_with_multiple_citation_types(self, fmt: AnthropicMessageFormatter):
         citations = [
@@ -773,8 +774,8 @@ class TestParseBlock:
         stub = StubTextBlock(text="a b", citations=citations)
         result = fmt._parse_block(stub)
         assert len(result.kwargs["canonical_citations"]) == 2
-        assert isinstance(result.kwargs["canonical_citations"][0], CharCitation)
-        assert isinstance(result.kwargs["canonical_citations"][1], WebSearchResultCitation)
+        assert result.kwargs["canonical_citations"][0]["citation_type"] == "char_location"
+        assert result.kwargs["canonical_citations"][1]["citation_type"] == "web_search_result_location"
 
     def test_text_no_citations(self, fmt: AnthropicMessageFormatter):
         stub = StubTextBlock(text="plain", citations=None)
@@ -1243,6 +1244,26 @@ class TestRoundTrip:
         wire1 = fmt._block_to_wire(block)
         wire2 = self._roundtrip_wire(fmt, block)
         assert wire1 == wire2
+
+    def test_text_with_citations_persistence_round_trip(self, fmt: AnthropicMessageFormatter):
+        """Verify that parsing from API, persisting via to_dict/from_dict, and converting
+        back to wire all produce correct results — the full persistence round-trip."""
+        import json
+        # Parse from "API response" (creates canonical_citations as dicts)
+        cit = StubCitation(cited_text="hello", document_index=0,
+                           start_char_index=0, end_char_index=5, document_title="Doc 1")
+        stub = StubTextBlock(text="hello world", citations=[cit])
+        parsed = fmt._parse_block(stub)
+        # Simulate persistence: to_dict → json.dumps → json.loads → from_dict
+        serialized = json.dumps(parsed.to_dict())  # must not raise
+        deserialized = ContentBlock.from_dict(json.loads(serialized))
+        # Wire output from deserialized block should match original
+        wire_original = fmt._block_to_wire(parsed)
+        wire_restored = fmt._block_to_wire(deserialized)
+        assert wire_original == wire_restored
+        # canonical_citations survive as dicts
+        assert "canonical_citations" in deserialized.kwargs
+        assert deserialized.kwargs["canonical_citations"][0]["citation_type"] == "char_location"
 
     def test_thinking_round_trip(self, fmt: AnthropicMessageFormatter):
         block = ThinkingContent(thinking="analyzing...", signature="sig_rt1")

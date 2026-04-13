@@ -18,6 +18,7 @@ from .types import (
     ToolResultDelta,
     CitationDelta,
     MetaDelta,
+    RollbackDelta,
     ErrorDelta,
 )
 from .utils import build_envelope, chunk_and_emit
@@ -106,6 +107,21 @@ class JsonStreamFormatter(StreamFormatter):
         elif isinstance(delta, MetaDelta):
             payload = json.dumps(
                 delta.payload, ensure_ascii=False, separators=(",", ":")
+            )
+            await chunk_and_emit(
+                queue, delta.type, agent, payload, final_on_last=delta.is_final
+            )
+
+        elif isinstance(delta, RollbackDelta):
+            payload = json.dumps(
+                {
+                    "message": delta.message,
+                    "code": delta.code,
+                    "details": delta.details,
+                    "collapse_previous_assistant": delta.collapse_previous_assistant,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
             )
             await chunk_and_emit(
                 queue, delta.type, agent, payload, final_on_last=delta.is_final

@@ -5,7 +5,7 @@ Complex nested objects (messages, tool_schemas, etc.) use JSONB columns
 while scalar fields use native SQL types.
 
 Tables:
-- agent_config: 27 typed columns for all AgentConfig fields
+- agent_config: 28 typed columns for all AgentConfig fields
 - conversation_history: 15 typed columns + auto sequence_number
 - agent_runs: one row per LogEntry with typed columns
 """
@@ -30,9 +30,12 @@ from ...core.config import (
     PendingToolRelay,
     SubAgentSchema,
 )
+from ...core.conversation_log import ConversationLog
 from ...core.messages import Message, Usage
 from ...core.result import LogEntry
 from ...media_backend.media_types import MediaMetadata
+from ...providers.anthropic.compaction import CompactionConfig
+from ...sandbox import deserialize_sandbox_config
 from ...tools.tool_types import ToolSchema
 from ...tools.registry import ToolCallInfo
 from ..exceptions import StorageConnectionError, StorageOperationError
@@ -54,10 +57,12 @@ def _parse_datetime(value: Any) -> str | None:
     return str(value)
 
 
-def _json_default(obj: Any) -> str:
-    """JSON serializer for datetime objects."""
+def _json_default(obj: Any) -> Any:
+    """JSON serializer for objects not handled by the default encoder."""
     if isinstance(obj, datetime):
         return obj.isoformat()
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
@@ -141,13 +146,22 @@ def _config_to_row_values(config: AgentConfig) -> tuple:
         config.max_steps,
         config.system_prompt,
         _to_jsonb([m.to_dict() for m in config.context_messages]),
-        _to_jsonb([m.to_dict() for m in config.conversation_history]),
+        _to_jsonb(config.conversation_log.to_dict()),
         _to_jsonb([dataclasses.asdict(ts) for ts in config.tool_schemas]),
         config.tool_names,
         _to_jsonb(config.llm_config.to_dict()),
         config.formatter,
-        config.compactor_type,
+        _to_jsonb(
+            config.compaction_config.to_dict()
+            if config.compaction_config is not None
+            else None
+        ),
         config.memory_store_type,
+        _to_jsonb(
+            config.sandbox_config.to_dict()
+            if config.sandbox_config is not None
+            else None
+        ),
         _to_jsonb({k: v.to_dict() for k, v in config.media_registry.items()}),
         config.last_known_input_tokens,
         config.last_known_output_tokens,
@@ -167,9 +181,11 @@ def _config_to_row_values(config: AgentConfig) -> tuple:
 def _row_to_config(row: asyncpg.Record) -> AgentConfig:
     """Convert database row to AgentConfig."""
     raw_context = _from_jsonb(row["context_messages"]) or []
-    raw_history = _from_jsonb(row["conversation_history"]) or []
+    raw_conversation_log = _from_jsonb(row["conversation_log"]) or {}
     raw_tools = _from_jsonb(row["tool_schemas"]) or []
     raw_llm = _from_jsonb(row["llm_config"]) or {}
+    raw_compaction_config = _from_jsonb(row["compaction_config"])
+    raw_sandbox_config = _from_jsonb(row["sandbox_config"])
     raw_media = _from_jsonb(row["media_registry"]) or {}
     raw_relay = _from_jsonb(row["pending_relay"])
     raw_subagents = _from_jsonb(row["subagent_schemas"]) or []
@@ -182,13 +198,18 @@ def _row_to_config(row: asyncpg.Record) -> AgentConfig:
         max_steps=row["max_steps"],
         system_prompt=row["system_prompt"],
         context_messages=[Message.from_dict(m) for m in raw_context],
-        conversation_history=[Message.from_dict(m) for m in raw_history],
+        conversation_log=ConversationLog.from_dict(raw_conversation_log),
         tool_schemas=[ToolSchema(**ts) for ts in raw_tools],
         tool_names=list(row["tool_names"]) if row["tool_names"] else [],
         llm_config=LLMConfig.from_dict(raw_llm),
         formatter=row["formatter"],
-        compactor_type=row["compactor_type"],
+        compaction_config=(
+            CompactionConfig.from_dict(raw_compaction_config)
+            if raw_compaction_config
+            else None
+        ),
         memory_store_type=row["memory_store_type"],
+        sandbox_config=deserialize_sandbox_config(raw_sandbox_config),
         media_registry={k: MediaMetadata(**v) for k, v in raw_media.items()},
         last_known_input_tokens=row["last_known_input_tokens"] or 0,
         last_known_output_tokens=row["last_known_output_tokens"] or 0,
@@ -209,7 +230,7 @@ def _row_to_conversation(row: asyncpg.Record) -> Conversation:
     """Convert database row to Conversation."""
     raw_user = _from_jsonb(row["user_message"])
     raw_final = _from_jsonb(row["final_response"])
-    raw_messages = _from_jsonb(row["messages"]) or []
+    raw_conversation_log = _from_jsonb(row["conversation_log"]) or {}
     raw_usage = _from_jsonb(row["usage"]) or {}
     raw_files = _from_jsonb(row["generated_files"]) or []
     raw_cost = _from_jsonb(row["cost"])
@@ -221,7 +242,7 @@ def _row_to_conversation(row: asyncpg.Record) -> Conversation:
         completed_at=_parse_datetime(row["completed_at"]),
         user_message=Message.from_dict(raw_user) if raw_user else None,
         final_response=Message.from_dict(raw_final) if raw_final else None,
-        messages=[Message.from_dict(m) for m in raw_messages],
+        conversation_log=ConversationLog.from_dict(raw_conversation_log),
         stop_reason=row["stop_reason"],
         total_steps=row["total_steps"],
         usage=Usage.from_dict(raw_usage) if raw_usage else Usage(),
@@ -240,7 +261,7 @@ def _row_to_conversation(row: asyncpg.Record) -> Conversation:
 class PostgresAgentConfigAdapter(AgentConfigAdapter):
     """PostgreSQL adapter for agent configuration.
 
-    Uses a typed-column schema with 27 columns. Scalar fields map to
+    Uses a typed-column schema with 28 columns. Scalar fields map to
     native SQL types; complex nested objects use JSONB columns.
     """
 
@@ -296,17 +317,17 @@ class PostgresAgentConfigAdapter(AgentConfigAdapter):
         query = """
             INSERT INTO agent_config (
                 agent_uuid, description, provider, model, max_steps,
-                system_prompt, context_messages, conversation_history,
+                system_prompt, context_messages, conversation_log,
                 tool_schemas, tool_names, llm_config, formatter,
-                compactor_type, memory_store_type, media_registry,
-                last_known_input_tokens, last_known_output_tokens,
-                pending_relay, current_step, parent_agent_uuid,
-                subagent_schemas, title, created_at, updated_at,
-                last_run_at, total_runs, extras
+                compaction_config, memory_store_type, sandbox_config,
+                media_registry, last_known_input_tokens,
+                last_known_output_tokens, pending_relay, current_step,
+                parent_agent_uuid, subagent_schemas, title, created_at,
+                updated_at, last_run_at, total_runs, extras
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                $21, $22, $23, $24, $25, $26, $27
+                $21, $22, $23, $24, $25, $26, $27, $28
             )
             ON CONFLICT (agent_uuid) DO UPDATE SET
                 description = EXCLUDED.description,
@@ -315,13 +336,14 @@ class PostgresAgentConfigAdapter(AgentConfigAdapter):
                 max_steps = EXCLUDED.max_steps,
                 system_prompt = EXCLUDED.system_prompt,
                 context_messages = EXCLUDED.context_messages,
-                conversation_history = EXCLUDED.conversation_history,
+                conversation_log = EXCLUDED.conversation_log,
                 tool_schemas = EXCLUDED.tool_schemas,
                 tool_names = EXCLUDED.tool_names,
                 llm_config = EXCLUDED.llm_config,
                 formatter = EXCLUDED.formatter,
-                compactor_type = EXCLUDED.compactor_type,
+                compaction_config = EXCLUDED.compaction_config,
                 memory_store_type = EXCLUDED.memory_store_type,
+                sandbox_config = EXCLUDED.sandbox_config,
                 media_registry = EXCLUDED.media_registry,
                 last_known_input_tokens = EXCLUDED.last_known_input_tokens,
                 last_known_output_tokens = EXCLUDED.last_known_output_tokens,
@@ -354,13 +376,13 @@ class PostgresAgentConfigAdapter(AgentConfigAdapter):
         query = """
             SELECT
                 agent_uuid, description, provider, model, max_steps,
-                system_prompt, context_messages, conversation_history,
+                system_prompt, context_messages, conversation_log,
                 tool_schemas, tool_names, llm_config, formatter,
-                compactor_type, memory_store_type, media_registry,
-                last_known_input_tokens, last_known_output_tokens,
-                pending_relay, current_step, parent_agent_uuid,
-                subagent_schemas, title, created_at, updated_at,
-                last_run_at, total_runs, extras
+                compaction_config, memory_store_type, sandbox_config,
+                media_registry, last_known_input_tokens,
+                last_known_output_tokens, pending_relay, current_step,
+                parent_agent_uuid, subagent_schemas, title, created_at,
+                updated_at, last_run_at, total_runs, extras
             FROM agent_config
             WHERE agent_uuid = $1
         """
@@ -527,7 +549,7 @@ class PostgresConversationAdapter(ConversationAdapter):
             INSERT INTO conversation_history (
                 agent_uuid, run_id, sequence_number,
                 started_at, completed_at,
-                user_message, final_response, messages, stop_reason,
+                user_message, final_response, conversation_log, stop_reason,
                 total_steps, usage, generated_files, cost,
                 created_at, extras
             ) VALUES (
@@ -544,7 +566,7 @@ class PostgresConversationAdapter(ConversationAdapter):
                 completed_at = EXCLUDED.completed_at,
                 user_message = EXCLUDED.user_message,
                 final_response = EXCLUDED.final_response,
-                messages = EXCLUDED.messages,
+                conversation_log = EXCLUDED.conversation_log,
                 stop_reason = EXCLUDED.stop_reason,
                 total_steps = EXCLUDED.total_steps,
                 usage = EXCLUDED.usage,
@@ -568,7 +590,7 @@ class PostgresConversationAdapter(ConversationAdapter):
                     conversation.final_response.to_dict()
                     if conversation.final_response else None
                 ),
-                _to_jsonb([m.to_dict() for m in conversation.messages]),
+                _to_jsonb(conversation.conversation_log.to_dict()),
                 conversation.stop_reason,
                 conversation.total_steps,
                 _to_jsonb(conversation.usage.to_dict()),
@@ -599,7 +621,7 @@ class PostgresConversationAdapter(ConversationAdapter):
         query = """
             SELECT
                 agent_uuid, run_id, sequence_number, started_at,
-                completed_at, user_message, final_response, messages,
+                completed_at, user_message, final_response, conversation_log,
                 stop_reason, total_steps, usage, generated_files,
                 cost, created_at, extras
             FROM conversation_history
@@ -625,7 +647,7 @@ class PostgresConversationAdapter(ConversationAdapter):
         query = """
             SELECT
                 agent_uuid, run_id, sequence_number, started_at,
-                completed_at, user_message, final_response, messages,
+                completed_at, user_message, final_response, conversation_log,
                 stop_reason, total_steps, usage, generated_files,
                 cost, created_at, extras
             FROM conversation_history
@@ -660,7 +682,7 @@ class PostgresConversationAdapter(ConversationAdapter):
             query = """
                 SELECT
                     agent_uuid, run_id, sequence_number, started_at,
-                    completed_at, user_message, final_response, messages,
+                    completed_at, user_message, final_response, conversation_log,
                     stop_reason, total_steps, usage, generated_files,
                     cost, created_at, extras
                 FROM conversation_history
@@ -674,7 +696,7 @@ class PostgresConversationAdapter(ConversationAdapter):
             query = """
                 SELECT
                     agent_uuid, run_id, sequence_number, started_at,
-                    completed_at, user_message, final_response, messages,
+                    completed_at, user_message, final_response, conversation_log,
                     stop_reason, total_steps, usage, generated_files,
                     cost, created_at, extras
                 FROM conversation_history

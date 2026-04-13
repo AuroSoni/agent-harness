@@ -27,6 +27,38 @@ from ..logging import get_logger
 logger = get_logger(__name__)
 
 
+class _AsyncIteratorAsFileObj:
+    """Wraps an AsyncIterator[bytes] as an async file-like object for aioboto3 upload_fileobj."""
+
+    def __init__(self, iterator: AsyncIterator[bytes]) -> None:
+        self._iterator = iterator
+        self._buffer = b""
+        self._exhausted = False
+        self.bytes_read = 0
+
+    async def read(self, size: int = -1) -> bytes:
+        if self._exhausted and not self._buffer:
+            return b""
+
+        while not self._exhausted and (size == -1 or len(self._buffer) < size):
+            try:
+                chunk = await self._iterator.__anext__()
+                self._buffer += chunk
+            except StopAsyncIteration:
+                self._exhausted = True
+                break
+
+        if size == -1:
+            data = self._buffer
+            self._buffer = b""
+        else:
+            data = self._buffer[:size]
+            self._buffer = self._buffer[size:]
+
+        self.bytes_read += len(data)
+        return data
+
+
 class S3MediaBackend(MediaBackend):
     """S3-backed media storage with lazy client initialization.
 
@@ -114,6 +146,10 @@ class S3MediaBackend(MediaBackend):
         key: str,
     ) -> MediaMetadata:
         """Construct a MediaMetadata from components."""
+        if self.endpoint_url:
+            url = f"{self.endpoint_url.rstrip('/')}/{self.bucket}/{key}"
+        else:
+            url = f"https://{self.bucket}.s3.{self.region}.amazonaws.com/{key}"
         return MediaMetadata(
             media_id=media_id,
             media_mime_type=mime_type,
@@ -122,6 +158,7 @@ class S3MediaBackend(MediaBackend):
             media_size=size,
             storage_type="s3",
             storage_location=f"s3://{self.bucket}/{key}",
+            url=url,
             extras={"s3_bucket": self.bucket, "s3_key": key},
         )
 
@@ -178,28 +215,31 @@ class S3MediaBackend(MediaBackend):
         mime_type: str,
         agent_uuid: str,
     ) -> MediaMetadata:
+        import aioboto3
+
         media_id = uuid.uuid4().hex
         key = self._build_key(agent_uuid, media_id, filename)
 
-        # Collect stream into buffer (S3 put_object requires full body)
-        chunks: list[bytes] = []
-        async for chunk in content:
-            chunks.append(chunk)
-        body = b"".join(chunks)
+        file_obj = _AsyncIteratorAsFileObj(content)
+        session = aioboto3.Session()
+        async with session.client(
+            "s3",
+            region_name=self.region,
+            endpoint_url=self.endpoint_url,
+        ) as client:
+            await client.upload_fileobj(
+                file_obj,
+                self.bucket,
+                key,
+                ExtraArgs={"ContentType": mime_type},
+            )
 
-        await asyncio.to_thread(
-            self.client.put_object,
-            Bucket=self.bucket,
-            Key=key,
-            Body=body,
-            ContentType=mime_type,
-        )
-
+        size = file_obj.bytes_read
         logger.info(
             "Stored media",
             media_id=media_id,
             filename=filename,
-            size=len(body),
+            size=size,
             backend="s3",
             bucket=self.bucket,
         )
@@ -208,7 +248,7 @@ class S3MediaBackend(MediaBackend):
             media_id=media_id,
             filename=filename,
             mime_type=mime_type,
-            size=len(body),
+            size=size,
             key=key,
         )
 
@@ -373,13 +413,9 @@ class S3MediaBackend(MediaBackend):
             )
 
         key = obj_info["Key"]
-        url = await asyncio.to_thread(
-            self.client.generate_presigned_url,
-            "get_object",
-            Params={"Bucket": self.bucket, "Key": key},
-            ExpiresIn=self.presigned_url_expiry,
-        )
-        return url
+        if self.endpoint_url:
+            return f"{self.endpoint_url.rstrip('/')}/{self.bucket}/{key}"
+        return f"https://{self.bucket}.s3.{self.region}.amazonaws.com/{key}"
 
     async def to_reference(
         self,

@@ -79,8 +79,13 @@ class LocalMediaBackend(MediaBackend):
         mime_type: str,
         size: int,
         path: Path,
+        agent_uuid: str,
     ) -> MediaMetadata:
         """Construct a MediaMetadata from components."""
+        if self.url_prefix is not None:
+            url = f"{self.url_prefix}/{agent_uuid}/{media_id}"
+        else:
+            url = path.absolute().as_uri()
         return MediaMetadata(
             media_id=media_id,
             media_mime_type=mime_type,
@@ -89,6 +94,7 @@ class LocalMediaBackend(MediaBackend):
             media_size=size,
             storage_type="local",
             storage_location=str(path.absolute()),
+            url=url,
         )
 
     def _extras_path(self, agent_uuid: str, media_id: str) -> Path:
@@ -135,6 +141,7 @@ class LocalMediaBackend(MediaBackend):
             mime_type=mime_type,
             size=size,
             path=file_path,
+            agent_uuid=agent_uuid,
         )
 
     async def retrieve(
@@ -185,6 +192,7 @@ class LocalMediaBackend(MediaBackend):
             mime_type=mime_type,
             size=size,
             path=path,
+            agent_uuid=agent_uuid,
         )
         metadata.extras = await self._load_extras(agent_uuid, media_id)
         return (True, metadata)
@@ -209,6 +217,7 @@ class LocalMediaBackend(MediaBackend):
             mime_type=mime_type,
             size=size,
             path=path,
+            agent_uuid=agent_uuid,
         )
         metadata.extras = await self._load_extras(agent_uuid, media_id)
         return metadata

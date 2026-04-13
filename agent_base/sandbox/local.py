@@ -9,7 +9,17 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import aiofiles
-import blake3
+try:
+    import blake3
+except ImportError:  # pragma: no cover - exercised only when optional dep is missing
+    import hashlib
+
+    class _Blake3Compat:
+        @staticmethod
+        def blake3():
+            return hashlib.blake2b(digest_size=32)
+
+    blake3 = _Blake3Compat()
 
 from .sandbox_types import (
     ExecResult,
@@ -43,8 +53,10 @@ class LocalSandbox(Sandbox):
 
         {base_dir}/{sandbox_id}/
         ├── workspace/          # default cwd for exec
-        ├── .imported/          # (created by caller, not by sandbox)
-        ├── .exports/           # (created by caller)
+        │   └── .imported/      # uploaded/imported files (visible to tools)
+        ├── .exports/           # tool-produced user-facing artifacts
+        ├── .plans/             # plan artifacts persisted inside the sandbox
+        ├── .tool_results/      # stored tool result payloads
         └── ...
 
     All relative paths are resolved against the sandbox root
@@ -130,7 +142,14 @@ class LocalSandbox(Sandbox):
 
     async def setup(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        for zone in (".imported", "workspace", ".exports"):
+        for zone in (
+            "workspace",
+            "workspace/.imported",
+            ".exports",
+            ".plans",
+            ".context",
+            ".tool_results",
+        ):
             (self.root / zone).mkdir(exist_ok=True)
         self._cwd = self.workspace
 
@@ -236,7 +255,7 @@ class LocalSandbox(Sandbox):
     async def import_file(
         self, filename: str, data: AsyncIterator[bytes]
     ) -> str:
-        sandbox_path = f".imported/{filename}"
+        sandbox_path = f"workspace/.imported/{filename}"
         await self.write_file_bytes(sandbox_path, data)
         return sandbox_path
 

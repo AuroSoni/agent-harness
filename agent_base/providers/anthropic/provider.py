@@ -13,6 +13,7 @@ from typing import Any, TYPE_CHECKING
 
 import anthropic
 
+from agent_base.providers.anthropic.abort_types import StreamResult
 from agent_base.core.messages import Message, Usage
 from agent_base.core.provider import Provider
 from agent_base.core.types import ContentBlock, Role
@@ -20,6 +21,7 @@ from agent_base.logging import get_logger
 
 from .formatters import AnthropicMessageFormatter
 from .retry import anthropic_stream_with_backoff, retry_with_backoff
+from .token_estimation import AnthropicTokenEstimator
 
 if TYPE_CHECKING:
     from agent_base.core.config import LLMConfig
@@ -193,12 +195,46 @@ class AnthropicProvider(Provider):
         self,
         client: anthropic.AsyncAnthropic | None = None,
         formatter: AnthropicMessageFormatter | None = None,
+        fallback_api_keys: list[str] | None = None,
     ) -> None:
         self.client = client or anthropic.AsyncAnthropic()
         self.formatter = formatter or AnthropicMessageFormatter()
-        # TODO: No need to accept external client or formatter.
-        # Just initialize internally.
-        
+        self.token_estimator = AnthropicTokenEstimator(self.formatter)
+        self._fallback_api_keys = fallback_api_keys or []
+        self._fallback_clients: list[anthropic.AsyncAnthropic] = []
+
+    # -- API key fallback ----------------------------------------------------
+
+    @staticmethod
+    def _is_credits_exhausted(error: Exception) -> bool:
+        """Check if an API error indicates credit/billing exhaustion."""
+        msg = str(error).lower()
+        return any(phrase in msg for phrase in (
+            "credit balance is too low",
+            "credits exhausted",
+            "insufficient credits",
+            "billing_error",
+            "your api key does not have enough credits",
+        ))
+
+    def _get_fallback_client(self, index: int) -> anthropic.AsyncAnthropic | None:
+        """Get or lazily create a fallback client by index."""
+        if index >= len(self._fallback_api_keys):
+            return None
+        while len(self._fallback_clients) <= index:
+            key = self._fallback_api_keys[len(self._fallback_clients)]
+            self._fallback_clients.append(anthropic.AsyncAnthropic(api_key=key))
+        return self._fallback_clients[index]
+
+    def _clients_to_try(self) -> list[anthropic.AsyncAnthropic]:
+        """Return [primary, fallback_0, fallback_1, ...] client list."""
+        clients = [self.client]
+        for i in range(len(self._fallback_api_keys)):
+            c = self._get_fallback_client(i)
+            if c is not None:
+                clients.append(c)
+        return clients
+
     # -- Request / response building ----------------------------------------
 
     def _build_request_params(
@@ -263,8 +299,15 @@ class AnthropicProvider(Provider):
         if llm_config and llm_config.context_management:
             request_params["context_management"] = llm_config.context_management
 
-        # TODO: llm_config may contain arbitrary api_kwargs.
-        # Add api_kwargs to the request params.
+        if llm_config:
+            for key in ("inference_geo", "speed", "service_tier"):
+                val = getattr(llm_config, key, None)
+                if val is not None:
+                    request_params[key] = val
+
+            if llm_config.api_kwargs:
+                request_params.update(llm_config.api_kwargs)
+
         return request_params
 
     def _build_response_message(
@@ -289,10 +332,13 @@ class AnthropicProvider(Provider):
                     if v is not None
                 },
             )
-        # TODO: Extract other kinds of usage like tool uses, etc. Check the anthropic developer docs
-        # and inspect the anthropic sdk to see what is available.
-
         usage_kwargs: dict[str, Any] = {}
+        if raw_usage:
+            for key in ("inference_geo", "service_tier", "speed"):
+                val = getattr(raw_usage, key, None)
+                if val is not None:
+                    usage_kwargs[key] = val
+
         raw_context_management = getattr(raw_response, "context_management", None)
         if raw_context_management:
             usage_kwargs["context_management"] = (
@@ -310,6 +356,46 @@ class AnthropicProvider(Provider):
             model=raw_response.model,
             usage_kwargs=usage_kwargs,
         )
+
+    # -- Defensive sanitization --------------------------------------------
+
+    @staticmethod
+    def _defensive_sanitize(messages: list[Message]) -> list[Message]:
+        """Run chain-validity checks before sending to the API.
+
+        This is a safety net — if the message chain is already valid (the
+        normal case), this is a no-op.  If it detects and repairs any
+        violations, it logs a warning so we can track down the root cause
+        and updates the caller's message list in place so the repair
+        persists for future turns.
+        """
+        from agent_base.providers.anthropic.message_sanitizer import (
+            ensure_chain_validity,
+        )
+
+        sanitized = ensure_chain_validity(messages)
+        chain_repaired = len(sanitized) != len(messages)
+
+        if chain_repaired:
+            logger.warning(
+                "defensive_sanitize_repaired_chain",
+                original_count=len(messages),
+                sanitized_count=len(sanitized),
+            )
+        else:
+            for orig, fixed in zip(messages, sanitized):
+                if orig is not fixed:
+                    chain_repaired = True
+                    logger.warning(
+                        "defensive_sanitize_repaired_message",
+                        role=orig.role.value,
+                    )
+                    break
+
+        if chain_repaired:
+            messages[:] = sanitized
+
+        return messages
 
     # -- Public API ---------------------------------------------------------
 
@@ -335,6 +421,7 @@ class AnthropicProvider(Provider):
         Returns:
             Canonical ``Message`` with content, usage, stop_reason.
         """
+        messages = self._defensive_sanitize(messages)
         formatted_tool_schemas = self.formatter.format_tool_schemas(tool_schemas)
 
         wire_messages = [
@@ -349,13 +436,24 @@ class AnthropicProvider(Provider):
             wire_messages, system_prompt, model, llm_config, formatted_tool_schemas
         )
 
-        @retry_with_backoff(max_retries=max_retries, base_delay=base_delay)
-        async def _create() -> Any:
-            return await self.client.beta.messages.create(**request_params)
+        clients = self._clients_to_try()
+        for client_idx, client in enumerate(clients):
+            @retry_with_backoff(max_retries=max_retries, base_delay=base_delay)
+            async def _create(_client=client) -> Any:
+                return await _client.beta.messages.create(**request_params)
 
-        raw_response = await _create()
-        content_blocks = self.formatter.parse_wire_to_blocks(raw_response.content)
-        return self._build_response_message(raw_response, content_blocks)
+            try:
+                raw_response = await _create()
+                if client_idx > 0:
+                    self.client = client
+                    logger.info("api_key_fallback_activated", fallback_index=client_idx)
+                content_blocks = self.formatter.parse_wire_to_blocks(raw_response.content)
+                return self._build_response_message(raw_response, content_blocks)
+            except anthropic.BadRequestError as e:
+                if self._is_credits_exhausted(e) and client_idx < len(clients) - 1:
+                    logger.warning("credits_exhausted_fallback", fallback_index=client_idx + 1)
+                    continue
+                raise
 
     async def generate_stream(
         self,
@@ -370,7 +468,8 @@ class AnthropicProvider(Provider):
         stream_formatter: StreamFormatter,
         stream_tool_results: bool = True,
         agent_uuid: str = "",
-    ) -> Message:
+        cancellation_event: asyncio.Event | None = None,
+    ) -> StreamResult:
         """Streaming Anthropic API call with retry.
 
         1. Format tool schemas and message content blocks via the formatter.
@@ -380,9 +479,15 @@ class AnthropicProvider(Provider):
         4. Parse response content blocks via the formatter.
         5. Build the canonical ``Message`` (provider's responsibility).
 
+        Args:
+            cancellation_event: Optional event that, when set, signals the
+                stream to stop and return partial state.
+
         Returns:
-            Complete canonical ``Message`` after stream finishes.
+            StreamResult containing the canonical Message, completed block
+            indices, and whether the stream was cancelled.
         """
+        messages = self._defensive_sanitize(messages)
         formatted_tool_schemas = self.formatter.format_tool_schemas(tool_schemas)
 
         wire_messages = [
@@ -397,16 +502,36 @@ class AnthropicProvider(Provider):
             wire_messages, system_prompt, model, llm_config, formatted_tool_schemas
         )
 
-        raw_message = await anthropic_stream_with_backoff(
-            client=self.client,
-            request_params=request_params,
-            queue=queue,
-            max_retries=max_retries,
-            base_delay=base_delay,
-            stream_formatter=stream_formatter,
-            stream_tool_results=stream_tool_results,
-            agent_uuid=agent_uuid,
-        )
-
-        content_blocks = self.formatter.parse_wire_to_blocks(raw_message.content)
-        return self._build_response_message(raw_message, content_blocks)
+        clients = self._clients_to_try()
+        for client_idx, client in enumerate(clients):
+            try:
+                stream_result = await anthropic_stream_with_backoff(
+                    client=client,
+                    request_params=request_params,
+                    queue=queue,
+                    max_retries=max_retries,
+                    base_delay=base_delay,
+                    stream_formatter=stream_formatter,
+                    stream_tool_results=stream_tool_results,
+                    agent_uuid=agent_uuid,
+                    cancellation_event=cancellation_event,
+                )
+                if client_idx > 0:
+                    self.client = client
+                    logger.info("api_key_fallback_activated", fallback_index=client_idx)
+                content_blocks = self.formatter.parse_wire_to_blocks(
+                    stream_result.message.content
+                )
+                response_message = self._build_response_message(
+                    stream_result.message, content_blocks
+                )
+                return StreamResult(
+                    message=response_message,
+                    completed_blocks=stream_result.completed_blocks,
+                    was_cancelled=stream_result.was_cancelled,
+                )
+            except anthropic.BadRequestError as e:
+                if self._is_credits_exhausted(e) and client_idx < len(clients) - 1:
+                    logger.warning("credits_exhausted_fallback", fallback_index=client_idx + 1)
+                    continue
+                raise

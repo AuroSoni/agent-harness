@@ -15,11 +15,14 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
+from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.messages import Message, Usage
 from agent_base.media_backend.media_types import MediaMetadata
 from agent_base.tools.tool_types import ToolSchema
 
 if TYPE_CHECKING:
+    from agent_base.providers.anthropic.compaction import CompactionConfig
+    from agent_base.sandbox.sandbox_types import SandboxConfig
     from agent_base.tools.registry import ToolCallInfo
 
 
@@ -168,10 +171,10 @@ class AgentConfig:
     Fields are grouped by concern:
 
     - **Identity**: ``agent_uuid``, ``description``, ``provider``, ``model``
-    - **LLM context**: ``context_messages`` (compacted), ``conversation_history`` (unabridged per-run)
+    - **LLM context**: ``context_messages`` (compacted), ``conversation_log`` (rich UI history)
     - **Tools**: ``tool_schemas``, ``tool_names``, ``subagent_schemas``
     - **Provider config**: ``llm_config`` (provider-specific ``LLMConfig`` subclass)
-    - **Components**: ``formatter``, ``compactor_type``, ``memory_store_type``
+    - **Components**: ``formatter``, ``compaction_config``, ``memory_store_type``, ``sandbox_config``
     - **Media**: ``media_registry`` (keyed by ``media_id``)
     - **Relay**: ``pending_relay`` (non-None when paused for frontend/user)
     - **Hierarchy**: ``parent_agent_uuid``
@@ -195,9 +198,8 @@ class AgentConfig:
     # Managed by the compactor — may be shorter than the full conversation.
     context_messages: list[Message] = field(default_factory=list)
 
-    # The unabridged per-run conversation history.
-    # Not affected by compaction. Used for conversation logging and UI display.
-    conversation_history: list[Message] = field(default_factory=list)
+    # The rich per-run conversation log used for persistence and UI replay.
+    conversation_log: ConversationLog = field(default_factory=ConversationLog)
 
     # --- Tools ---
 
@@ -214,8 +216,9 @@ class AgentConfig:
 
     # --- Component configuration ---
     formatter: str | None = None
-    compactor_type: str | None = None
+    compaction_config: CompactionConfig | None = None
     memory_store_type: str | None = None
+    sandbox_config: SandboxConfig | None = None
 
     # --- Media registry ---
 
@@ -249,6 +252,10 @@ class AgentConfig:
     updated_at: str | None = None
     last_run_at: str | None = None
     total_runs: int = 0
+
+    # --- Abort/steer state ---
+    # Persisted agent phase for AWAITING_RELAY cold-start abort.
+    agent_phase: str | None = None
 
     # --- User extension point ---
     extras: dict[str, Any] = field(default_factory=dict)
@@ -287,8 +294,8 @@ class Conversation:
     # The agent's final assistant response for this run.
     final_response: Message | None = None
 
-    # --- Full conversation for this run ---
-    messages: list[Message] = field(default_factory=list)
+    # --- Full conversation log for this run ---
+    conversation_log: ConversationLog = field(default_factory=ConversationLog)
 
     # --- Run outcome ---
     stop_reason: str | None = None

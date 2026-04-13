@@ -1,0 +1,1857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Developer Diary — Abort &amp; Steer in an Agentic System</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1c1917;
+    --paper: #faf8f5;
+    --paper-warm: #f3efe8;
+    --accent: #9f1239;
+    --accent-soft: #9f123918;
+    --teal: #0d6e6e;
+    --teal-soft: #0d6e6e18;
+    --slate: #475569;
+    --slate-soft: #47556918;
+    --amber: #b45309;
+    --amber-soft: #b4530918;
+    --violet: #6d28d9;
+    --violet-soft: #6d28d918;
+    --rose: #be185d;
+    --rose-soft: #be185d18;
+    --emerald: #047857;
+    --emerald-soft: #04785718;
+    --code-bg: #1c1b22;
+    --code-fg: #d4d4d8;
+    --muted: #94a3b8;
+    --border: #d6d3cd;
+    --border-light: #e8e5df;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Newsreader', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 18.5px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* === HERO === */
+  .hero {
+    padding: 72px 40px 54px;
+    text-align: center;
+    border-bottom: 3px double var(--border);
+    background: linear-gradient(175deg, #f0ece4 0%, var(--paper) 60%);
+    position: relative;
+  }
+  .hero .icon { font-size: 42px; margin-bottom: 12px; display: block; filter: grayscale(0.2); }
+  .hero h1 {
+    font-family: 'Newsreader', serif;
+    font-size: clamp(28px, 4.5vw, 48px);
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 1.18;
+    margin-bottom: 10px;
+  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero .sub {
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    font-weight: 600;
+  }
+  .hero .context {
+    font-family: 'Newsreader', serif;
+    font-size: 16px;
+    color: var(--slate);
+    margin-top: 14px;
+    max-width: 640px;
+    margin-left: auto;
+    margin-right: auto;
+    font-style: italic;
+  }
+
+  /* === CONTENT === */
+  .content { max-width: 850px; margin: 0 auto; padding: 0 28px; }
+
+  /* === ENTRY === */
+  .entry {
+    padding: 44px 0;
+    border-bottom: 1px solid var(--border-light);
+    opacity: 0; transform: translateY(24px);
+    transition: opacity 0.65s ease, transform 0.65s ease;
+  }
+  .entry.vis { opacity: 1; transform: translateY(0); }
+  .entry-tag {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 7px;
+  }
+  .entry h2 { font-size: 27px; font-weight: 700; margin-bottom: 16px; line-height: 1.25; }
+  .entry h3 { font-size: 21px; font-weight: 600; margin: 30px 0 12px; }
+  .entry p { margin-bottom: 15px; }
+  .entry p strong { color: var(--accent); font-weight: 600; }
+  .entry ul, .entry ol { margin: 0 0 15px 24px; }
+  .entry li { margin-bottom: 6px; }
+
+  /* === THOUGHT === */
+  .th {
+    background: var(--paper-warm);
+    border-left: 4px solid var(--accent);
+    padding: 15px 22px;
+    margin: 22px 0;
+    border-radius: 0 8px 8px 0;
+    font-style: italic;
+    position: relative;
+  }
+  .th::before {
+    content: '💭';
+    position: absolute;
+    top: -12px;
+    left: -15px;
+    font-size: 18px;
+    font-style: normal;
+  }
+  .th .tl {
+    font-family: 'Outfit', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--accent);
+    font-style: normal;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .th.blue { border-left-color: var(--teal); }
+  .th.blue .tl { color: var(--teal); }
+  .th.violet { border-left-color: var(--violet); }
+  .th.violet .tl { color: var(--violet); }
+  .th.amber { border-left-color: var(--amber); }
+  .th.amber .tl { color: var(--amber); }
+
+  /* === CODE === */
+  .cw {
+    margin: 22px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 3px 18px rgba(0,0,0,0.10);
+  }
+  .ch {
+    background: #27262e;
+    padding: 9px 16px;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+  }
+  .ch .dt { display: flex; gap: 6px; }
+  .ch .dt span { width: 9px; height: 9px; border-radius: 50%; }
+  .ch .dt span:nth-child(1) { background: #ff5f56; }
+  .ch .dt span:nth-child(2) { background: #ffbd2e; }
+  .ch .dt span:nth-child(3) { background: #27c93f; }
+  .ch .fn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #999;
+    font-weight: 500;
+  }
+  .ch .tg {
+    margin-left: auto;
+    font-family: 'Outfit', sans-serif;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 9px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tg-bad { background: #9f123933; color: #f87171; }
+  .tg-abs { background: #6d28d933; color: #c4b5fd; }
+  .tg-impl { background: #0d6e6e33; color: #5eead4; }
+  .tg-wire { background: #47556933; color: #94a3b8; }
+  .tg-new { background: #16a34a33; color: #86efac; }
+  .tg-rule { background: #b4530933; color: #fbbf24; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.8px;
+    line-height: 1.68;
+    tab-size: 4;
+  }
+  pre .c { color: #6b7280; font-style: italic; }
+  pre .k { color: #c4b5fd; }
+  pre .t { color: #5eead4; }
+  pre .s { color: #fca5a5; }
+  pre .f { color: #fde68a; }
+  pre .p { color: #93c5fd; }
+  pre .d { color: #f0abfc; }
+  pre .n { color: #fbbf24; }
+  pre .hl {
+    background: rgba(253, 230, 138, 0.06);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+  pre .hl-r {
+    background: rgba(248, 113, 113, 0.08);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+  pre .hl-g {
+    background: rgba(134, 239, 172, 0.06);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+
+  /* === DIAGRAM === */
+  .dw { margin: 26px 0; text-align: center; }
+  .dw svg { max-width: 100%; height: auto; }
+  .dc {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-top: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 500;
+  }
+
+  /* === INSIGHT === */
+  .ins {
+    border: 2px solid;
+    border-radius: 10px;
+    padding: 20px 24px;
+    margin: 26px 0;
+  }
+  .ins.red { border-color: var(--accent); background: var(--accent-soft); }
+  .ins.teal { border-color: var(--teal); background: var(--teal-soft); }
+  .ins.violet { border-color: var(--violet); background: var(--violet-soft); }
+  .ins.amber { border-color: var(--amber); background: var(--amber-soft); }
+  .ins.slate { border-color: var(--slate); background: var(--slate-soft); }
+  .ins.rose { border-color: var(--rose); background: var(--rose-soft); }
+  .ins.emerald { border-color: var(--emerald); background: var(--emerald-soft); }
+  .ins .il {
+    font-family: 'Outfit', sans-serif;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+    margin-bottom: 7px;
+    display: block;
+  }
+  .ins.red .il { color: var(--accent); }
+  .ins.teal .il { color: var(--teal); }
+  .ins.violet .il { color: var(--violet); }
+  .ins.amber .il { color: var(--amber); }
+  .ins.slate .il { color: var(--slate); }
+  .ins.rose .il { color: var(--rose); }
+  .ins.emerald .il { color: var(--emerald); }
+  .ins p { margin-bottom: 0; }
+
+  p code, li code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14.5px;
+    background: var(--paper-warm);
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border-light);
+  }
+
+  /* === CHAPTER === */
+  .chap {
+    text-align: center;
+    padding: 44px 0 16px;
+    position: relative;
+  }
+  .chap::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0; right: 0;
+    height: 1px;
+    background: var(--border);
+  }
+  .chap span {
+    position: relative;
+    background: var(--paper);
+    padding: 0 22px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    color: var(--accent);
+  }
+
+  /* === TABLE === */
+  .ctbl {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 22px 0;
+    font-size: 15.5px;
+  }
+  .ctbl th {
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+    text-align: left;
+    padding: 11px 13px;
+    border-bottom: 2px solid var(--ink);
+    color: var(--muted);
+  }
+  .ctbl td {
+    padding: 11px 13px;
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+  }
+  .ctbl tr:last-child td { border-bottom: none; }
+  .ctbl code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: var(--paper-warm);
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+
+  .footer {
+    text-align: center;
+    padding: 44px 28px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    border-top: 3px double var(--border);
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <span class="icon">&#x26A1;</span>
+  <h1>Designing <em>Abort &amp; Steer</em><br>for an Agentic AI System</h1>
+  <p class="sub">Developer Diary &mdash; Interrupting a Running Agent Without Breaking the Contract</p>
+  <p class="context">The agent runs in a loop: stream a response, execute tools, repeat. What happens when the user says "stop" in the middle of all that?</p>
+</header>
+
+<div class="content">
+
+<!-- ================================================================ -->
+<!-- PROLOGUE: THE PROBLEM                                           -->
+<!-- ================================================================ -->
+<section class="entry">
+  <div class="entry-tag">The Problem</div>
+  <h2>You Can't Just Kill an Agent Mid-Turn</h2>
+
+  <p>A user clicks "Stop." It sounds simple. But the agent is mid-stream: Claude is generating text, tool calls are half-formed, the JSON for a tool input hasn't finished arriving. Or maybe the agent finished streaming and is now executing three tools in parallel &mdash; two have returned, one is still running. Or the agent has paused entirely, waiting for a browser-side tool to report back.</p>
+
+  <p>In all three cases, the user wants to stop. And in all three cases, simply killing the process leaves behind a <strong>corrupted message chain</strong> that makes it impossible to resume the conversation.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "The problem isn't cancellation. I know how to cancel an asyncio task. The problem is what the conversation looks like <em>after</em> I cancel. Claude's API has strict rules about message ordering. Every tool_use block must have a matching tool_result. Messages must alternate user/assistant. Thinking blocks have cryptographic signatures. If I cancel mid-stream and naively save whatever partial state I have, the next API call will return a 400 and the conversation is dead."
+  </div>
+
+  <p>And then there's "steer" &mdash; a user wants to not just stop, but <em>redirect</em>. "Stop what you're doing and do this instead." That's abort plus immediately continuing with a new instruction. The message chain has to be valid at the abort point <em>and</em> ready to accept a new user message.</p>
+
+  <div class="ins red">
+    <span class="il">&#x1F6A8; The Core Challenge</span>
+    <p>The agent loop was designed to run to completion. Every step assumes the previous step finished cleanly. There is no concept of "mid-step state." Introducing abort means introducing the idea that <strong>any step can be interrupted at any point</strong>, and the system must produce a valid message chain from whatever partial state exists. This is a fundamental change to the agent's execution model.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 1: THE API CONTRACT                                     -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 1 &mdash; The Rules We Cannot Break</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Contract</div>
+  <h2>Claude's Message Chain: The Six Commandments</h2>
+
+  <p>Before designing any abort logic, we need to internalize exactly what Claude's API enforces. The SDK does zero client-side validation &mdash; everything is validated server-side and violations come back as HTTP 400. Here are the non-negotiable rules:</p>
+
+  <h3>Rule 1: Role Alternation</h3>
+  <p>Messages must have role <code>"user"</code> or <code>"assistant"</code>. The first message must be <code>"user"</code>. The system prompt goes in a separate top-level parameter, not in the message chain.</p>
+
+  <h3>Rule 2: tool_use &rarr; tool_result Pairing</h3>
+  <p>This is the one that makes abort hard. <strong>Every <code>tool_use</code> block in an assistant message must have a corresponding <code>tool_result</code> block in the immediately following user message.</strong> The <code>tool_use_id</code> must match exactly. If an assistant emits three <code>tool_use</code> blocks, the next user message must contain three <code>tool_result</code> blocks &mdash; no exceptions.</p>
+
+  <h3>Rule 3: Content Block Ordering</h3>
+  <p>In user messages, <code>tool_result</code> blocks must come before <code>text</code> blocks. In assistant messages, the API ordering (<code>thinking</code> &rarr; <code>text</code> &rarr; <code>tool_use</code>) must be preserved.</p>
+
+  <h3>Rule 4: Extended Thinking Integrity</h3>
+  <p>Thinking blocks from the current tool-use loop must be preserved. The <code>signature</code> field is cryptographic &mdash; <strong>modifying a single character invalidates the signature</strong> and the API rejects the message. <code>redacted_thinking</code> blocks must be passed through untouched.</p>
+
+  <h3>Rule 5: Incomplete Responses</h3>
+  <p>If a stream is aborted mid-way, you may have partial content blocks. A <code>tool_use</code> block whose <code>input_json_delta</code> events never completed will have <strong>malformed JSON</strong>. Such blocks must be removed &mdash; they cannot be sent back to the API.</p>
+
+  <h3>Rule 6: stop_reason Semantics</h3>
+
+  <table class="ctbl">
+    <thead>
+      <tr>
+        <th>stop_reason</th>
+        <th>Response State</th>
+        <th>What Must Happen</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>end_turn</code></td>
+        <td>Complete</td>
+        <td>Nothing special</td>
+      </tr>
+      <tr>
+        <td><code>tool_use</code></td>
+        <td>Complete, expecting results</td>
+        <td>Must provide <code>tool_result</code> for every <code>tool_use</code></td>
+      </tr>
+      <tr>
+        <td><code>max_tokens</code></td>
+        <td>Truncated, possibly mid-block</td>
+        <td>May have incomplete <code>tool_use</code></td>
+      </tr>
+      <tr>
+        <td><code>pause_turn</code></td>
+        <td>Server tool loop limit</td>
+        <td>May have pending <code>server_tool_use</code></td>
+      </tr>
+      <tr>
+        <td><em>None (aborted)</em></td>
+        <td><em>Stream never finished</em></td>
+        <td><em>Any block could be incomplete</em></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="ins amber">
+    <span class="il">&#x1F511; The Pairing Rule Is Everything</span>
+    <p>Almost all abort complexity flows from Rule 2. If the assistant message has <code>tool_use</code> blocks, we <em>must</em> provide matching <code>tool_result</code> blocks, even if the tools never ran. This means abort cannot simply discard the assistant message &mdash; if any <code>tool_use</code> blocks completed their streaming, they're in the accumulated message, and we're contractually obligated to answer them. The only escape hatch is to remove incomplete <code>tool_use</code> blocks before appending the assistant message, and synthesize <code>tool_result</code> blocks for any that remain.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 2: THE THREE ABORT SCENARIOS                            -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 2 &mdash; The Three Abort Scenarios</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Scenario Analysis</div>
+  <h2>Where the Agent Can Be When the User Says "Stop"</h2>
+
+  <p>The agent loop has three distinct phases where it blocks on I/O. Abort can happen during any of them, and each requires different cleanup logic.</p>
+
+  <div class="dw">
+    <svg viewBox="0 0 760 280" xmlns="http://www.w3.org/2000/svg">
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">THREE ABORT SCENARIOS</text>
+
+      <!-- Scenario A: Streaming -->
+      <rect x="20" y="42" width="225" height="220" rx="8" fill="#9f1239" opacity="0.06" stroke="#9f1239" stroke-width="1.5"/>
+      <text x="132" y="68" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#9f1239" letter-spacing="1.5">SCENARIO A</text>
+      <text x="132" y="92" text-anchor="middle" font-family="Newsreader, serif" font-size="15" fill="#1c1917" font-weight="600">Abort During Streaming</text>
+      <text x="132" y="120" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Claude is generating text</text>
+      <text x="132" y="138" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">and tool_use blocks.</text>
+      <text x="132" y="156" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Some blocks finished,</text>
+      <text x="132" y="174" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">others are partial.</text>
+      <text x="132" y="205" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#9f1239">Partial tool_use JSON</text>
+      <text x="132" y="222" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#9f1239">Incomplete thinking</text>
+      <text x="132" y="248" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#9f1239" font-weight="600">HARDEST</text>
+
+      <!-- Scenario B: Tool Execution -->
+      <rect x="267" y="42" width="225" height="220" rx="8" fill="#b45309" opacity="0.06" stroke="#b45309" stroke-width="1.5"/>
+      <text x="380" y="68" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#b45309" letter-spacing="1.5">SCENARIO B</text>
+      <text x="380" y="92" text-anchor="middle" font-family="Newsreader, serif" font-size="15" fill="#1c1917" font-weight="600">Abort During Tools</text>
+      <text x="380" y="120" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Backend tools are</text>
+      <text x="380" y="138" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">executing in parallel.</text>
+      <text x="380" y="156" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Some completed,</text>
+      <text x="380" y="174" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">others still running.</text>
+      <text x="380" y="205" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#b45309">Assistant msg committed</text>
+      <text x="380" y="222" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#b45309">Need all tool_results</text>
+      <text x="380" y="248" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#b45309" font-weight="600">MODERATE</text>
+
+      <!-- Scenario C: Frontend Wait -->
+      <rect x="515" y="42" width="225" height="220" rx="8" fill="#6d28d9" opacity="0.06" stroke="#6d28d9" stroke-width="1.5"/>
+      <text x="627" y="68" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#6d28d9" letter-spacing="1.5">SCENARIO C</text>
+      <text x="627" y="92" text-anchor="middle" font-family="Newsreader, serif" font-size="15" fill="#1c1917" font-weight="600">Abort During Relay</text>
+      <text x="627" y="120" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Agent paused, waiting</text>
+      <text x="627" y="138" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">for relay tool results.</text>
+      <text x="627" y="156" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Backend results exist.</text>
+      <text x="627" y="174" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Frontend results missing.</text>
+      <text x="627" y="205" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#6d28d9">PendingToolRelay persisted</text>
+      <text x="627" y="222" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10.5" fill="#6d28d9">Must clear pending_relay</text>
+      <text x="627" y="248" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#6d28d9" font-weight="600">EASIEST</text>
+    </svg>
+    <div class="dc">Fig 1 &mdash; Each scenario requires different cleanup logic to produce a valid chain</div>
+  </div>
+
+  <h3>Scenario A: Abort During API Streaming</h3>
+
+  <p>This is the hardest case. The stream from <code>self.provider.generate_stream()</code> (which internally calls <code>anthropic_stream_with_backoff()</code>) is open. The stream processor (<code>_process_stream_events()</code>) has received some events but not all. Content blocks may be in various states of completion.</p>
+
+  <p>The key data structure is already in the stream processor: <code>_process_stream_events()</code> in <code>providers/anthropic/retry.py</code> tracks content blocks via <code>block_types</code> and <code>tool_buffers</code>. When we cancel the stream, we know which blocks received a <code>content_block_stop</code> event (they were popped from the buffers) and which are still partial (they remain in the buffers).</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/anthropic_agent.py &mdash; _resume_loop()</span>
+      <span class="tg tg-bad">No Abort Path</span>
+    </div>
+    <pre><span class="c"># AnthropicAgent._resume_loop() &mdash; the loop assumes every step completes</span>
+<span class="k">while</span> self.agent_config.current_step &lt; self.max_steps:
+
+    <span class="c"># Compaction</span>
+    did_compact, compacted_messages = <span class="k">await</span> self.compactor.apply_compaction(...)
+
+<span class="hl-r">    <span class="c"># This call blocks until the ENTIRE stream completes.</span></span>
+<span class="hl-r">    <span class="c"># There is no way to interrupt it from outside.</span></span>
+<span class="hl-r">    <span class="k">if</span> queue:</span>
+<span class="hl-r">        response_message = <span class="k">await</span> self.provider.generate_stream(</span>
+<span class="hl-r">            system_prompt=..., messages=..., tool_schemas=...,</span>
+<span class="hl-r">            queue=queue, stream_formatter=stream_formatter, ...,</span>
+<span class="hl-r">        )</span>
+<span class="hl-r">    <span class="k">else</span>:</span>
+<span class="hl-r">        response_message = <span class="k">await</span> self.provider.generate(...)</span>
+
+    <span class="c"># Assumes response_message is complete and valid</span>
+    self.agent_config.current_step += 1
+    self._accumulate_usage(response_message.usage)
+    self.agent_config.context_messages.append(response_message)
+    self.agent_config.conversation_history.append(response_message)</pre>
+  </div>
+
+  <p><strong>What must happen on abort</strong>: Stop consuming stream events. Determine which content blocks completed (received <code>content_block_stop</code>). Remove any incomplete <code>tool_use</code> blocks from the assistant message. Keep completed <code>text</code> and <code>thinking</code> blocks. If any completed <code>tool_use</code> blocks remain, synthesize <code>tool_result</code> blocks with an abort indicator. Append the sanitized assistant message and synthetic tool results to the chain.</p>
+
+  <h3>Scenario B: Abort During Tool Execution</h3>
+
+  <p>The assistant message is already committed to <code>self.agent_config.context_messages</code>. The tool execution is running via <code>self.tool_registry.execute_tools()</code>. Some tasks may have completed; others are in-flight.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/anthropic_agent.py &mdash; tool execution</span>
+      <span class="tg tg-bad">No Cancellation</span>
+    </div>
+    <pre><span class="c"># AnthropicAgent._resume_loop() &mdash; no way to cancel in-flight tools</span>
+<span class="k">if</span> stop_reason == <span class="s">"tool_use"</span>:
+    tool_calls = self._extract_tool_calls(response_message)
+
+    <span class="k">if</span> <span class="k">not</span> needs_relay:
+<span class="hl-r">        <span class="c"># Blocks until ALL tools complete. No partial return.</span></span>
+<span class="hl-r">        tool_results = <span class="k">await</span> self.tool_registry.execute_tools(</span>
+<span class="hl-r">            tool_calls, ...  <span class="c"># parallel up to max_parallel_tool_calls</span></span>
+<span class="hl-r">        )</span>
+
+        <span class="c"># Only reached after every tool finishes</span>
+        tool_result_message = self._build_tool_result_message(tool_results)
+        self.agent_config.context_messages.append(tool_result_message)</pre>
+  </div>
+
+  <p><strong>What must happen on abort</strong>: Cancel in-flight tool tasks. Collect results from completed tools. Synthesize <code>tool_result</code> blocks for cancelled tools (with an abort message). Combine real and synthetic results. Append them as the user message. The assistant message is already in the chain, so we <em>must</em> provide all matching tool results.</p>
+
+  <h3>Scenario C: Abort During Relay Wait</h3>
+
+  <p>The agent has returned with <code>stop_reason="relay"</code>. Backend results are saved in <code>self.agent_config.pending_relay.completed_results</code>. Frontend results haven't arrived. The agent is not running &mdash; it's in a paused state persisted to the database via the <code>PendingToolRelay</code> dataclass.</p>
+
+  <p><strong>What must happen on abort</strong>: Synthesize <code>tool_result</code> blocks for the pending frontend/confirmation tools in <code>pending_relay.frontend_calls</code> and <code>pending_relay.confirmation_calls</code>. Combine with existing <code>completed_results</code>. Append to <code>context_messages</code>. Clear <code>agent_config.pending_relay</code> from both memory and persisted state. This is the simplest scenario because the agent isn't running &mdash; we just need to fix up the state.</p>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 3: THE MESSAGE SANITIZER                                -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 3 &mdash; The Message Sanitizer</span></div>
+
+<section class="entry">
+  <div class="entry-tag">New Module</div>
+  <h2>One Place That Knows How to Fix a Broken Chain</h2>
+
+  <p>The central insight is that all three abort scenarios converge on the same need: <strong>take a potentially invalid message chain and make it valid</strong>. Rather than sprinkling fix-up logic across the streaming layer, the tool executor, and the frontend-wait handler, we extract it into a single module.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "I need a module that's the single source of truth for 'what makes a message chain valid.' It should be pure logic &mdash; no async, no I/O, no framework dependencies. Just functions that take message data in, return cleaned message data out. This makes it trivially testable and keeps the async abort orchestration separate from the data cleanup."
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">core/message_sanitizer.py</span>
+      <span class="tg tg-new">New Module</span>
+    </div>
+    <pre><span class="s">"""Message chain sanitization for abort/steer scenarios.
+
+Pure functions that take potentially invalid message chain state
+and produce valid state that satisfies Claude's API contract.
+No async, no I/O &mdash; just data transformation.
+"""</span>
+
+<span class="k">from</span> __future__ <span class="k">import</span> annotations
+
+
+<span class="k">def</span> <span class="f">sanitize_partial_assistant_message</span>(
+    <span class="p">content_blocks</span>: list[dict],
+    <span class="p">completed_block_indices</span>: set[int],
+) -> tuple[list[dict], list[str]]:
+    <span class="s">"""Remove incomplete blocks from a partial assistant message.
+
+    Returns:
+        (clean_blocks, orphaned_tool_use_ids)
+        clean_blocks: Only blocks that fully completed streaming.
+        orphaned_tool_use_ids: IDs of tool_use blocks that completed
+            but whose tools never ran (need synthetic results).
+    """</span>
+    clean_blocks: list[dict] = []
+    orphaned_tool_use_ids: list[str] = []
+
+    <span class="k">for</span> i, block <span class="k">in</span> enumerate(content_blocks):
+<span class="hl">        <span class="k">if</span> i <span class="k">not in</span> completed_block_indices:</span>
+<span class="hl">            <span class="k">continue</span>  <span class="c"># Drop incomplete blocks entirely</span></span>
+
+        clean_blocks.append(block)
+
+        <span class="k">if</span> block.get(<span class="s">"type"</span>) == <span class="s">"tool_use"</span>:
+            orphaned_tool_use_ids.append(block[<span class="s">"id"</span>])
+
+    <span class="k">return</span> clean_blocks, orphaned_tool_use_ids
+
+
+<span class="k">def</span> <span class="f">synthesize_abort_tool_results</span>(
+    <span class="p">tool_use_ids</span>: list[str],
+    <span class="p">reason</span>: str = <span class="s">"Tool execution was cancelled by user."</span>,
+) -> list[dict]:
+    <span class="s">"""Create tool_result blocks for tool_use blocks that need answers.
+
+    These are "synthetic" results &mdash; the tools never ran (or were
+    cancelled), but the API contract demands a tool_result for every
+    tool_use. We provide one with is_error=True.
+    """</span>
+    <span class="k">return</span> [
+        {
+            <span class="s">"type"</span>: <span class="s">"tool_result"</span>,
+            <span class="s">"tool_use_id"</span>: tool_id,
+            <span class="s">"content"</span>: reason,
+            <span class="s">"is_error"</span>: <span class="k">True</span>,
+        }
+        <span class="k">for</span> tool_id <span class="k">in</span> tool_use_ids
+    ]
+
+
+<span class="k">def</span> <span class="f">ensure_chain_validity</span>(
+    <span class="p">messages</span>: list[dict],
+) -> list[dict]:
+    <span class="s">"""Walk the entire chain and fix structural violations.
+
+    Fixes:
+    - Trailing assistant messages with tool_use but no following
+      tool_result &rarr; synthesize results
+    - tool_result blocks after text blocks in user messages
+      &rarr; reorder content
+    - Orphaned tool_result blocks with no matching tool_use
+      &rarr; remove
+    """</span>
+    result = []
+    <span class="k">for</span> i, msg <span class="k">in</span> enumerate(messages):
+        <span class="k">if</span> msg[<span class="s">"role"</span>] == <span class="s">"assistant"</span>:
+            tool_use_ids = {
+                b[<span class="s">"id"</span>] <span class="k">for</span> b <span class="k">in</span> msg.get(<span class="s">"content"</span>, [])
+                <span class="k">if</span> isinstance(b, dict) <span class="k">and</span> b.get(<span class="s">"type"</span>) == <span class="s">"tool_use"</span>
+            }
+            <span class="k">if</span> tool_use_ids:
+                <span class="c"># Check if next message has matching results</span>
+                next_msg = messages[i + 1] <span class="k">if</span> i + 1 &lt; len(messages) <span class="k">else</span> <span class="k">None</span>
+                <span class="k">if</span> next_msg <span class="k">is None</span> <span class="k">or</span> next_msg[<span class="s">"role"</span>] != <span class="s">"user"</span>:
+                    <span class="c"># Trailing assistant with tool_use and no results</span>
+                    result.append(msg)
+                    result.append({
+                        <span class="s">"role"</span>: <span class="s">"user"</span>,
+                        <span class="s">"content"</span>: synthesize_abort_tool_results(
+                            list(tool_use_ids)
+                        ),
+                    })
+                    <span class="k">continue</span>
+        result.append(msg)
+    <span class="k">return</span> result</pre>
+  </div>
+
+  <div class="ins teal">
+    <span class="il">&#x1F9E9; Why Pure Functions Matter Here</span>
+    <p>The sanitizer is stateless. It takes data in, returns data out. It doesn't know about asyncio, queues, streams, or databases. This means: (1) you can unit test every edge case with simple dicts, (2) the abort orchestration layer stays focused on <em>when</em> to sanitize, not <em>how</em>, and (3) the sanitizer can be reused anywhere &mdash; in the main agent, in sub-agents, in a standalone recovery tool.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 4: THE CANCELLATION SIGNAL                              -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 4 &mdash; Threading the Cancellation Signal</span></div>
+
+<section class="entry">
+  <div class="entry-tag">The Mechanism</div>
+  <h2>An <code>asyncio.Event</code> Threaded Through Every Blocking Call</h2>
+
+  <p>The agent needs a way to signal "stop" that every blocking operation can check cooperatively. The right primitive is <code>asyncio.Event</code>: it's set from outside the loop, and each layer checks it between iterations.</p>
+
+  <div class="th blue">
+    <span class="tl">Developer's inner voice</span>
+    "I considered cancelling the asyncio Task directly, but that's too blunt. A cancelled task raises CancelledError at the nearest await point, which could be inside the Anthropic SDK, inside aiohttp, inside a database write &mdash; anywhere. I'd have no control over where execution stops. An Event is cooperative: each layer checks it at a safe boundary and exits cleanly."
+  </div>
+
+  <div class="cw">
+    <div name="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/retry.py &mdash; with cancellation</span>
+      <span class="tg tg-impl">Modified</span>
+    </div>
+    <pre><span class="k">async def</span> <span class="f">anthropic_stream_with_backoff</span>(
+    client: anthropic.AsyncAnthropic,
+    request_params: dict,
+    queue: Optional[asyncio.Queue] = <span class="k">None</span>,
+    max_retries: int = 5,
+    base_delay: float = 5.0,
+    stream_formatter: StreamFormatter = ...,
+    stream_tool_results: bool = <span class="k">True</span>,
+    agent_uuid: str = <span class="s">""</span>,
+<span class="hl-g">    cancellation_event: Optional[asyncio.Event] = <span class="k">None</span>,  <span class="c"># NEW</span></span>
+) -> <span class="t">StreamResult</span>:                                       <span class="c"># NEW return type</span>
+    <span class="s">"""Execute Anthropic streaming with backoff and optional cancellation."""</span>
+
+    <span class="k">for</span> attempt <span class="k">in</span> range(max_retries):
+        <span class="k">try</span>:
+            <span class="k">async with</span> client.beta.messages.stream(**request_params) <span class="k">as</span> stream:
+                <span class="k">if</span> queue:
+<span class="hl-g">                    accumulated, completed_blocks, was_cancelled = \</span>
+<span class="hl-g">                        <span class="k">await</span> _process_stream_events(</span>
+<span class="hl-g">                            stream, queue, stream_formatter=stream_formatter,</span>
+<span class="hl-g">                            cancellation_event=cancellation_event,</span>
+<span class="hl-g">                            ...,</span>
+<span class="hl-g">                        )</span>
+                <span class="k">else</span>:
+                    <span class="k">async for</span> event <span class="k">in</span> stream:
+<span class="hl-g">                        <span class="k">if</span> cancellation_event <span class="k">and</span> cancellation_event.is_set():</span>
+<span class="hl-g">                            <span class="k">break</span></span>
+                    accumulated = <span class="k">await</span> stream.get_final_message()
+
+<span class="hl-g">                <span class="k">return</span> <span class="t">StreamResult</span>(</span>
+<span class="hl-g">                    message=accumulated,</span>
+<span class="hl-g">                    completed_blocks=completed_blocks,</span>
+<span class="hl-g">                    was_cancelled=was_cancelled,</span>
+<span class="hl-g">                )</span>
+        <span class="k">except</span> ...:
+            <span class="c"># existing retry logic unchanged</span></pre>
+  </div>
+
+  <p>The same event flows into the stream event processor. <code>_process_stream_events()</code> in <code>providers/anthropic/retry.py</code> checks the event on each iteration and, on cancellation, stops processing but returns its current state &mdash; which blocks completed, which are still partial. It emits canonical <code>StreamDelta</code> objects (<code>TextDelta</code>, <code>ToolCallDelta</code>, etc.) to the queue via the <code>StreamFormatter</code>.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/retry.py &mdash; _process_stream_events with cancellation</span>
+      <span class="tg tg-impl">Modified</span>
+    </div>
+    <pre><span class="k">async def</span> <span class="f">_process_stream_events</span>(
+    stream: BetaAsyncMessageStream,
+    queue: asyncio.Queue,
+    stream_formatter: StreamFormatter,
+    stream_tool_results: bool = <span class="k">True</span>,
+    agent_uuid: str = <span class="s">""</span>,
+<span class="hl-g">    cancellation_event: Optional[asyncio.Event] = <span class="k">None</span>,</span>
+) -> <span class="t">tuple[Message, set[int], bool]</span>:
+    block_types: dict[int, str] = {}
+    tool_buffers: dict[int, dict[str, Any]] = {}
+<span class="hl-g">    completed_blocks: set[int] = set()  <span class="c"># Tracks blocks that got content_block_stop</span></span>
+
+    <span class="k">async for</span> event <span class="k">in</span> stream:
+<span class="hl-g">        <span class="c"># ---- Check cancellation at each event boundary ----</span></span>
+<span class="hl-g">        <span class="k">if</span> cancellation_event <span class="k">and</span> cancellation_event.is_set():</span>
+<span class="hl-g">            <span class="k">break</span></span>
+
+        <span class="c"># ... translate Anthropic events into StreamDelta objects ...</span>
+        <span class="c"># Emits TextDelta, ThinkingDelta, ToolCallDelta via queue</span>
+
+        <span class="k">if</span> event.type == <span class="s">"content_block_stop"</span>:
+<span class="hl-g">            completed_blocks.add(event.index)  <span class="c"># Track completion</span></span>
+            <span class="c"># ... existing stop logic (emit final ToolCallDelta, etc.) ...</span>
+
+<span class="hl-g">    was_cancelled = cancellation_event <span class="k">and</span> cancellation_event.is_set()</span>
+    accumulated = <span class="k">await</span> stream.get_final_message()
+    <span class="k">return</span> accumulated, completed_blocks, was_cancelled</pre>
+  </div>
+
+  <div class="ins violet">
+    <span class="il">&#x1F3AF; The completed_blocks Set Is the Key</span>
+    <p>The formatter already tracks every block by index. We just need one additional <code>set[int]</code> to record which blocks received <code>content_block_stop</code>. On abort, this set tells us exactly which blocks are safe to keep and which must be discarded. No heuristics, no guessing &mdash; the streaming protocol gives us a definitive answer.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 5: AGENT PHASE TRACKING                                 -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 5 &mdash; Agent Phase Tracking</span></div>
+
+<section class="entry">
+  <div class="entry-tag">New Concept</div>
+  <h2>The Agent Needs to Know Where It Is</h2>
+
+  <p>When <code>abort()</code> is called, it needs to know which cleanup path to take. Is the agent streaming? Executing tools? Waiting for frontend? The agent doesn't currently track this. We introduce a simple enum.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/anthropic_agent.py &mdash; phase tracking</span>
+      <span class="tg tg-new">New</span>
+    </div>
+    <pre><span class="k">from</span> enum <span class="k">import</span> Enum
+
+
+<span class="k">class</span> <span class="t">AgentPhase</span>(Enum):
+    <span class="s">"""Where the agent is in its execution lifecycle."""</span>
+    IDLE = <span class="s">"idle"</span>                          <span class="c"># Not running</span>
+    STREAMING = <span class="s">"streaming"</span>                <span class="c"># Waiting for API response</span>
+    EXECUTING_TOOLS = <span class="s">"executing_tools"</span>    <span class="c"># Running backend tools</span>
+    AWAITING_RELAY = <span class="s">"awaiting_relay"</span>      <span class="c"># Waiting for frontend/confirmation tools</span>
+
+
+<span class="c"># In AnthropicAgent._resume_loop():</span>
+<span class="k">while</span> self.agent_config.current_step &lt; self.max_steps:
+
+<span class="hl-g">    self._phase = <span class="t">AgentPhase</span>.STREAMING</span>
+    <span class="k">if</span> queue:
+        response_message = <span class="k">await</span> self.provider.generate_stream(...)
+    <span class="k">else</span>:
+        response_message = <span class="k">await</span> self.provider.generate(...)
+
+    <span class="c"># ... append to context_messages, conversation_history ...</span>
+
+    <span class="k">if</span> stop_reason == <span class="s">"tool_use"</span>:
+        <span class="k">if</span> needs_relay:
+<span class="hl-g">            self._phase = <span class="t">AgentPhase</span>.AWAITING_RELAY</span>
+            <span class="c"># ... set pending_relay, persist, return AgentResult("relay") ...</span>
+        <span class="k">else</span>:
+<span class="hl-g">            self._phase = <span class="t">AgentPhase</span>.EXECUTING_TOOLS</span>
+            tool_results = <span class="k">await</span> self.tool_registry.execute_tools(...)
+            <span class="c"># ...</span>
+
+<span class="hl-g">self._phase = <span class="t">AgentPhase</span>.IDLE</span></pre>
+  </div>
+
+  <p>The phase is set at the boundaries between operations. It's read by <code>abort()</code> to determine which cleanup path to take. For the <code>AWAITING_RELAY</code> phase, it's also persisted to the database so abort can work even if the agent process has restarted.</p>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 6: THE ABORT METHOD                                     -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 6 &mdash; The abort() Method</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Core Implementation</div>
+  <h2>Wiring It All Together</h2>
+
+  <p>The <code>abort()</code> method is the public API. It reads the current phase, signals cancellation, waits for the current operation to acknowledge, and then uses the sanitizer to fix the chain.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/anthropic_agent.py &mdash; abort()</span>
+      <span class="tg tg-new">New Method</span>
+    </div>
+    <pre><span class="k">async def</span> <span class="f">abort</span>(<span class="p">self</span>) -> <span class="t">AgentResult</span>:
+    <span class="s">"""Cancel the current agent turn and produce a valid message chain.
+
+    Safe to call from any context (another task, a signal handler, an
+    HTTP endpoint). The agent loop detects the cancellation cooperatively
+    and cleans up.
+
+    Returns:
+        AgentResult with stop_reason="aborted"
+    """</span>
+<span class="hl">    <span class="c"># 1. Signal cancellation</span></span>
+<span class="hl">    self._cancellation_event.set()</span>
+
+    phase = self._phase
+
+    <span class="k">if</span> phase == <span class="t">AgentPhase</span>.IDLE:
+        <span class="c"># Nothing running &mdash; just return current state</span>
+        <span class="k">return</span> self._build_aborted_result()
+
+    <span class="k">if</span> phase == <span class="t">AgentPhase</span>.STREAMING:
+        <span class="c"># _process_stream_events() will break out of its loop.</span>
+        <span class="c"># _resume_loop() will receive a StreamResult with was_cancelled=True.</span>
+        <span class="c"># It will use the sanitizer to clean up the partial message.</span>
+        <span class="c"># We wait for the loop to finish its cleanup.</span>
+<span class="hl">        <span class="k">await</span> self._abort_completion.wait()</span>
+
+    <span class="k">elif</span> phase == <span class="t">AgentPhase</span>.EXECUTING_TOOLS:
+        <span class="c"># Tool tasks will check the event and bail out.</span>
+        <span class="c"># The main loop collects partial results and synthesizes</span>
+        <span class="c"># tool_result blocks for cancelled tools.</span>
+<span class="hl">        <span class="k">await</span> self._abort_completion.wait()</span>
+
+    <span class="k">elif</span> phase == <span class="t">AgentPhase</span>.AWAITING_RELAY:
+        <span class="c"># Agent is paused (not running). We fix up the chain directly.</span>
+        <span class="c"># PendingToolRelay holds frontend_calls, confirmation_calls,</span>
+        <span class="c"># and completed_results from backend tools.</span>
+        <span class="k">from</span> .message_sanitizer <span class="k">import</span> synthesize_abort_tool_results
+
+        relay = self.agent_config.pending_relay
+        pending_ids = [
+            tc.tool_id <span class="k">for</span> tc <span class="k">in</span> relay.frontend_calls + relay.confirmation_calls
+        ]
+        synthetic_results = synthesize_abort_tool_results(pending_ids)
+        all_results = relay.completed_results + synthetic_results
+
+        tool_result_message = self._build_tool_result_message(all_results)
+        self.agent_config.context_messages.append(tool_result_message)
+
+        <span class="c"># Clear pending relay state</span>
+        self.agent_config.pending_relay = <span class="k">None</span>
+        self._phase = <span class="t">AgentPhase</span>.IDLE
+
+        <span class="k">await</span> self._persist_state()
+
+    <span class="k">return</span> self._build_aborted_result()</pre>
+  </div>
+
+  <p>Notice the two different patterns: for <code>STREAMING</code> and <code>EXECUTING_TOOLS</code>, abort sets the event and <em>waits</em> for the main loop to handle cleanup (via <code>_abort_completion</code>). For <code>AWAITING_RELAY</code>, abort does the cleanup directly because the main loop isn't running.</p>
+
+  <div class="th amber">
+    <span class="tl">Developer's inner voice</span>
+    "The abort_completion event is crucial. Without it, the caller of abort() would return before the message chain is actually fixed. The main loop sets abort_completion after it has sanitized the chain and saved state. This gives abort() a clean synchronization point: when it returns, the chain is guaranteed valid."
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 7: TOOL EXECUTION CANCELLATION                          -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 7 &mdash; Cancelling In-Flight Tools</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Parallel Execution</div>
+  <h2>From <code>asyncio.gather</code> to <code>asyncio.wait</code></h2>
+
+  <p>The current <code>tool_registry.execute_tools()</code> uses parallel execution (up to <code>max_parallel_tool_calls</code>). This waits for <em>all</em> tasks and provides no way to bail out early. We need to switch to <code>asyncio.wait()</code> which gives us fine-grained control over which tasks completed and which to cancel.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">tools/registry.py &mdash; execute_tools with cancellation</span>
+      <span class="tg tg-impl">Modified</span>
+    </div>
+    <pre><span class="k">async def</span> <span class="f">execute_tools</span>(
+    <span class="p">self</span>,
+    <span class="p">tool_calls</span>: list[ToolCallInfo],
+    <span class="p">cancellation_event</span>: Optional[asyncio.Event] = <span class="k">None</span>,
+) -> list[ToolResultContent]:
+    <span class="s">"""Execute tools with cancellation support."""</span>
+    tasks: dict[asyncio.Task, str] = {}  <span class="c"># task &rarr; tool_use_id</span>
+
+    <span class="k">for</span> tc <span class="k">in</span> tool_calls:
+        task = asyncio.create_task(
+            self._execute_single_tool(tc)
+        )
+        tasks[task] = tc.id
+
+    results: dict[str, dict] = {}  <span class="c"># tool_use_id &rarr; result</span>
+    pending = set(tasks.keys())
+
+    <span class="k">while</span> pending:
+<span class="hl-g">        <span class="c"># Wait for either a task to complete or cancellation</span></span>
+<span class="hl-g">        cancel_task = asyncio.create_task(</span>
+<span class="hl-g">            cancellation_event.wait()</span>
+<span class="hl-g">        ) <span class="k">if</span> cancellation_event <span class="k">else</span> <span class="k">None</span></span>
+<span class="hl-g">        done, pending = <span class="k">await</span> asyncio.wait(</span>
+<span class="hl-g">            pending | {cancel_task},</span>
+<span class="hl-g">            return_when=asyncio.FIRST_COMPLETED,</span>
+<span class="hl-g">        )</span>
+
+        <span class="k">for</span> task <span class="k">in</span> done:
+            <span class="k">if</span> task == cancel_task:
+                <span class="c"># Cancellation signalled &mdash; cancel remaining tools</span>
+                <span class="k">for</span> p <span class="k">in</span> pending:
+                    p.cancel()
+                <span class="c"># Synthesize results for cancelled tools</span>
+                <span class="k">for</span> p <span class="k">in</span> pending:
+                    tool_id = tasks.get(p)
+                    <span class="k">if</span> tool_id <span class="k">and</span> tool_id <span class="k">not in</span> results:
+                        results[tool_id] = {
+                            <span class="s">"type"</span>: <span class="s">"tool_result"</span>,
+                            <span class="s">"tool_use_id"</span>: tool_id,
+                            <span class="s">"content"</span>: <span class="s">"Cancelled by user."</span>,
+                            <span class="s">"is_error"</span>: <span class="k">True</span>,
+                        }
+                pending = set()
+                <span class="k">break</span>
+            <span class="k">else</span>:
+                <span class="c"># Normal tool completion</span>
+                tool_id = tasks[task]
+                results[tool_id] = task.result()
+                pending.discard(cancel_task)
+
+        cancel_task.cancel()  <span class="c"># Clean up if not triggered</span>
+
+    <span class="k">return</span> [results[tc.id] <span class="k">for</span> tc <span class="k">in</span> tool_calls]</pre>
+  </div>
+
+  <div class="ins teal">
+    <span class="il">&#x2694;&#xFE0F; Race Condition: Tool Completes During Abort</span>
+    <p>A tool might complete in the same event loop tick that cancellation is signalled. The <code>asyncio.wait()</code> pattern handles this correctly: tasks in the <code>done</code> set already have their results, regardless of the cancellation event. We process completed tasks first, then cancel the rest. No results are lost.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 8: THE STEER METHOD                                     -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 8 &mdash; Steer: Abort + Redirect</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Composition</div>
+  <h2>Steer Is Abort Followed by a New User Message</h2>
+
+  <p>With abort producing a valid message chain, steer is almost trivial. Abort, then append a new user message with the steering instruction, then re-enter the agent loop.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/anthropic_agent.py &mdash; steer()</span>
+      <span class="tg tg-new">New Method</span>
+    </div>
+    <pre><span class="k">async def</span> <span class="f">steer</span>(
+    <span class="p">self</span>,
+    <span class="p">new_instruction</span>: str,
+    <span class="p">queue</span>: Optional[asyncio.Queue] = <span class="k">None</span>,
+    <span class="p">stream_formatter</span>: Optional[str | StreamFormatter] = <span class="s">"json"</span>,
+) -> <span class="t">AgentResult</span>:
+    <span class="s">"""Abort the current turn and redirect with a new instruction.
+
+    This is the "steer" operation: stop what you're doing, here's
+    what I want instead.
+
+    Args:
+        new_instruction: The user's new direction.
+        queue: SSE queue for streaming output.
+        stream_formatter: Output formatter.
+
+    Returns:
+        AgentResult from the redirected run.
+    """</span>
+    <span class="c"># Step 1: Abort cleanly (produces valid chain)</span>
+    <span class="k">await</span> self.abort()
+
+    <span class="c"># Step 2: Build a Message with the new instruction</span>
+    <span class="k">from</span> ..core.messages <span class="k">import</span> Message
+    <span class="k">from</span> ..core.types <span class="k">import</span> TextContent, Role
+
+    steer_message = Message(
+        role=Role.USER,
+        content=[TextContent(text=new_instruction)],
+    )
+    self.agent_config.context_messages.append(steer_message)
+    self.agent_config.conversation_history.append(steer_message)
+
+    <span class="c"># Step 3: Reset cancellation for the new run</span>
+    self._cancellation_event = asyncio.Event()
+    self._abort_completion = asyncio.Event()
+
+    <span class="c"># Step 4: Resume the agent loop</span>
+    <span class="k">return await</span> self._resume_loop(
+        queue=queue, stream_formatter=stream_formatter,
+    )</pre>
+  </div>
+
+  <div class="th violet">
+    <span class="tl">Developer's inner voice</span>
+    "This is why the sanitizer matters so much. The entire steer method is just four steps because abort() guarantees the chain is valid when it returns. If I had sprinkled cleanup logic throughout the codebase, steer would need to know about every abort scenario. Instead, it just calls abort() and trusts the result."
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 9: ABORT IN THE MAIN LOOP                               -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 9 &mdash; The Modified Agent Loop</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Integration</div>
+  <h2>How the Main Loop Handles Cancellation</h2>
+
+  <p>The main loop is modified to check the <code>StreamResult</code> for cancellation after each API call, and to handle tool execution cancellation. Here's the full modified loop with the new abort paths highlighted:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/anthropic_agent.py &mdash; modified _resume_loop()</span>
+      <span class="tg tg-impl">Modified</span>
+    </div>
+    <pre><span class="k">async def</span> <span class="f">_resume_loop</span>(self, queue=<span class="k">None</span>, stream_formatter=<span class="k">None</span>):
+    <span class="c"># ... existing initialization ...</span>
+
+<span class="hl-g">    self._cancellation_event = self._cancellation_event <span class="k">or</span> asyncio.Event()</span>
+<span class="hl-g">    self._abort_completion = asyncio.Event()</span>
+
+    <span class="k">while</span> self.agent_config.current_step &lt; self.max_steps:
+
+        <span class="c"># Compaction</span>
+        did_compact, compacted_messages = <span class="k">await</span> self.compactor.apply_compaction(...)
+
+<span class="hl-g">        self._phase = <span class="t">AgentPhase</span>.STREAMING</span>
+        <span class="k">if</span> queue:
+            stream_result = <span class="k">await</span> self.provider.generate_stream(
+                ...,
+<span class="hl-g">                cancellation_event=self._cancellation_event,</span>
+            )
+        <span class="k">else</span>:
+            stream_result = <span class="k">await</span> self.provider.generate(...)
+
+<span class="hl-g">        <span class="c"># ---- NEW: Handle stream cancellation ----</span></span>
+<span class="hl-g">        <span class="k">if</span> stream_result.was_cancelled:</span>
+<span class="hl-g">            <span class="k">from</span> .message_sanitizer <span class="k">import</span> (</span>
+<span class="hl-g">                sanitize_partial_assistant_message,</span>
+<span class="hl-g">                synthesize_abort_tool_results,</span>
+<span class="hl-g">            )</span>
+<span class="hl-g">            raw_blocks = stream_result.message.content</span>
+<span class="hl-g">            clean_blocks, orphaned_ids = sanitize_partial_assistant_message(</span>
+<span class="hl-g">                raw_blocks,</span>
+<span class="hl-g">                stream_result.completed_blocks,</span>
+<span class="hl-g">            )</span>
+<span class="hl-g"></span>
+<span class="hl-g">            <span class="k">if</span> clean_blocks:</span>
+<span class="hl-g">                sanitized_msg = Message(</span>
+<span class="hl-g">                    role=Role.ASSISTANT, content=clean_blocks,</span>
+<span class="hl-g">                )</span>
+<span class="hl-g">                self.agent_config.context_messages.append(sanitized_msg)</span>
+<span class="hl-g">                <span class="k">if</span> orphaned_ids:</span>
+<span class="hl-g">                    abort_results = synthesize_abort_tool_results(orphaned_ids)</span>
+<span class="hl-g">                    result_msg = self._build_tool_result_message(abort_results)</span>
+<span class="hl-g">                    self.agent_config.context_messages.append(result_msg)</span>
+<span class="hl-g"></span>
+<span class="hl-g">            self._phase = <span class="t">AgentPhase</span>.IDLE</span>
+<span class="hl-g">            self._abort_completion.set()  <span class="c"># Signal abort() caller</span></span>
+<span class="hl-g">            <span class="k">return</span> self._build_aborted_result()</span>
+
+        <span class="c"># ---- Normal path (unchanged) ----</span>
+        response_message = stream_result.message
+        self.agent_config.current_step += 1
+        self._accumulate_usage(response_message.usage)
+        self.agent_config.context_messages.append(response_message)
+        self.agent_config.conversation_history.append(response_message)
+
+        stop_reason = response_message.stop_reason
+
+        <span class="k">if</span> stop_reason == <span class="s">"tool_use"</span>:
+            tool_calls = self._extract_tool_calls(response_message)
+
+            <span class="k">if</span> needs_relay:
+<span class="hl-g">                self._phase = <span class="t">AgentPhase</span>.AWAITING_RELAY</span>
+                <span class="c"># ... set pending_relay, persist, return ...</span>
+            <span class="k">else</span>:
+<span class="hl-g">                self._phase = <span class="t">AgentPhase</span>.EXECUTING_TOOLS</span>
+                tool_results = <span class="k">await</span> self.tool_registry.execute_tools(...)
+
+<span class="hl-g">                <span class="c"># tool_results now contains real + synthetic abort results</span></span>
+                tool_result_message = self._build_tool_result_message(tool_results)
+                self.agent_config.context_messages.append(tool_result_message)
+                self.agent_config.conversation_history.append(tool_result_message)
+
+<span class="hl-g">                <span class="c"># Check if we were cancelled during tool execution</span></span>
+<span class="hl-g">                <span class="k">if</span> self._cancellation_event.is_set():</span>
+<span class="hl-g">                    self._phase = <span class="t">AgentPhase</span>.IDLE</span>
+<span class="hl-g">                    self._abort_completion.set()</span>
+<span class="hl-g">                    <span class="k">return</span> self._build_aborted_result()</span>
+
+                <span class="k">continue</span>
+
+        <span class="c"># ... rest of loop (end_turn, pause_turn handling, etc.) ...</span></pre>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 10: THE ARCHITECTURE DIAGRAM                            -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 10 &mdash; The New Architecture</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Before &amp; After</div>
+  <h2>How the Agent's Execution Model Changes</h2>
+
+  <div class="dw">
+    <svg viewBox="0 0 760 420" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#475569"/></marker>
+        <marker id="arrRed" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#9f1239"/></marker>
+        <marker id="arrGreen" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#047857"/></marker>
+      </defs>
+
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">NEW ARCHITECTURE: COOPERATIVE CANCELLATION</text>
+
+      <!-- abort() entry point -->
+      <rect x="20" y="50" width="120" height="45" rx="6" fill="#9f1239" opacity="0.12" stroke="#9f1239" stroke-width="1.5"/>
+      <text x="80" y="70" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#9f1239" font-weight="600">abort()</text>
+      <text x="80" y="85" text-anchor="middle" font-family="Outfit, sans-serif" font-size="9" fill="#9f1239">external call</text>
+
+      <!-- steer() entry point -->
+      <rect x="20" y="110" width="120" height="45" rx="6" fill="#047857" opacity="0.12" stroke="#047857" stroke-width="1.5"/>
+      <text x="80" y="130" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#047857" font-weight="600">steer(msg)</text>
+      <text x="80" y="145" text-anchor="middle" font-family="Outfit, sans-serif" font-size="9" fill="#047857">abort + redirect</text>
+
+      <!-- Cancellation Event -->
+      <rect x="180" y="60" width="140" height="55" rx="6" fill="#b45309" opacity="0.12" stroke="#b45309" stroke-width="1.5"/>
+      <text x="250" y="82" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#b45309">cancellation_event</text>
+      <text x="250" y="100" text-anchor="middle" font-family="Outfit, sans-serif" font-size="9" fill="#b45309">asyncio.Event</text>
+
+      <!-- Arrows to event -->
+      <line x1="140" y1="72" x2="178" y2="80" stroke="#9f1239" stroke-width="1.5" marker-end="url(#arrRed)"/>
+      <line x1="140" y1="130" x2="178" y2="95" stroke="#047857" stroke-width="1.5" marker-end="url(#arrGreen)"/>
+
+      <!-- Main loop box -->
+      <rect x="370" y="40" width="370" height="345" rx="8" fill="#0d6e6e" opacity="0.05" stroke="#0d6e6e" stroke-width="1.5"/>
+      <text x="555" y="62" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#0d6e6e" letter-spacing="1.5">AGENT MAIN LOOP &mdash; _resume_loop()</text>
+
+      <!-- Phase: Streaming -->
+      <rect x="390" y="80" width="160" height="70" rx="6" fill="#9f1239" opacity="0.08" stroke="#9f1239" stroke-width="1"/>
+      <text x="470" y="100" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#9f1239">STREAMING</text>
+      <text x="470" y="118" text-anchor="middle" font-family="Newsreader, serif" font-size="11" fill="#475569">API stream + formatter</text>
+      <text x="470" y="135" text-anchor="middle" font-family="Newsreader, serif" font-size="11" fill="#475569">checks event per-event</text>
+
+      <!-- Phase: Executing -->
+      <rect x="390" y="170" width="160" height="70" rx="6" fill="#b45309" opacity="0.08" stroke="#b45309" stroke-width="1"/>
+      <text x="470" y="190" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#b45309">EXECUTING_TOOLS</text>
+      <text x="470" y="208" text-anchor="middle" font-family="Newsreader, serif" font-size="11" fill="#475569">asyncio.wait() loop</text>
+      <text x="470" y="225" text-anchor="middle" font-family="Newsreader, serif" font-size="11" fill="#475569">checks event per-task</text>
+
+      <!-- Phase: Frontend -->
+      <rect x="390" y="260" width="160" height="55" rx="6" fill="#6d28d9" opacity="0.08" stroke="#6d28d9" stroke-width="1"/>
+      <text x="470" y="280" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#6d28d9">AWAITING_RELAY</text>
+      <text x="470" y="300" text-anchor="middle" font-family="Newsreader, serif" font-size="11" fill="#475569">agent paused (pending_relay)</text>
+
+      <!-- Sanitizer -->
+      <rect x="580" y="115" width="140" height="125" rx="6" fill="#047857" opacity="0.08" stroke="#047857" stroke-width="1.5"/>
+      <text x="650" y="138" text-anchor="middle" font-family="Outfit, sans-serif" font-size="9" font-weight="700" fill="#047857" letter-spacing="1">MESSAGE SANITIZER</text>
+      <text x="650" y="160" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="#475569">sanitize_partial()</text>
+      <text x="650" y="178" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="#475569">synthesize_results()</text>
+      <text x="650" y="196" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="#475569">ensure_validity()</text>
+      <text x="650" y="225" text-anchor="middle" font-family="Newsreader, serif" font-size="10" fill="#047857" font-style="italic">pure functions, no I/O</text>
+
+      <!-- Arrows: event to phases -->
+      <line x1="320" y1="87" x2="388" y2="105" stroke="#b45309" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+      <line x1="320" y1="87" x2="388" y2="195" stroke="#b45309" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+
+      <!-- Arrows: phases to sanitizer -->
+      <line x1="550" y1="115" x2="578" y2="140" stroke="#475569" stroke-width="1.2" marker-end="url(#arr)"/>
+      <line x1="550" y1="200" x2="578" y2="180" stroke="#475569" stroke-width="1.2" marker-end="url(#arr)"/>
+
+      <!-- Output -->
+      <rect x="580" y="270" width="140" height="50" rx="6" fill="#1c1917" opacity="0.06" stroke="#1c1917" stroke-width="1"/>
+      <text x="650" y="292" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#1c1917">AgentResult</text>
+      <text x="650" y="310" text-anchor="middle" font-family="Outfit, sans-serif" font-size="9" fill="#94a3b8">valid chain guaranteed</text>
+
+      <line x1="650" y1="240" x2="650" y2="268" stroke="#475569" stroke-width="1.2" marker-end="url(#arr)"/>
+
+      <!-- Legend -->
+      <line x1="40" y1="385" x2="70" y2="385" stroke="#b45309" stroke-width="1.2" stroke-dasharray="4,3"/>
+      <text x="78" y="389" font-family="Outfit, sans-serif" font-size="9.5" fill="#475569">cancellation signal propagation</text>
+      <line x1="40" y1="405" x2="70" y2="405" stroke="#475569" stroke-width="1.2"/>
+      <text x="78" y="409" font-family="Outfit, sans-serif" font-size="9.5" fill="#475569">cleanup/sanitization flow</text>
+    </svg>
+    <div class="dc">Fig 2 &mdash; The cancellation event threads through every blocking phase; the sanitizer fixes the chain</div>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 11: MODIFICATION INVENTORY                              -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 11 &mdash; The Full Inventory</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Implementation Plan</div>
+  <h2>Every File and Line That Must Change</h2>
+
+  <table class="ctbl">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>File</th>
+        <th>What Changes</th>
+        <th>Effort</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><code>core/message_sanitizer.py</code></td>
+        <td>New module: pure sanitization functions</td>
+        <td>New file</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><code>providers/anthropic/retry.py</code></td>
+        <td>Add <code>cancellation_event</code> param to <code>anthropic_stream_with_backoff</code>; return <code>StreamResult</code></td>
+        <td>Moderate</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><code>providers/anthropic/retry.py</code></td>
+        <td><code>_process_stream_events</code> checks cancellation; tracks <code>completed_blocks</code></td>
+        <td>Moderate</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td><code>providers/anthropic/provider.py</code></td>
+        <td><code>AnthropicProvider.generate_stream()</code> passes cancellation through</td>
+        <td>Small</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td><code>providers/anthropic/anthropic_agent.py</code></td>
+        <td><code>_resume_loop()</code>: phase tracking, cancellation checks, sanitization</td>
+        <td>Large</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td><code>tools/registry.py</code></td>
+        <td><code>execute_tools()</code>: <code>asyncio.wait</code> with cancellation</td>
+        <td>Large</td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td><code>providers/anthropic/anthropic_agent.py</code></td>
+        <td><code>resume_with_relay_results()</code>: abort-while-waiting path</td>
+        <td>Moderate</td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td><code>providers/anthropic/anthropic_agent.py</code></td>
+        <td>New: <code>abort()</code>, <code>steer()</code>, <code>AgentPhase</code>, <code>_build_aborted_result()</code></td>
+        <td>Large</td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td><code>core/result.py</code></td>
+        <td>Add <code>was_aborted</code>, <code>abort_metadata</code> to <code>AgentResult</code></td>
+        <td>Small</td>
+      </tr>
+      <tr>
+        <td>10</td>
+        <td><code>core/config.py</code></td>
+        <td>Add <code>agent_phase</code> to <code>AgentConfig</code> dataclass</td>
+        <td>Small</td>
+      </tr>
+      <tr>
+        <td>11</td>
+        <td><code>API layer (e.g. router.py)</code></td>
+        <td>Task registry + <code>/abort</code> endpoint; inject <code>cancellation_event</code> into <code>run()</code></td>
+        <td>Moderate</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Recommended Implementation Order</h3>
+  <ol>
+    <li><strong>Message sanitizer</strong> &mdash; pure logic, no async, easy to test in isolation. Start here.</li>
+    <li><strong>StreamResult + FormatterResult</strong> &mdash; define the new return types.</li>
+    <li><strong>Stream processor cancellation</strong> &mdash; modify <code>_process_stream_events()</code> in <code>providers/anthropic/retry.py</code> to accept and check the event.</li>
+    <li><strong>Provider + stream-with-backoff cancellation</strong> &mdash; thread the event through <code>AnthropicProvider.generate_stream()</code> and <code>anthropic_stream_with_backoff()</code>.</li>
+    <li><strong>Agent phase tracking</strong> &mdash; add <code>AgentPhase</code> and set it in the main loop.</li>
+    <li><strong>abort() method</strong> &mdash; wire sanitizer + phase detection for all three scenarios.</li>
+    <li><strong>Tool execution cancellation</strong> &mdash; modify <code>tool_registry.execute_tools()</code>.</li>
+    <li><strong>steer() method</strong> &mdash; compose abort + new message + resume.</li>
+    <li><strong>Config updates</strong> &mdash; persist phase in <code>AgentConfig</code> (<code>core/config.py</code>).</li>
+    <li><strong>Tests</strong> &mdash; unit tests for sanitizer, integration tests for each abort scenario.</li>
+  </ol>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 12: THE API-LAYER PROBLEM                               -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 12 &mdash; The API-Layer Problem</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Critical Flaw</div>
+  <h2>asyncio.Event Doesn't Cross HTTP Request Boundaries</h2>
+
+  <p>Everything described so far assumes you have a reference to the live agent object. But in the NOVA backend &mdash; and any production deployment &mdash; <strong>agents are reconstructed from database state per-request</strong>. The SSE streaming handler creates the agent, runs it in a background task, and holds the only reference. When a separate <code>/abort</code> HTTP request arrives, it creates a <em>new</em> agent instance. That new instance has no connection to the running one &mdash; its <code>asyncio.Event</code> is a different object in a different request context.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "The asyncio.Event pattern works beautifully within a single process where both abort() and run() share the same object. But in NOVA, the SSE stream handler (router.py:354-376) creates agent_task = asyncio.create_task(run_agent_and_signal()). That task reference is a local variable inside the generator. A separate HTTP request for /abort has absolutely no way to reach it. Setting an event on a freshly-constructed agent does nothing."
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">excel_agent/router.py &mdash; the isolation problem</span>
+      <span class="tg tg-bad">Unreachable Task</span>
+    </div>
+    <pre><span class="c"># Request 1: POST /agent/run  (SSE stream)</span>
+<span class="k">async def</span> <span class="f">stream_agent_response</span>(...):
+    agent = _create_agent(config, agent_uuid, ...)  <span class="c"># Instance A</span>
+    queue: asyncio.Queue = asyncio.Queue()
+
+    <span class="k">async def</span> <span class="f">run_agent_and_signal</span>():
+        result = <span class="k">await</span> agent.run_stream(prompt, queue)
+        <span class="k">return</span> result
+
+<span class="hl-r">    agent_task = asyncio.create_task(run_agent_and_signal())</span>
+    <span class="c"># agent_task is a LOCAL variable. No other request can see it.</span>
+
+    <span class="k">try</span>:
+        <span class="k">while</span> <span class="k">True</span>:
+            chunk = <span class="k">await</span> queue.get()
+            <span class="k">if</span> chunk <span class="k">is None</span>: <span class="k">break</span>
+            <span class="k">yield</span> <span class="k">f</span><span class="s">"data: {chunk}\n\n"</span>
+    <span class="k">except</span> asyncio.CancelledError:
+        agent_task.cancel()   <span class="c"># Only reachable if client disconnects</span>
+        <span class="k">raise</span>
+
+
+<span class="c"># Request 2: POST /agent/{uuid}/abort  (separate HTTP request)</span>
+<span class="k">async def</span> <span class="f">abort_agent</span>(agent_uuid: str):
+    agent = _create_agent(config, agent_uuid, ...)  <span class="c"># Instance B (NEW object!)</span>
+<span class="hl-r">    <span class="k">await</span> agent.abort()  <span class="c"># Sets event on Instance B. Instance A doesn't notice.</span></span></pre>
+  </div>
+
+  <div class="ins red">
+    <span class="il">&#x1F6A8; The Fundamental Problem</span>
+    <p>The <code>asyncio.Event</code> lives on a Python object. Python objects live in a single process. HTTP requests are isolated contexts. <strong>There is no cross-request mechanism to reach a running agent's in-memory state.</strong> We need an intermediary that both the streaming request and the abort request can access.</p>
+  </div>
+
+  <h3>Solution: A Process-Level Task Registry</h3>
+
+  <p>The fix is a shared, process-level registry that maps agent UUIDs to their running tasks and cancellation events. Both the SSE handler and the abort endpoint access this registry.</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">excel_agent/agent_registry.py</span>
+      <span class="tg tg-new">New Module</span>
+    </div>
+    <pre><span class="s">"""Process-level registry of running agent tasks.
+
+Maps agent_uuid to the live task + cancellation event so that
+a separate HTTP request (abort, steer) can reach a running agent.
+
+Thread-safe within asyncio (single event loop). For multi-worker
+deployments, this must be backed by Redis or similar.
+"""</span>
+<span class="k">from</span> __future__ <span class="k">import</span> annotations
+
+<span class="k">import</span> asyncio
+<span class="k">from</span> dataclasses <span class="k">import</span> dataclass, field
+<span class="k">from</span> typing <span class="k">import</span> Optional
+
+
+<span class="d">@dataclass</span>
+<span class="k">class</span> <span class="t">RunningAgent</span>:
+    <span class="s">"""Handle to a running agent task."""</span>
+    agent_uuid: str
+    task: asyncio.Task
+    cancellation_event: asyncio.Event
+    queue: asyncio.Queue
+    created_at: float = field(default_factory=<span class="k">lambda</span>: asyncio.get_event_loop().time())
+
+
+<span class="c"># Module-level singleton &mdash; shared across all requests in the same process</span>
+<span class="hl">_registry: dict[str, RunningAgent] = {}</span>
+
+
+<span class="k">def</span> <span class="f">register</span>(
+    agent_uuid: str,
+    task: asyncio.Task,
+    cancellation_event: asyncio.Event,
+    queue: asyncio.Queue,
+) -> <span class="k">None</span>:
+    <span class="s">"""Register a running agent. Called by the SSE stream handler."""</span>
+    _registry[agent_uuid] = <span class="t">RunningAgent</span>(
+        agent_uuid=agent_uuid,
+        task=task,
+        cancellation_event=cancellation_event,
+        queue=queue,
+    )
+
+
+<span class="k">def</span> <span class="f">unregister</span>(agent_uuid: str) -> <span class="k">None</span>:
+    <span class="s">"""Remove a finished agent. Called in finally block of stream handler."""</span>
+    _registry.pop(agent_uuid, <span class="k">None</span>)
+
+
+<span class="k">def</span> <span class="f">get</span>(agent_uuid: str) -> Optional[<span class="t">RunningAgent</span>]:
+    <span class="s">"""Look up a running agent by UUID."""</span>
+    <span class="k">return</span> _registry.get(agent_uuid)
+
+
+<span class="k">def</span> <span class="f">is_running</span>(agent_uuid: str) -> bool:
+    <span class="s">"""Check if an agent is currently active."""</span>
+    entry = _registry.get(agent_uuid)
+    <span class="k">return</span> entry <span class="k">is not None and not</span> entry.task.done()</pre>
+  </div>
+
+  <p>The SSE stream handler registers the agent when it starts and unregisters when it ends:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">excel_agent/router.py &mdash; with registry</span>
+      <span class="tg tg-impl">Modified</span>
+    </div>
+    <pre><span class="k">from</span> .agent_registry <span class="k">import</span> register, unregister
+
+<span class="k">async def</span> <span class="f">stream_agent_response</span>(...):
+    agent = _create_agent(config, agent_uuid, ...)
+    queue: asyncio.Queue = asyncio.Queue()
+<span class="hl-g">    cancellation_event = asyncio.Event()</span>
+
+    <span class="k">async def</span> <span class="f">run_agent_and_signal</span>():
+        <span class="k">try</span>:
+            result = <span class="k">await</span> agent.run_stream(
+                prompt, queue,
+<span class="hl-g">                cancellation_event=cancellation_event,</span>
+            )
+            <span class="k">return</span> result
+        <span class="k">finally</span>:
+            <span class="k">await</span> queue.put(<span class="k">None</span>)
+
+    agent_task = asyncio.create_task(run_agent_and_signal())
+
+<span class="hl-g">    <span class="c"># Register so /abort can reach this task</span></span>
+<span class="hl-g">    register(agent.agent_uuid, agent_task, cancellation_event, queue)</span>
+
+    <span class="k">try</span>:
+        <span class="k">while</span> <span class="k">True</span>:
+            chunk = <span class="k">await</span> queue.get()
+            <span class="k">if</span> chunk <span class="k">is None</span>: <span class="k">break</span>
+            <span class="k">yield</span> <span class="k">f</span><span class="s">"data: {chunk}\n\n"</span>
+    <span class="k">except</span> asyncio.CancelledError:
+        agent_task.cancel()
+        <span class="k">raise</span>
+    <span class="k">finally</span>:
+<span class="hl-g">        unregister(agent.agent_uuid)  <span class="c"># Always clean up</span></span>
+
+    <span class="k">await</span> agent_task
+    result = agent_task.result()
+    <span class="k">await</span> _deduct_credits_from_result(result, ...)</pre>
+  </div>
+
+  <p>And the abort endpoint looks up the registry instead of constructing a new agent:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">excel_agent/router.py &mdash; abort endpoint</span>
+      <span class="tg tg-new">New Endpoint</span>
+    </div>
+    <pre><span class="k">from</span> .agent_registry <span class="k">import</span> get <span class="k">as</span> get_running_agent
+
+<span class="d">@router.post</span>(<span class="s">"/{agent_uuid}/abort"</span>)
+<span class="k">async def</span> <span class="f">abort_agent</span>(agent_uuid: str):
+    <span class="s">"""Abort a running agent turn."""</span>
+    running = get_running_agent(agent_uuid)
+
+    <span class="k">if</span> running <span class="k">is None</span>:
+        <span class="c"># Not running in this process &mdash; check DB for AWAITING_RELAY</span>
+        <span class="k">return await</span> _abort_from_db_state(agent_uuid)
+
+<span class="hl">    <span class="c"># Signal the running agent's cancellation event</span></span>
+<span class="hl">    running.cancellation_event.set()</span>
+
+    <span class="c"># Wait for the task to finish its cleanup (with timeout)</span>
+    <span class="k">try</span>:
+        <span class="k">await</span> asyncio.wait_for(running.task, timeout=10.0)
+    <span class="k">except</span> asyncio.TimeoutError:
+        running.task.cancel()  <span class="c"># Force-cancel if cleanup is stuck</span>
+
+    <span class="k">return</span> {<span class="s">"status"</span>: <span class="s">"aborted"</span>, <span class="s">"agent_uuid"</span>: agent_uuid}</pre>
+  </div>
+
+  <div class="dw">
+    <svg viewBox="0 0 760 300" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrB" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#475569"/></marker>
+        <marker id="arrR2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#9f1239"/></marker>
+      </defs>
+
+      <text x="380" y="20" text-anchor="middle" font-family="Outfit, sans-serif" font-size="11" font-weight="700" fill="#94a3b8" letter-spacing="2">CROSS-REQUEST ABORT VIA TASK REGISTRY</text>
+
+      <!-- Request 1: SSE Stream -->
+      <rect x="20" y="45" width="200" height="110" rx="8" fill="#0d6e6e" opacity="0.08" stroke="#0d6e6e" stroke-width="1.5"/>
+      <text x="120" y="68" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#0d6e6e" letter-spacing="1">REQUEST 1: POST /run</text>
+      <text x="120" y="92" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">agent = _create_agent()</text>
+      <text x="120" y="110" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">event = Event()</text>
+      <text x="120" y="128" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#0d6e6e">register(uuid, task, event)</text>
+      <text x="120" y="145" text-anchor="middle" font-family="Newsreader, serif" font-size="11" fill="#475569" font-style="italic">streams SSE to client...</text>
+
+      <!-- Registry (center) -->
+      <rect x="265" y="65" width="230" height="80" rx="8" fill="#b45309" opacity="0.08" stroke="#b45309" stroke-width="2"/>
+      <text x="380" y="88" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#b45309" letter-spacing="1.5">TASK REGISTRY (process-level)</text>
+      <text x="380" y="110" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">uuid &rarr; RunningAgent{task, event, queue}</text>
+      <text x="380" y="130" text-anchor="middle" font-family="Newsreader, serif" font-size="11" fill="#b45309" font-style="italic">dict shared across all requests</text>
+
+      <!-- Request 2: Abort -->
+      <rect x="540" y="45" width="200" height="110" rx="8" fill="#9f1239" opacity="0.08" stroke="#9f1239" stroke-width="1.5"/>
+      <text x="640" y="68" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#9f1239" letter-spacing="1">REQUEST 2: POST /abort</text>
+      <text x="640" y="92" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#475569">running = get(uuid)</text>
+      <text x="640" y="110" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#9f1239" font-weight="600">running.event.set()</text>
+      <text x="640" y="128" text-anchor="middle" font-family="Newsreader, serif" font-size="11" fill="#475569" font-style="italic">sets THE SAME event</text>
+      <text x="640" y="145" text-anchor="middle" font-family="Newsreader, serif" font-size="11" fill="#475569" font-style="italic">that Request 1 checks</text>
+
+      <!-- Arrows -->
+      <line x1="220" y1="100" x2="263" y2="100" stroke="#0d6e6e" stroke-width="1.5" marker-end="url(#arrB)"/>
+      <text x="241" y="92" text-anchor="middle" font-family="Outfit, sans-serif" font-size="8" fill="#0d6e6e">write</text>
+      <line x1="497" y1="100" x2="538" y2="100" stroke="#9f1239" stroke-width="1.5" marker-end="url(#arrR2)"/>
+      <text x="518" y="92" text-anchor="middle" font-family="Outfit, sans-serif" font-size="8" fill="#9f1239">read</text>
+
+      <!-- The key insight -->
+      <rect x="110" y="190" width="540" height="90" rx="8" fill="#047857" opacity="0.06" stroke="#047857" stroke-width="1.5"/>
+      <text x="380" y="215" text-anchor="middle" font-family="Outfit, sans-serif" font-size="10" font-weight="700" fill="#047857" letter-spacing="1.5">THE KEY: BOTH REQUESTS SHARE THE SAME EVENT OBJECT</text>
+      <text x="380" y="240" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Request 1 creates the Event and passes it into the agent.</text>
+      <text x="380" y="258" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#475569">Request 2 looks up the same Event via the registry and sets it.</text>
+      <text x="380" y="272" text-anchor="middle" font-family="Newsreader, serif" font-size="13" fill="#047857" font-style="italic">The agent's formatter checks the Event on the next streaming iteration and breaks.</text>
+    </svg>
+    <div class="dc">Fig 3 &mdash; The registry bridges the gap between isolated HTTP requests</div>
+  </div>
+
+  <h3>Where This Breaks: Multi-Worker Deployments</h3>
+
+  <p>The process-level dict works for a single-worker Uvicorn deployment. But if you scale to multiple workers (multiple processes), the abort request might land on a different worker than the one running the agent. Two options:</p>
+
+  <table class="ctbl">
+    <thead>
+      <tr>
+        <th>Approach</th>
+        <th>How It Works</th>
+        <th>Tradeoff</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Sticky sessions</strong></td>
+        <td>Route all requests for the same <code>agent_uuid</code> to the same worker (via load balancer hash)</td>
+        <td>Simple, but limits scaling flexibility</td>
+      </tr>
+      <tr>
+        <td><strong>Redis pub/sub</strong></td>
+        <td>Abort writes a <code>cancel:{agent_uuid}</code> message to Redis. Each worker subscribes and checks against its local registry.</td>
+        <td>Works across workers, adds Redis dependency</td>
+      </tr>
+      <tr>
+        <td><strong>Database polling</strong></td>
+        <td>Abort sets <code>agent_config.abort_requested = true</code> in PostgreSQL. The agent loop polls the DB every N seconds.</td>
+        <td>Slowest (polling delay), but no new infrastructure. Already have the DB.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="th amber">
+    <span class="tl">Developer's inner voice</span>
+    "For NOVA today, we run a single Uvicorn worker per container, so the process-level registry works. But I should design the agent_base layer to accept the cancellation_event as a parameter from the outside &mdash; not create it internally. That way the framework doesn't care where the event comes from. The API layer provides it, whether it's a local Event or a wrapper around Redis pub/sub."
+  </div>
+
+  <div class="ins teal">
+    <span class="il">&#x1F3AF; Design Principle: Cancellation Event as Injected Dependency</span>
+    <p>The <code>cancellation_event</code> should be a parameter to <code>run()</code>, not an internal member of the agent. The agent doesn't create it &mdash; the caller does. This means: (1) in a simple script, you create a local <code>asyncio.Event()</code>; (2) in a single-worker API, the registry holds events; (3) in a multi-worker deployment, the event is a wrapper that checks Redis. The agent code is identical in all three cases. <strong>The framework provides the mechanism; the deployment provides the signal.</strong></p>
+  </div>
+
+  <h3>Impact on the agent_base Framework</h3>
+
+  <p>This changes the <code>abort()</code> signature from Chapters 6&ndash;9. Instead of <code>self._cancellation_event</code> being an internal field, <code>run()</code> accepts it as a parameter:</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/anthropic/anthropic_agent.py &mdash; revised run_stream() signature</span>
+      <span class="tg tg-impl">Revised</span>
+    </div>
+    <pre><span class="k">async def</span> <span class="f">run_stream</span>(
+    <span class="p">self</span>,
+    <span class="p">prompt</span>: str | Message,
+    <span class="p">queue</span>: asyncio.Queue,
+    <span class="p">stream_formatter</span>: str | StreamFormatter = <span class="s">"json"</span>,
+<span class="hl-g">    <span class="p">cancellation_event</span>: Optional[asyncio.Event] = <span class="k">None</span>,</span>
+) -> <span class="t">AgentResult</span>:
+    <span class="s">"""Run the agent loop with streaming output.
+
+    Args:
+        cancellation_event: Optional event that, when set, signals the
+            agent to abort gracefully. The caller owns this event &mdash;
+            the agent only reads it.
+    """</span>
+<span class="hl-g">    self._cancellation_event = cancellation_event <span class="k">or</span> asyncio.Event()</span>
+    <span class="c"># ... rest of loop ...</span></pre>
+  </div>
+
+  <p>And <code>abort()</code> moves from being a method on the agent to being a function that operates on the registry (or directly on the event):</p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">Two abort patterns</span>
+      <span class="tg tg-wire">Comparison</span>
+    </div>
+    <pre><span class="c"># Pattern A: Direct (script, test, same-object access)</span>
+event = asyncio.Event()
+task = asyncio.create_task(agent.run(prompt, cancel=event))
+<span class="c"># ... later ...</span>
+event.set()          <span class="c"># Signals abort</span>
+result = <span class="k">await</span> task  <span class="c"># Agent cleans up and returns</span>
+
+
+<span class="c"># Pattern B: Via registry (API layer, cross-request)</span>
+<span class="c"># In /run handler:</span>
+event = asyncio.Event()
+register(uuid, task, event, queue)
+task = asyncio.create_task(agent.run(prompt, cancel=event))
+
+<span class="c"># In /abort handler:</span>
+running = get_running_agent(uuid)
+running.cancellation_event.set()
+<span class="k">await</span> asyncio.wait_for(running.task, timeout=10)
+
+
+<span class="c"># Pattern C: Via DB (multi-worker, agent awaiting relay)</span>
+<span class="c"># In /abort handler:</span>
+<span class="k">await</span> db.execute(
+    <span class="s">"UPDATE agent_config SET abort_requested = true WHERE agent_uuid = $1"</span>,
+    agent_uuid,
+)
+<span class="c"># Agent loop polls DB or checks flag on next tool_result resume</span></pre>
+  </div>
+
+  <div class="ins emerald">
+    <span class="il">&#x2705; The Agent Base Stays Clean</span>
+    <p>The agent_base framework doesn't need to know about registries, Redis, or databases. It accepts a <code>cancellation_event</code> parameter and checks it at safe boundaries. How that event gets set &mdash; locally, via registry, via pub/sub &mdash; is the deployment's concern. The framework provides one additional helper: an <code>abort_from_persisted_state()</code> class method that reconstructs the agent from storage (via the three-adapter pattern: <code>AgentConfigAdapter</code>, <code>ConversationAdapter</code>, <code>AgentRunAdapter</code>), sanitizes the message chain by clearing <code>pending_relay</code> and synthesizing tool results, and saves it. This covers the <code>AWAITING_RELAY</code> case where no live agent exists.</p>
+  </div>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 13: EDGE CASES                                          -->
+<!-- ================================================================ -->
+<div class="chap"><span>Chapter 13 &mdash; Edge Cases &amp; Gotchas</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Watch Out</div>
+  <h2>The Traps That Will Bite You</h2>
+
+  <h3>Thinking Block Signatures</h3>
+  <p>Extended thinking blocks have a <code>signature</code> field that is cryptographically signed by Anthropic. <strong>Modifying a single character of the thinking text invalidates the signature</strong> and the API will reject the message with a 400. On abort, you must keep thinking blocks <em>exactly</em> as received or discard them entirely. Never truncate, edit, or reconstruct a thinking block.</p>
+
+  <div class="ins red">
+    <span class="il">&#x1F6A8; Critical Rule</span>
+    <p>If an abort happens mid-thinking-block (the thinking text is only partially received), you <strong>must discard the entire thinking block</strong>. A partial thinking block with no valid signature will be rejected by the API. The <code>completed_blocks</code> set tells you whether the block received its <code>content_block_stop</code> event &mdash; only keep it if it did.</p>
+  </div>
+
+  <h3>Race Between Abort and Tool Completion</h3>
+  <p>A tool completes in the same event loop tick that cancellation is signalled. The <code>asyncio.wait()</code> pattern handles this: the completed task appears in the <code>done</code> set regardless of cancellation. Process completed tasks first; only synthesize abort results for tasks still in <code>pending</code>.</p>
+
+  <h3>Compaction After Abort</h3>
+  <p>After an abort, the message chain may contain synthetic <code>tool_result</code> blocks with <code>is_error: True</code>. The compactor must not strip these, or the chain becomes invalid. The current compactor only truncates tool result <em>content</em> (not entire blocks), so this should be safe &mdash; but needs a test.</p>
+
+  <h3>Multiple Aborts in Sequence</h3>
+  <p>User aborts, then steers, then aborts again. Each abort must independently produce a valid chain. The sanitizer must be idempotent: calling <code>ensure_chain_validity()</code> on an already-valid chain should return it unchanged.</p>
+
+  <h3>Queue Draining on Abort</h3>
+  <p>After abort, the SSE queue may contain stale events from the cancelled turn (partial text deltas, incomplete tool results). Options: (a) drain the queue before emitting new events, or (b) emit an <code>"aborted"</code> envelope and let the client ignore subsequent events from the old turn. Option (b) is simpler and more resilient.</p>
+
+  <h3>Frontend Tool Abort and DB Consistency</h3>
+  <p>When aborting during <code>AWAITING_RELAY</code>, we must clear <code>agent_config.pending_relay</code> from both the in-memory state <em>and</em> the persisted <code>AgentConfig</code>. Otherwise, a stale <code>resume_with_relay_results()</code> call could arrive from the browser and operate on invalid state.</p>
+
+  <h3>Abort During Compaction</h3>
+  <p>Compaction modifies <code>self.agent_config.context_messages</code>. If abort is signalled mid-compaction, the list could be inconsistent. Solution: compaction should be atomic (build a new list, then swap) or abort should defer until compaction finishes. Compaction is fast (pure data manipulation), so deferring is acceptable.</p>
+</section>
+
+
+<!-- ================================================================ -->
+<!-- EPILOGUE: PATTERNS                                              -->
+<!-- ================================================================ -->
+<div class="chap"><span>Epilogue</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Patterns At Work</div>
+  <h2>The Design Patterns Behind the Architecture</h2>
+
+  <table class="ctbl">
+    <thead>
+      <tr>
+        <th>Pattern</th>
+        <th>Where</th>
+        <th>Why</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Cooperative Cancellation</strong></td>
+        <td><code>asyncio.Event</code> threaded through layers</td>
+        <td>Each layer checks at safe boundaries and exits cleanly, rather than being killed mid-operation. This guarantees the system reaches a known state.</td>
+      </tr>
+      <tr>
+        <td><strong>Data Repair / Sanitizer</strong></td>
+        <td><code>message_sanitizer.py</code></td>
+        <td>A single module that knows the API contract and can fix any violation. Keeps repair logic out of the async orchestration code.</td>
+      </tr>
+      <tr>
+        <td><strong>Phase State Machine</strong></td>
+        <td><code>AgentPhase</code> enum</td>
+        <td>The agent is always in exactly one phase. Abort reads the phase to determine cleanup strategy. No ambiguity about what's running.</td>
+      </tr>
+      <tr>
+        <td><strong>Completion Signal</strong></td>
+        <td><code>_abort_completion</code> event</td>
+        <td>The <code>abort()</code> caller waits for the main loop to finish cleanup. Guarantees the chain is valid when <code>abort()</code> returns.</td>
+      </tr>
+      <tr>
+        <td><strong>Composition</strong></td>
+        <td><code>steer() = abort() + message + resume()</code></td>
+        <td>Complex behavior built from simpler, independently tested pieces.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="ins amber">
+    <span class="il">&#x1F511; The Unifying Insight</span>
+    <p>The entire abort/steer architecture flows from one principle: <strong>the message chain must be valid after every operation, including interrupted ones</strong>. This is the same invariant that databases maintain with transactions &mdash; either the operation completes fully, or it's as if it never happened. The sanitizer is the "rollback" mechanism: it takes whatever partial state exists and produces a consistent snapshot. Every other piece &mdash; the cancellation event, the phase tracking, the completion signal &mdash; exists to get the system to a point where the sanitizer can do its job.</p>
+  </div>
+</section>
+
+</div>
+
+<footer class="footer">
+  <p>The hardest part of cancellation isn't stopping.<br>
+  It's leaving behind a world that still makes sense.<br>
+  Abort is a transaction boundary for agent state.</p>
+</footer>
+
+<script>
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('vis'); });
+}, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.entry').forEach(el => obs.observe(el));
+</script>
+
+</body>
+</html>

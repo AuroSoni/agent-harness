@@ -43,7 +43,7 @@ CREATE TABLE agent_config (
 
     -- Components
     formatter           TEXT,
-    compactor_type      TEXT,
+    compaction_config   JSONB,
     memory_store_type   TEXT,
 
     -- Media (keyed by media_id — JSONB)

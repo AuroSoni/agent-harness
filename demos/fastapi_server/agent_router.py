@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from agent_base.providers.anthropic import AnthropicAgent, AnthropicLLMConfig
 from agent_base.common_tools import (
     ReadFileTool, GlobFileSearchTool, GrepSearchTool,
-    ListDirTool, ApplyPatchTool, CodeExecutionTool,
+    ListDirTreeTool, ApplyPatchTool, CodeExecutionTool,
 )
 from agent_base.tools import tool
 from agent_base.core.types import ToolResultContent, TextContent
@@ -335,7 +335,7 @@ COMMON_TOOL_FUNCTIONS = [
     ReadFileTool().get_tool(),
     GlobFileSearchTool().get_tool(),
     GrepSearchTool().get_tool(),
-    ListDirTool().get_tool(),
+    ListDirTreeTool().get_tool(),
     ApplyPatchTool().get_tool(),
     CodeExecutionTool().get_tool(),
 ]

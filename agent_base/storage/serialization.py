@@ -19,9 +19,11 @@ from agent_base.core.config import (
     PendingToolRelay,
     SubAgentSchema,
 )
+from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import LogEntry
 from agent_base.media_backend.media_types import MediaMetadata
+from agent_base.sandbox import deserialize_sandbox_config
 from agent_base.tools.registry import ToolCallInfo
 from agent_base.tools.tool_types import ToolSchema
 
@@ -43,7 +45,7 @@ def serialize_config(config: AgentConfig) -> dict[str, Any]:
         "system_prompt": config.system_prompt,
         # LLM context
         "context_messages": [m.to_dict() for m in config.context_messages],
-        "conversation_history": [m.to_dict() for m in config.conversation_history],
+        "conversation_log": config.conversation_log.to_dict(),
         # Tools
         "tool_schemas": [dataclasses.asdict(ts) for ts in config.tool_schemas],
         "tool_names": config.tool_names,
@@ -51,8 +53,17 @@ def serialize_config(config: AgentConfig) -> dict[str, Any]:
         "llm_config": config.llm_config.to_dict(),
         # Components
         "formatter": config.formatter,
-        "compactor_type": config.compactor_type,
+        "compaction_config": (
+            config.compaction_config.to_dict()
+            if config.compaction_config is not None
+            else None
+        ),
         "memory_store_type": config.memory_store_type,
+        "sandbox_config": (
+            config.sandbox_config.to_dict()
+            if config.sandbox_config is not None
+            else None
+        ),
         # Media
         "media_registry": {
             k: v.to_dict() for k, v in config.media_registry.items()
@@ -93,6 +104,8 @@ def deserialize_config(
             The caller (agent layer) knows the provider and passes the
             correct subclass. Defaults to base LLMConfig.
     """
+    from agent_base.providers.anthropic.compaction import CompactionConfig
+
     return AgentConfig(
         # Identity
         agent_uuid=data["agent_uuid"],
@@ -105,9 +118,7 @@ def deserialize_config(
         context_messages=[
             Message.from_dict(m) for m in data.get("context_messages", [])
         ],
-        conversation_history=[
-            Message.from_dict(m) for m in data.get("conversation_history", [])
-        ],
+        conversation_log=ConversationLog.from_dict(data.get("conversation_log")),
         # Tools
         tool_schemas=[
             ToolSchema(**ts) for ts in data.get("tool_schemas", [])
@@ -117,8 +128,13 @@ def deserialize_config(
         llm_config=llm_config_class.from_dict(data.get("llm_config", {})),
         # Components
         formatter=data.get("formatter"),
-        compactor_type=data.get("compactor_type"),
+        compaction_config=(
+            CompactionConfig.from_dict(data.get("compaction_config"))
+            if data.get("compaction_config")
+            else None
+        ),
         memory_store_type=data.get("memory_store_type"),
+        sandbox_config=deserialize_sandbox_config(data.get("sandbox_config")),
         # Media
         media_registry={
             k: MediaMetadata(**v)
@@ -162,7 +178,7 @@ def serialize_conversation(conv: Conversation) -> dict[str, Any]:
         "completed_at": conv.completed_at,
         "user_message": conv.user_message.to_dict() if conv.user_message else None,
         "final_response": conv.final_response.to_dict() if conv.final_response else None,
-        "messages": [m.to_dict() for m in conv.messages],
+        "conversation_log": conv.conversation_log.to_dict(),
         "stop_reason": conv.stop_reason,
         "total_steps": conv.total_steps,
         "usage": conv.usage.to_dict(),
@@ -188,7 +204,7 @@ def deserialize_conversation(data: dict[str, Any]) -> Conversation:
         completed_at=data.get("completed_at"),
         user_message=Message.from_dict(raw_user) if raw_user else None,
         final_response=Message.from_dict(raw_final) if raw_final else None,
-        messages=[Message.from_dict(m) for m in data.get("messages", [])],
+        conversation_log=ConversationLog.from_dict(data.get("conversation_log")),
         stop_reason=data.get("stop_reason"),
         total_steps=data.get("total_steps"),
         usage=Usage.from_dict(raw_usage) if raw_usage else Usage(),

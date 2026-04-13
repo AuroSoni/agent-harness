@@ -68,6 +68,7 @@ class Agent(ABC):
         prompt: str | Message,
         queue: asyncio.Queue,
         stream_formatter: str | StreamFormatter = "json",
+        cancellation_event: asyncio.Event | None = None,
     ) -> AgentResult:
         """Execute a full agent run with streaming output.
 
@@ -76,6 +77,8 @@ class Agent(ABC):
             queue: Async queue for serialized stream output.
             stream_formatter: Formatter name (e.g., ``"json"``) or
                 ``StreamFormatter`` instance.
+            cancellation_event: Optional externally managed cancellation
+                event for cooperative abort/steer orchestration.
 
         Returns:
             ``AgentResult`` after stream completes.
@@ -88,6 +91,7 @@ class Agent(ABC):
         relay_results: Any,
         queue: asyncio.Queue | None = None,
         stream_formatter: str | StreamFormatter | None = "json",
+        cancellation_event: asyncio.Event | None = None,
     ) -> AgentResult:
         """Resume a paused agent run with frontend/confirmation tool results.
 
@@ -100,6 +104,8 @@ class Agent(ABC):
                 confirmations.
             queue: Optional queue for streaming output.
             stream_formatter: Optional formatter for streaming.
+            cancellation_event: Optional externally managed cancellation
+                event for cooperative abort/steer orchestration.
 
         Returns:
             ``AgentResult`` after the resumed run completes.

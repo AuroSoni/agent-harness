@@ -3,6 +3,8 @@ Major Upgrades:
     ✔ Test the new storage architecture. @done(26-02-17 15:26)
     ☐ JSON formatter parsing for frontend.
     ☐ Frontend UI State with new primitives: Todo, Planning, Subagents.
+    ☐ Improve compaction implementation in agent base.
+    ☐ Add important hooks in agent base.
 
 Major Bugs:
     ☐ Abrupt stream end in Server tools with web search tools. In special cases for web fetch? 
@@ -17,3 +19,6 @@ Potential Improvements:
     ☐ Better agent run logging for deeper analytics.
     ☐ Integrated handling of attachments in the agent. Direct token estimation.
     ☐ Create a proactive memory based compactor for instant compaction.
+    ☐ On tool_result_hook in agent_base.
+    ☐ Remove old anthropic implementation and older tests.
+    ☐ Async IO queue is not thread-safe. Consider thread-safe implementation.

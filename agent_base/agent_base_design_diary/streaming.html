@@ -1,0 +1,1411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Developer Diary — The Streaming Pipeline</title>
+<link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1a1a2e;
+    --paper: #f7f9fc;
+    --paper-warm: #edf1f8;
+    --accent: #2563eb;
+    --accent-soft: #2563eb18;
+    --teal: #0d6e6e;
+    --teal-soft: #0d6e6e18;
+    --slate: #475569;
+    --slate-soft: #47556918;
+    --amber: #b45309;
+    --amber-soft: #b4530918;
+    --violet: #7c3aed;
+    --violet-soft: #7c3aed18;
+    --rose: #be185d;
+    --rose-soft: #be185d18;
+    --crimson: #9f1239;
+    --crimson-soft: #9f123918;
+    --emerald: #047857;
+    --emerald-soft: #04785718;
+    --code-bg: #1e1e2e;
+    --code-fg: #cdd6f4;
+    --muted: #94a3b8;
+    --border: #c8d0e0;
+    --border-light: #dce3ef;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Lora', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 18.5px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* --- Navigation Bar --- */
+  .nav-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(247, 249, 252, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-light);
+    font-family: 'Inter', sans-serif;
+    font-size: 12.5px;
+  }
+  .nav-arrow {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 32px;
+    text-align: center;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  .nav-arrow:hover { background: rgba(0,0,0,0.05); }
+  .nav-arrow.disabled {
+    color: var(--muted);
+    pointer-events: none;
+    opacity: 0.35;
+  }
+  .nav-tabs {
+    display: flex;
+    gap: 1px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .nav-tab:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--ink);
+  }
+  .nav-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+  }
+
+  /* --- Hero --- */
+  .hero {
+    padding: 68px 40px 50px;
+    text-align: center;
+    border-bottom: 3px double var(--border);
+    background: linear-gradient(175deg, #dfe6f2 0%, var(--paper) 60%);
+  }
+  .hero .icon { font-size: 42px; margin-bottom: 12px; display: block; }
+  .hero h1 {
+    font-family: 'Lora', serif;
+    font-size: clamp(26px, 4.2vw, 44px);
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    line-height: 1.18;
+    margin-bottom: 10px;
+  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero .sub {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    font-weight: 600;
+  }
+  .hero .tagline {
+    font-size: 17px;
+    color: var(--slate);
+    margin-top: 14px;
+    max-width: 620px;
+    margin-left: auto;
+    margin-right: auto;
+    font-style: italic;
+  }
+
+  /* --- Table of contents --- */
+  .toc {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 28px 28px 0;
+  }
+  .toc-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  .toc-list {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 6px;
+  }
+  .toc-list a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  .toc-list a:hover { background: var(--paper-warm); }
+  .toc-list .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+
+  /* --- Content --- */
+  .wrap { max-width: 820px; margin: 0 auto; padding: 0 28px; }
+
+  .entry {
+    padding: 44px 0;
+    border-bottom: 1px solid var(--border-light);
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .entry.vis { opacity: 1; transform: translateY(0); }
+
+  .entry-tag {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  h2 {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    line-height: 1.25;
+  }
+  h3 {
+    font-family: 'Inter', sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+    margin: 30px 0 12px;
+    color: var(--ink);
+  }
+  p { margin-bottom: 14px; }
+  p strong { color: var(--accent); font-weight: 700; }
+  ul, ol { margin: 0 0 14px 24px; }
+  li { margin-bottom: 4px; }
+
+  /* --- Chapter dividers --- */
+  .chap {
+    text-align: center;
+    padding: 36px 0 8px;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    color: var(--muted);
+    font-weight: 700;
+    border-top: 3px double var(--border);
+  }
+  .chap span {
+    background: var(--paper);
+    padding: 0 16px;
+  }
+
+  /* --- Thought bubbles --- */
+  .th {
+    background: var(--paper-warm);
+    border-left: 4px solid var(--accent);
+    padding: 16px 22px;
+    margin: 24px 0;
+    border-radius: 0 10px 10px 0;
+    font-style: italic;
+    position: relative;
+  }
+  .th::before {
+    content: '\1F4AD';
+    position: absolute;
+    top: -12px;
+    left: -14px;
+    font-size: 18px;
+    font-style: normal;
+  }
+  .tl {
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-style: normal;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 4px;
+    color: var(--accent);
+  }
+  .th.amber { border-left-color: var(--amber); }
+  .th.amber .tl { color: var(--amber); }
+  .th.amber::before { content: '\1F4A1'; }
+  .th.crimson { border-left-color: var(--crimson); }
+  .th.crimson .tl { color: var(--crimson); }
+  .th.crimson::before { content: '\26A0\FE0F'; }
+  .th.teal { border-left-color: var(--teal); }
+  .th.teal .tl { color: var(--teal); }
+  .th.teal::before { content: '\1F511'; }
+  .th.emerald { border-left-color: var(--emerald); }
+  .th.emerald .tl { color: var(--emerald); }
+  .th.emerald::before { content: '\2705'; }
+
+  /* --- Insight boxes --- */
+  .ins {
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 28px 0;
+  }
+  .ins .il {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 8px;
+  }
+  .ins.amber { background: var(--amber-soft); border-color: var(--amber); }
+  .ins.emerald { background: var(--emerald-soft); border-color: var(--emerald); }
+  .ins.violet { background: var(--violet-soft); border-color: var(--violet); }
+
+  /* --- Code blocks --- */
+  .cw {
+    margin: 24px 0;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+  }
+  .ch {
+    background: #24243a;
+    padding: 9px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .dt { display: flex; gap: 6px; }
+  .dt span { width: 10px; height: 10px; border-radius: 50%; }
+  .dt span:nth-child(1) { background: #ff5f56; }
+  .dt span:nth-child(2) { background: #ffbd2e; }
+  .dt span:nth-child(3) { background: #27c93f; }
+  .fn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #8888a8;
+    font-weight: 500;
+  }
+  .tg {
+    margin-left: auto;
+    font-family: 'Inter', sans-serif;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tg-abc { background: #7c3aed30; color: #c4b5fd; }
+  .tg-type { background: #0d948830; color: #5eead4; }
+  .tg-impl { background: #2563eb30; color: #93c5fd; }
+  .tg-schema { background: #d9770630; color: #fcd34d; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    tab-size: 4;
+  }
+  pre .c { color: #6c7086; font-style: italic; }
+  pre .k { color: #cba6f7; }
+  pre .t { color: #89b4fa; }
+  pre .s { color: #a6e3a1; }
+  pre .f { color: #f9e2af; }
+  pre .p { color: #89b4fa; }
+  pre .n { color: #fab387; }
+  pre .r { color: #f38ba8; }
+  pre .hl {
+    background: rgba(37, 99, 235, 0.06);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82em;
+    background: var(--paper-warm);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+
+  /* --- Tables --- */
+  .ctbl {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 24px 0;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+  }
+  .ctbl th {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 2px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--slate);
+    font-weight: 700;
+  }
+  .ctbl td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-light);
+    line-height: 1.5;
+  }
+
+  /* --- Diagram blocks --- */
+  .dw {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 24px 0;
+    overflow-x: auto;
+  }
+  .dc {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+  }
+
+  /* --- Separator --- */
+  .sep {
+    text-align: center;
+    padding: 20px 0;
+    color: var(--border);
+    font-size: 18px;
+    letter-spacing: 12px;
+  }
+
+  /* --- Footer --- */
+  .footer {
+    text-align: center;
+    padding: 44px 28px;
+    border-top: 3px double var(--border);
+    margin-top: 16px;
+    font-style: italic;
+    color: var(--slate);
+    font-size: 16px;
+    line-height: 1.8;
+  }
+
+  @media (max-width: 600px) {
+    .hero { padding: 46px 18px 36px; }
+    .wrap { padding: 0 16px; }
+    pre { font-size: 11.5px; padding: 14px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav-bar">
+  <a href="storage.html" class="nav-arrow">&larr;</a>
+  <div class="nav-tabs">
+    <a href="index.html" class="nav-tab">Hub</a>
+    <a href="core-domain-model.html" class="nav-tab">Domain</a>
+    <a href="tool-system.html" class="nav-tab">Tools</a>
+    <a href="sandbox.html" class="nav-tab">Sandbox</a>
+    <a href="media-backend.html" class="nav-tab">Media</a>
+    <a href="file-coordination.html" class="nav-tab">Files</a>
+    <a href="storage.html" class="nav-tab">Storage</a>
+    <a href="streaming.html" class="nav-tab active">Streaming</a>
+    <a href="providers.html" class="nav-tab">Providers</a>
+    <a href="planned-systems.html" class="nav-tab">Planned</a>
+  </div>
+  <a href="providers.html" class="nav-arrow">&rarr;</a>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <span class="icon">&#x1F4E1;</span>
+  <h1>The <em>Streaming Pipeline</em></h1>
+  <div class="sub">Developer Diary &middot; Real-Time Event Architecture</div>
+  <p class="tagline">
+    The LLM speaks in fragments. The agent loop needs completed messages.
+    The UI needs every token the instant it arrives. This is how we built a pipeline
+    that serves both without coupling either to the other.
+  </p>
+</div>
+
+<!-- TABLE OF CONTENTS -->
+<nav class="toc">
+  <div class="toc-title">Chapters</div>
+  <ul class="toc-list">
+    <li><a href="#ch1"><span class="num">1</span> The Problem</a></li>
+    <li><a href="#ch2"><span class="num">2</span> StreamDelta &mdash; The Canonical Event</a></li>
+    <li><a href="#ch3"><span class="num">3</span> StreamFormatter &mdash; The Transport Adapter</a></li>
+    <li><a href="#ch4"><span class="num">4</span> The UTF-8 Boundary Problem</a></li>
+    <li><a href="#ch5"><span class="num">5</span> Wiring &mdash; The Full Pipeline</a></li>
+    <li><a href="#ch6"><span class="num">6</span> MetaDelta &mdash; Framework Events</a></li>
+  </ul>
+</nav>
+
+<div class="wrap">
+
+<!-- ================================================================== -->
+<div class="chap"><span>Chapter One</span></div>
+<!-- ================================================================== -->
+
+<div class="entry" id="ch1">
+  <div class="entry-tag">Chapter 1</div>
+  <h2>The Problem: Two Consumers, One Stream</h2>
+
+  <p>
+    An LLM generates tokens one at a time. Two very different consumers need those tokens,
+    and they need them in fundamentally incompatible ways.
+  </p>
+
+  <p>
+    <strong>The agent loop</strong> needs <em>complete messages</em>. It waits for the full
+    response &mdash; text content, tool calls with parsed arguments, thinking blocks &mdash;
+    before deciding what to do next. It operates in terms of turn-level semantics: &ldquo;the model
+    wants to call <code>read_file</code> with these arguments.&rdquo;
+  </p>
+
+  <p>
+    <strong>The UI</strong> needs <em>incremental updates</em>. Every token should appear
+    the moment it&rsquo;s generated. The user is watching. Latency is felt viscerally. A two-second
+    pause while the model &ldquo;thinks&rdquo; feels like a hang; streaming the thinking tokens
+    makes it feel alive.
+  </p>
+
+  <div class="th">
+    <span class="tl">Design Tension</span>
+    If you give the agent loop the raw token stream, it has to reassemble complete messages itself.
+    If you give the UI only completed messages, the user stares at a spinner for seconds at a time.
+    You need both &mdash; and neither should know about the other.
+  </div>
+
+  <p>
+    There&rsquo;s a third constraint: <strong>transport independence</strong>. The streaming system
+    can&rsquo;t assume SSE. It can&rsquo;t assume WebSockets. It can&rsquo;t even assume a network &mdash;
+    a CLI consumer might just print to stdout. The canonical event model must be transport-agnostic.
+  </p>
+
+  <div class="dw">
+<pre style="background:transparent;color:var(--ink);padding:0;box-shadow:none;font-size:12.5px;line-height:1.7;">
+                        +-----------------+
+                        |   LLM Provider  |
+                        |  (Anthropic API)|
+                        +--------+--------+
+                                 |
+                     raw SSE tokens / events
+                                 |
+                    +------------+------------+
+                    |                         |
+           +-------v--------+       +--------v-------+
+           |   Agent Loop   |       |   UI Consumer  |
+           | (needs complete |       | (needs every   |
+           |  messages)      |       |  token NOW)    |
+           +----------------+       +----------------+
+
+    Two consumers. Incompatible timing requirements.
+    One stream. Zero coupling.
+</pre>
+    <div class="dc">The fundamental tension</div>
+  </div>
+
+  <p>
+    The solution is a <strong>canonical event type</strong> &mdash; a provider-agnostic dataclass
+    that represents every kind of streaming event &mdash; paired with a <strong>formatter abstraction</strong>
+    that serializes those events for whatever transport layer is in use. The provider translates its
+    native stream into canonical deltas. The formatter translates canonical deltas into wire format.
+    Neither knows about the other.
+  </p>
+</div>
+
+<!-- ================================================================== -->
+<div class="chap"><span>Chapter Two</span></div>
+<!-- ================================================================== -->
+
+<div class="entry" id="ch2">
+  <div class="entry-tag">Chapter 2</div>
+  <h2>StreamDelta &mdash; The Canonical Event</h2>
+
+  <p>
+    Every streaming event in agent_base flows through a single type hierarchy rooted at
+    <code>StreamDelta</code>. It doesn&rsquo;t matter whether the event originated from the
+    Anthropic API, a tool execution, or the framework itself &mdash; by the time it reaches the
+    transport layer, it&rsquo;s a <code>StreamDelta</code>.
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/types.py</div>
+      <div class="tg tg-abc">BASE</div>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">StreamDelta</span>:
+    <span class="s">"""Base class for all stream events.</span>
+
+<span class="s">    Attributes:</span>
+<span class="s">        agent_uuid: UUID of the agent emitting this delta.</span>
+<span class="s">        type: Event type string (auto-set by subclasses).</span>
+<span class="s">        is_final: Whether this is the last delta in its logical chunk.</span>
+<span class="s">    """</span>
+
+<span class="hl">    agent_uuid: <span class="t">str</span></span>
+<span class="hl">    type: <span class="t">str</span> = <span class="s">""</span></span>
+<span class="hl">    is_final: <span class="t">bool</span> = <span class="n">False</span></span>
+</pre>
+  </div>
+
+  <p>
+    Three fields. That&rsquo;s the contract every streaming event must satisfy:
+  </p>
+
+  <ul>
+    <li><code>agent_uuid</code> &mdash; identifies <em>which agent</em> emitted the event, enabling multiplexing when sub-agents run concurrently</li>
+    <li><code>type</code> &mdash; a string discriminator, auto-set by each subclass in <code>__post_init__</code></li>
+    <li><code>is_final</code> &mdash; signals the last chunk of a logical event (critical for chunked payloads)</li>
+  </ul>
+
+  <div class="th amber">
+    <span class="tl">Why agent_uuid?</span>
+    In a multi-agent system, the UI might be rendering output from an orchestrator and two sub-agents
+    simultaneously. Without <code>agent_uuid</code>, the consumer can&rsquo;t demultiplex &mdash; it can&rsquo;t
+    tell which agent&rsquo;s text is arriving. Every delta carries its origin.
+  </div>
+
+  <h3>The Subtype Hierarchy</h3>
+
+  <p>
+    Seven concrete subtypes cover the full vocabulary of streaming events:
+  </p>
+
+  <table class="ctbl">
+    <thead>
+      <tr>
+        <th>Subtype</th>
+        <th>Type String</th>
+        <th>Payload</th>
+        <th>Source</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>TextDelta</code></td>
+        <td><code>"text"</code></td>
+        <td><code>text: str</code></td>
+        <td>LLM response tokens</td>
+      </tr>
+      <tr>
+        <td><code>ThinkingDelta</code></td>
+        <td><code>"thinking"</code></td>
+        <td><code>thinking: str</code></td>
+        <td>Extended thinking / reasoning</td>
+      </tr>
+      <tr>
+        <td><code>ToolCallDelta</code></td>
+        <td><code>"tool_call"</code> / <code>"server_tool_call"</code></td>
+        <td><code>tool_name</code>, <code>tool_id</code>, <code>arguments_json</code></td>
+        <td>Model requesting tool execution</td>
+      </tr>
+      <tr>
+        <td><code>ToolResultDelta</code></td>
+        <td><code>"tool_result"</code> / <code>"server_tool_result"</code></td>
+        <td><code>tool_name</code>, <code>tool_id</code>, <code>result_content</code></td>
+        <td>Tool execution output</td>
+      </tr>
+      <tr>
+        <td><code>CitationDelta</code></td>
+        <td><code>"citation"</code></td>
+        <td><code>cited_text</code>, <code>citation_type</code>, <code>extras</code></td>
+        <td>Source references from LLM</td>
+      </tr>
+      <tr>
+        <td><code>MetaDelta</code></td>
+        <td><em>(caller-defined)</em></td>
+        <td><code>payload: dict</code></td>
+        <td>Framework lifecycle events</td>
+      </tr>
+      <tr>
+        <td><code>ErrorDelta</code></td>
+        <td><code>"error"</code></td>
+        <td><code>error_payload: dict</code></td>
+        <td>Errors from any layer</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/types.py</div>
+      <div class="tg tg-type">CONTENT DELTAS</div>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">TextDelta</span>(<span class="t">StreamDelta</span>):
+    <span class="s">"""Incremental text content from the LLM."""</span>
+    text: <span class="t">str</span> = <span class="s">""</span>
+
+    <span class="k">def</span> <span class="f">__post_init__</span>(<span class="k">self</span>) -> <span class="t">None</span>:
+        <span class="k">self</span>.type = <span class="s">"text"</span>
+
+
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">ThinkingDelta</span>(<span class="t">StreamDelta</span>):
+    <span class="s">"""Incremental thinking/reasoning content from the LLM."""</span>
+    thinking: <span class="t">str</span> = <span class="s">""</span>
+
+    <span class="k">def</span> <span class="f">__post_init__</span>(<span class="k">self</span>) -> <span class="t">None</span>:
+        <span class="k">self</span>.type = <span class="s">"thinking"</span>
+</pre>
+  </div>
+
+  <p>
+    Notice the <code>__post_init__</code> pattern: every subclass auto-sets its <code>type</code>
+    string. The caller never has to remember to pass <code>type="text"</code> &mdash; constructing a
+    <code>TextDelta</code> automatically gives it the right discriminator.
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/types.py</div>
+      <div class="tg tg-type">TOOL DELTAS</div>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">ToolCallDelta</span>(<span class="t">StreamDelta</span>):
+    <span class="s">"""A tool invocation request (buffered, emitted complete)."""</span>
+
+    tool_name: <span class="t">str</span> = <span class="s">""</span>
+    tool_id: <span class="t">str</span> = <span class="s">""</span>
+    arguments_json: <span class="t">str</span> = <span class="s">""</span>
+    is_server_tool: <span class="t">bool</span> = <span class="n">False</span>
+
+    <span class="k">def</span> <span class="f">__post_init__</span>(<span class="k">self</span>) -> <span class="t">None</span>:
+<span class="hl">        <span class="k">self</span>.type = <span class="s">"server_tool_call"</span> <span class="k">if</span> <span class="k">self</span>.is_server_tool <span class="k">else</span> <span class="s">"tool_call"</span></span>
+</pre>
+  </div>
+
+  <div class="th teal">
+    <span class="tl">Key Insight</span>
+    <code>ToolCallDelta</code> conditionally sets its type to <code>"server_tool_call"</code> or
+    <code>"tool_call"</code> based on the <code>is_server_tool</code> flag. This distinction matters
+    downstream: the formatter can gate server tool results behind a configuration flag, while client
+    tool results always stream through.
+  </div>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/types.py</div>
+      <div class="tg tg-type">TOOL RESULT</div>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">ToolResultDelta</span>(<span class="t">StreamDelta</span>):
+    <span class="s">"""A tool invocation result."""</span>
+
+    tool_name: <span class="t">str</span> = <span class="s">""</span>
+    tool_id: <span class="t">str</span> = <span class="s">""</span>
+    result_content: <span class="t">str</span> = <span class="s">""</span>
+    envelope_log: <span class="t">dict</span>[<span class="t">str</span>, <span class="t">Any</span>] = <span class="f">field</span>(default_factory=<span class="t">dict</span>)
+    is_server_tool: <span class="t">bool</span> = <span class="n">False</span>
+
+    <span class="k">def</span> <span class="f">__post_init__</span>(<span class="k">self</span>) -> <span class="t">None</span>:
+        <span class="k">self</span>.type = <span class="s">"server_tool_result"</span> <span class="k">if</span> <span class="k">self</span>.is_server_tool <span class="k">else</span> <span class="s">"tool_result"</span>
+</pre>
+  </div>
+
+  <p>
+    The <code>envelope_log</code> field is worth noting &mdash; it carries an optional
+    conversation-log envelope dict that can be serialized into the wire-format chunk.
+    This allows the UI to reconstruct the full conversation structure without a separate API call.
+  </p>
+</div>
+
+<!-- ================================================================== -->
+<div class="chap"><span>Chapter Three</span></div>
+<!-- ================================================================== -->
+
+<div class="entry" id="ch3">
+  <div class="entry-tag">Chapter 3</div>
+  <h2>StreamFormatter &mdash; The Transport Adapter</h2>
+
+  <p>
+    A <code>StreamDelta</code> is a Python dataclass. The transport layer speaks JSON strings
+    (for SSE), binary frames (for WebSockets), or plain text (for a CLI). Something has to
+    bridge the gap. That something is the <strong>StreamFormatter</strong>.
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/base.py</div>
+      <div class="tg tg-abc">ABC</div>
+    </div>
+<pre>
+<span class="t">StreamFormatterType</span> = <span class="t">Literal</span>[<span class="s">"json"</span>]
+
+
+<span class="k">class</span> <span class="t">StreamFormatter</span>(<span class="t">ABC</span>):
+    <span class="s">"""Abstract base class for stream formatters.</span>
+
+<span class="s">    Implementations serialize StreamDelta objects to a specific wire</span>
+<span class="s">    format (JSON envelopes, raw text, etc.) and put the result on a</span>
+<span class="s">    queue for the transport layer to consume.</span>
+<span class="s">    """</span>
+
+    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">format_delta</span>(
+        <span class="k">self</span>, delta: <span class="t">StreamDelta</span>, queue: <span class="t">asyncio.Queue</span>
+    ) -> <span class="t">None</span>:
+        <span class="s">"""Serialize a StreamDelta and put the result on the queue."""</span>
+        ...
+</pre>
+  </div>
+
+  <p>
+    The contract is minimal by design: one method, two arguments. The formatter receives a
+    canonical delta and an output queue. It serializes the delta into whatever wire format it
+    supports and puts the result on the queue. The transport layer drains the queue.
+  </p>
+
+  <div class="th">
+    <span class="tl">Design Decision</span>
+    Why pass the queue to <code>format_delta()</code> instead of returning a string? Because a single
+    delta might produce <em>multiple</em> wire-format messages. A large tool result gets chunked into
+    several envelopes. Returning a list would work, but the queue-based API naturally supports
+    backpressure and keeps the async flow clean.
+  </div>
+
+  <h3>JsonStreamFormatter &mdash; The Default Implementation</h3>
+
+  <p>
+    The concrete implementation produces compact JSON envelopes &mdash; the wire format consumed
+    by SSE endpoints and WebSocket handlers:
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/formatters.py</div>
+      <div class="tg tg-impl">IMPL</div>
+    </div>
+<pre>
+<span class="k">class</span> <span class="t">JsonStreamFormatter</span>(<span class="t">StreamFormatter</span>):
+    <span class="s">"""Stream formatter producing compact JSON envelopes.</span>
+
+<span class="s">    Each delta is serialized to one or more JSON envelope strings</span>
+<span class="s">    and put on the output queue. Large payloads (tool calls, tool</span>
+<span class="s">    results) are automatically chunked with UTF-8-safe splitting.</span>
+<span class="s">    """</span>
+
+    <span class="k">def</span> <span class="f">__init__</span>(<span class="k">self</span>, stream_tool_results: <span class="t">bool</span> = <span class="n">True</span>) -> <span class="t">None</span>:
+        <span class="k">self</span>.stream_tool_results = stream_tool_results
+
+    <span class="k">async def</span> <span class="f">format_delta</span>(
+        <span class="k">self</span>, delta: <span class="t">StreamDelta</span>, queue: <span class="t">asyncio.Queue</span>
+    ) -> <span class="t">None</span>:
+        agent = delta.agent_uuid
+
+        <span class="k">if</span> <span class="f">isinstance</span>(delta, <span class="t">TextDelta</span>):
+            env = <span class="f">build_envelope</span>(<span class="s">"text"</span>, agent, delta.is_final, delta.text)
+            <span class="k">await</span> queue.<span class="f">put</span>(env)
+
+        <span class="k">elif</span> <span class="f">isinstance</span>(delta, <span class="t">ToolResultDelta</span>):
+            <span class="c"># Gate server tool results behind the flag.</span>
+<span class="hl">            <span class="k">if</span> delta.is_server_tool <span class="k">and not</span> <span class="k">self</span>.stream_tool_results:</span>
+<span class="hl">                <span class="k">return</span></span>
+            <span class="c"># ... chunk_and_emit for large results</span>
+</pre>
+  </div>
+
+  <p>
+    The formatter dispatches on the delta&rsquo;s concrete type using <code>isinstance</code> checks.
+    Simple deltas like <code>TextDelta</code> and <code>ThinkingDelta</code> produce a single envelope.
+    Complex deltas like <code>ToolCallDelta</code> and <code>ToolResultDelta</code> are routed through
+    <code>chunk_and_emit()</code> for automatic payload splitting.
+  </p>
+
+  <div class="ins emerald">
+    <span class="il">The stream_tool_results Gate</span>
+    <p style="margin:0;">
+      Server-side tool results can be voluminous &mdash; code execution output, file contents, search results.
+      The <code>stream_tool_results</code> flag lets the caller suppress these from the wire format entirely.
+      The agent loop still sees them (it works with the raw <code>StreamDelta</code> objects), but the
+      UI never receives the noise. Client tool results always stream through &mdash; the user initiated
+      those and expects to see the output.
+    </p>
+  </div>
+
+  <h3>The JSON Envelope Format</h3>
+
+  <p>
+    Every wire-format message is a compact JSON object with a fixed shape:
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/utils.py &mdash; build_envelope()</div>
+      <div class="tg tg-schema">SCHEMA</div>
+    </div>
+<pre>
+<span class="k">def</span> <span class="f">build_envelope</span>(
+    msg_type: <span class="t">str</span>,
+    agent: <span class="t">str</span>,
+    final: <span class="t">bool</span>,
+    delta: <span class="t">str</span>,
+    **extra: <span class="t">Any</span>,
+) -> <span class="t">str</span>:
+    obj: <span class="t">dict</span>[<span class="t">str</span>, <span class="t">Any</span>] = {
+        <span class="s">"type"</span>:  msg_type,   <span class="c"># "text", "tool_call", "error", ...</span>
+        <span class="s">"agent"</span>: agent,      <span class="c"># agent UUID for demuxing</span>
+        <span class="s">"final"</span>: final,      <span class="c"># last chunk of this logical event?</span>
+        <span class="s">"delta"</span>: delta,      <span class="c"># the payload string</span>
+    }
+    obj.<span class="f">update</span>(extra)     <span class="c"># tool_id, tool_name, envelope_log, ...</span>
+    <span class="k">return</span> json.<span class="f">dumps</span>(obj, ensure_ascii=<span class="n">False</span>, separators=(<span class="s">","</span>, <span class="s">":"</span>))
+</pre>
+  </div>
+
+  <p>
+    A sample envelope on the wire looks like:
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">wire format examples</div>
+      <div class="tg tg-schema">JSON</div>
+    </div>
+<pre>
+<span class="c">// Text token</span>
+{<span class="s">"type"</span>:<span class="s">"text"</span>,<span class="s">"agent"</span>:<span class="s">"a1b2c3"</span>,<span class="s">"final"</span>:<span class="n">false</span>,<span class="s">"delta"</span>:<span class="s">"Hello"</span>}
+
+<span class="c">// Tool call (might be chunked)</span>
+{<span class="s">"type"</span>:<span class="s">"tool_call"</span>,<span class="s">"agent"</span>:<span class="s">"a1b2c3"</span>,<span class="s">"final"</span>:<span class="n">true</span>,
+ <span class="s">"delta"</span>:<span class="s">"{\"path\":\"/src/main.py\"}"</span>,
+ <span class="s">"id"</span>:<span class="s">"tc_001"</span>,<span class="s">"name"</span>:<span class="s">"read_file"</span>}
+
+<span class="c">// Error</span>
+{<span class="s">"type"</span>:<span class="s">"error"</span>,<span class="s">"agent"</span>:<span class="s">"a1b2c3"</span>,<span class="s">"final"</span>:<span class="n">true</span>,
+ <span class="s">"delta"</span>:<span class="s">"{\"message\":\"rate_limit_exceeded\"}"</span>}
+</pre>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<div class="chap"><span>Chapter Four</span></div>
+<!-- ================================================================== -->
+
+<div class="entry" id="ch4">
+  <div class="entry-tag">Chapter 4</div>
+  <h2>Chunking and the UTF-8 Boundary Problem</h2>
+
+  <p>
+    Text tokens are small &mdash; a few bytes each. But tool results can be enormous. A
+    <code>read_file</code> call might return 50 KB of source code. A code execution tool might
+    produce pages of output. These payloads need to be broken into SSE-sized chunks.
+  </p>
+
+  <p>
+    The naive approach is simple: split the byte string every <code>N</code> bytes. But text
+    is UTF-8, and UTF-8 is a variable-width encoding. A single character can span 1 to 4 bytes.
+    If you split at an arbitrary byte boundary, you can land in the <em>middle</em> of a
+    multi-byte character, producing invalid UTF-8 on both sides of the split.
+  </p>
+
+  <div class="th crimson">
+    <span class="tl">The Danger</span>
+    Consider the string &ldquo;Hello &#x1F680; World&rdquo;. The rocket emoji is 4 bytes in UTF-8:
+    <code>F0 9F 9A 80</code>. If your chunk boundary falls at byte offset 7, you split it into
+    <code>F0 9F</code> and <code>9A 80</code>. Neither fragment is valid UTF-8. The JSON serializer
+    will choke. The client will see a replacement character. The user will see garbage.
+  </div>
+
+  <p>
+    The solution is <strong>UTF-8-safe splitting</strong>. When the split point lands on a
+    continuation byte (a byte matching <code>0b10xxxxxx</code>), back up until you reach a
+    leading byte:
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/utils.py</div>
+      <div class="tg tg-impl">UTF-8 SAFE SPLIT</div>
+    </div>
+<pre>
+<span class="k">def</span> <span class="f">_utf8_safe_split</span>(payload_bytes: <span class="t">bytes</span>, max_bytes: <span class="t">int</span>) -> <span class="t">list</span>[<span class="t">bytes</span>]:
+    <span class="s">"""Split payload_bytes into chunks of at most max_bytes each.</span>
+
+<span class="s">    Never splits inside a multi-byte UTF-8 character.</span>
+<span class="s">    """</span>
+    chunks: <span class="t">list</span>[<span class="t">bytes</span>] = []
+    offset = <span class="n">0</span>
+    length = <span class="f">len</span>(payload_bytes)
+    <span class="k">while</span> offset &lt; length:
+        end = <span class="f">min</span>(offset + max_bytes, length)
+        <span class="k">if</span> end &lt; length:
+<span class="hl">            <span class="c"># Back up if we landed on a continuation byte (0b10xxxxxx)</span></span>
+<span class="hl">            <span class="k">while</span> end > offset <span class="k">and</span> (payload_bytes[end] & <span class="n">0xC0</span>) == <span class="n">0x80</span>:</span>
+<span class="hl">                end -= <span class="n">1</span></span>
+        chunks.<span class="f">append</span>(payload_bytes[offset:end])
+        offset = end
+    <span class="k">return</span> chunks
+</pre>
+  </div>
+
+  <div class="th teal">
+    <span class="tl">How It Works</span>
+    UTF-8 continuation bytes always have the bit pattern <code>10xxxxxx</code> (hex <code>0x80</code>&ndash;<code>0xBF</code>).
+    Leading bytes have patterns <code>0xxxxxxx</code> (ASCII), <code>110xxxxx</code> (2-byte),
+    <code>1110xxxx</code> (3-byte), or <code>11110xxx</code> (4-byte). The bitmask
+    <code>(byte &amp; 0xC0) == 0x80</code> precisely identifies continuation bytes. When we find one at
+    the split point, we back up until we reach a leading byte &mdash; keeping the multi-byte character
+    intact in the <em>next</em> chunk.
+  </div>
+
+  <h3>chunk_and_emit &mdash; The Orchestrator</h3>
+
+  <p>
+    The <code>chunk_and_emit()</code> function ties it all together. It measures the envelope
+    overhead, calculates the maximum delta size per chunk, splits if necessary, and emits
+    each chunk as a separate envelope:
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/utils.py</div>
+      <div class="tg tg-impl">CHUNKING</div>
+    </div>
+<pre>
+<span class="t">MAX_SSE_CHUNK_BYTES</span> = <span class="n">2048</span>
+
+<span class="k">async def</span> <span class="f">chunk_and_emit</span>(
+    queue: <span class="t">asyncio.Queue</span>,
+    msg_type: <span class="t">str</span>,
+    agent: <span class="t">str</span>,
+    payload: <span class="t">str</span>,
+    final_on_last: <span class="t">bool</span>,
+    **extra: <span class="t">Any</span>,
+) -> <span class="t">None</span>:
+    <span class="c"># Measure overhead (envelope with empty delta)</span>
+    overhead = <span class="f">len</span>(<span class="f">build_envelope</span>(msg_type, agent, <span class="n">False</span>, <span class="s">""</span>, **extra).<span class="f">encode</span>(<span class="s">"utf-8"</span>))
+    max_delta_bytes = <span class="t">MAX_SSE_CHUNK_BYTES</span> - overhead
+    <span class="k">if</span> max_delta_bytes &lt; <span class="n">64</span>:
+        max_delta_bytes = <span class="t">MAX_SSE_CHUNK_BYTES</span>  <span class="c"># degenerate case fallback</span>
+
+    payload_bytes = payload.<span class="f">encode</span>(<span class="s">"utf-8"</span>)
+
+    <span class="k">if</span> <span class="f">len</span>(payload_bytes) &lt;= max_delta_bytes:
+        <span class="c"># Small payload — emit directly, no splitting</span>
+        env = <span class="f">build_envelope</span>(msg_type, agent, final_on_last, payload, **extra)
+        <span class="k">await</span> queue.<span class="f">put</span>(env)
+        <span class="k">return</span>
+
+    <span class="c"># Large payload — split safely and emit chunks</span>
+    chunks = <span class="f">_utf8_safe_split</span>(payload_bytes, max_delta_bytes)
+    <span class="k">for</span> i, chunk_bytes <span class="k">in</span> <span class="f">enumerate</span>(chunks):
+        is_last = i == <span class="f">len</span>(chunks) - <span class="n">1</span>
+        delta_str = chunk_bytes.<span class="f">decode</span>(<span class="s">"utf-8"</span>)
+        env = <span class="f">build_envelope</span>(
+            msg_type, agent,
+<span class="hl">            final=(final_on_last <span class="k">and</span> is_last),  <span class="c"># only the last chunk is "final"</span></span>
+            delta=delta_str, **extra,
+        )
+        <span class="k">await</span> queue.<span class="f">put</span>(env)
+</pre>
+  </div>
+
+  <div class="dw">
+<pre style="background:transparent;color:var(--ink);padding:0;box-shadow:none;font-size:12.5px;line-height:1.7;">
+  50 KB tool result payload
+  ========================
+
+  Step 1: Measure envelope overhead
+    {"type":"tool_result","agent":"...","final":false,"delta":"","id":"...","name":"..."}
+    ~120 bytes of overhead
+
+  Step 2: max_delta_bytes = 2048 - 120 = 1928 bytes per chunk
+
+  Step 3: Split payload at UTF-8-safe boundaries
+    [chunk_0: 1928 bytes] [chunk_1: 1928 bytes] ... [chunk_N: remainder]
+
+  Step 4: Emit envelopes
+    {"type":"tool_result","final":false,"delta":"...chunk_0...","id":"tc_01","name":"read_file"}
+    {"type":"tool_result","final":false,"delta":"...chunk_1...","id":"tc_01","name":"read_file"}
+    ...
+    {"type":"tool_result","final":true, "delta":"...chunk_N...","id":"tc_01","name":"read_file"}
+                           ^^^^^^^^^
+                      Only the last chunk carries final=true
+</pre>
+    <div class="dc">Chunking a large tool result into SSE-safe envelopes</div>
+  </div>
+
+  <div class="th amber">
+    <span class="tl">Why Measure Overhead Dynamically?</span>
+    The envelope overhead depends on the agent UUID length, the type string, and the extra
+    fields (tool_id, tool_name). Rather than guessing, <code>chunk_and_emit()</code> builds
+    an actual envelope with an empty delta, measures its byte length, and subtracts that from
+    the chunk budget. This guarantees every emitted envelope fits within <code>MAX_SSE_CHUNK_BYTES</code>.
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<div class="chap"><span>Chapter Five</span></div>
+<!-- ================================================================== -->
+
+<div class="entry" id="ch5">
+  <div class="entry-tag">Chapter 5</div>
+  <h2>Wiring &mdash; The Full Pipeline</h2>
+
+  <p>
+    Let&rsquo;s trace a token from the moment it leaves the LLM to the moment the user sees it.
+    The pipeline has four stages, each decoupled from the others by a well-defined interface:
+  </p>
+
+  <div class="dw">
+<pre style="background:transparent;color:var(--ink);padding:0;box-shadow:none;font-size:13px;line-height:1.8;">
+  +-------------------+
+  |   LLM Provider    |    Stage 1: Provider emits native events
+  | (Anthropic API)   |    (content_block_delta, tool_use, etc.)
+  +---------+---------+
+            |
+            | translate to canonical type
+            v
+  +-------------------+
+  |    StreamDelta     |    Stage 2: Canonical event objects
+  |  (TextDelta,       |    (provider-agnostic, typed, carry agent_uuid)
+  |   ToolCallDelta,   |
+  |   MetaDelta, ...)  |
+  +---------+---------+
+            |
+            | format_delta()
+            v
+  +-------------------+
+  |  StreamFormatter   |    Stage 3: Serialize to wire format
+  | (JsonStreamFormatter|    (compact JSON envelopes, auto-chunked)
+  |  or custom impl)   |
+  +---------+---------+
+            |
+            | await queue.put(envelope_str)
+            v
+  +-------------------+
+  |  asyncio.Queue     |    Stage 4: Async queue bridges to transport
+  |                    |    (SSE endpoint, WebSocket handler, CLI printer)
+  +---------+---------+
+            |
+            | transport drains queue
+            v
+  +-------------------+
+  |  Transport Layer   |    Delivery
+  | (SSE / WS / CLI)  |    (user sees each token as it arrives)
+  +-------------------+
+</pre>
+    <div class="dc">The four-stage streaming pipeline</div>
+  </div>
+
+  <p>
+    Each boundary is a clean abstraction:
+  </p>
+
+  <table class="ctbl">
+    <thead>
+      <tr>
+        <th>Boundary</th>
+        <th>Interface</th>
+        <th>Decouples</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Provider &rarr; Delta</td>
+        <td><code>StreamDelta</code> subclass constructors</td>
+        <td>Provider-specific event formats from the rest of the system</td>
+      </tr>
+      <tr>
+        <td>Delta &rarr; Formatter</td>
+        <td><code>format_delta(delta, queue)</code></td>
+        <td>Event semantics from serialization format</td>
+      </tr>
+      <tr>
+        <td>Formatter &rarr; Transport</td>
+        <td><code>asyncio.Queue</code></td>
+        <td>Serialization from delivery mechanism</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="th emerald">
+    <span class="tl">Why This Matters</span>
+    Want to add a WebSocket transport? Write a consumer that drains the queue and sends each
+    string as a WS frame. Want to support a new LLM provider? Translate its native events into
+    <code>StreamDelta</code> subclasses. Want to change the wire format to Protocol Buffers?
+    Write a new <code>StreamFormatter</code>. Each change is isolated to a single layer.
+  </div>
+
+  <h3>The emit_stream_delta Convenience Function</h3>
+
+  <p>
+    For cases where you have a <code>StreamDelta</code> and just want to get it onto the wire
+    without constructing a formatter, <code>utils.py</code> provides a standalone dispatch function:
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/utils.py</div>
+      <div class="tg tg-impl">CONVENIENCE</div>
+    </div>
+<pre>
+<span class="k">async def</span> <span class="f">emit_stream_delta</span>(
+    queue: <span class="t">asyncio.Queue</span>,
+    delta: <span class="t">StreamDelta</span>,
+) -> <span class="t">None</span>:
+    <span class="s">"""Dispatches on delta subclass and emits the appropriate</span>
+<span class="s">    JSON envelope(s) to the queue.</span>
+
+<span class="s">    Bridges StreamDelta objects to the wire-format emission layer.</span>
+<span class="s">    For large payloads it uses chunk_and_emit for automatic</span>
+<span class="s">    UTF-8-safe splitting.</span>
+<span class="s">    """</span>
+    agent = delta.agent_uuid
+
+    <span class="k">if</span> <span class="f">isinstance</span>(delta, <span class="t">TextDelta</span>):
+        env = <span class="f">build_envelope</span>(<span class="s">"text"</span>, agent, delta.is_final, delta.text)
+        <span class="k">await</span> queue.<span class="f">put</span>(env)
+
+    <span class="k">elif</span> <span class="f">isinstance</span>(delta, <span class="t">ThinkingDelta</span>):
+        env = <span class="f">build_envelope</span>(<span class="s">"thinking"</span>, agent, delta.is_final, delta.thinking)
+        <span class="k">await</span> queue.<span class="f">put</span>(env)
+
+    <span class="c"># ... ToolCallDelta, ToolResultDelta, CitationDelta, MetaDelta, ErrorDelta</span>
+    <span class="c"># each dispatched to build_envelope or chunk_and_emit as appropriate</span>
+
+    <span class="k">else</span>:
+        logger.<span class="f">warning</span>(<span class="s">"unknown_stream_delta_type"</span>,
+                       delta_type=<span class="f">type</span>(delta).__name__,
+                       agent_uuid=agent)
+</pre>
+  </div>
+
+  <p>
+    This function mirrors the logic in <code>JsonStreamFormatter.format_delta()</code> but lives
+    outside the formatter class. It&rsquo;s useful for framework-internal code that needs to emit
+    deltas without going through the full formatter pipeline &mdash; for example, error handling
+    paths that need to push an <code>ErrorDelta</code> directly onto the queue.
+  </p>
+</div>
+
+<!-- ================================================================== -->
+<div class="chap"><span>Chapter Six</span></div>
+<!-- ================================================================== -->
+
+<div class="entry" id="ch6">
+  <div class="entry-tag">Chapter 6</div>
+  <h2>MetaDelta &mdash; Framework-Level Events</h2>
+
+  <p>
+    Not all streaming events come from the LLM. The framework itself has lifecycle events that
+    the UI needs to know about: an agent starting up, a run completing, files being produced,
+    the system waiting for a human relay. These are <strong>meta events</strong>, and they flow
+    through the same streaming pipeline as LLM tokens.
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/types.py</div>
+      <div class="tg tg-type">META</div>
+    </div>
+<pre>
+<span class="k">@dataclass</span>
+<span class="k">class</span> <span class="t">MetaDelta</span>(<span class="t">StreamDelta</span>):
+    <span class="s">"""Framework-level meta events (init, final, files, awaiting, etc.).</span>
+
+<span class="s">    The type is set by the caller (e.g. "meta_init", "meta_final").</span>
+<span class="s">    """</span>
+
+<span class="hl">    payload: <span class="t">dict</span>[<span class="t">str</span>, <span class="t">Any</span>] = <span class="f">field</span>(default_factory=<span class="t">dict</span>)</span>
+
+    <span class="c"># type is set by the caller — no __post_init__ override.</span>
+</pre>
+  </div>
+
+  <div class="th">
+    <span class="tl">Design Decision</span>
+    <code>MetaDelta</code> is the only subtype that does <em>not</em> override <code>__post_init__</code>.
+    Its <code>type</code> is set by the caller &mdash; <code>"meta_init"</code>, <code>"meta_final"</code>,
+    <code>"meta_files"</code>, <code>"meta_awaiting_relay"</code>. This makes it an extensible
+    escape hatch: any framework-level event can be piped through the stream without defining a
+    new subclass.
+  </div>
+
+  <h3>The Meta Event Vocabulary</h3>
+
+  <table class="ctbl">
+    <thead>
+      <tr>
+        <th>Type String</th>
+        <th>When Emitted</th>
+        <th>Typical Payload</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>"meta_init"</code></td>
+        <td>Agent run begins</td>
+        <td>Agent config, model name, run ID</td>
+      </tr>
+      <tr>
+        <td><code>"meta_final"</code></td>
+        <td>Agent run completes</td>
+        <td>Usage stats, total tokens, cost</td>
+      </tr>
+      <tr>
+        <td><code>"meta_files"</code></td>
+        <td>Files produced during execution</td>
+        <td>File paths, sizes, types</td>
+      </tr>
+      <tr>
+        <td><code>"meta_awaiting_relay"</code></td>
+        <td>Agent is waiting for human input</td>
+        <td>Prompt text, relay context</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="th amber">
+    <span class="tl">Unified Event Model</span>
+    The alternative would be a separate signaling channel for lifecycle events &mdash; a second
+    queue, a callback system, or WebSocket control frames. But that means the UI has to listen
+    on two channels and merge them into a single timeline. By piping everything through the
+    same <code>StreamDelta</code> hierarchy and the same queue, the UI gets a single ordered
+    stream of events. One consumer. One timeline. No merge logic.
+  </div>
+
+  <h3>Serialization Path</h3>
+
+  <p>
+    When the formatter encounters a <code>MetaDelta</code>, it JSON-serializes the payload dict
+    and routes it through <code>chunk_and_emit()</code> like any other complex delta:
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <div class="fn">streaming/formatters.py</div>
+      <div class="tg tg-impl">META HANDLING</div>
+    </div>
+<pre>
+<span class="k">elif</span> <span class="f">isinstance</span>(delta, <span class="t">MetaDelta</span>):
+    payload = json.<span class="f">dumps</span>(
+        delta.payload, ensure_ascii=<span class="n">False</span>, separators=(<span class="s">","</span>, <span class="s">":"</span>)
+    )
+    <span class="k">await</span> <span class="f">chunk_and_emit</span>(
+        queue, delta.type, agent, payload, final_on_last=delta.is_final
+    )
+</pre>
+  </div>
+
+  <p>
+    The <code>delta.type</code> here is the caller-provided string &mdash; <code>"meta_init"</code>,
+    <code>"meta_final"</code>, etc. &mdash; which becomes the <code>"type"</code> field in the
+    JSON envelope. The UI can switch on this field to render lifecycle events differently from
+    LLM content.
+  </p>
+
+  <div class="ins violet">
+    <span class="il">ErrorDelta &mdash; The Safety Valve</span>
+    <p style="margin:0;">
+      <code>ErrorDelta</code> always emits with <code>final=True</code>, regardless of the
+      <code>is_final</code> field on the delta itself. This is intentional: an error is always
+      the <em>last</em> event in its logical sequence. The UI can treat it as a terminal signal
+      and display the error immediately without waiting for more chunks.
+    </p>
+  </div>
+
+  <div class="sep">&middot; &middot; &middot;</div>
+
+  <p>
+    The streaming pipeline is the nervous system of agent_base. It carries signals from the
+    LLM provider, through canonical types, through transport-agnostic formatters, into whatever
+    delivery mechanism the deployment requires. Each layer knows only its immediate neighbors.
+    The provider doesn&rsquo;t know about SSE. The formatter doesn&rsquo;t know about Anthropic.
+    The transport doesn&rsquo;t know about tool calls. And the user sees every token the moment
+    it&rsquo;s born.
+  </p>
+</div>
+
+</div><!-- .wrap -->
+
+<div class="footer">
+  Streaming Architecture &middot; March 2026
+</div>
+
+<script>
+  const io = new IntersectionObserver(es => {
+    es.forEach(e => { if (e.isIntersecting) e.target.classList.add('vis'); });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.entry').forEach(el => io.observe(el));
+</script>
+
+</body>
+</html>

@@ -41,13 +41,15 @@ agent_base/
 │   └── base.py                    # ConfigurableToolBase ABC (templated docstrings)
 │
 ├── common_tools/                  # Built-in tool implementations
-│   ├── code_execution.py          # CodeExecutionTool + CodeExecEnvelope
-│   ├── file_read.py               # ReadFile tool
-│   ├── file_write.py              # WriteFile / ApplyPatch tools
-│   ├── glob_search.py             # GlobFilesSearch tool
-│   ├── grep_search.py             # GrepSearch tool
-│   ├── list_dir.py                # ListDir tool
-│   ├── subagent.py                # SubAgentTool + SubAgentEnvelope
+│   ├── code_execution_tool.py     # CodeExecutionTool
+│   ├── read_file.py               # ReadFileTool
+│   ├── apply_patch.py             # ApplyPatchTool
+│   ├── glob_file_search.py        # GlobFileSearchTool
+│   ├── grep_search.py             # GrepSearchTool
+│   ├── list_dir_tree.py           # ListDirTreeTool
+│   ├── todo_write.py              # TodoWriteTool
+│   ├── read_todos.py              # ReadTodosTool
+│   ├── sub_agent_tool.py          # SubAgentTool
 │   └── ...
 │
 ├── sandbox/                       # Sandbox infrastructure (isolation layer)
@@ -167,7 +169,7 @@ Each provider implements its own `MessageFormatter`. This is where provider-spec
 - State: `messages` (compacted context), `conversation_history` (unabridged per-run), `current_step`
 - Tools: `tool_schemas`, `tool_names`, `server_tools`, `subagent_schemas`
 - Provider config: `llm_config: dict[str, Any]` (provider-specific params serialized)
-- Components: `formatter`, `compactor_type`, `memory_store_type`
+- Components: `formatter`, `compaction_config`, `memory_store_type`
 - Media: `file_registry` (to be migrated to media_backend reference)
 - Frontend relay: `pending_frontend_tools`, `pending_backend_results`, `awaiting_frontend_tools`
 - Hierarchy: `parent_agent_uuid`
