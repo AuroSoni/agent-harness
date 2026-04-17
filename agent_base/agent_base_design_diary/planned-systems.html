@@ -391,7 +391,7 @@
 <body>
 
 <nav class="nav-bar">
-  <a href="providers.html" class="nav-arrow">&larr;</a>
+  <a href="async-communication.html" class="nav-arrow">&larr;</a>
   <div class="nav-tabs">
     <a href="index.html" class="nav-tab">Hub</a>
     <a href="core-domain-model.html" class="nav-tab">Domain</a>
@@ -402,6 +402,7 @@
     <a href="storage.html" class="nav-tab">Storage</a>
     <a href="streaming.html" class="nav-tab">Streaming</a>
     <a href="providers.html" class="nav-tab">Providers</a>
+    <a href="async-communication.html" class="nav-tab">Async Comms</a>
     <a href="planned-systems.html" class="nav-tab active">Planned</a>
   </div>
   <span class="nav-arrow disabled">&rarr;</span>
@@ -461,29 +462,32 @@
     </table>
   </div>
 
-  <h3>Compaction Strategies</h3>
+  <h3>Compaction &mdash; Per-Provider Controllers</h3>
+
+  <p>
+    Unlike the original multi-strategy plan, compaction is now implemented as a
+    <strong>provider-specific <code>CompactionController</code></strong> co-located with each
+    provider under <code>providers/&lt;name&gt;/compaction.py</code>. Each controller knows how to
+    invoke its own provider to generate summaries, how to strip provider-specific artefacts
+    (e.g. thinking blocks, cache markers), and how to find a safe user-message boundary
+    before which history can be replaced with a summary.
+  </p>
 
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Strategy</th><th>Approach</th></tr>
+        <tr><th>Controller</th><th>Location</th><th>Approach</th></tr>
       </thead>
       <tbody>
         <tr>
-          <td><code>NoOpCompactor</code></td>
-          <td>Pass-through, no compaction</td>
+          <td><code>CompactionController</code> (Anthropic)</td>
+          <td><code>providers/anthropic/compaction.py</code></td>
+          <td>LLM-summarized history replacement at a safe user-message boundary, with streamed progress deltas</td>
         </tr>
         <tr>
-          <td><code>SlidingWindowCompactor</code></td>
-          <td><strong>Default.</strong> 4-phase progressive: remove thinking &rarr; truncate tool results &rarr; placeholder old results &rarr; remove old turns</td>
-        </tr>
-        <tr>
-          <td><code>ToolResultRemovalCompactor</code></td>
-          <td>2-phase: replace old tool results &rarr; remove old turns</td>
-        </tr>
-        <tr>
-          <td><code>SummarizingCompactor</code></td>
-          <td>LLM-based summarization of older history</td>
+          <td><code>CompactionController</code> (LiteLLM)</td>
+          <td><code>providers/litellm/compaction.py</code></td>
+          <td>Same contract, adapted for LiteLLM's SDK</td>
         </tr>
       </tbody>
     </table>
@@ -492,28 +496,31 @@
   <div class="cw">
     <div class="ch">
       <div class="dots"><span></span><span></span><span></span></div>
-      <span class="fn">compaction/base.py + memory/base.py</span>
-      <span class="tag tag-abc">ABC</span>
+      <span class="fn">providers/&lt;name&gt;/compaction.py + memory/base.py</span>
+      <span class="tag tag-abc">Controller + ABC</span>
     </div>
 <pre>
-<span class="k">class</span> <span class="t">Compactor</span>(<span class="t">ABC</span>):
-    <span class="k">@abstractmethod</span>
-    <span class="k">async def</span> <span class="f">apply_compaction</span>(<span class="p">self</span>, agent_config: <span class="t">AgentConfig</span>)
-        -> <span class="t">tuple</span>[<span class="t">bool</span>, <span class="t">list</span>[<span class="t">Message</span>]]: ...
+<span class="k">class</span> <span class="t">CompactionController</span>:
+    <span class="k">def</span> <span class="f">should_compact</span>(<span class="p">self</span>, messages, estimated_tokens) -> <span class="t">bool</span>: ...
+    <span class="k">def</span> <span class="f">find_safe_boundary</span>(<span class="p">self</span>, messages, preserve_tokens) -> <span class="t">int</span>: ...
+    <span class="k">async def</span> <span class="f">compact</span>(<span class="p">self</span>, context_messages, model,
+                      agent_uuid, queue, stream_formatter, reason)
+        -> <span class="t">list</span>[<span class="t">Message</span>]: ...
 
 <span class="k">class</span> <span class="t">MemoryStore</span>(<span class="t">ABC</span>):
     <span class="k">@abstractmethod</span>
     <span class="k">async def</span> <span class="f">retrieve</span>(<span class="p">self</span>, user_message, messages) -> <span class="t">list</span>[<span class="t">ContentBlock</span>]: ...
     <span class="k">@abstractmethod</span>
-    <span class="k">async def</span> <span class="f">update</span>(<span class="p">self</span>, messages, conversation_history) -> <span class="t">dict</span>: ...</pre>
+    <span class="k">async def</span> <span class="f">update</span>(<span class="p">self</span>, messages, conversation_log) -> <span class="t">dict</span>: ...</pre>
   </div>
 
   <div class="thought">
     <span class="label">Design Decision</span>
-    Compaction runs <em>before</em> each LLM call. Memory retrieval runs <em>once</em> at run start
-    (injected as context). Memory update runs <em>once</em> at run end. They share no state.
-    This separation means you can swap compaction strategies without affecting memory,
-    and vice versa.
+    Compaction runs <em>before</em> each LLM call when the token threshold is exceeded.
+    Memory retrieval runs <em>once</em> at run start (injected as context). Memory update
+    runs <em>once</em> at run end. They share no state. Locating the controller next to the
+    provider avoids a leaky generic ABC: summarization, safe-boundary detection, and
+    artefact stripping all need provider-specific knowledge.
   </div>
 </section>
 
@@ -587,37 +594,47 @@
   <h2>Provider Implementations</h2>
 
   <p>
-    Each provider directory contains exactly four files &mdash; each owning one concern.
-    The Anthropic provider is now fully implemented with streaming, retry, cache control,
-    relay/pause, and cost tracking. See the <a href="providers.html">Provider Layer diary</a>
-    for the full design narrative. OpenAI and LiteLLM providers remain planned.
+    Each provider directory contains a small family of files &mdash; each owning one concern.
+    <strong>Two providers are fully implemented: Anthropic and LiteLLM.</strong> Both support
+    streaming, retry, cache control, relay/pause, and cost tracking. A native OpenAI
+    provider remains on the roadmap. See the <a href="providers.html">Provider Layer diary</a>
+    for the full design narrative.
   </p>
 
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>File</th><th>Class</th><th>Responsibility</th></tr>
+        <tr><th>File</th><th>Anthropic class</th><th>LiteLLM class</th><th>Responsibility</th></tr>
       </thead>
       <tbody>
         <tr>
-          <td><code>agent.py</code></td>
+          <td><code>*_agent.py</code></td>
           <td><code>AnthropicAgent</code></td>
+          <td><code>LiteLLMAgent</code></td>
           <td>Orchestration loop &mdash; step counting, tool dispatch, compaction, streaming</td>
         </tr>
         <tr>
           <td><code>provider.py</code></td>
           <td><code>AnthropicProvider</code></td>
+          <td><code>LiteLLMProvider</code></td>
           <td>LLM API call &mdash; SDK client, retry, streaming accumulation</td>
         </tr>
         <tr>
-          <td><code>formatter.py</code></td>
+          <td><code>formatters.py</code></td>
           <td><code>AnthropicMessageFormatter</code></td>
-          <td>Wire format translation &mdash; canonical &harr; Anthropic API, media resolution</td>
+          <td><code>LiteLLMMessageFormatter</code></td>
+          <td>Wire format translation &mdash; canonical &harr; provider API, media resolution</td>
         </tr>
         <tr>
           <td><code>config.py</code></td>
           <td><code>AnthropicLLMConfig</code></td>
-          <td>Provider-specific params &mdash; thinking_tokens, beta_headers, container_id</td>
+          <td><code>LiteLLMConfig</code></td>
+          <td>Provider-specific params (e.g. thinking_tokens, beta_headers, routing params)</td>
+        </tr>
+        <tr>
+          <td><code>compaction.py</code></td>
+          <td colspan="2"><code>CompactionController</code> (each)</td>
+          <td>Provider-aware LLM summarization + safe-boundary detection</td>
         </tr>
       </tbody>
     </table>
@@ -631,12 +648,13 @@
       <tbody>
         <tr><td>Agentic loop (step counting, dispatch, compaction)</td><td>Provider's Agent</td></tr>
         <tr><td>LLM API call (auth, retry, streaming)</td><td>Provider's Provider</td></tr>
-        <tr><td>Wire format translation</td><td>Provider's Formatter</td></tr>
-        <tr><td>Tool execution &amp; enveloping</td><td>Framework (tools/)</td></tr>
-        <tr><td>Sandbox lifecycle</td><td>Framework (sandbox/)</td></tr>
-        <tr><td>Compaction</td><td>Framework (compaction/)</td></tr>
-        <tr><td>Memory stores</td><td>Framework (memory/)</td></tr>
-        <tr><td>Storage adapters</td><td>Framework (storage/)</td></tr>
+        <tr><td>Wire format translation</td><td>Provider's MessageFormatter</td></tr>
+        <tr><td>Context compaction</td><td>Provider's CompactionController</td></tr>
+        <tr><td>Tool execution &amp; enveloping</td><td>Framework (<code>tools/</code>)</td></tr>
+        <tr><td>Sandbox lifecycle</td><td>Framework (<code>sandbox/</code>)</td></tr>
+        <tr><td>Memory stores</td><td>Framework (<code>memory/</code>)</td></tr>
+        <tr><td>Storage adapters</td><td>Framework (<code>storage/</code>)</td></tr>
+        <tr><td>Pause / steer mid-turn</td><td>Framework (<code>abort_steer/</code>)</td></tr>
       </tbody>
     </table>
   </div>
@@ -658,19 +676,19 @@
 agent = <span class="t">AnthropicAgent</span>(
     system_prompt=<span class="s">"You are a helpful assistant."</span>,
     model=<span class="s">"claude-sonnet-4-5"</span>,
-    config=<span class="t">AnthropicLLMConfig</span>(thinking_tokens=<span class="n">10000</span>),
+    llm_config=<span class="t">AnthropicLLMConfig</span>(thinking_tokens=<span class="n">10000</span>),
 
     tools=[my_tool_a, my_tool_b],
     subagents={<span class="s">"research"</span>: research_agent},
 
-    sandbox=<span class="t">DockerSandbox</span>(image=<span class="s">"python:3.12-slim"</span>),
+    sandbox=<span class="t">LocalSandbox</span>.from_config(<span class="t">LocalSandboxConfig</span>(sandbox_id=uuid)),
     media_backend=<span class="t">S3MediaBackend</span>(bucket=<span class="s">"my-bucket"</span>),
-    compactor=<span class="t">SlidingWindowCompactor</span>(),
     memory_store=<span class="t">NoOpMemoryStore</span>(),
+    <span class="c"># compaction: per-provider; AnthropicAgent wires its own CompactionController</span>
 
-    config_adapter=<span class="t">PostgresAgentConfigAdapter</span>(db_url),
-    conversation_adapter=<span class="t">PostgresConversationAdapter</span>(db_url),
-    run_adapter=<span class="t">PostgresAgentRunAdapter</span>(db_url),
+    config_adapter=<span class="t">AgentConfigPostgresAdapter</span>(db_url),
+    conversation_adapter=<span class="t">ConversationPostgresAdapter</span>(db_url),
+    run_adapter=<span class="t">AgentRunPostgresAdapter</span>(db_url),
 )</pre>
   </div>
 
@@ -735,8 +753,9 @@ await agent.run(prompt)
   <h2>What Remains</h2>
 
   <p>
-    With the Anthropic provider, streaming, relay, and pricing all implemented, the remaining
-    planned work focuses on provider breadth and operational maturity:
+    With Anthropic + LiteLLM providers, streaming, relay, compaction, and pricing all shipped,
+    the remaining planned work focuses on provider breadth, sandbox isolation, and advanced
+    memory:
   </p>
 
   <div class="table-wrap">
@@ -748,32 +767,37 @@ await agent.run(prompt)
         <tr>
           <td><code>providers/openai/</code></td>
           <td>Planned</td>
-          <td>OpenAI provider &mdash; same 4-file pattern, different wire format</td>
-        </tr>
-        <tr>
-          <td><code>providers/litellm/</code></td>
-          <td>Planned</td>
-          <td>LiteLLM provider for multi-provider proxy routing</td>
+          <td>Native OpenAI provider &mdash; same file pattern as Anthropic/LiteLLM, different wire format. LiteLLM can already route to OpenAI today.</td>
         </tr>
         <tr>
           <td><code>sandbox/docker.py</code></td>
           <td>Interface defined</td>
-          <td>DockerSandbox container lifecycle &mdash; ABC exists, implementation stubbed</td>
+          <td>DockerSandbox container lifecycle &mdash; ABC exists, concrete implementation pending</td>
         </tr>
         <tr>
           <td><code>sandbox/e2b.py</code></td>
           <td>Interface defined</td>
-          <td>E2B cloud sandbox &mdash; ABC exists, implementation stubbed</td>
+          <td>E2B cloud sandbox &mdash; ABC exists, concrete implementation pending</td>
+        </tr>
+        <tr>
+          <td><code>media_backend/memory.py</code></td>
+          <td>Planned</td>
+          <td>In-memory MediaBackend for tests and ephemeral runs</td>
         </tr>
         <tr>
           <td>WebSocket StreamFormatter</td>
           <td>Planned</td>
-          <td>Alternative transport for bi-directional streaming</td>
+          <td>Alternative transport for bi-directional streaming (sibling to <code>JsonStreamFormatter</code>)</td>
         </tr>
         <tr>
           <td>Advanced memory stores</td>
           <td>Planned</td>
-          <td>Vector-backed, graph-backed cross-session memory implementations</td>
+          <td>Vector-backed and graph-backed cross-session memory (only <code>NoOpMemoryStore</code> ships today)</td>
+        </tr>
+        <tr>
+          <td><code>storage/EventLogAdapter</code></td>
+          <td>Designed</td>
+          <td>Fourth storage adapter: durable, run-scoped event log backing the front-end / sub-agent async boundary. Full design rationale and pattern comparison in <a href="async-communication.html">The Async Boundary</a>.</td>
         </tr>
       </tbody>
     </table>
@@ -783,7 +807,9 @@ await agent.run(prompt)
     <span class="label">Design Decision</span>
     The architecture was designed so that each planned system slots into an existing
     extension point. Adding OpenAI touches <code>providers/openai/</code> only. Adding
-    DockerSandbox touches <code>sandbox/docker.py</code> only. No core changes required.
+    DockerSandbox touches <code>sandbox/docker.py</code> only. The
+    <a href="async-communication.html">async-communication</a> work extends the
+    three-adapter storage pattern to four &mdash; no core changes required.
   </div>
 </section>
 

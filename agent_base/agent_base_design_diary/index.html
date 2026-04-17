@@ -594,6 +594,7 @@
     <a href="storage.html" class="nav-tab">Storage</a>
     <a href="streaming.html" class="nav-tab">Streaming</a>
     <a href="providers.html" class="nav-tab">Providers</a>
+    <a href="async-communication.html" class="nav-tab">Async Comms</a>
     <a href="planned-systems.html" class="nav-tab">Planned</a>
   </div>
   <a href="core-domain-model.html" class="nav-arrow">&rarr;</a>
@@ -851,12 +852,26 @@
       <span class="card-icon">🔌</span>
       <div class="card-title">Provider Layer</div>
       <div class="card-desc">
-        Provider ABC to Anthropic implementation. Relay/pause system, cost tracking,
-        retry with backoff, cache control, and the full agent loop.
+        Provider ABC with two concrete implementations: Anthropic (native SDK) and
+        LiteLLM (multi-provider bridge). Relay/pause, cost tracking, retry, cache control.
       </div>
       <div class="card-footer">
         <span class="card-link">Read the diary &rarr;</span>
         <span class="status status-impl">Implemented</span>
+      </div>
+    </a>
+
+    <a class="module-card" href="async-communication.html">
+      <span class="card-icon">🔀</span>
+      <div class="card-title">The Async Boundary</div>
+      <div class="card-desc">
+        How tool calls survive crashes, reconnects, and sub-agents four levels deep.
+        Six communication patterns ranked, and the correlation-ID inbox we plan to
+        land on.
+      </div>
+      <div class="card-footer">
+        <span class="card-link">Read the diary &rarr;</span>
+        <span class="status status-plan">Planned</span>
       </div>
     </a>
   </div>
@@ -876,27 +891,21 @@
                              │ uses
       ┌──────────┬───────────┼───────────┬──────────┐
       │          │           │           │          │
-┌─────▼─────┐ ┌──▼───────┐ ┌▼──────────┐ ┌▼────────┐ ┌▼─────────┐
-│  Provider  │ │ Stream   │ │ToolRegist.│ │Compactor│ │ Pricing  │
-│ (LLM API) │ │Formatter │ │(dispatch) │ │(ctx mgt)│ │(cost/$)  │
-└─────┬─────┘ │(SSE/WS)  │ └─────┬─────┘ └────────┘ └──────────┘
-      │        └──────────┘       │
+┌─────▼─────┐ ┌──▼───────┐ ┌▼──────────┐ ┌▼────────────┐ ┌▼─────────┐
+│  Provider  │ │ Stream   │ │ToolRegist.│ │ Compaction  │ │ Pricing  │
+│ (LLM API) │ │Formatter │ │(dispatch) │ │ Controller  │ │(cost/$)  │
+└─────┬─────┘ │(SSE)     │ └─────┬─────┘ │(per-provider)│ └──────────┘
+      │        └──────────┘       │       └─────────────┘
 ┌─────▼──────┐             ┌──────▼──────┐
-│ Formatter  │             │   Sandbox   │
-│(wire fmt)  │             │ (isolation) │
-└─────┬──────┘             └──────┬──────┘
-      │                           ^
-      │                           │ attach_sandbox()
+│ Message    │             │   Sandbox   │
+│ Formatter  │             │ (isolation) │
+│(wire fmt)  │             └──────┬──────┘
+└─────┬──────┘                    ^
+      │                           │ import_file / flush_exports
       └───────────────►┌──────────┴──┐
                        │MediaBackend │
                        │(store+resolve+
-                       │ materialize+
-                       │ flush_exports)
-                       └──────┬──────┘
-                              │
-                       ┌──────▼──────┐
-                       │  FileCache  │
-                       │(read-through)
+                       │ sandbox orch.)
                        └─────────────┘
 
     ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
@@ -904,10 +913,11 @@
     │(session)    │  │(run records)│  │(exec logs)  │
     └─────────────┘  └─────────────┘  └─────────────┘
 
-    ┌─────────────┐
-    │ MemoryStore │
-    │(cross-session)
-    └─────────────┘</pre>
+    ┌─────────────┐  ┌─────────────────┐
+    │ MemoryStore │  │AbortSteerRegistry│
+    │(cross-      │  │ (pause / steer   │
+    │ session)    │  │  mid-turn)       │
+    └─────────────┘  └─────────────────┘</pre>
     <div class="caption">Component dependency graph</div>
   </div>
 </section>
@@ -961,8 +971,8 @@
         <tr>
           <td><strong>Compaction Strategy</strong></td>
           <td>Context trimming approach</td>
-          <td><code>compaction/&lt;strategy&gt;.py</code></td>
-          <td>1 file</td>
+          <td><code>providers/&lt;name&gt;/compaction.py</code></td>
+          <td>1 file per provider</td>
         </tr>
         <tr>
           <td><strong>Stream Transport</strong></td>
@@ -1008,37 +1018,41 @@
 │   ├── types.py                   <span class="c"># ContentBlock hierarchy, enums, serialization</span>
 │   ├── messages.py                <span class="c"># Message, Usage, MessageFormatter ABC</span>
 │   ├── config.py                  <span class="c"># AgentConfig, Conversation dataclasses</span>
-│   ├── agent.py                   <span class="c"># Agent ABC (run, resume_run_with_tool_results)</span>
+│   ├── agent_base.py              <span class="c"># Agent ABC (run, run_stream, resume_with_relay_results)</span>
 │   ├── provider.py                <span class="c"># Provider ABC (generate, generate_stream)</span>
-│   ├── result.py                  <span class="c"># AgentResult dataclass</span>
-│   └── streaming.py               <span class="c"># StreamDelta types for framework-level SSE</span>
+│   ├── result.py                  <span class="c"># AgentResult, CostBreakdown dataclasses</span>
+│   ├── end_turn_hook.py           <span class="c"># EndTurnHook — final-answer validation</span>
+│   └── log_entry.py               <span class="c"># LogEntry for per-step run logs</span>
 │
 ├── <span class="f">tools/</span>                         <span class="c"># Tool infrastructure (registry, decorator, envelope)</span>
-│   ├── types.py                   <span class="c"># ToolResultEnvelope ABC, GenericErrorEnvelope</span>
+│   ├── tool_types.py              <span class="c"># ToolResultEnvelope ABC, ToolSchema, GenericErrorEnvelope, GenericTextEnvelope</span>
 │   ├── registry.py                <span class="c"># ToolRegistry (register, execute, schema export)</span>
 │   ├── decorators.py              <span class="c"># @tool decorator, schema generation</span>
 │   └── base.py                    <span class="c"># ConfigurableToolBase ABC</span>
 │
 ├── <span class="f">common_tools/</span>                  <span class="c"># Built-in tool implementations</span>
-│   ├── code_execution.py          <span class="c"># CodeExecutionTool + CodeExecEnvelope</span>
-│   ├── file_read.py / file_write.py
-│   ├── glob_search.py / grep_search.py
-│   ├── subagent.py                <span class="c"># SubAgentTool + SubAgentEnvelope</span>
-│   └── ...
+│   ├── code_execution_tool.py     <span class="c"># CodeExecutionTool + CodeExecutionResult</span>
+│   ├── read_file.py               <span class="c"># ReadFileTool (text + images)</span>
+│   ├── apply_patch.py             <span class="c"># ApplyPatchTool (unified-diff)</span>
+│   ├── glob_file_search.py        <span class="c"># GlobFileSearchTool</span>
+│   ├── grep_search.py             <span class="c"># GrepSearchTool</span>
+│   ├── list_dir_tree.py           <span class="c"># ListDirTreeTool (token-aware tree)</span>
+│   ├── todo_write.py              <span class="c"># TodoWriteTool</span>
+│   ├── read_todos.py              <span class="c"># ReadTodosTool</span>
+│   └── sub_agent_tool.py          <span class="c"># SubAgentTool + SubAgentResult</span>
 │
 ├── <span class="n">sandbox/</span>                       <span class="c"># Sandbox infrastructure (isolation layer)</span>
-│   ├── sandbox_types.py           <span class="c"># Sandbox ABC, ExecResult, FileEntry, SandboxConfig</span>
-│   ├── local.py                   <span class="c"># LocalSandbox (~1ms setup)</span>
-│   ├── docker.py                  <span class="c"># DockerSandbox (2–5s setup)</span>
-│   └── e2b.py                     <span class="c"># E2BSandbox (5–15s setup)</span>
+│   ├── sandbox_types.py           <span class="c"># Sandbox ABC, ExecResult, FileEntry, ExportedFileMetadata</span>
+│   └── local.py                   <span class="c"># LocalSandbox + LocalSandboxConfig (~1ms setup)</span>
+│                                  <span class="c"># Docker/E2B variants: interface-ready, not yet shipped</span>
 │
 ├── <span class="t">media_backend/</span>                 <span class="c"># Media storage + resolution</span>
-│   ├── media_types.py             <span class="c"># MediaMetadata dataclass, MediaBackend ABC</span>
-│   ├── local.py / s3.py / memory.py
-│   └── cache.py                   <span class="c"># LocalFileCache (read-through + write-back)</span>
+│   ├── media_types.py             <span class="c"># MediaBackend ABC, MediaMetadata dataclass</span>
+│   ├── local.py                   <span class="c"># LocalMediaBackend (filesystem-backed)</span>
+│   └── s3.py                      <span class="c"># S3MediaBackend (async S3 with JSON sidecars)</span>
 │
 ├── <span class="s">streaming/</span>                     <span class="c"># Real-time event architecture</span>
-│   ├── types.py                   <span class="c"># StreamDelta hierarchy (Text, Thinking, ToolCall, etc.)</span>
+│   ├── types.py                   <span class="c"># StreamDelta hierarchy (Text, Thinking, ToolCall, Rollback, Meta, …)</span>
 │   ├── base.py                    <span class="c"># StreamFormatter ABC</span>
 │   ├── formatters.py              <span class="c"># JsonStreamFormatter (SSE/chunked)</span>
 │   └── utils.py                   <span class="c"># UTF-8-safe chunking, envelope builders</span>
@@ -1047,27 +1061,36 @@
 │   ├── calculator.py              <span class="c"># ModelPricing, calculate_step_cost(), multiplier stacking</span>
 │   └── models.csv                 <span class="c"># Per-model pricing table</span>
 │
-├── <span class="r">compaction/</span>                    <span class="c"># Context window management</span>
-│   ├── base.py                    <span class="c"># Compactor ABC</span>
-│   ├── sliding_window.py          <span class="c"># SlidingWindowCompactor (default)</span>
-│   ├── summarizing.py             <span class="c"># SummarizingCompactor (LLM-based)</span>
-│   └── tool_result_removal.py / noop.py
-│
 ├── <span class="s">memory/</span>                        <span class="c"># Cross-session memory stores</span>
 │   ├── base.py                    <span class="c"># MemoryStore ABC (retrieve, update)</span>
-│   └── noop.py
+│   └── noop.py                    <span class="c"># NoOpMemoryStore</span>
 │
 ├── <span class="k">storage/</span>                       <span class="c"># Persistence (three-adapter pattern)</span>
 │   ├── base.py                    <span class="c"># ABCs: AgentConfigAdapter, ConversationAdapter, AgentRunAdapter</span>
-│   ├── adapters/                  <span class="c"># memory.py, filesystem.py, postgres.py</span>
-│   └── factory.py                 <span class="c"># create_adapters(backend_type, **kwargs)</span>
+│   ├── serialization.py           <span class="c"># serialize_config / serialize_conversation / serialize_log_entry</span>
+│   ├── adapters/                  <span class="c"># memory.py, filesystem.py, postgres.py (all three adapters each)</span>
+│   └── registry.py                <span class="c"># create_adapters(backend_type, **kwargs)</span>
 │
 ├── <span class="p">providers/</span>                     <span class="c"># Concrete provider implementations</span>
-│   ├── anthropic/                 <span class="c"># agent.py, provider.py, formatter.py, config.py</span>
-│   ├── openai/                    <span class="c"># (future)</span>
-│   └── litellm/                   <span class="c"># (future)</span>
+│   ├── anthropic/                 <span class="c"># anthropic_agent.py, provider.py, formatters.py, config.py, compaction.py</span>
+│   └── litellm/                   <span class="c"># litellm_agent.py, provider.py, formatters.py, config.py, compaction.py</span>
+│                                  <span class="c"># (OpenAI native provider planned)</span>
 │
-└── <span class="c">developer-diaries/             # Design discussion records</span>
+├── <span class="r">abort_steer/</span>                   <span class="c"># Mid-turn coordination (pause/steer running agents)</span>
+│   ├── base.py                    <span class="c"># AbortSteerRegistry ABC</span>
+│   ├── registry.py                <span class="c"># Registry orchestration</span>
+│   └── adapters/memory.py         <span class="c"># In-process registry</span>
+│
+├── <span class="n">python_executors/</span>              <span class="c"># Safe Python evaluation (used by CodeExecutionTool)</span>
+│   ├── base.py                    <span class="c"># Executor ABC + safety constraints</span>
+│   ├── ast_evaluator.py           <span class="c"># AST-based whitelist interpreter</span>
+│   └── local_python_executor.py   <span class="c"># Subprocess-based local executor</span>
+│
+├── <span class="t">logging/</span>                       <span class="c"># Structured logging via structlog</span>
+│   ├── config.py / processors.py / context.py
+│
+├── <span class="c">agent_base_design_diary/       # This diary — design narratives</span>
+└── <span class="c">developer-diaries/             # Raw design discussion records</span>
 </pre>
       </div>
     </div>
@@ -1095,7 +1118,7 @@
         </tr>
         <tr>
           <td><strong>New</strong></td>
-          <td>Sandbox system (3 isolation levels + file coordination), <code>MediaBackend</code> (storage + resolution + orchestration + S3 backend), <code>Provider</code> ABC + Anthropic implementation, <code>StreamDelta</code> hierarchy + <code>StreamFormatter</code>, relay/pause system (<code>PendingToolRelay</code>), pricing module (per-step cost tracking), <code>AnthropicMessageFormatter</code> (citations, compaction blocks, media resolution), retry with exponential backoff, sub-agent tool with multiplexed streaming</td>
+          <td>Sandbox system (<code>LocalSandbox</code> shipped; Docker/E2B interface-ready), <code>MediaBackend</code> (Local + S3), <code>Provider</code> ABC with <strong>Anthropic and LiteLLM</strong> implementations, <code>StreamDelta</code> hierarchy + <code>StreamFormatter</code>, relay/pause system (<code>PendingToolRelay</code>), pricing module (per-step cost, multiplier stacking), provider-scoped <code>CompactionController</code> (LLM-based summarization), retry with exponential backoff, <code>SubAgentTool</code> with multiplexed streaming, <code>AbortSteerRegistry</code> for mid-turn coordination</td>
         </tr>
       </tbody>
     </table>

@@ -425,6 +425,7 @@
     <a href="storage.html" class="nav-tab">Storage</a>
     <a href="streaming.html" class="nav-tab">Streaming</a>
     <a href="providers.html" class="nav-tab">Providers</a>
+    <a href="async-communication.html" class="nav-tab">Async Comms</a>
     <a href="planned-systems.html" class="nav-tab">Planned</a>
   </div>
   <a href="sandbox.html" class="nav-arrow">&rarr;</a>
@@ -717,11 +718,11 @@
   <div class="code-wrapper">
     <div class="code-header">
       <div class="dots"><span></span><span></span><span></span></div>
-      <span class="filename">code_exec_envelope.py</span>
+      <span class="filename">common_tools/code_execution_tool.py</span>
       <span class="tag tag-impl">Tool-Owned</span>
     </div>
     <pre><span class="decorator">@dataclass</span>
-<span class="kw">class</span> <span class="tp">CodeExecEnvelope</span>(<span class="tp">ToolResultEnvelope</span>):
+<span class="kw">class</span> <span class="tp">CodeExecutionResult</span>(<span class="tp">ToolResultEnvelope</span>):
     <span class="st">"""Rich result from a code execution tool."""</span>
 
     <span class="cm"># ── Tool-specific fields (the canonical model knows nothing about these) ──</span>
@@ -793,11 +794,11 @@
   <div class="code-wrapper">
     <div class="code-header">
       <div class="dots"><span></span><span></span><span></span></div>
-      <span class="filename">subagent_envelope.py</span>
+      <span class="filename">common_tools/sub_agent_tool.py</span>
       <span class="tag tag-impl">Tool-Owned</span>
     </div>
     <pre><span class="decorator">@dataclass</span>
-<span class="kw">class</span> <span class="tp">SubAgentEnvelope</span>(<span class="tp">ToolResultEnvelope</span>):
+<span class="kw">class</span> <span class="tp">SubAgentResult</span>(<span class="tp">ToolResultEnvelope</span>):
     <span class="st">"""Rich result from a sub-agent execution."""</span>
 
     <span class="cm"># ── Sub-agent specific data ──</span>
@@ -830,7 +831,7 @@
 
   <div class="insight green">
     <span class="insight-label">✅ What We've Achieved</span>
-    <p>Each tool now owns its result shape completely. The <code>CodeExecEnvelope</code> has <code>stdout</code>, <code>stderr</code>, and <code>execution_log</code>. The <code>SubAgentEnvelope</code> has <code>nested_messages</code> and <code>sub_agent_usage</code>. These fields don't pollute the canonical model — they exist only in the tool's envelope. The canonical model stays clean: it just sees <code>List[ContentBlock]</code> from the context-window projection.</p>
+    <p>Each tool now owns its result shape completely. The <code>CodeExecutionResult</code> has <code>stdout</code>, <code>stderr</code>, and <code>execution_log</code>. The <code>SubAgentResult</code> has <code>nested_messages</code> and <code>sub_agent_usage</code>. These fields don't pollute the canonical model — they exist only in the tool's envelope. The canonical model stays clean: it just sees <code>List[ContentBlock]</code> from the context-window projection.</p>
   </div>
 </section>
 
@@ -1859,6 +1860,33 @@ _BASE_TYPE_MAPPING = {
     <span class="insight-label">✅ The Litmus Test</span>
     <p>For each axis of change, ask: <em>"How many files do I touch?"</em> New tool type → one file (tool + envelope). New consumer → one file (add projection method). New provider → one file (implement <code>MessageFormatter</code>). New tool configuration → one file (subclass <code>ConfigurableToolBase</code>). If the answer is always "one," the factoring is right.</p>
   </div>
+
+  <h3>Tools Shipped in <code>common_tools/</code> Today</h3>
+
+  <p>The pattern's real test is whether it survives a growing tool catalogue. Today <code>common_tools/</code> ships nine tools, each with its own <code>ToolResultEnvelope</code> subclass:</p>
+
+  <table class="compare-table">
+    <thead>
+      <tr>
+        <th>Tool</th>
+        <th>Module</th>
+        <th>Envelope</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>CodeExecutionTool</code></td><td><code>code_execution_tool.py</code></td><td><code>CodeExecutionResult</code></td></tr>
+      <tr><td><code>ReadFileTool</code></td><td><code>read_file.py</code></td><td><code>ReadFileResult</code> (text + images)</td></tr>
+      <tr><td><code>ApplyPatchTool</code></td><td><code>apply_patch.py</code></td><td><code>ApplyPatchResult</code> (unified-diff with rollback)</td></tr>
+      <tr><td><code>GlobFileSearchTool</code></td><td><code>glob_file_search.py</code></td><td><code>GlobSearchResult</code></td></tr>
+      <tr><td><code>GrepSearchTool</code></td><td><code>grep_search.py</code></td><td><code>GrepSearchResult</code></td></tr>
+      <tr><td><code>ListDirTreeTool</code></td><td><code>list_dir_tree.py</code></td><td><code>ListDirResult</code> (token-aware tree)</td></tr>
+      <tr><td><code>TodoWriteTool</code></td><td><code>todo_write.py</code></td><td><code>TodoWriteResult</code></td></tr>
+      <tr><td><code>ReadTodosTool</code></td><td><code>read_todos.py</code></td><td><code>ReadTodosResult</code></td></tr>
+      <tr><td><code>SubAgentTool</code></td><td><code>sub_agent_tool.py</code></td><td><code>SubAgentResult</code></td></tr>
+    </tbody>
+  </table>
+
+  <p>Every envelope above implements both <code>for_context_window()</code> and <code>for_conversation_log()</code>. None of them required a change to <code>core/</code> to ship &mdash; the dual-projection contract absorbed them all.</p>
 </section>
 
 </div>

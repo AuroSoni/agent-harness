@@ -13,3 +13,4 @@ demos/fastapi_server/workspace/
 agent-media/
 test_data/
 sandbox_data/
+.playwright-mcp/
