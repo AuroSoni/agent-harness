@@ -25,6 +25,20 @@ class AnthropicTokenEstimator:
         serialized = json.dumps(payload, ensure_ascii=False)
         return max(len(serialized) // self.CHARS_PER_TOKEN, 1)
 
+    def _estimate_tool_result_content(self, content: Any) -> int:
+        """Estimate nested tool-result content without pricing base64 as text."""
+        if isinstance(content, list):
+            total = 0
+            for item in content:
+                if isinstance(item, dict):
+                    total += self._estimate_wire_block(item)
+                else:
+                    total += self._estimate_text_like_payload(item)
+            return total
+        if isinstance(content, dict):
+            return self._estimate_wire_block(content)
+        return self._estimate_text_like_payload(content)
+
     def _estimate_wire_block(self, block: dict[str, Any]) -> int:
         """Estimate tokens for a single Anthropic wire-format content block."""
         block_type = block.get("type")
@@ -44,7 +58,18 @@ class AnthropicTokenEstimator:
             if isinstance(source, dict) and source.get("type") == "text":
                 return self._estimate_text_like_payload(block)
             return self.DEFAULT_DOCUMENT_TOKENS
-        
+
+        # Tool-result wrappers can legally contain nested multimodal blocks.
+        # Estimate the wrapper separately so embedded base64 image payloads are
+        # costed like images instead of raw JSON text.
+        if block_type in {"tool_result", "mcp_tool_result"}:
+            content = block.get("content")
+            wrapper = {k: v for k, v in block.items() if k != "content"}
+            return (
+                self._estimate_text_like_payload({**wrapper, "content": []})
+                + self._estimate_tool_result_content(content)
+            )
+
         # TODO: improve heuristic. Need to capture number of pages.
 
         return self._estimate_text_like_payload(block)
