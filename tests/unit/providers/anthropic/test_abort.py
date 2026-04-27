@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agent_base.core.abort_types import AgentPhase
+from agent_base.core.abort_types import AgentPhase, STREAM_ABORT_TEXT, TOOL_ABORT_TEXT
 from agent_base.core.config import PendingToolRelay
 from agent_base.core.messages import Message, Usage
 from agent_base.core.types import (
@@ -22,7 +22,8 @@ from agent_base.core.types import (
 )
 from agent_base.providers.anthropic import AnthropicAgent
 from agent_base.providers.anthropic.abort_types import StreamResult
-from agent_base.tools.registry import ToolCallInfo
+from agent_base.tools.registry import ToolCallClassification, ToolCallInfo
+from agent_base.tools.tool_types import GenericTextEnvelope, ToolResultEnvelope
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +45,17 @@ def _tool_result(tool_id: str = "toolu_001", result: str = "42") -> ToolResultCo
 
 def _tool_call_info(tool_id: str = "toolu_001", name: str = "calc") -> ToolCallInfo:
     return ToolCallInfo(name=name, tool_id=tool_id, input={})
+
+
+def _tool_result_text(block: ToolResultContent) -> str:
+    if isinstance(block.tool_result, str):
+        return block.tool_result
+    texts = [
+        item.text
+        for item in block.tool_result
+        if isinstance(item, TextContent)
+    ]
+    return "\n".join(texts)
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +85,7 @@ class TestAbort:
     async def test_abort_when_idle_no_assistant_message(self, agent):
         agent._phase = AgentPhase.IDLE
         result = await agent.abort()
-        assert "aborted" in result.final_answer.lower()
+        assert result.final_answer == STREAM_ABORT_TEXT
 
     async def test_abort_sets_cancellation_event(self, agent):
         agent._phase = AgentPhase.IDLE
@@ -112,6 +124,9 @@ class TestAbort:
         assert all(r.is_error for r in tool_results)
         result_ids = {r.tool_id for r in tool_results}
         assert result_ids == {"t1", "t2"}
+        result_names = {r.tool_name for r in tool_results}
+        assert result_names == {"tool_a", "tool_b"}
+        assert all(_tool_result_text(result) == TOOL_ABORT_TEXT for result in tool_results)
 
     async def test_abort_awaiting_relay_clears_pending_relay(self, agent):
         agent._phase = AgentPhase.AWAITING_RELAY
@@ -145,6 +160,9 @@ class TestAbort:
         result_ids = {r.tool_id for r in all_results}
         assert "t1" in result_ids  # preserved from completed_results
         assert "t2" in result_ids  # synthesized
+        abort_result = next(result for result in all_results if result.tool_id == "t2")
+        assert abort_result.tool_name == "tool_b"
+        assert _tool_result_text(abort_result) == TOOL_ABORT_TEXT
 
     async def test_abort_awaiting_relay_no_relay_is_noop(self, agent):
         agent._phase = AgentPhase.AWAITING_RELAY
@@ -184,7 +202,9 @@ class TestHandleStreamAbort:
             if m.role.value == "assistant"
         ]
         assert len(assistant_msgs) == 1
-        assert len(assistant_msgs[0].content) == 2
+        assert len(assistant_msgs[0].content) == 3
+        assert isinstance(assistant_msgs[0].content[-1], TextContent)
+        assert assistant_msgs[0].content[-1].text == STREAM_ABORT_TEXT
 
     async def test_orphaned_tool_use_gets_synthetic_result(self, agent):
         agent._abort_completion = asyncio.Event()
@@ -199,15 +219,23 @@ class TestHandleStreamAbort:
 
         await agent._handle_stream_abort(stream_result, queue=None, stream_formatter=None)
 
-        # Last message should be a user message with synthetic tool_result
-        last_msg = agent.agent_config.context_messages[-1]
-        assert last_msg.role.value == "user"
-        tool_results = [b for b in last_msg.content if isinstance(b, ToolResultContent)]
+        assert [msg.role.value for msg in agent.agent_config.context_messages] == [
+            "assistant",
+            "user",
+            "assistant",
+        ]
+        tool_result_msg = agent.agent_config.context_messages[-2]
+        tool_results = [b for b in tool_result_msg.content if isinstance(b, ToolResultContent)]
         assert len(tool_results) == 1
         assert tool_results[0].tool_id == "t1"
+        assert tool_results[0].tool_name == "calc"
         assert tool_results[0].is_error is True
+        assert _tool_result_text(tool_results[0]) == TOOL_ABORT_TEXT
+        final_msg = agent.agent_config.context_messages[-1]
+        assert final_msg.role.value == "assistant"
+        assert final_msg.content[0].text == STREAM_ABORT_TEXT
 
-    async def test_no_clean_blocks_skips_append(self, agent):
+    async def test_no_clean_blocks_appends_assistant_abort_marker(self, agent):
         agent._abort_completion = asyncio.Event()
         blocks = [_text("partial")]
         msg = Message.assistant(blocks)
@@ -222,7 +250,10 @@ class TestHandleStreamAbort:
         await agent._handle_stream_abort(stream_result, queue=None, stream_formatter=None)
         msg_count_after = len(agent.agent_config.context_messages)
 
-        assert msg_count_after == msg_count_before
+        assert msg_count_after == msg_count_before + 1
+        last_msg = agent.agent_config.context_messages[-1]
+        assert last_msg.role.value == "assistant"
+        assert last_msg.content[0].text == STREAM_ABORT_TEXT
 
     async def test_sets_phase_idle_and_signals_completion(self, agent):
         agent._abort_completion = asyncio.Event()
@@ -255,6 +286,67 @@ class TestHandleStreamAbort:
         result = await agent._handle_stream_abort(stream_result, queue=None, stream_formatter=None)
         assert result.stop_reason == "aborted"
         assert result.was_aborted is True
+
+    async def test_incomplete_tool_use_does_not_create_synthetic_tool_result(self, agent):
+        agent._abort_completion = asyncio.Event()
+        msg = Message.assistant([_text("ready"), _tool_use("t1")])
+        msg.usage = Usage()
+        stream_result = StreamResult(
+            message=msg,
+            completed_blocks={0},
+            was_cancelled=True,
+        )
+
+        await agent._handle_stream_abort(stream_result, queue=None, stream_formatter=None)
+
+        assert len(agent.agent_config.context_messages) == 1
+        stored_message = agent.agent_config.context_messages[0]
+        assert stored_message.role.value == "assistant"
+        assert not any(isinstance(block, ToolUseContent) for block in stored_message.content)
+        assert [
+            block.text for block in stored_message.content if isinstance(block, TextContent)
+        ] == ["ready", STREAM_ABORT_TEXT]
+
+    async def test_tool_execution_abort_preserves_completed_results_and_marks_missing_ones(self, agent):
+        prompt = Message.user("calculate")
+        agent.initialize_run(prompt)
+        agent.conversation.messages.append(prompt)
+        agent.agent_config.context_messages.append(prompt)
+        agent.agent_config.conversation_history.append(prompt)
+        agent._reset_cancellation_state()
+
+        response_message = Message.assistant([_tool_use("t1"), _tool_use("t2")])
+        response_message.stop_reason = "tool_use"
+        response_message.usage = Usage()
+
+        classification = ToolCallClassification(
+            backend_calls=[_tool_call_info("t1"), _tool_call_info("t2")],
+        )
+
+        async def fake_execute_tools(*args, **kwargs):
+            agent._cancellation_event.set()
+            return [
+                GenericTextEnvelope(tool_name="calc", tool_id="t1", text="done"),
+                ToolResultEnvelope.error("calc", "t2", TOOL_ABORT_TEXT),
+            ]
+
+        with patch.object(agent.provider, "generate", AsyncMock(return_value=response_message)), \
+             patch.object(agent.tool_registry, "classify_tool_calls", return_value=classification), \
+             patch.object(agent.tool_registry, "execute_tools", side_effect=fake_execute_tools), \
+             patch.object(agent, "_persist_state", AsyncMock()):
+            result = await agent._resume_loop()
+
+        assert result.stop_reason == "aborted"
+        last_msg = agent.agent_config.context_messages[-1]
+        assert last_msg.role.value == "user"
+        tool_results = [block for block in last_msg.content if isinstance(block, ToolResultContent)]
+        assert len(tool_results) == 2
+        completed_result = next(block for block in tool_results if block.tool_id == "t1")
+        aborted_result = next(block for block in tool_results if block.tool_id == "t2")
+        assert completed_result.is_error is False
+        assert _tool_result_text(completed_result) == "done"
+        assert aborted_result.is_error is True
+        assert TOOL_ABORT_TEXT in _tool_result_text(aborted_result)
 
 
 # ===========================================================================
@@ -332,7 +424,7 @@ class TestBuildAbortedResult:
 
     async def test_placeholder_when_no_assistant(self, agent):
         result = agent._build_aborted_result()
-        assert "aborted" in result.final_answer.lower()
+        assert result.final_answer == STREAM_ABORT_TEXT
 
     async def test_was_aborted_flag_set(self, agent):
         result = agent._build_aborted_result()

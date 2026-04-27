@@ -16,7 +16,12 @@ from typing import Any
 import pytest
 
 from agent_base.abort_steer.adapters.memory import MemoryAbortSteerRegistry
-from agent_base.core.abort_types import AgentPhase, RunningAgentHandle
+from agent_base.core.abort_types import (
+    AgentPhase,
+    RunningAgentHandle,
+    STREAM_ABORT_TEXT,
+    TOOL_ABORT_TEXT,
+)
 from agent_base.core.messages import Message
 from agent_base.core.types import (
     ToolResultBase,
@@ -130,6 +135,34 @@ def assert_chain_valid(messages: list[Message]) -> None:
                 )
 
 
+def assert_stream_abort_marker_present(messages: list[Message]) -> None:
+    assert any(
+        msg.role.value == "assistant"
+        and any(
+            isinstance(block, TextContent) and block.text == STREAM_ABORT_TEXT
+            for block in msg.content
+        )
+        for msg in messages
+    )
+
+
+def assert_tool_abort_marker_present(messages: list[Message]) -> None:
+    assert any(
+        msg.role.value == "user"
+        and any(
+            isinstance(block, ToolResultContent)
+            and block.is_error
+            and bool(block.tool_name)
+            and any(
+                isinstance(inner, TextContent) and TOOL_ABORT_TEXT in inner.text
+                for inner in block.tool_result
+            )
+            for block in msg.content
+        )
+        for msg in messages
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -162,6 +195,7 @@ class TestAbortIntegration:
         assert result.stop_reason == "aborted"
         assert result.was_aborted is True
         assert_chain_valid(result.conversation_history)
+        assert_stream_abort_marker_present(result.conversation_history)
 
     async def test_abort_during_tool_execution(self, agent):
         """Abort while the agent is executing the slow_calculator tool."""
@@ -193,6 +227,7 @@ class TestAbortIntegration:
         assert result.stop_reason == "aborted"
         assert result.was_aborted is True
         assert_chain_valid(result.conversation_history)
+        assert_tool_abort_marker_present(result.conversation_history)
 
     async def test_abort_via_registry(self, agent, registry):
         """Abort using the registry API (simulates HTTP endpoint pattern)."""
@@ -232,7 +267,7 @@ class TestAbortIntegration:
         result = await agent.abort()
         assert result.stop_reason == "aborted"
         assert result.was_aborted is True
-        assert "aborted" in result.final_answer.lower()
+        assert STREAM_ABORT_TEXT == result.final_answer
 
 
 class TestSteerIntegration:

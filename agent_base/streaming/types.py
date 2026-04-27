@@ -149,6 +149,24 @@ class MetaDelta(StreamDelta):
 
 
 # ---------------------------------------------------------------------------
+# Rollback delta
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RollbackDelta(StreamDelta):
+    """A persisted rollback marker paired with a rejected assistant draft."""
+
+    message: str = ""
+    code: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+    collapse_previous_assistant: bool = True
+
+    def __post_init__(self) -> None:
+        self.type = "rollback"
+
+
+# ---------------------------------------------------------------------------
 # Error delta
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from agent_base.core.conversation_log import ToolLogProjection
 from agent_base.core.types import ContentBlock, TextContent
 from typing import Any
 
@@ -67,24 +68,8 @@ class ToolResultEnvelope(ABC):
     # ─── Projection 2: For the conversation log (UI) ───
 
     @abstractmethod
-    def for_conversation_log(self) -> dict[str, Any]:
-        """Project this result into a rich dict for ConversationHistory.
-        
-        This is what gets stored in the conversation log for UI display.
-        It can include anything the frontend might want to render:
-        execution logs, timing, intermediate steps, file references,
-        nested sub-agent conversations, etc.
-        
-        The dict should always include at minimum:
-          {
-            "tool_name": str,
-            "tool_id": str,
-            "is_error": bool,
-            "summary": str,      # human-readable one-liner
-            "content_blocks": [], # the same blocks as for_context_window
-            ...tool-specific fields...
-          }
-        """
+    def for_conversation_log(self) -> ToolLogProjection:
+        """Project this result into a typed history payload for UI replay."""
         ...
 
     # ─── Convenience: error envelope factory ───
@@ -107,14 +92,15 @@ class GenericErrorEnvelope(ToolResultEnvelope):
     def for_context_window(self) -> list[ContentBlock]:
         return [TextContent(text=f"Error: {self.error_message}")]
 
-    def for_conversation_log(self) -> dict[str, Any]:
-        return {
-            "tool_name": self.tool_name,
-            "tool_id": self.tool_id,
-            "is_error": True,
-            "summary": self.error_message,
-            "content_blocks": [TextContent(text=self.error_message or "").to_dict()],
-        }
+    def for_conversation_log(self) -> ToolLogProjection:
+        return ToolLogProjection(
+            tool_name=self.tool_name,
+            tool_id=self.tool_id,
+            is_error=True,
+            summary=self.error_message or "",
+            content_blocks=[TextContent(text=self.error_message or "")],
+            duration_ms=self.duration_ms,
+        )
 
 
 @dataclass
@@ -129,12 +115,12 @@ class GenericTextEnvelope(ToolResultEnvelope):
     def for_context_window(self) -> list[ContentBlock]:
         return [TextContent(text=self.text)]
 
-    def for_conversation_log(self) -> dict[str, Any]:
-        return {
-            "tool_name": self.tool_name,
-            "tool_id": self.tool_id,
-            "is_error": self.is_error,
-            "summary": self.text[:200],
-            "content_blocks": [TextContent(text=self.text).to_dict()],
-            "duration_ms": self.duration_ms,
-        }
+    def for_conversation_log(self) -> ToolLogProjection:
+        return ToolLogProjection(
+            tool_name=self.tool_name,
+            tool_id=self.tool_id,
+            is_error=self.is_error,
+            summary=self.text[:200],
+            content_blocks=[TextContent(text=self.text)],
+            duration_ms=self.duration_ms,
+        )

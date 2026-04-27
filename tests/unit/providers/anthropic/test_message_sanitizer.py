@@ -6,6 +6,7 @@ are synchronous — no API calls or async needed.
 """
 from __future__ import annotations
 
+from agent_base.core.abort_types import STREAM_ABORT_TEXT, TOOL_ABORT_TEXT
 from agent_base.core.messages import Message
 from agent_base.core.types import (
     TextContent,
@@ -14,7 +15,10 @@ from agent_base.core.types import (
 )
 from agent_base.providers.anthropic.message_sanitizer import (
     _reorder_user_content,
+    AbortToolCall,
     ensure_chain_validity,
+    plan_relay_abort,
+    plan_stream_abort,
     sanitize_partial_assistant_message,
     synthesize_abort_tool_results,
 )
@@ -47,7 +51,7 @@ class TestSanitizePartialAssistantMessage:
         blocks = [_text("hi"), _tool_use("t1")]
         clean, orphaned = sanitize_partial_assistant_message(blocks, {0, 1})
         assert len(clean) == 2
-        assert orphaned == ["t1"]
+        assert orphaned == [AbortToolCall(tool_id="t1", tool_name="calc")]
 
     def test_no_blocks_completed(self):
         blocks = [_text("hi"), _tool_use("t1")]
@@ -71,7 +75,10 @@ class TestSanitizePartialAssistantMessage:
     def test_tool_use_blocks_become_orphaned(self):
         blocks = [_tool_use("t1"), _tool_use("t2")]
         clean, orphaned = sanitize_partial_assistant_message(blocks, {0, 1})
-        assert orphaned == ["t1", "t2"]
+        assert orphaned == [
+            AbortToolCall(tool_id="t1", tool_name="calc"),
+            AbortToolCall(tool_id="t2", tool_name="calc"),
+        ]
 
     def test_mixed_content_preserves_order(self):
         blocks = [_text("first"), _tool_use("t1"), _text("last")]
@@ -104,7 +111,7 @@ class TestSynthesizeAbortToolResults:
 
     def test_default_reason(self):
         results = synthesize_abort_tool_results(["t1"])
-        assert "cancelled" in results[0].tool_result.lower()
+        assert "aborted" in results[0].tool_result.lower()
 
     def test_empty_ids_returns_empty(self):
         assert synthesize_abort_tool_results([]) == []
@@ -113,6 +120,87 @@ class TestSynthesizeAbortToolResults:
         ids = ["t1", "t2", "t3"]
         results = synthesize_abort_tool_results(ids)
         assert [r.tool_id for r in results] == ids
+
+    def test_preserves_tool_names_when_provided(self):
+        results = synthesize_abort_tool_results([
+            AbortToolCall(tool_id="t1", tool_name="manual_confirm"),
+        ])
+        assert results[0].tool_name == "manual_confirm"
+
+
+# ===========================================================================
+# AbortChainPatch planners
+# ===========================================================================
+
+
+class TestPlanStreamAbort:
+    def test_no_completed_blocks_persists_only_assistant_abort_marker(self):
+        partial = Message.assistant([_text("partial")])
+        patch = plan_stream_abort(partial, set())
+
+        assert len(patch.append_messages) == 1
+        abort_message = patch.append_messages[0]
+        assert abort_message.role.value == "assistant"
+        assert [block.text for block in abort_message.content if isinstance(block, TextContent)] == [
+            STREAM_ABORT_TEXT,
+        ]
+
+    def test_incomplete_tool_use_is_dropped_and_only_assistant_abort_marker_is_added(self):
+        partial = Message.assistant([_text("done"), _tool_use("t1")])
+        patch = plan_stream_abort(partial, {0})
+
+        assert len(patch.append_messages) == 1
+        message = patch.append_messages[0]
+        assert message.role.value == "assistant"
+        texts = [block.text for block in message.content if isinstance(block, TextContent)]
+        assert texts == ["done", STREAM_ABORT_TEXT]
+        assert not any(isinstance(block, ToolUseContent) for block in message.content)
+
+    def test_completed_tool_use_produces_synthetic_result_and_trailing_abort_marker(self):
+        partial = Message.assistant([_text("done"), _tool_use("t1")])
+        patch = plan_stream_abort(partial, {0, 1})
+
+        assert [message.role.value for message in patch.append_messages] == [
+            "assistant",
+            "user",
+            "assistant",
+        ]
+
+        tool_result_message = patch.append_messages[1]
+        tool_results = [
+            block for block in tool_result_message.content if isinstance(block, ToolResultContent)
+        ]
+        assert len(tool_results) == 1
+        assert tool_results[0].tool_id == "t1"
+        assert tool_results[0].tool_name == "calc"
+        assert tool_results[0].tool_result == TOOL_ABORT_TEXT
+
+        final_message = patch.append_messages[-1]
+        assert final_message.role.value == "assistant"
+        assert [block.text for block in final_message.content if isinstance(block, TextContent)] == [
+            STREAM_ABORT_TEXT,
+        ]
+
+
+class TestPlanRelayAbort:
+    def test_preserves_completed_results_and_adds_abort_markers_for_pending_tools(self):
+        completed = Message.user([_tool_result("t1", "done")])
+        patch = plan_relay_abort(
+            [completed],
+            [AbortToolCall(tool_id="t2", tool_name="manual_confirm")],
+        )
+
+        assert len(patch.append_messages) == 1
+        message = patch.append_messages[0]
+        assert message.role.value == "user"
+        results = [block for block in message.content if isinstance(block, ToolResultContent)]
+        assert len(results) == 2
+        assert results[0].tool_id == "t1"
+        assert results[0].tool_name == ""
+        assert results[0].tool_result == "done"
+        assert results[1].tool_id == "t2"
+        assert results[1].tool_name == "manual_confirm"
+        assert results[1].tool_result == TOOL_ABORT_TEXT
 
 
 # ===========================================================================
@@ -150,7 +238,7 @@ class TestEnsureChainValidity:
         chain = [
             Message.user("go"),
             Message.assistant([_tool_use("t1"), _tool_use("t2")]),
-            Message.user([_tool_result("t1", "done")]),
+            Message.user([_tool_result("t1", "done"), _text("continue")]),
         ]
         result = ensure_chain_validity(chain)
         # The user message should now have both t1 and t2 results
@@ -159,6 +247,8 @@ class TestEnsureChainValidity:
         result_ids = {r.tool_id for r in tool_results}
         assert "t1" in result_ids
         assert "t2" in result_ids
+        text_blocks = [b.text for b in user_msg.content if isinstance(b, TextContent)]
+        assert text_blocks == ["continue"]
 
     def test_user_content_reordered_tool_results_first(self):
         chain = [

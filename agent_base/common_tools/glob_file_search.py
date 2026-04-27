@@ -1,227 +1,126 @@
-"""GlobFileSearchTool — async, sandbox-based file search.
-
-Migrated from anthropic_agent/common_tools/glob_file_search.py.
-Path.glob() replaced with sandbox.exec("find ...") commands.
-"""
+"""Find files matching glob-style patterns."""
 from __future__ import annotations
 
-import re
 import shlex
 from collections import Counter
-from posixpath import normpath as _posix_normpath
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List
 
-from ..tools.base import ConfigurableToolBase
+from agent_base.tools import ConfigurableToolBase
 
-# Characters allowed in find -name/-path patterns (glob metacharacters + safe chars)
-_SAFE_PATTERN_RE = re.compile(r'^[a-zA-Z0-9_\-.*?\[\]/]+$')
+from .utils.filesystem_path_helpers import format_agent_path, resolve_agent_path
+from .utils.tool_result_storage import save_tool_result, truncation_reference
 
 
-# ---------------------------------------------------------------------------
-# Pure utility functions (no state needed)
-# ---------------------------------------------------------------------------
 def _normalize_pattern(glob_pattern: str) -> str:
-    """Normalize a glob pattern to ensure recursive matching."""
     if glob_pattern.startswith("**/"):
         return glob_pattern
     return f"**/{glob_pattern}"
 
 
 def _ext_label(path: str) -> str:
-    """Get the extension label for a path (without leading dot)."""
-    if "." in path.rsplit("/", 1)[-1]:
-        suffix = "." + path.rsplit(".", 1)[-1]
-        return suffix[1:]
-    return "noext"
+    filename = path.rsplit("/", 1)[-1]
+    if "." not in filename:
+        return "noext"
+    return filename.rsplit(".", 1)[-1]
 
 
-def _has_allowed_ext(path: str, allowed_exts: set[str]) -> bool:
-    """Check if a path has an allowed extension."""
-    name = path.rsplit("/", 1)[-1] if "/" in path else path
-    return any(name.lower().endswith(ext) for ext in allowed_exts)
-
-
-def _summarize_file_exts(paths: Iterable[str], max_groups: Optional[int] = None) -> str:
-    """Summarize remaining files by extension type."""
-    counter: Counter[str] = Counter(_ext_label(p) for p in paths)
-    if not counter:
+def _summarize_file_exts(paths: Iterable[str], max_groups: int) -> str:
+    counts = Counter(_ext_label(path) for path in paths)
+    if not counts:
         return ""
-    groups = 3 if max_groups is None else max_groups
-    items = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
-    if len(items) <= groups:
-        return ", ".join(f"{n} more files of type {ext}" for ext, n in items)
-    top = items[:groups]
-    rest = items[groups:]
-    other_count = sum(n for _, n in rest)
-    parts = [f"{n} more files of type {ext}" for ext, n in top]
+    items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    if len(items) <= max_groups:
+        return ", ".join(f"{count} more files of type {ext}" for ext, count in items)
+    top = items[:max_groups]
+    other_count = sum(count for _, count in items[max_groups:])
+    parts = [f"{count} more files of type {ext}" for ext, count in top]
     parts.append(f"{other_count} more files of other types")
     return ", ".join(parts)
 
 
-def _build_find_command(pattern: str, target_dir: str = ".") -> str:
-    """Build a find command that mimics glob behavior.
-
-    Translates glob patterns to find commands:
-    - "**/*.py"     -> find . -type f -name '*.py'
-    - "src/*.ts"    -> find . -type f -path '*/src/*.ts'
-    - "*.md"        -> find . -type f -name '*.md'
-
-    Uses only POSIX-compatible find flags (no GNU -printf).
-    All arguments are shell-escaped to prevent injection.
-    """
-    safe_dir = shlex.quote(target_dir)
-
-    # After normalization, pattern always starts with **/
-    # Extract the name portion after the last **/
+def _build_find_command(pattern: str, sandbox_path: str) -> str:
+    safe_dir = shlex.quote(sandbox_path)
     if "**/" in pattern:
-        name_part = pattern.rsplit("**/", 1)[-1]
-        if not name_part or name_part == "**":
-            # "**" or "**/**" — match all files
-            cmd = f"find {safe_dir} -type f"
-        elif "/" in name_part:
-            # Pattern has a directory component: use -path
-            safe_name = shlex.quote(f"*/{name_part}")
-            cmd = f"find {safe_dir} -type f -path {safe_name}"
-        else:
-            # Just a filename pattern
-            safe_name = shlex.quote(name_part)
-            cmd = f"find {safe_dir} -type f -name {safe_name}"
-    else:
-        safe_name = shlex.quote(pattern)
-        cmd = f"find {safe_dir} -type f -name {safe_name}"
-
-    cmd += " 2>/dev/null"
-    return cmd
+        tail = pattern.rsplit("**/", 1)[-1]
+        if not tail or tail == "**":
+            return f"find {safe_dir} -type f 2>/dev/null"
+        if "/" in tail:
+            return f"find {safe_dir} -type f -path {shlex.quote(f'*/{tail}')} 2>/dev/null"
+        return f"find {safe_dir} -type f -name {shlex.quote(tail)} 2>/dev/null"
+    return f"find {safe_dir} -type f -name {shlex.quote(pattern)} 2>/dev/null"
 
 
-# ---------------------------------------------------------------------------
-# Class-based tool implementation
-# ---------------------------------------------------------------------------
 class GlobFileSearchTool(ConfigurableToolBase):
-    """Configurable glob_file_search tool with sandbox-based I/O.
-
-    All file access goes through the injected Sandbox instance.
-    Uses `find` via sandbox.exec for file discovery.
-
-    Example:
-        >>> glob_tool = GlobFileSearchTool(max_results=100)
-        >>> func = glob_tool.get_tool()
-        >>> registry.register_tools([func])
-        >>> registry.attach_sandbox(sandbox)
-    """
+    """Configurable glob file search tool."""
 
     DOCSTRING_TEMPLATE = """Find files matching a glob pattern.
 
 Use this tool to discover files by name pattern. Searches recursively by default.
 
 **Limits:**
-- Max results: {max_results} (excess files are summarized by extension)
-- Allowed extensions: {allowed_extensions_str}
+- Max results shown: {max_results}
 
 Args:
     glob_pattern: Glob pattern to match. Auto-prepends "**/" for recursive search.
-        Examples:
-        - "*.md" -> finds all .md files recursively
-        - "README*" -> finds all README files
-        - "docs/*.md" -> finds .md files in any docs/ directory
-        - "**/*.mmd" -> explicit recursive search
     target_directory: Optional subdirectory to search within. Defaults to workspace root.
 
 Returns:
-    Newline-separated file paths:
-    ```
-    docs/api/endpoints.md
-    docs/getting-started.md
-    README.md
-    [12 more files of type md, 3 more files of type mmd]
-    ```
-
-**Error Recovery:**
-- "No matches found" -> Try a broader pattern (e.g., "*.md" instead of "specific*.md")
-- "Path does not exist" -> Check the directory path with list_dir first
-- "Path is not a directory" -> Remove the file name, search in its parent directory
+    Newline-separated matching file paths. When results are truncated, the full
+    result is stored in `.tool_results/`.
 """
 
     def __init__(
         self,
         max_results: int = 50,
         summary_max_ext_groups: int = 3,
-        allowed_extensions: set[str] | None = None,
         docstring_template: str | None = None,
         schema_override: dict | None = None,
     ):
-        """Initialize the GlobFileSearchTool.
-
-        Args:
-            max_results: Maximum number of results to return. Defaults to 50.
-            summary_max_ext_groups: Maximum extension groups to show in summary. Defaults to 3.
-            allowed_extensions: Set of allowed file extensions (with leading dot).
-                               Defaults to {".md", ".mmd"} if None.
-            docstring_template: Optional custom docstring template.
-            schema_override: Optional complete Anthropic tool schema dict.
-        """
         super().__init__(docstring_template=docstring_template, schema_override=schema_override)
-        self.max_results: int = max_results
-        self.summary_max_ext_groups: int = summary_max_ext_groups
-        self.allowed_extensions: set[str] = allowed_extensions or {".md", ".mmd"}
+        self.max_results = max_results
+        self.summary_max_ext_groups = summary_max_ext_groups
 
     def _get_template_context(self) -> Dict[str, Any]:
-        return {
-            "max_results": self.max_results,
-            "allowed_extensions_str": ", ".join(sorted(self.allowed_extensions)),
-        }
+        return {"max_results": self.max_results}
 
     def get_tool(self) -> Callable:
         instance = self
 
         async def glob_file_search(glob_pattern: str, target_directory: str | None = None) -> str:
             """Placeholder docstring - replaced by template."""
-            target_dir = "." if target_directory is None else _posix_normpath(str(target_directory).replace("\\", "/"))
-            rel_arg = "." if target_directory is None else target_dir
+            resolved = resolve_agent_path(target_directory or ".")
+            sandbox_path = resolved.sandbox_path
 
-            # Verify target directory exists and is a directory
-            if target_directory is not None:
-                exists = await instance._sandbox.file_exists(target_dir)
-                if not exists:
-                    return f"Path does not exist: {rel_arg}. Use list_dir to explore available directories first."
-                # Verify it's actually a directory (not a file)
-                try:
-                    await instance._sandbox.list_dir(target_dir)
-                except NotADirectoryError:
-                    return f"Path is not a directory: {rel_arg}. Remove the file name and search in its parent directory."
+            try:
+                await instance._sandbox.list_dir(sandbox_path)
+            except FileNotFoundError:
+                return f"Path does not exist: {target_directory or '.'}. Use list_dir_tree to explore available directories first."
+            except NotADirectoryError:
+                return f"Path is not a directory: {target_directory or '.'}. Remove the file name and search in its parent directory."
 
-            pattern = _normalize_pattern(glob_pattern)
-            cmd = _build_find_command(pattern, target_dir)
+            command = _build_find_command(_normalize_pattern(glob_pattern), sandbox_path)
+            result = await instance._sandbox.exec(command, timeout=15.0, cwd=".")
+            raw_paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            display_paths = [format_agent_path(path) for path in raw_paths]
 
-            result = await instance._sandbox.exec(cmd, timeout=15.0, cwd=".")
-            if result.exit_code != 0 and not result.stdout.strip():
-                return f"No matches found for pattern '{glob_pattern}'. Try a broader pattern (e.g., '*.md') or check the directory with list_dir."
+            if not display_paths:
+                return f"No matches found for pattern '{glob_pattern}'."
 
-            # Parse results, filter by allowed extensions
-            raw_paths = [
-                _posix_normpath(line.strip().removeprefix("./"))
-                for line in result.stdout.strip().split("\n")
-                if line.strip()
-            ]
+            full_output = "\n".join(display_paths)
+            result_path = await save_tool_result(instance._sandbox, "glob_file_search", full_output)
 
-            # Filter by allowed extensions
-            filtered_paths = [p for p in raw_paths if _has_allowed_ext(p, instance.allowed_extensions)]
-
-            if not filtered_paths:
-                return f"No matches found for pattern '{glob_pattern}'. Try a broader pattern (e.g., '*.md') or check the directory with list_dir."
-
-            # Truncate and summarize
-            shown_paths = filtered_paths[:instance.max_results]
-            remaining_paths = filtered_paths[instance.max_results:]
-
-            lines: List[str] = list(shown_paths)
-
-            if remaining_paths:
-                file_summary = _summarize_file_exts(remaining_paths, instance.summary_max_ext_groups)
-                if file_summary:
-                    lines.append(f"[{file_summary}]")
-
-            return "\n".join(lines)
+            shown = display_paths[: instance.max_results]
+            remainder = display_paths[instance.max_results :]
+            output_lines: List[str] = list(shown)
+            if remainder:
+                summary = _summarize_file_exts(remainder, instance.summary_max_ext_groups)
+                if summary:
+                    output_lines.append(f"[{summary}]")
+                output = "\n".join(output_lines)
+                output += truncation_reference(result_path)
+                output += "\n[Hint: Use read_file on the saved result to inspect every match.]"
+                return output
+            return "\n".join(output_lines)
 
         func = self._apply_schema(glob_file_search)
         func.__tool_instance__ = instance

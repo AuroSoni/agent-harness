@@ -35,6 +35,43 @@ logger = get_logger(__name__)
 
 T = TypeVar("T")
 
+_RETRYABLE_API_STATUS_ERROR_TYPES = {
+    "overloaded_error",
+    "rate_limit_error",
+}
+
+
+def _extract_api_status_error_type(error: anthropic.APIStatusError) -> str | None:
+    """Return Anthropic's structured error type when present."""
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error")
+        if isinstance(inner, dict):
+            err_type = inner.get("type")
+            if isinstance(err_type, str):
+                return err_type
+
+        err_type = body.get("type")
+        if isinstance(err_type, str):
+            return err_type
+
+    message = str(error).lower()
+    if "overloaded_error" in message or "'overloaded'" in message or '"overloaded"' in message:
+        return "overloaded_error"
+    if "rate_limit_error" in message:
+        return "rate_limit_error"
+    return None
+
+
+def _is_retryable_api_status_error(error: anthropic.APIStatusError) -> bool:
+    """Return True for transient API status failures that should be retried."""
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int) and status_code >= 500:
+        return True
+
+    error_type = _extract_api_status_error_type(error)
+    return error_type in _RETRYABLE_API_STATUS_ERROR_TYPES
+
 
 # ---------------------------------------------------------------------------
 # Streaming with backoff
@@ -136,12 +173,13 @@ async def anthropic_stream_with_backoff(
                 raise
 
         except anthropic.APIStatusError as e:
-            if e.status_code >= 500 and attempt < max_retries - 1:
+            if _is_retryable_api_status_error(e) and attempt < max_retries - 1:
                 delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
                 logger.warning(
                     "server_error_retry",
                     attempt=attempt + 1,
-                    status_code=e.status_code,
+                    status_code=getattr(e, "status_code", None),
+                    error_type=_extract_api_status_error_type(e),
                     delay=f"{delay:.2f}s",
                 )
                 await asyncio.sleep(delay)
@@ -428,7 +466,7 @@ def retry_with_backoff(
                 try:
                     return await func(*args, **kwargs)
                 except anthropic.APIStatusError as e:
-                    if e.status_code < 500:
+                    if not _is_retryable_api_status_error(e):
                         raise
                     last_exc = e
                     if attempt < max_retries - 1:
@@ -437,6 +475,8 @@ def retry_with_backoff(
                             "retry",
                             func=func.__name__,
                             attempt=attempt + 1,
+                            status_code=getattr(e, "status_code", None),
+                            error_type=_extract_api_status_error_type(e),
                             delay=f"{delay:.2f}s",
                         )
                         await asyncio.sleep(delay)

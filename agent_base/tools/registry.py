@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, TYPE_CHECKING
 
+from agent_base.core.abort_types import TOOL_ABORT_TEXT
+
 from .tool_types import ToolResultEnvelope, GenericTextEnvelope, ToolSchema
 from .decorators import ExecutorType
 
@@ -282,7 +284,7 @@ class ToolRegistry:
                             if tc.tool_id not in results:
                                 results[tc.tool_id] = ToolResultEnvelope.error(
                                     tc.name, tc.tool_id,
-                                    "Tool execution was cancelled by user.",
+                                    TOOL_ABORT_TEXT,
                                 )
                         pending = set()
                         break

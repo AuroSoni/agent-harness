@@ -288,15 +288,15 @@ class ToolResultBase(ContentBlock):
     """Shared base for all tool result blocks."""
     tool_name: str = ""
     tool_id: str = ""
-    tool_result: Union[str, List[ContentBlock]] = ""
+    tool_result: Union[str, Dict[str, Any], List[Any]] = ""
     is_error: bool = False
 
     def __post_init__(self) -> None:
         if not self.tool_id:
             raise ValueError(f"{type(self).__name__} requires a non-empty tool_id for correlation")
 
-    def _serialize_tool_result(self) -> Union[str, List[Dict[str, Any]]]:
-        if isinstance(self.tool_result, str):
+    def _serialize_tool_result(self) -> Union[str, Dict[str, Any], List[Any]]:
+        if isinstance(self.tool_result, (str, dict)):
             return self.tool_result
         result = []
         for item in self.tool_result:
@@ -559,4 +559,130 @@ def _build_dataclass_block(
                 payload[field_name] = enum_cls(raw_value)
 
     return block_cls(**payload)
+
+
+# ==============================================================================
+# Prompt-input primitives: Attachment and Contribution
+# ==============================================================================
+# Top-level inputs to a USER Message. Distinct from ContentBlock — they live on
+# Message.attachments / Message.contributions and are folded into content blocks
+# only at render time (see core/renderer.py).
+# ==============================================================================
+
+class AttachmentKind(str, Enum):
+    IMAGE = "image"
+    DOCUMENT = "document"
+    UPLOAD = "upload"
+
+
+class ContributionPosition(str, Enum):
+    BEFORE = "before"
+    AFTER = "after"
+
+
+@dataclass
+class Attachment:
+    """A user-uploaded file referenced from a USER Message.
+
+    Held as metadata on Message.attachments. The renderer maps this to the
+    appropriate ContentBlock for the wire (Image/Document/AttachmentContent)
+    AND emits a textual <user_upload> reference inside <user_query>.
+    """
+    filename: str = ""
+    media_type: str = ""
+    source_type: str = ""           # SourceType value: "file" | "url" | "base64" | "file_id"
+    data: str = ""                  # sandbox path, URL, base64, or file_id
+    kind: str = AttachmentKind.UPLOAD.value
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "filename": self.filename,
+            "media_type": self.media_type,
+            "source_type": self.source_type,
+            "data": self.data,
+            "kind": self.kind,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Attachment":
+        return cls(
+            filename=data.get("filename", ""),
+            media_type=data.get("media_type", ""),
+            source_type=data.get("source_type", ""),
+            data=data.get("data", ""),
+            kind=data.get("kind", AttachmentKind.UPLOAD.value),
+        )
+
+    def to_content_block(self) -> "ContentBlock":
+        """Convert this attachment metadata into the corresponding wire ContentBlock."""
+        if self.kind == AttachmentKind.IMAGE.value:
+            return ImageContent(
+                media_type=self.media_type,
+                source_type=self.source_type,
+                data=self.data,
+                filename=self.filename,
+            )
+        if self.kind == AttachmentKind.DOCUMENT.value:
+            return DocumentContent(
+                media_type=self.media_type,
+                source_type=self.source_type,
+                data=self.data,
+                filename=self.filename,
+            )
+        return AttachmentContent(
+            media_type=self.media_type,
+            filename=self.filename,
+            source_type=self.source_type,
+            data=self.data,
+        )
+
+
+@dataclass
+class Contribution:
+    """A typed augmentation of a user prompt (e.g., current_time, system_help, memory).
+
+    Held as metadata on Message.contributions. The renderer wraps each entry as
+    <{slot}>...</{slot}> and places it before or after the <user_query> block
+    based on `position`. `source` is recorded for audit only.
+    """
+    slot: str = ""
+    content: Any = ""               # str | List[ContentBlock]
+    source: str = ""                # "frontend" | "backend" | "agent" | "memory"
+    position: str = ContributionPosition.BEFORE.value
+
+    def to_dict(self) -> Dict[str, Any]:
+        if isinstance(self.content, list):
+            serialized_content: Any = [
+                b.to_dict() if hasattr(b, "to_dict") else b for b in self.content
+            ]
+        else:
+            serialized_content = self.content
+        return {
+            "slot": self.slot,
+            "content": serialized_content,
+            "source": self.source,
+            "position": self.position,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Contribution":
+        raw_content = data.get("content", "")
+        if isinstance(raw_content, list):
+            content: Any = [
+                ContentBlock.from_dict(b) if isinstance(b, dict) and "content_block_type" in b else b
+                for b in raw_content
+            ]
+        else:
+            content = raw_content
+        position = data.get("position", ContributionPosition.BEFORE.value)
+        if position not in {ContributionPosition.BEFORE.value, ContributionPosition.AFTER.value}:
+            raise ValueError(
+                f"Contribution.position must be 'before' or 'after', got {position!r}"
+            )
+        return cls(
+            slot=data.get("slot", ""),
+            content=content,
+            source=data.get("source", ""),
+            position=position,
+        )
 

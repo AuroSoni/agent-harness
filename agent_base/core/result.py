@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.config import CostBreakdown
 from agent_base.core.messages import Message, Usage
 from agent_base.media_backend.media_types import MediaMetadata
@@ -57,8 +58,8 @@ class AgentResult:
         final_message: The last assistant ``Message`` in this run.
         final_answer: Extracted text content from ``final_message``.
             Convenience field for consumers that only need the text.
-        conversation_history: The complete list of ``Message`` objects
-            exchanged during this run (user, assistant, tool results).
+        conversation_log: The complete persisted conversation log for
+            this run, including messages and rich tool results.
         stop_reason: Why the run ended. Common values:
             ``"end_turn"`` (natural completion),
             ``"max_steps"`` (step limit reached),
@@ -76,7 +77,7 @@ class AgentResult:
     """
     final_message: Message
     final_answer: str
-    conversation_history: list[Message]
+    conversation_log: ConversationLog
     stop_reason: str
     model: str
     provider: str

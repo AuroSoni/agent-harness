@@ -14,14 +14,17 @@ The six rules these functions enforce:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from agent_base.core.abort_types import STREAM_ABORT_TEXT, TOOL_ABORT_TEXT
 from agent_base.core.types import (
     ContentBlock,
     ContentBlockType,
+    Role,
     ToolResultContent,
-    ToolUseBase,
     ToolResultBase,
+    ToolUseContent,
     TextContent,
 )
 
@@ -29,10 +32,21 @@ if TYPE_CHECKING:
     from agent_base.core.messages import Message
 
 
+@dataclass
+class AbortChainPatch:
+    append_messages: list[Message] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AbortToolCall:
+    tool_id: str
+    tool_name: str = ""
+
+
 def sanitize_partial_assistant_message(
     content_blocks: list[ContentBlock],
     completed_block_indices: set[int],
-) -> tuple[list[ContentBlock], list[str]]:
+) -> tuple[list[ContentBlock], list[AbortToolCall]]:
     """Remove incomplete blocks from a partial assistant message.
 
     Args:
@@ -43,11 +57,11 @@ def sanitize_partial_assistant_message(
     Returns:
         (clean_blocks, orphaned_tool_use_ids)
         clean_blocks: Only blocks that fully completed streaming.
-        orphaned_tool_use_ids: IDs of completed tool_use blocks whose
-            tools never ran (need synthetic tool_result blocks).
+        orphaned_tool_use_ids: IDs of completed client-side tool_use blocks
+            whose tools never ran (need synthetic tool_result blocks).
     """
     clean_blocks: list[ContentBlock] = []
-    orphaned_tool_use_ids: list[str] = []
+    orphaned_tool_uses: list[AbortToolCall] = []
 
     for i, block in enumerate(content_blocks):
         if i not in completed_block_indices:
@@ -55,15 +69,17 @@ def sanitize_partial_assistant_message(
 
         clean_blocks.append(block)
 
-        if isinstance(block, ToolUseBase):
-            orphaned_tool_use_ids.append(block.tool_id)
+        if isinstance(block, ToolUseContent):
+            orphaned_tool_uses.append(
+                AbortToolCall(tool_id=block.tool_id, tool_name=block.tool_name),
+            )
 
-    return clean_blocks, orphaned_tool_use_ids
+    return clean_blocks, orphaned_tool_uses
 
 
 def synthesize_abort_tool_results(
-    tool_use_ids: list[str],
-    reason: str = "Tool execution was cancelled by user.",
+    tool_uses: list[str | AbortToolCall],
+    reason: str = TOOL_ABORT_TEXT,
 ) -> list[ToolResultContent]:
     """Create tool_result blocks for tool_use blocks that need answers.
 
@@ -72,7 +88,7 @@ def synthesize_abort_tool_results(
     tool_use. We provide one with is_error=True.
 
     Args:
-        tool_use_ids: tool_use IDs that need matching tool_result blocks.
+        tool_uses: tool uses that need matching tool_result blocks.
         reason: Human-readable cancellation reason.
 
     Returns:
@@ -80,12 +96,70 @@ def synthesize_abort_tool_results(
     """
     return [
         ToolResultContent(
-            tool_id=tool_id,
+            tool_name=tool_use.tool_name,
+            tool_id=tool_use.tool_id,
             tool_result=reason,
             is_error=True,
         )
-        for tool_id in tool_use_ids
+        for tool_use in (_normalize_abort_tool_use(tool_use) for tool_use in tool_uses)
     ]
+
+
+def plan_stream_abort(
+    partial_message: Message,
+    completed_block_indices: set[int],
+) -> AbortChainPatch:
+    """Build the persisted message chain patch for a streaming abort."""
+    from agent_base.core.messages import Message as Msg
+
+    clean_blocks, orphaned_tool_uses = sanitize_partial_assistant_message(
+        partial_message.content,
+        completed_block_indices,
+    )
+
+    if not clean_blocks:
+        return AbortChainPatch(
+            append_messages=[_build_abort_assistant_message(partial_message)],
+        )
+
+    sanitized_message = _clone_message_with_content(partial_message, clean_blocks)
+
+    if orphaned_tool_uses:
+        abort_results = synthesize_abort_tool_results(orphaned_tool_uses)
+        return AbortChainPatch(
+            append_messages=[
+                sanitized_message,
+                Msg.user(abort_results),  # type: ignore[arg-type]
+                _build_abort_assistant_message(partial_message),
+            ],
+        )
+
+    sanitized_message.content.append(_build_abort_text_block())
+    return AbortChainPatch(append_messages=[sanitized_message])
+
+
+def plan_relay_abort(
+    completed_result_messages: list[Message],
+    pending_tool_uses: list[AbortToolCall],
+) -> AbortChainPatch:
+    """Build the persisted message chain patch for a relay abort."""
+    from agent_base.core.messages import Message as Msg
+
+    all_result_blocks: list[ContentBlock] = []
+    for completed_msg in completed_result_messages:
+        all_result_blocks.extend(completed_msg.content)
+
+    if pending_tool_uses:
+        all_result_blocks.extend(
+            synthesize_abort_tool_results(pending_tool_uses),
+        )
+
+    if not all_result_blocks:
+        return AbortChainPatch()
+
+    return AbortChainPatch(
+        append_messages=[Msg.user(all_result_blocks)],  # type: ignore[arg-type]
+    )
 
 
 def ensure_chain_validity(messages: list[Message]) -> list[Message]:
@@ -112,23 +186,28 @@ def ensure_chain_validity(messages: list[Message]) -> list[Message]:
     from agent_base.core.messages import Message as Msg
 
     result: list[Message] = []
+    consumed_indices: set[int] = set()
 
     for i, msg in enumerate(messages):
+        if i in consumed_indices:
+            continue
+
         if msg.role.value == "assistant":
-            # Collect tool_use IDs from this assistant message
-            tool_use_ids = [
-                block.tool_id
+            # Collect only client-side tool_use IDs from this assistant message.
+            # Server/MCP tools do not use the user-side `tool_result` contract.
+            tool_uses = [
+                AbortToolCall(tool_id=block.tool_id, tool_name=block.tool_name)
                 for block in msg.content
-                if isinstance(block, ToolUseBase)
+                if isinstance(block, ToolUseContent)
             ]
 
-            if tool_use_ids:
+            if tool_uses:
                 # Check if the next message has matching results
                 next_msg = messages[i + 1] if i + 1 < len(messages) else None
                 if next_msg is None or next_msg.role.value != "user":
                     # Trailing assistant with tool_use and no results
                     result.append(msg)
-                    synthetic = synthesize_abort_tool_results(tool_use_ids)
+                    synthetic = synthesize_abort_tool_results(tool_uses)
                     result.append(Msg.user(synthetic))  # type: ignore[arg-type]
                     continue
                 else:
@@ -138,14 +217,14 @@ def ensure_chain_validity(messages: list[Message]) -> list[Message]:
                         for block in next_msg.content
                         if isinstance(block, ToolResultBase)
                     }
-                    missing_ids = [
-                        tid for tid in tool_use_ids
-                        if tid not in existing_result_ids
+                    missing_tool_uses = [
+                        tool_use for tool_use in tool_uses
+                        if tool_use.tool_id not in existing_result_ids
                     ]
-                    if missing_ids:
+                    if missing_tool_uses:
                         # Add synthetic results for missing ones
                         result.append(msg)
-                        synthetic = synthesize_abort_tool_results(missing_ids)
+                        synthetic = synthesize_abort_tool_results(missing_tool_uses)
                         patched_content = list(next_msg.content) + list(synthetic)
                         patched_content = _reorder_user_content(patched_content)
                         result.append(Msg(
@@ -156,6 +235,7 @@ def ensure_chain_validity(messages: list[Message]) -> list[Message]:
                             provider=next_msg.provider,
                             model=next_msg.model,
                         ))
+                        consumed_indices.add(i + 1)
                         continue
 
             result.append(msg)
@@ -221,3 +301,42 @@ def _reorder_user_content(
         return content
 
     return reordered
+
+
+def _build_abort_assistant_message(source_message: Message) -> Message:
+    from agent_base.core.messages import Message as Msg
+
+    return Msg(
+        role=Role.ASSISTANT,
+        content=[_build_abort_text_block()],
+        provider=source_message.provider,
+        model=source_message.model,
+        usage_kwargs=dict(source_message.usage_kwargs),
+    )
+
+
+def _clone_message_with_content(
+    source_message: Message,
+    content: list[ContentBlock],
+) -> Message:
+    from agent_base.core.messages import Message as Msg
+
+    return Msg(
+        role=source_message.role,
+        content=list(content),
+        stop_reason=source_message.stop_reason,
+        usage=source_message.usage,
+        provider=source_message.provider,
+        model=source_message.model,
+        usage_kwargs=dict(source_message.usage_kwargs),
+    )
+
+
+def _build_abort_text_block() -> TextContent:
+    return TextContent(text=STREAM_ABORT_TEXT)
+
+
+def _normalize_abort_tool_use(tool_use: str | AbortToolCall) -> AbortToolCall:
+    if isinstance(tool_use, AbortToolCall):
+        return tool_use
+    return AbortToolCall(tool_id=tool_use)

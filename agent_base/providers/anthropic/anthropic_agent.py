@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
+import inspect
 import json
 import mimetypes
 import uuid
@@ -11,13 +13,31 @@ from typing import Any, Callable, Optional, TYPE_CHECKING
 
 import anthropic
 
-from agent_base.core.abort_types import AgentPhase
+from agent_base.core.abort_types import AgentPhase, STREAM_ABORT_TEXT
+from agent_base.core.conversation_log import ConversationLog, ToolLogProjection
+from agent_base.core.end_turn_hook import (
+    EndTurnContext,
+    EndTurnHook,
+    EndTurnHookEvent,
+    EndTurnHookResult,
+)
 from agent_base.providers.anthropic.abort_types import StreamResult
 from agent_base.core.agent_base import Agent
 from agent_base.core.config import AgentConfig, Conversation, CostBreakdown, LLMConfig, PendingToolRelay
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import AgentResult, LogEntry
-from agent_base.core.types import ContentBlock, Role, ServerToolResultContent, TextContent, ToolResultBase, ToolUseBase, ToolResultContent
+from agent_base.core.types import (
+    ContentBlock,
+    Contribution,
+    ContributionPosition,
+    Role,
+    ServerToolResultContent,
+    TextContent,
+    ToolResultBase,
+    ToolResultContent,
+    ToolUseBase,
+    ToolUseContent,
+)
 from agent_base.memory.stores import NoOpMemoryStore
 from agent_base.sandbox import sandbox_from_config
 from agent_base.sandbox.local import LocalSandbox
@@ -29,10 +49,11 @@ from agent_base.storage.adapters.memory import (
 from agent_base.media_backend.local import LocalMediaBackend
 from agent_base.media_backend.media_types import MediaMetadata
 from agent_base.tools.registry import ToolCallInfo, ToolRegistry
-from agent_base.streaming.types import MetaDelta
+from agent_base.streaming.types import MetaDelta, RollbackDelta
 from agent_base.tools.tool_types import ToolResultEnvelope
 from agent_base.logging import get_logger
 from .compaction import CompactionConfig, CompactionController
+from .context_externalizer import ContextExternalizer, ExternalizationConfig
 from .formatters import AnthropicMessageFormatter
 
 logger = get_logger(__name__)
@@ -110,6 +131,7 @@ class AnthropicAgent(Agent):
         messages: list[Message] | None = None,
         config: AnthropicLLMConfig = AnthropicLLMConfig(),
         compaction_config: CompactionConfig | None = None,
+        externalization_config: ExternalizationConfig | None = None,
         # Agent Orchestration Configurations.
         description: Optional[str] = None,
         max_steps: Optional[int] = DEFAULT_MAX_STEPS,    # None means no limit.
@@ -124,13 +146,14 @@ class AnthropicAgent(Agent):
         memory_store: MemoryStore | None = None,
         sandbox: Sandbox | None = None,
         sandbox_factory: Callable[[str], Sandbox] | None = None,
-        final_answer_check: Optional[Callable[[str], tuple[bool, str]]] = None,
+        end_turn_hook: EndTurnHook | None = None,
         agent_uuid: str | None = None,
         # Storage and Media Adapter Configurations.
         config_adapter: AgentConfigAdapter | None = None,
         conversation_adapter: ConversationAdapter | None = None,
         run_adapter: AgentRunAdapter | None = None,
         media_backend: MediaBackend | None = None,
+        fallback_api_keys: list[str] | None = None,
         ):
 
         ####################################################################
@@ -157,11 +180,12 @@ class AnthropicAgent(Agent):
         self._sandbox = sandbox
         self._sandbox_factory = sandbox_factory
 
-        # Final answer validation checker. Cannot be loaded from database.
-        self.final_answer_check = final_answer_check
+        # End-turn validation hook. Cannot be loaded from database.
+        self.end_turn_hook = end_turn_hook
 
         # Store original tool callables for child agent cloning (SubAgentTool).
         self._constructor_tools: list[Callable[..., Any]] | None = tools
+        self._constructor_frontend_tools: list[Callable[..., Any]] | None = frontend_tools
 
         # Tools (backend and frontend) - registry takes care of how to execute tools.
         self.tool_registry: ToolRegistry = ToolRegistry()
@@ -199,14 +223,36 @@ class AnthropicAgent(Agent):
         self._current_step = 0
         self._awaiting_tool_results = False
         self._compaction_controller: CompactionController | None = None
+        self._context_externalizer: ContextExternalizer | None = None
+
+        # Per-run runtime contributions (memory, future system_help, etc.).
+        # Applied to the target user message at render time only — never
+        # persisted into context_messages. Reset at the start of each run.
+        # NOTE: instance state, lost on cold-load resume — known v1 limitation.
+        self._runtime_contributions: list[Contribution] = []
+        self._runtime_target_msg_id: str | None = None
 
         # Composition
-        self.provider = AnthropicProvider()
+        self.provider = AnthropicProvider(fallback_api_keys=fallback_api_keys)
 
         # Abort/steer state — cooperative cancellation
         self._phase: AgentPhase = AgentPhase.IDLE
         self._cancellation_event: asyncio.Event | None = None
         self._abort_completion: asyncio.Event | None = None
+
+        # Relay mode for frontend-tool pauses. Root agents ``persist_return``
+        # (serialize ``pending_relay``, close SSE, resume via a new stream on
+        # ``/tool_results``). Inline-await children pause on an
+        # ``asyncio.Future`` and continue the loop when it resolves, without
+        # ever returning from ``_resume_loop``. Set at spawn time by
+        # ``SubAgentTool`` for fresh children only (not rehydrated resumes).
+        self._relay_mode: str = "persist_return"
+
+        # Optional upstream forward for cumulative usage/cost so inline-await
+        # children fold their per-step tokens and $ into the root's
+        # ``_run_cumulative_usage`` and ``_cumulative_cost`` — credits are
+        # deducted from the root ``AgentResult.cost``.
+        self._parent_usage_forward: "AnthropicAgent | None" = None
 
         ####################################################################
         # The agent's persistable state. This is the state that is saved to the database.
@@ -217,6 +263,7 @@ class AnthropicAgent(Agent):
         self.messages = messages
         self.config = config
         self._compaction_config = compaction_config
+        self._externalization_config = externalization_config
         self.description = description
         self.max_steps = max_steps if max_steps is not None else float('inf')
         self._agent_uuid = agent_uuid
@@ -224,6 +271,7 @@ class AnthropicAgent(Agent):
         # Per-run tracking state (initialized in initialize_run).
         self._run_id: str = ""
         self._run_logs: list[LogEntry] = []
+        self._run_cumulative_usage: Usage = Usage()
         self._cumulative_usage: Usage = Usage()
 
         # These are set during initialize().
@@ -273,6 +321,7 @@ class AnthropicAgent(Agent):
         self.tool_registry.attach_sandbox(sandbox)
         self.media_backend.attach_sandbox(sandbox)
         self._inject_agent_uuid_to_tools()
+        self._configure_context_externalizer()
 
 
     async def initialize(self) -> tuple[AgentConfig, Conversation | None]:
@@ -303,15 +352,20 @@ class AnthropicAgent(Agent):
                     loaded_config.llm_config.to_dict()
                 )
             self.agent_config = loaded_config
+            raw_session_usage = self.agent_config.extras.get("session_cumulative_usage")
+            if isinstance(raw_session_usage, dict):
+                self._cumulative_usage = Usage.from_dict(raw_session_usage)
             self._configure_compaction_controller()
 
             logger.debug(
                 "loaded_agent_config",
                 agent_uuid=self._agent_uuid,
-                conversation_history_len=len(loaded_config.conversation_history),
+                conversation_log_entries=len(loaded_config.conversation_log.entries),
                 context_messages_len=len(loaded_config.context_messages),
                 has_pending_relay=loaded_config.pending_relay is not None,
-                last_msg_roles=[m.role.value for m in loaded_config.conversation_history[-3:]],
+                last_log_entry_types=[
+                    entry.entry_type for entry in loaded_config.conversation_log.entries[-3:]
+                ],
             )
 
             # If a relay is pending, restore the partial Conversation
@@ -347,7 +401,10 @@ class AnthropicAgent(Agent):
             run_id=run_id,
             started_at=now,
             user_message=prompt,
+            conversation_log=ConversationLog(),
         )
+        self.agent_config.conversation_log = ConversationLog()
+        self.agent_config.parent_agent_uuid = self._parent_agent_uuid
 
         # Reset step counter.
         self.agent_config.current_step = 0
@@ -370,12 +427,14 @@ class AnthropicAgent(Agent):
             self.agent_config.tool_names = [s.name for s in self.agent_config.tool_schemas]
 
         self._configure_compaction_controller()
+        self._configure_context_externalizer()
 
         # Initialize per-run tracking.
         self._run_id = run_id
         self._run_logs = []
-        self._cumulative_usage = Usage()
+        self._run_cumulative_usage = Usage()
         self._cumulative_cost = CostBreakdown()
+        self._ensure_registered_agent()
 
     def _reset_cancellation_state(
         self,
@@ -409,11 +468,115 @@ class AnthropicAgent(Agent):
             base_delay=self.base_delay,
         )
 
+    def _build_default_externalization_config(self) -> ExternalizationConfig:
+        """Return the default context-externalization policy for this agent."""
+        return ExternalizationConfig(
+            max_tool_result_tokens=self.max_tool_result_tokens,
+            max_combined_tool_result_tokens=(
+                self.max_tool_result_tokens * max(self.max_parallel_tool_calls, 1)
+            ),
+        )
+
+    def _resolve_externalization_config(self) -> ExternalizationConfig:
+        """Resolve the effective externalization config from constructor or saved state."""
+        resolved_config = self._externalization_config
+        if resolved_config is None and self.agent_config is not None:
+            raw_config = self.agent_config.extras.get("externalization_config")
+            if isinstance(raw_config, dict):
+                resolved_config = ExternalizationConfig.from_dict(raw_config)
+
+        if resolved_config is None:
+            resolved_config = self._build_default_externalization_config()
+
+        self._externalization_config = resolved_config
+        if self.agent_config is not None:
+            self.agent_config.extras["externalization_config"] = resolved_config.to_dict()
+        return resolved_config
+
+    def _configure_context_externalizer(self) -> None:
+        """Compose or clear the file-backed context externalizer from config state."""
+        if self.agent_config is None or self._sandbox is None:
+            self._context_externalizer = None
+            return
+
+        resolved_config = self._resolve_externalization_config()
+        self._context_externalizer = ContextExternalizer(
+            config=resolved_config,
+            sandbox=self._sandbox,
+            token_estimator=self.provider.token_estimator,
+        )
+
     def _replace_context_messages(self, messages: list[Message]) -> None:
         """Replace compacted context and clear token baselines."""
         self.agent_config.context_messages = messages
         self.agent_config.last_known_input_tokens = 0
         self.agent_config.last_known_output_tokens = 0
+
+    def _append_message_variants(
+        self,
+        context_message: Message,
+        history_message: Message | None = None,
+    ) -> None:
+        """Append distinct context and history variants for the same logical message."""
+        history_variant = history_message if history_message is not None else context_message
+        self.agent_config.context_messages.append(context_message)
+        self._append_message_to_logs(history_variant)
+
+    async def _build_runtime_contributions(self, prompt: Message) -> list[Contribution]:
+        """Collect per-run augmentations (memory, future hooks) as Contributions.
+
+        Returns a fresh list each run; callers store it on instance state and
+        apply it to the target user message at render time only. The Contributions
+        produced here are NEVER appended to ``prompt.contributions`` directly,
+        which would cause them to be persisted in ``context_messages`` and then
+        re-injected on every replay turn.
+        """
+        runtime: list[Contribution] = []
+        if self.memory_store:
+            memories = await self.memory_store.retrieve(
+                user_message=prompt,
+                messages=self.agent_config.context_messages,
+            )
+            if memories:
+                runtime.append(
+                    Contribution(
+                        slot="memory",
+                        content=memories,
+                        source="memory",
+                        position=ContributionPosition.BEFORE.value,
+                    )
+                )
+        return runtime
+
+    def _select_tail_for_mode(self) -> str | None:
+        """Return the tail instruction for the current agent mode.
+
+        Base implementation returns ``None`` so the renderer falls back to its
+        default (``DEFAULT_TAIL_INSTRUCTION``). Subclasses (e.g. NovaAgent) can
+        override to vary the tail per mode (plan/ask/full).
+        """
+        return None
+
+    def _build_render_view(self, messages: list[Message]) -> list[Message]:
+        """Render every message for the LLM wire, applying runtime contributions
+        to the target user message only.
+
+        Runtime contributions (memory, etc.) are applied transiently — they are
+        never persisted — so each provider call within a single run sees the same
+        rendered shape, but the underlying ``context_messages`` stays clean.
+        """
+        target_id = self._runtime_target_msg_id
+        runtime = self._runtime_contributions
+        tail = self._select_tail_for_mode()
+        rendered: list[Message] = []
+        for msg in messages:
+            view_msg = (
+                msg.with_runtime_contributions(runtime)
+                if (msg.id == target_id and runtime)
+                else msg
+            )
+            rendered.append(view_msg.render(tail_instruction=tail))
+        return rendered
 
     async def run(self, prompt: str | Message) -> AgentResult:
         if not self._initialized:
@@ -426,18 +589,15 @@ class AnthropicAgent(Agent):
 
         self.initialize_run(prompt)
 
-        self.conversation.messages.append(prompt)
+        self._runtime_contributions = await self._build_runtime_contributions(prompt)
+        self._runtime_target_msg_id = prompt.id
 
-        if self.memory_store:
-            memories = await self.memory_store.retrieve(
-                user_message=prompt,
-                messages=self.agent_config.context_messages
-            )
-            if memories:
-                prompt.content.extend(memories)
+        if self._context_externalizer is not None:
+            context_prompt = await self._context_externalizer.externalize_prompt(prompt)
+        else:
+            context_prompt = prompt
 
-        self.agent_config.context_messages.append(prompt)
-        self.agent_config.conversation_history.append(prompt)
+        self._append_message_variants(context_prompt, prompt)
 
         # Agent Loop
         return await self._resume_loop()
@@ -461,18 +621,15 @@ class AnthropicAgent(Agent):
 
         self.initialize_run(prompt)
 
-        self.conversation.messages.append(prompt)
+        self._runtime_contributions = await self._build_runtime_contributions(prompt)
+        self._runtime_target_msg_id = prompt.id
 
-        if self.memory_store:
-            memories = await self.memory_store.retrieve(
-                user_message=prompt,
-                messages=self.agent_config.context_messages
-            )
-            if memories:
-                prompt.content.extend(memories)
+        if self._context_externalizer is not None:
+            context_prompt = await self._context_externalizer.externalize_prompt(prompt)
+        else:
+            context_prompt = prompt
 
-        self.agent_config.context_messages.append(prompt)
-        self.agent_config.conversation_history.append(prompt)
+        self._append_message_variants(context_prompt, prompt)
 
         # Resolve formatter and emit meta_init before the loop.
         if isinstance(stream_formatter, str):
@@ -503,26 +660,8 @@ class AnthropicAgent(Agent):
         # Initialize per-run tracking state for the resumed run.
         self._run_id = pending.run_id or str(uuid.uuid4())
         self._run_logs = []
-        self._cumulative_usage = Usage()
+        self._run_cumulative_usage = Usage()
         self._cumulative_cost = CostBreakdown()
-
-        # Build a tool result message combining:
-        # 1. Backend results that were already computed
-        # 2. Incoming relay results from frontend/user
-        all_result_blocks: list[ContentBlock] = []
-
-        for completed_msg in pending.completed_results:
-            all_result_blocks.extend(completed_msg.content)
-
-        if isinstance(relay_results, list):
-            all_result_blocks.extend(relay_results)
-
-        combined_message = Message.user(all_result_blocks)
-
-        self.agent_config.context_messages.append(combined_message)
-        self.agent_config.conversation_history.append(combined_message)
-        if self.conversation:
-            self.conversation.messages.append(combined_message)
 
         # Resolve string formatter names to actual StreamFormatter instances
         # before the on_relay_result loop so hooks can use queue/formatter.
@@ -530,7 +669,46 @@ class AnthropicAgent(Agent):
             from agent_base.streaming import get_formatter
             stream_formatter = get_formatter(stream_formatter)
 
-        # Fire on_relay_result hook for each relay result before resuming.
+        await self._splice_relay_results(relay_results, queue, stream_formatter)
+
+        # Resume the agent loop.
+        return await self._resume_loop(queue, stream_formatter)
+
+    async def _splice_relay_results(
+        self,
+        relay_results: list[ContentBlock],
+        queue: asyncio.Queue | None,
+        stream_formatter: StreamFormatter | None,
+    ) -> None:
+        """Fold completed backend + incoming frontend results into context.
+
+        Shared by the rehydrated root resume path (``resume_with_relay_results``)
+        and the inline-await subagent branch in ``_resume_loop``. Assumes
+        ``self.agent_config.pending_relay`` is populated; clears it on success.
+        """
+        pending = self.agent_config.pending_relay
+        if pending is None:
+            raise RuntimeError("_splice_relay_results called without pending_relay")
+
+        all_result_blocks: list[ContentBlock] = []
+        for completed_msg in pending.completed_results:
+            all_result_blocks.extend(completed_msg.content)
+        if isinstance(relay_results, list):
+            all_result_blocks.extend(relay_results)
+
+        if self._context_externalizer is not None:
+            combined_message, context_message = (
+                await self._context_externalizer.externalize_relay_results(
+                    pending.completed_results,
+                    relay_results,
+                )
+            )
+        else:
+            combined_message = Message.user(all_result_blocks)
+            context_message = combined_message
+
+        self._append_message_variants(context_message, combined_message)
+
         for block in relay_results:
             if isinstance(block, ToolResultBase):
                 tool_name = block.tool_name or self._get_relay_tool_name(block.tool_id, pending)
@@ -543,15 +721,111 @@ class AnthropicAgent(Agent):
                     stream_formatter=stream_formatter,
                 )
 
-        # Clear pending relay.
         self.agent_config.pending_relay = None
 
-        # Emit meta_init for the resumed stream.
         if queue and stream_formatter:
             await self._emit_meta_init(combined_message, queue, stream_formatter)
 
-        # Resume the agent loop.
-        return await self._resume_loop(queue, stream_formatter)
+    async def _await_inline_relay(
+        self,
+        pending_tool_ids: list[str],
+        classification,
+        queue: asyncio.Queue | None,
+        stream_formatter: StreamFormatter | None,
+    ) -> AgentResult | None:
+        """Pause this subagent on the relay registry until results arrive.
+
+        Returns ``None`` on successful resume (the caller should ``continue``
+        the ``_resume_loop`` to make the next LLM call), or an
+        ``AgentResult`` if the child was cancelled while waiting (the caller
+        should return it upward like the normal cancel path).
+
+        The Future wait races against ``self._cancellation_event`` so an
+        abort/steer on the parent wakes every blocked child; ``finally``
+        guarantees the registry entry is cleaned up on every exit path.
+        """
+        from agent_base.relay import get_inline_relay_registry
+
+        owner = (self.agent_config.extras or {}).get("owner")
+        if not isinstance(owner, dict):
+            raise RuntimeError(
+                "inline-await subagent missing agent_config.extras['owner']; "
+                "the host must populate it on the root agent before run_stream"
+            )
+        organization_id = str(owner["organization_id"])
+        member_id = str(owner["member_id"])
+        root_agent_uuid = str(owner["root_agent_uuid"])
+
+        registry = get_inline_relay_registry()
+        future = await registry.register(
+            child_agent_uuid=self.agent_config.agent_uuid,
+            root_agent_uuid=root_agent_uuid,
+            organization_id=organization_id,
+            member_id=member_id,
+            pending_tool_use_ids=set(pending_tool_ids),
+        )
+
+        # Emit the awaiting_frontend_tools delta so the client sees the
+        # pause and knows which tools to run — same event shape the root
+        # uses, just carrying this child's agent_uuid.
+        if queue is not None:
+            fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
+            pending_tools = [
+                {"tool_use_id": tc.tool_id, "name": tc.name, "input": tc.input}
+                for tc in (*classification.frontend_calls, *classification.confirmation_calls)
+            ]
+            delta = MetaDelta(
+                agent_uuid=self.agent_config.agent_uuid,
+                type="awaiting_frontend_tools",
+                payload={"tools": pending_tools},
+                is_final=True,
+            )
+            await fmt.format_delta(delta, queue)
+
+        cancel_event = self._cancellation_event
+        try:
+            if cancel_event is not None:
+                cancel_task = asyncio.create_task(cancel_event.wait())
+                done, pending = await asyncio.wait(
+                    {future, cancel_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cancel_task in done and future not in done:
+                    # Abort/steer/disconnect reached us before results did.
+                    for p in pending:
+                        p.cancel()
+                    self._phase = AgentPhase.IDLE
+                    if self._abort_completion is not None:
+                        self._abort_completion.set()
+                    return self._build_aborted_result()
+                # Future done; tidy up the cancel waiter.
+                for p in pending:
+                    p.cancel()
+            else:
+                try:
+                    await future
+                except asyncio.CancelledError:
+                    # drop_tree (client disconnect / turn teardown) cancelled
+                    # the future — fall through to the aborted-result path
+                    # rather than letting the cancellation propagate.
+                    pass
+
+            if future.cancelled():
+                # Registry dropped us (e.g. client disconnect drop_tree).
+                self._phase = AgentPhase.IDLE
+                if self._abort_completion is not None:
+                    self._abort_completion.set()
+                return self._build_aborted_result()
+
+            relay_results = future.result()
+        finally:
+            registry.pop(self.agent_config.agent_uuid)
+
+        # Splice backend + incoming frontend results and persist once so a
+        # subsequent turn can resume by ``resume_agent_uuid=<child>``.
+        await self._splice_relay_results(relay_results, queue, stream_formatter)
+        await self._persist_state()
+        return None
 
     async def _resume_loop(self, queue: asyncio.Queue | None = None, stream_formatter: str | StreamFormatter | None = None) -> AgentResult:
 
@@ -573,12 +847,17 @@ class AnthropicAgent(Agent):
                 self._phase = AgentPhase.STREAMING
 
                 # --- Proactive compaction check ---
-                if (
+                estimated_tokens = self.estimate_current_context_tokens()
+                should_compact = (
                     self._compaction_controller is not None
                     and self._compaction_controller.should_compact(
                         self.agent_config.context_messages,
-                        self.estimate_current_context_tokens(),
+                        estimated_tokens,
                     )
+                )
+                if (
+                    self._compaction_controller is not None
+                    and should_compact
                 ):
                     compacted_messages = await self._compaction_controller.compact(
                         context_messages=self.agent_config.context_messages,
@@ -592,10 +871,11 @@ class AnthropicAgent(Agent):
                         self._replace_context_messages(compacted_messages)
 
                 try:
+                    render_view = self._build_render_view(self.agent_config.context_messages)
                     if queue:
                         stream_result: StreamResult = await self.provider.generate_stream(
                             system_prompt=self.agent_config.system_prompt,
-                            messages=self.agent_config.context_messages,
+                            messages=render_view,
                             tool_schemas=self.agent_config.tool_schemas,
                             llm_config=self.agent_config.llm_config,
                             model=self.agent_config.model,
@@ -618,7 +898,7 @@ class AnthropicAgent(Agent):
                     else:
                         response_message = await self.provider.generate(
                             system_prompt=self.agent_config.system_prompt,
-                            messages=self.agent_config.context_messages,
+                            messages=render_view,
                             tool_schemas=self.agent_config.tool_schemas,
                             llm_config=self.agent_config.llm_config,
                             model=self.agent_config.model,
@@ -651,9 +931,7 @@ class AnthropicAgent(Agent):
                 self._accumulate_usage(response_message.usage)
 
                 self.agent_config.context_messages.append(response_message)
-                self.agent_config.conversation_history.append(response_message)
-                if self.conversation:
-                    self.conversation.messages.append(response_message)
+                self._append_message_to_logs(response_message)
 
                 stop_reason = response_message.stop_reason
 
@@ -722,10 +1000,38 @@ class AnthropicAgent(Agent):
                             run_id=self._run_id,
                         )
 
-                        # Persist state before pausing.
+                        pending_tool_ids = [
+                            tc.tool_id
+                            for tc in (*classification.frontend_calls, *classification.confirmation_calls)
+                        ]
+
+                        if self._relay_mode == "inline_await":
+                            # Subagent branch: do NOT persist pending_relay
+                            # (the parent's ``asyncio.gather`` still holds the
+                            # child coroutine; on a worker crash the root's
+                            # last checkpoint predates the spawn tool_use so
+                            # resuming from DB would give wrong state), do
+                            # NOT return — instead park on an asyncio.Future
+                            # keyed by this child's uuid and let the relay
+                            # registry wake us when results arrive.
+                            relay_result = await self._await_inline_relay(
+                                pending_tool_ids=pending_tool_ids,
+                                classification=classification,
+                                queue=queue,
+                                stream_formatter=stream_formatter,
+                            )
+                            if relay_result is not None:
+                                return relay_result
+                            # Future resolved with results and were spliced in;
+                            # continue the loop to make the next LLM call.
+                            continue
+
+                        # Root branch (persist_return): serialize state, emit
+                        # the frontend notification, close the turn with
+                        # stop_reason="relay"; the client's POST to
+                        # ``/tool_results`` rehydrates and continues.
                         await self._persist_state()
 
-                        # Emit awaiting_frontend_tools event to notify the frontend.
                         if queue is not None:
                             fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
                             pending_tools = [
@@ -761,12 +1067,18 @@ class AnthropicAgent(Agent):
                             fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
                             await self._stream_tool_results(tool_results, queue, fmt)
 
-                        tool_result_message = self._build_tool_result_message(tool_results)
+                        if self._context_externalizer is not None:
+                            tool_result_message, context_tool_result_message = (
+                                await self._context_externalizer.externalize_tool_results(
+                                    tool_results
+                                )
+                            )
+                        else:
+                            tool_result_message = self._build_tool_result_message(tool_results)
+                            context_tool_result_message = tool_result_message
 
-                        self.agent_config.context_messages.append(tool_result_message)
-                        self.agent_config.conversation_history.append(tool_result_message)
-                        if self.conversation:
-                            self.conversation.messages.append(tool_result_message)
+                        self.agent_config.context_messages.append(context_tool_result_message)
+                        self._append_tool_results_to_logs(tool_results)
 
                         # Check if we were cancelled during tool execution (Scenario B)
                         if self._cancellation_event.is_set():
@@ -776,17 +1088,14 @@ class AnthropicAgent(Agent):
                             return self._build_aborted_result()
 
                 elif stop_reason == "end_turn":
-
-                    if self.final_answer_check:
-                        # Extract text for validation.
-                        final_text = self._extract_text(response_message)
-                        success, error_message = self.final_answer_check(final_text)
-                        if not success:
-                            # Append error to context only (not conversation history).
-                            self.agent_config.context_messages.append(
-                                Message.user(error_message)
-                            )
-                            continue
+                    should_retry = await self._run_end_turn_hook(
+                        response_message,
+                        stop_reason="end_turn",
+                        queue=queue,
+                        stream_formatter=stream_formatter,
+                    )
+                    if should_retry:
+                        continue
 
                     return await self._finalize_run(response_message, "end_turn", queue, stream_formatter)
 
@@ -858,9 +1167,7 @@ class AnthropicAgent(Agent):
         # Step 2: Build a user message with the new instruction
         steer_message = Message.user(new_instruction)
         self.agent_config.context_messages.append(steer_message)
-        self.agent_config.conversation_history.append(steer_message)
-        if self.conversation:
-            self.conversation.messages.append(steer_message)
+        self._append_message_to_logs(steer_message)
 
         # Step 3: Reset cancellation for the new run
         self._reset_cancellation_state(cancellation_event)
@@ -885,34 +1192,14 @@ class AnthropicAgent(Agent):
         blocks for orphaned tool_use blocks, and produces a valid chain.
         """
         from agent_base.providers.anthropic.message_sanitizer import (
-            sanitize_partial_assistant_message,
-            synthesize_abort_tool_results,
+            plan_stream_abort,
         )
 
-        raw_blocks = stream_result.message.content
-        clean_blocks, orphaned_ids = sanitize_partial_assistant_message(
-            raw_blocks, stream_result.completed_blocks,
+        patch = plan_stream_abort(
+            partial_message=stream_result.message,
+            completed_block_indices=stream_result.completed_blocks,
         )
-
-        if clean_blocks:
-            sanitized_msg = Message.assistant(clean_blocks)
-            sanitized_msg.usage = stream_result.message.usage
-            sanitized_msg.stop_reason = stream_result.message.stop_reason
-            sanitized_msg.provider = stream_result.message.provider
-            sanitized_msg.model = stream_result.message.model
-
-            self.agent_config.context_messages.append(sanitized_msg)
-            self.agent_config.conversation_history.append(sanitized_msg)
-            if self.conversation:
-                self.conversation.messages.append(sanitized_msg)
-
-            if orphaned_ids:
-                abort_results = synthesize_abort_tool_results(orphaned_ids)
-                result_msg = Message.user(abort_results)  # type: ignore[arg-type]
-                self.agent_config.context_messages.append(result_msg)
-                self.agent_config.conversation_history.append(result_msg)
-                if self.conversation:
-                    self.conversation.messages.append(result_msg)
+        self._append_messages_to_histories(patch.append_messages)
 
         # Emit aborted MetaDelta to the stream queue
         if queue and stream_formatter:
@@ -938,33 +1225,24 @@ class AnthropicAgent(Agent):
         calls, combines with existing backend results, and appends to the
         chain. Clears pending_relay state.
         """
-        from agent_base.providers.anthropic.message_sanitizer import synthesize_abort_tool_results
+        from agent_base.providers.anthropic.message_sanitizer import plan_relay_abort
+        from agent_base.providers.anthropic.message_sanitizer import AbortToolCall
 
         relay = self.agent_config.pending_relay
         if relay is None:
             return
 
         # Collect IDs of pending frontend/confirmation tools
-        pending_ids = [
-            tc.tool_id
+        pending_tool_uses = [
+            AbortToolCall(tool_id=tc.tool_id, tool_name=tc.name)
             for tc in (*relay.frontend_calls, *relay.confirmation_calls)
         ]
 
-        # Synthesize abort results for pending tools
-        synthetic_results = synthesize_abort_tool_results(pending_ids)
-
-        # Combine existing backend results with synthetic abort results
-        all_result_blocks: list[ContentBlock] = []
-        for completed_msg in relay.completed_results:
-            all_result_blocks.extend(completed_msg.content)
-        all_result_blocks.extend(synthetic_results)
-
-        # Append combined result message to the chain
-        combined_message = Message.user(all_result_blocks)  # type: ignore[arg-type]
-        self.agent_config.context_messages.append(combined_message)
-        self.agent_config.conversation_history.append(combined_message)
-        if self.conversation:
-            self.conversation.messages.append(combined_message)
+        patch = plan_relay_abort(
+            completed_result_messages=relay.completed_results,
+            pending_tool_uses=pending_tool_uses,
+        )
+        self._append_messages_to_histories(patch.append_messages)
 
         # Clear pending relay state
         self.agent_config.pending_relay = None
@@ -974,7 +1252,8 @@ class AnthropicAgent(Agent):
 
     def _build_aborted_result(self) -> AgentResult:
         """Build an AgentResult for an aborted run."""
-        # Use the last assistant message if available, else a placeholder.
+        # Prefer the last persisted assistant message; if the abort only
+        # produced tool_result markers, fall back to a synthetic assistant note.
         last_msg = None
         for msg in reversed(self.agent_config.context_messages):
             if msg.role.value == "assistant":
@@ -982,14 +1261,14 @@ class AnthropicAgent(Agent):
                 break
 
         if last_msg is None:
-            last_msg = Message.assistant("Agent run was aborted.")
+            last_msg = Message.assistant(STREAM_ABORT_TEXT)
 
         final_text = self._extract_text(last_msg)
 
         return AgentResult(
             final_message=last_msg,
             final_answer=final_text,
-            conversation_history=list(self.agent_config.conversation_history),
+            conversation_log=copy.deepcopy(self.agent_config.conversation_log),
             stop_reason="aborted",
             model=self.agent_config.model,
             provider="anthropic",
@@ -1002,6 +1281,391 @@ class AnthropicAgent(Agent):
         )
 
     # ─── Private Helpers ──────────────────────────────────────────────
+
+    def _ensure_registered_agent(
+        self,
+        *,
+        completed: bool | None = None,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> None:
+        agent_uuid = self.agent_uuid
+        if not agent_uuid or self.agent_config is None:
+            return
+
+        kwargs = {
+            "agent_uuid": agent_uuid,
+            "parent_agent_uuid": self._parent_agent_uuid,
+            "name": name,
+            "description": description if description is not None else self.description,
+            "model": self.agent_config.model,
+            "provider": self.agent_config.provider,
+            "completed": completed,
+        }
+        self.agent_config.conversation_log.ensure_agent(**kwargs)
+        if self.conversation:
+            self.conversation.conversation_log.ensure_agent(**kwargs)
+
+    def _append_message_to_logs(
+        self,
+        message: Message,
+        *,
+        agent_uuid: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        effective_agent_uuid = agent_uuid or self.agent_uuid
+        if not effective_agent_uuid:
+            return
+
+        if effective_agent_uuid == self.agent_uuid:
+            self._ensure_registered_agent()
+        else:
+            self.agent_config.conversation_log.ensure_agent(agent_uuid=effective_agent_uuid)
+            if self.conversation:
+                self.conversation.conversation_log.ensure_agent(agent_uuid=effective_agent_uuid)
+
+        self.agent_config.conversation_log.add_message(
+            message,
+            agent_uuid=effective_agent_uuid,
+            timestamp=timestamp,
+        )
+        if self.conversation:
+            self.conversation.conversation_log.add_message(
+                message,
+                agent_uuid=effective_agent_uuid,
+                timestamp=timestamp,
+            )
+
+    def _append_tool_results_to_logs(
+        self,
+        envelopes: list[ToolResultEnvelope],
+        *,
+        agent_uuid: str | None = None,
+    ) -> None:
+        effective_agent_uuid = agent_uuid or self.agent_uuid
+        if not effective_agent_uuid:
+            return
+
+        self._ensure_registered_agent()
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        for envelope in envelopes:
+            projection = envelope.for_conversation_log()
+            child_agent_uuid = projection.details.get("child_agent_uuid")
+            if projection.nested_conversation is not None and child_agent_uuid:
+                child_descriptor = projection.nested_conversation.agents.get(child_agent_uuid)
+                self.agent_config.conversation_log.ensure_agent(
+                    agent_uuid=child_agent_uuid,
+                    parent_agent_uuid=child_descriptor.parent_agent_uuid if child_descriptor else effective_agent_uuid,
+                    name=projection.details.get("agent_name") or (child_descriptor.name if child_descriptor else None),
+                    description=child_descriptor.description if child_descriptor else None,
+                    model=child_descriptor.model if child_descriptor else projection.details.get("child_model"),
+                    provider=child_descriptor.provider if child_descriptor else projection.details.get("child_provider"),
+                    completed=True,
+                )
+                if self.conversation:
+                    self.conversation.conversation_log.ensure_agent(
+                        agent_uuid=child_agent_uuid,
+                        parent_agent_uuid=child_descriptor.parent_agent_uuid if child_descriptor else effective_agent_uuid,
+                        name=projection.details.get("agent_name") or (child_descriptor.name if child_descriptor else None),
+                        description=child_descriptor.description if child_descriptor else None,
+                        model=child_descriptor.model if child_descriptor else projection.details.get("child_model"),
+                        provider=child_descriptor.provider if child_descriptor else projection.details.get("child_provider"),
+                        completed=True,
+                    )
+
+            self.agent_config.conversation_log.add_tool_result(
+                projection,
+                agent_uuid=effective_agent_uuid,
+                timestamp=timestamp,
+            )
+            if self.conversation:
+                self.conversation.conversation_log.add_tool_result(
+                    projection,
+                    agent_uuid=effective_agent_uuid,
+                    timestamp=timestamp,
+                )
+
+    def _append_rollback_to_logs(
+        self,
+        rollback_message: str,
+        *,
+        rollback_code: str | None = None,
+        details: dict[str, Any] | None = None,
+        agent_uuid: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        effective_agent_uuid = agent_uuid or self.agent_uuid
+        if not effective_agent_uuid:
+            return
+
+        self._ensure_registered_agent()
+        rollback_details = details or {}
+
+        self.agent_config.conversation_log.add_rollback(
+            rollback_message,
+            agent_uuid=effective_agent_uuid,
+            code=rollback_code,
+            details=rollback_details,
+            timestamp=timestamp,
+        )
+        if self.conversation:
+            self.conversation.conversation_log.add_rollback(
+                rollback_message,
+                agent_uuid=effective_agent_uuid,
+                code=rollback_code,
+                details=rollback_details,
+                timestamp=timestamp,
+            )
+
+    def _append_stream_event_to_logs(
+        self,
+        stream_type: str,
+        payload: dict[str, Any],
+        *,
+        agent_uuid: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        effective_agent_uuid = agent_uuid or self.agent_uuid
+        if not effective_agent_uuid:
+            return
+
+        self._ensure_registered_agent()
+        self.agent_config.conversation_log.add_stream_event(
+            stream_type,
+            agent_uuid=effective_agent_uuid,
+            payload=payload,
+            timestamp=timestamp,
+        )
+        if self.conversation:
+            self.conversation.conversation_log.add_stream_event(
+                stream_type,
+                agent_uuid=effective_agent_uuid,
+                payload=payload,
+                timestamp=timestamp,
+            )
+
+    def _build_end_turn_context(
+        self,
+        response_message: Message,
+        *,
+        stop_reason: str,
+    ) -> EndTurnContext:
+        final_text = self._extract_text(response_message)
+        return EndTurnContext(
+            agent_uuid=self.agent_uuid or "",
+            run_id=self._run_id or None,
+            provider=self.agent_config.provider,
+            model=self.agent_config.model,
+            stop_reason=stop_reason,
+            response_message=response_message,
+            final_text=final_text,
+            current_step=self.agent_config.current_step,
+            max_steps=(
+                None
+                if self.max_steps == float("inf")
+                else int(self.max_steps)
+            ),
+            agent_config=self.agent_config,
+            conversation=self.conversation,
+            sandbox=self._sandbox,
+            media_backend=self.media_backend,
+            memory_store=self.memory_store,
+        )
+
+    async def _emit_end_turn_validation(
+        self,
+        status: str,
+        queue: asyncio.Queue | None,
+        stream_formatter: StreamFormatter | None,
+        *,
+        result: str | None = None,
+    ) -> None:
+        if queue is None or stream_formatter is None:
+            return
+
+        delta = MetaDelta(
+            agent_uuid=self.agent_config.agent_uuid,
+            type="meta_end_turn_validation",
+            payload={
+                "status": status,
+                "result": result,
+                "hook": "end_turn_hook",
+            },
+            is_final=True,
+        )
+        await stream_formatter.format_delta(delta, queue)
+
+    async def _emit_rollback_delta(
+        self,
+        rollback_message: str,
+        queue: asyncio.Queue | None,
+        stream_formatter: StreamFormatter | None,
+        *,
+        rollback_code: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        if queue is None or stream_formatter is None:
+            return
+
+        delta = RollbackDelta(
+            agent_uuid=self.agent_config.agent_uuid,
+            message=rollback_message,
+            code=rollback_code,
+            details=details or {},
+            collapse_previous_assistant=True,
+            is_final=True,
+        )
+        await stream_formatter.format_delta(delta, queue)
+
+    async def _emit_hook_event(
+        self,
+        stream_type: str,
+        payload: dict[str, Any],
+        queue: asyncio.Queue | None,
+        stream_formatter: StreamFormatter | None,
+    ) -> None:
+        if queue is None or stream_formatter is None:
+            return
+
+        delta = MetaDelta(
+            agent_uuid=self.agent_config.agent_uuid,
+            type=stream_type,
+            payload=payload,
+            is_final=True,
+        )
+        await stream_formatter.format_delta(delta, queue)
+
+    async def _apply_end_turn_hook_events(
+        self,
+        events: list[EndTurnHookEvent],
+        queue: asyncio.Queue | None,
+        stream_formatter: StreamFormatter | None,
+    ) -> None:
+        for event in events:
+            if event.persist_to_conversation_log:
+                self._append_stream_event_to_logs(
+                    event.stream_type,
+                    event.payload,
+                )
+            await self._emit_hook_event(
+                event.stream_type,
+                event.payload,
+                queue,
+                stream_formatter,
+            )
+
+    async def _resolve_end_turn_hook_result(
+        self,
+        response_message: Message,
+        *,
+        stop_reason: str,
+    ) -> EndTurnHookResult | None:
+        if self.end_turn_hook is None:
+            return None
+
+        hook_result = self.end_turn_hook(
+            self._build_end_turn_context(
+                response_message,
+                stop_reason=stop_reason,
+            )
+        )
+        if inspect.isawaitable(hook_result):
+            hook_result = await hook_result
+
+        if not isinstance(hook_result, EndTurnHookResult):
+            raise TypeError(
+                "end_turn_hook must return EndTurnHookResult"
+            )
+        return hook_result
+
+    async def _run_end_turn_hook(
+        self,
+        response_message: Message,
+        *,
+        stop_reason: str,
+        queue: asyncio.Queue | None,
+        stream_formatter: StreamFormatter | None,
+    ) -> bool:
+        if self.end_turn_hook is None:
+            return False
+
+        await self._emit_end_turn_validation(
+            "start",
+            queue,
+            stream_formatter,
+        )
+
+        try:
+            hook_result = await self._resolve_end_turn_hook_result(
+                response_message,
+                stop_reason=stop_reason,
+            )
+        except Exception:
+            await self._emit_end_turn_validation(
+                "end",
+                queue,
+                stream_formatter,
+                result="error",
+            )
+            raise
+
+        if hook_result is None or hook_result.action == "pass":
+            if hook_result is not None and hook_result.events:
+                await self._apply_end_turn_hook_events(
+                    hook_result.events,
+                    queue,
+                    stream_formatter,
+                )
+            await self._emit_end_turn_validation(
+                "end",
+                queue,
+                stream_formatter,
+                result="pass",
+            )
+            return False
+
+        rollback_message = hook_result.rollback_message or ""
+        rollback_details = hook_result.details or {}
+        rollback_prompt = Message.user(
+            [
+                TextContent(
+                    text=rollback_message,
+                    kwargs={
+                        "synthetic_kind": "rollback",
+                        "visible_to_user": False,
+                        "rollback_code": hook_result.rollback_code,
+                    },
+                )
+            ]
+        )
+        self.agent_config.context_messages.append(rollback_prompt)
+        self._append_rollback_to_logs(
+            rollback_message,
+            rollback_code=hook_result.rollback_code,
+            details=rollback_details,
+        )
+        await self._emit_rollback_delta(
+            rollback_message,
+            queue,
+            stream_formatter,
+            rollback_code=hook_result.rollback_code,
+            details=rollback_details,
+        )
+        await self._emit_end_turn_validation(
+            "end",
+            queue,
+            stream_formatter,
+            result="retry",
+        )
+        await self._persist_state()
+        return True
+
+    def _append_messages_to_histories(self, messages: list[Message]) -> None:
+        """Append persisted messages to context and conversation logs."""
+        for message in messages:
+            self.agent_config.context_messages.append(message)
+            self._append_message_to_logs(message)
 
     def _inject_agent_uuid_to_tools(self) -> None:
         """Inject agent UUID into tools that need it.
@@ -1018,6 +1682,21 @@ class AnthropicAgent(Agent):
                 set_uuid_method = getattr(tool_instance, 'set_agent_uuid', None)
                 if callable(set_uuid_method):
                     set_uuid_method(self.agent_uuid)
+                set_parent_context = getattr(tool_instance, 'set_parent_context', None)
+                if callable(set_parent_context):
+                    from agent_base.common_tools.sub_agent_tool import SubAgentParentContext
+
+                    set_parent_context(SubAgentParentContext(
+                        parent_agent_uuid=self.agent_uuid,
+                        config_adapter=self.config_adapter,
+                        conversation_adapter=self.conversation_adapter,
+                        run_adapter=self.run_adapter,
+                        media_backend=self.media_backend,
+                        sandbox=self._sandbox,
+                        sandbox_factory=self._sandbox_factory,
+                        memory_store=self.memory_store,
+                        parent_agent=self,
+                    ))
 
     # ─── Mid-Run Reconfiguration ──────────────────────────────────────
 
@@ -1152,12 +1831,21 @@ class AnthropicAgent(Agent):
                 set_ctx = getattr(tool_instance, 'set_run_context', None)
                 if callable(set_ctx):
                     set_ctx(queue, formatter)
+                set_cancel = getattr(tool_instance, 'set_cancellation_event', None)
+                if callable(set_cancel):
+                    set_cancel(self._cancellation_event)
 
     def _extract_tool_calls(self, message: Message) -> list[ToolCallInfo]:
-        """Extract ToolCallInfo objects from an assistant message's tool-use blocks."""
+        """Extract local client tool calls from an assistant message.
+
+        Server tools such as ``web_search`` / ``web_fetch`` are executed by the
+        Anthropic API and surface as ``ServerToolUseContent``.  Routing them
+        through the local tool registry creates invalid client-side
+        ``tool_result`` blocks for ``srvtoolu_*`` ids.
+        """
         tool_calls = []
         for block in message.content:
-            if isinstance(block, ToolUseBase):
+            if isinstance(block, ToolUseContent):
                 tool_calls.append(ToolCallInfo(
                     name=block.tool_name,
                     tool_id=block.tool_id,
@@ -1202,7 +1890,7 @@ class AnthropicAgent(Agent):
                 tool_name=envelope.tool_name,
                 tool_id=envelope.tool_id,
                 result_content=result_content,
-                envelope_log=envelope.for_conversation_log(),
+                envelope_log=envelope.for_conversation_log().to_dict(),
                 is_server_tool=False,
                 is_final=True,
             )
@@ -1235,32 +1923,62 @@ class AnthropicAgent(Agent):
             delta_tokens = self.provider.token_estimator.estimate_messages(
                 delta_messages
             )
-            return last_input_tokens + last_output_tokens + delta_tokens
+            estimate = last_input_tokens + last_output_tokens + delta_tokens
+            return estimate
 
-        return self.provider.token_estimator.estimate_messages(
+        estimate = self.provider.token_estimator.estimate_messages(
             self.agent_config.context_messages
+        )
+        return estimate
+
+    @staticmethod
+    def _context_input_tokens(step_usage: Usage) -> int:
+        """Return provider-reported input-context tokens including cached portions."""
+        return (
+            step_usage.input_tokens
+            + (step_usage.cache_write_tokens or 0)
+            + (step_usage.cache_read_tokens or 0)
         )
 
     def _accumulate_usage(self, step_usage: Usage | None) -> None:
         """Add step usage to cumulative tracking and compute per-step cost."""
         if step_usage is None:
             return
-        self.agent_config.last_known_input_tokens = step_usage.input_tokens
+        effective_input_tokens = self._context_input_tokens(step_usage)
+        self.agent_config.last_known_input_tokens = effective_input_tokens
         self.agent_config.last_known_output_tokens = step_usage.output_tokens
+        self._run_cumulative_usage.input_tokens += step_usage.input_tokens
+        self._run_cumulative_usage.output_tokens += step_usage.output_tokens
         self._cumulative_usage.input_tokens += step_usage.input_tokens
         self._cumulative_usage.output_tokens += step_usage.output_tokens
         if step_usage.cache_write_tokens:
+            self._run_cumulative_usage.cache_write_tokens = (
+                (self._run_cumulative_usage.cache_write_tokens or 0)
+                + step_usage.cache_write_tokens
+            )
+        if step_usage.cache_write_tokens:
             self._cumulative_usage.cache_write_tokens = (
                 (self._cumulative_usage.cache_write_tokens or 0) + step_usage.cache_write_tokens
+            )
+        if step_usage.cache_read_tokens:
+            self._run_cumulative_usage.cache_read_tokens = (
+                (self._run_cumulative_usage.cache_read_tokens or 0)
+                + step_usage.cache_read_tokens
             )
         if step_usage.cache_read_tokens:
             self._cumulative_usage.cache_read_tokens = (
                 (self._cumulative_usage.cache_read_tokens or 0) + step_usage.cache_read_tokens
             )
         if step_usage.thinking_tokens:
+            self._run_cumulative_usage.thinking_tokens = (
+                (self._run_cumulative_usage.thinking_tokens or 0)
+                + step_usage.thinking_tokens
+            )
+        if step_usage.thinking_tokens:
             self._cumulative_usage.thinking_tokens = (
                 (self._cumulative_usage.thinking_tokens or 0) + step_usage.thinking_tokens
             )
+        self.agent_config.extras["session_cumulative_usage"] = self._cumulative_usage.to_dict()
 
         from agent_base.pricing import calculate_step_cost
         step_cost = calculate_step_cost(step_usage, self.agent_config.model)
@@ -1273,6 +1991,70 @@ class AnthropicAgent(Agent):
                     self._cumulative_cost.breakdown.get(k, 0.0) + v, 6
                 )
 
+        # Bubble this step into the parent's sinks for inline-await children
+        # so credits deducted from the root ``AgentResult.cost`` reflect the
+        # whole tree. Pass the already-computed ``step_cost`` to avoid
+        # re-pricing with the parent's (possibly different) model.
+        if self._parent_usage_forward is not None:
+            self._parent_usage_forward._ingest_child_usage(step_usage, step_cost)
+
+    def _ingest_child_usage(
+        self,
+        step_usage: Usage,
+        step_cost: "CostBreakdown | None",
+    ) -> None:
+        """Fold an inline-await child's step usage/cost into this agent's sinks.
+
+        Mirrors ``_accumulate_usage`` but skips the ``calculate_step_cost``
+        call (the child already priced with its own model) and does not
+        touch ``last_known_*_tokens`` or ``session_cumulative_usage``
+        (those describe this agent's own last step).
+        """
+        self._run_cumulative_usage.input_tokens += step_usage.input_tokens
+        self._run_cumulative_usage.output_tokens += step_usage.output_tokens
+        self._cumulative_usage.input_tokens += step_usage.input_tokens
+        self._cumulative_usage.output_tokens += step_usage.output_tokens
+        if step_usage.cache_write_tokens:
+            self._run_cumulative_usage.cache_write_tokens = (
+                (self._run_cumulative_usage.cache_write_tokens or 0)
+                + step_usage.cache_write_tokens
+            )
+            self._cumulative_usage.cache_write_tokens = (
+                (self._cumulative_usage.cache_write_tokens or 0)
+                + step_usage.cache_write_tokens
+            )
+        if step_usage.cache_read_tokens:
+            self._run_cumulative_usage.cache_read_tokens = (
+                (self._run_cumulative_usage.cache_read_tokens or 0)
+                + step_usage.cache_read_tokens
+            )
+            self._cumulative_usage.cache_read_tokens = (
+                (self._cumulative_usage.cache_read_tokens or 0)
+                + step_usage.cache_read_tokens
+            )
+        if step_usage.thinking_tokens:
+            self._run_cumulative_usage.thinking_tokens = (
+                (self._run_cumulative_usage.thinking_tokens or 0)
+                + step_usage.thinking_tokens
+            )
+            self._cumulative_usage.thinking_tokens = (
+                (self._cumulative_usage.thinking_tokens or 0)
+                + step_usage.thinking_tokens
+            )
+
+        if step_cost:
+            self._cumulative_cost.total_cost = round(
+                self._cumulative_cost.total_cost + step_cost.total_cost, 6
+            )
+            for k, v in step_cost.breakdown.items():
+                self._cumulative_cost.breakdown[k] = round(
+                    self._cumulative_cost.breakdown.get(k, 0.0) + v, 6
+                )
+
+        # Chain: if this agent is itself an inline-await child, forward up.
+        if self._parent_usage_forward is not None:
+            self._parent_usage_forward._ingest_child_usage(step_usage, step_cost)
+
     def _build_agent_result(
         self,
         response_message: Message,
@@ -1284,7 +2066,11 @@ class AnthropicAgent(Agent):
         return AgentResult(
             final_message=response_message,
             final_answer=final_answer,
-            conversation_history=self.conversation.messages if self.conversation else [],
+            conversation_log=copy.deepcopy(
+                self.conversation.conversation_log
+                if self.conversation
+                else self.agent_config.conversation_log
+            ),
             stop_reason=stop_reason,
             model=self.agent_config.model,
             provider="anthropic",
@@ -1326,9 +2112,7 @@ class AnthropicAgent(Agent):
         """
         # Collect all file_ids from current conversation messages.
         file_ids: set[str] = set()
-        messages = (
-            self.conversation.messages if self.conversation else self.agent_config.conversation_history
-        )
+        messages = self.agent_config.context_messages
         for message in messages:
             for block in message.content:
                 if isinstance(block, ServerToolResultContent):
@@ -1399,7 +2183,11 @@ class AnthropicAgent(Agent):
         if self.memory_store:
             await self.memory_store.update(
                 messages=self.agent_config.context_messages,
-                conversation_history=self.conversation.messages if self.conversation else [],
+                conversation_log=(
+                    self.conversation.conversation_log
+                    if self.conversation
+                    else self.agent_config.conversation_log
+                ),
             )
 
         # Compute cost before persisting so it's saved with the conversation.
@@ -1410,10 +2198,13 @@ class AnthropicAgent(Agent):
             self.conversation.final_response = response_message
             self.conversation.stop_reason = stop_reason
             self.conversation.total_steps = self.agent_config.current_step
-            self.conversation.usage = self._cumulative_usage
+            self.conversation.usage = self._run_cumulative_usage
             self.conversation.generated_files = generated_files
             self.conversation.cost = cost
             self.conversation.completed_at = now
+            self.conversation.conversation_log.mark_agent_completed(self.agent_uuid)
+
+        self.agent_config.conversation_log.mark_agent_completed(self.agent_uuid)
 
         # Validate tool_use / tool_result pairing in context_messages before
         # persisting.  An orphaned tool_use without a subsequent tool_result will
@@ -1422,6 +2213,26 @@ class AnthropicAgent(Agent):
 
         # Persist state.
         await self._persist_state()
+
+        # Auto-generate title on first run if not already set.
+        if (
+            self.agent_config.title is None
+            and self.conversation
+            and self.conversation.user_message
+        ):
+            title = self._derive_title(self.conversation.user_message)
+            if title:
+                self.agent_config.title = title
+                try:
+                    await self.config_adapter.update_title(
+                        self.agent_config.agent_uuid, title
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist auto-generated title",
+                        agent_uuid=self.agent_config.agent_uuid,
+                        exc_info=True,
+                    )
 
         result = self._build_agent_result(response_message, stop_reason)
         result.generated_files = generated_files
@@ -1434,6 +2245,24 @@ class AnthropicAgent(Agent):
 
         return result
 
+    @staticmethod
+    def _derive_title(user_message: Message) -> str | None:
+        """Derive a short session title from the first user message."""
+        text_parts: list[str] = []
+        for block in user_message.content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text_parts.append(block["text"])
+            elif isinstance(block, str):
+                text_parts.append(block)
+        text = " ".join(text_parts).strip()
+        if not text:
+            return None
+        text = " ".join(text.split())  # normalize whitespace
+        max_len = 72
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 1].rstrip() + "\u2026"
+
     async def _persist_state(self) -> None:
         """Save agent config, conversation, and run logs to storage adapters."""
         now = datetime.now(timezone.utc).isoformat()
@@ -1444,10 +2273,12 @@ class AnthropicAgent(Agent):
         logger.debug(
             "persisting_state",
             agent_uuid=self.agent_config.agent_uuid,
-            conversation_history_len=len(self.agent_config.conversation_history),
+            conversation_log_entries=len(self.agent_config.conversation_log.entries),
             context_messages_len=len(self.agent_config.context_messages),
             has_pending_relay=self.agent_config.pending_relay is not None,
-            last_msg_roles=[m.role.value for m in self.agent_config.conversation_history[-3:]],
+            last_log_entry_types=[
+                entry.entry_type for entry in self.agent_config.conversation_log.entries[-3:]
+            ],
         )
 
         await self.config_adapter.save(self.agent_config)
@@ -1514,8 +2345,8 @@ class AnthropicAgent(Agent):
         }
 
         if self.stream_meta_history_and_tool_results:
-            payload["message_history"] = _strip_binary_data(
-                [m.to_dict() for m in self.agent_config.conversation_history]
+            payload["conversation_log"] = _strip_binary_data(
+                self.agent_config.conversation_log.to_dict()
             )
 
         delta = MetaDelta(
@@ -1544,8 +2375,8 @@ class AnthropicAgent(Agent):
             "cumulative_usage": result.cumulative_usage.to_dict() if result.cumulative_usage else None,
         }
 
-        payload["conversation_history"] = _strip_binary_data(
-            [m.to_dict() for m in result.conversation_history]
+        payload["conversation_log"] = _strip_binary_data(
+            result.conversation_log.to_dict()
         )
 
         delta = MetaDelta(

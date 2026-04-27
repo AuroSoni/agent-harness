@@ -1,53 +1,155 @@
-"""
-SubAgentTool — Single dispatcher tool for spawning subagents.
-
-This module provides a ConfigurableToolBase-based tool that registers multiple
-pre-configured AnthropicAgent instances and exposes a single ``spawn_subagent``
-tool. Claude calls it with ``agent_name``, ``task``, and an optional
-``resume_agent_uuid`` to delegate work to a specialized child agent.
-
-The subagent runs autonomously, streams to the parent's SSE queue (tagged with
-its own ``agent_uuid`` for frontend demultiplexing), and returns its final
-answer as the tool result.
-"""
+"""Dispatch work to registered subagents using typed specs and logs."""
 from __future__ import annotations
 
 import asyncio
 import copy
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Optional, TYPE_CHECKING
 
-from ..tools.base import ConfigurableToolBase
+from agent_base.core.conversation_log import ConversationLog, ToolLogProjection
+from agent_base.core.types import ContentBlock, TextContent
+from agent_base.tools import ConfigurableToolBase
+from agent_base.tools.tool_types import ToolResultEnvelope
 
 if TYPE_CHECKING:
-    from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
     from agent_base.core.result import AgentResult
+    from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
     from agent_base.streaming.base import StreamFormatter
+    from agent_base.storage.base import (
+        AgentConfigAdapter,
+        AgentRunAdapter,
+        ConversationAdapter,
+    )
+    from agent_base.media_backend.media_types import MediaBackend
+    from agent_base.memory.base import MemoryStore
+    from agent_base.sandbox.sandbox_types import Sandbox
+
+
+@dataclass
+class SubAgentSpec:
+    """Static specification for a subagent."""
+
+    name: str | None = None
+    system_prompt: str | None = None
+    description: str | None = None
+    model: str | None = None
+    config: Any = None
+    compaction_config: Any = None
+    externalization_config: Any = None
+    max_steps: int | None = None
+    tools: list[Callable[..., Any]] | None = None
+    frontend_tools: list[Callable[..., Any]] | None = None
+    subagents: dict[str, "SubAgentSpec"] | None = None
+    max_retries: int = 5
+    base_delay: float = 1.0
+    max_parallel_tool_calls: int = 5
+    max_tool_result_tokens: int = 25_000
+    memory_store: "MemoryStore | None" = None
+
+    @classmethod
+    def from_template_agent(
+        cls,
+        name: str,
+        agent: "AnthropicAgent",
+    ) -> "SubAgentSpec":
+        nested_specs: dict[str, SubAgentSpec] | None = None
+        subagent_tool = getattr(agent, "_sub_agent_tool", None)
+        if subagent_tool is not None and getattr(subagent_tool, "specs", None):
+            nested_specs = {
+                sub_name: copy.deepcopy(spec)
+                for sub_name, spec in subagent_tool.specs.items()
+            }
+
+        compaction_config = getattr(agent, "_compaction_config", None)
+        externalization_config = getattr(agent, "_externalization_config", None)
+
+        return cls(
+            name=name,
+            system_prompt=agent.system_prompt,
+            description=agent.description,
+            model=agent.model,
+            config=copy.copy(agent.config),
+            compaction_config=copy.copy(compaction_config),
+            externalization_config=copy.copy(externalization_config),
+            max_steps=(
+                int(agent.max_steps)
+                if getattr(agent, "max_steps", None) not in (None, float("inf"))
+                else None
+            ),
+            tools=list(agent._constructor_tools or []),
+            frontend_tools=None,
+            subagents=nested_specs,
+            max_retries=agent.max_retries,
+            base_delay=agent.base_delay,
+            max_parallel_tool_calls=agent.max_parallel_tool_calls,
+            max_tool_result_tokens=agent.max_tool_result_tokens,
+            memory_store=agent.memory_store,
+        )
+
+
+@dataclass
+class SubAgentParentContext:
+    parent_agent_uuid: str | None = None
+    queue: asyncio.Queue | None = None
+    formatter: str | "StreamFormatter" | None = None
+    config_adapter: "AgentConfigAdapter | None" = None
+    conversation_adapter: "ConversationAdapter | None" = None
+    run_adapter: "AgentRunAdapter | None" = None
+    media_backend: "MediaBackend | None" = None
+    sandbox: "Sandbox | None" = None
+    sandbox_factory: Callable[[str], "Sandbox"] | None = None
+    memory_store: "MemoryStore | None" = None
+    parent_cancellation_event: asyncio.Event | None = None
+    parent_agent: "AnthropicAgent | None" = None
+
+
+@dataclass
+class SubAgentEnvelope(ToolResultEnvelope):
+    """Rich result from a subagent execution."""
+
+    agent_name: str = ""
+    child_agent_uuid: str = ""
+    final_answer: str = ""
+    stop_reason: str = ""
+    total_steps: int = 0
+    child_model: str = ""
+    child_provider: str = ""
+    nested_conversation: ConversationLog = field(default_factory=ConversationLog)
+
+    def for_context_window(self) -> list[ContentBlock]:
+        text = self.final_answer or "(No final answer extracted)"
+        return [TextContent(text=text)]
+
+    def for_conversation_log(self) -> ToolLogProjection:
+        summary = self.final_answer[:200] if self.final_answer else f"Subagent '{self.agent_name}' completed"
+        return ToolLogProjection(
+            tool_name=self.tool_name,
+            tool_id=self.tool_id,
+            is_error=self.is_error,
+            summary=summary,
+            content_blocks=self.for_context_window(),
+            duration_ms=self.duration_ms,
+            details={
+                "agent_name": self.agent_name,
+                "child_agent_uuid": self.child_agent_uuid,
+                "final_answer": self.final_answer,
+                "stop_reason": self.stop_reason,
+                "total_steps": self.total_steps,
+                "child_model": self.child_model,
+                "child_provider": self.child_provider,
+            },
+            nested_conversation=self.nested_conversation,
+        )
+
+
+ChildAgentBuilder = Callable[
+    [SubAgentSpec, str | None, SubAgentParentContext],
+    "AnthropicAgent",
+]
 
 
 class SubAgentTool(ConfigurableToolBase):
-    """Single dispatcher tool that delegates tasks to registered subagents.
-
-    Each registered subagent is a pre-configured ``AnthropicAgent`` instance
-    with a ``description`` attribute. The tool's docstring is dynamically
-    generated to list all available subagents and their descriptions.
-
-    Example::
-
-        researcher = AnthropicAgent(
-            system_prompt="You are a research specialist.",
-            description="Researches topics and provides comprehensive analysis",
-            model="claude-sonnet-4-5",
-        )
-        coder = AnthropicAgent(
-            system_prompt="You are a coding specialist.",
-            description="Writes and modifies code based on specifications",
-            model="claude-sonnet-4-5",
-        )
-
-        tool = SubAgentTool(agents={"researcher": researcher, "coder": coder})
-        spawn_fn = tool.get_tool()
-        # Register spawn_fn with the parent agent's tool registry
-    """
+    """Single dispatcher tool that delegates tasks to registered subagents."""
 
     DOCSTRING_TEMPLATE = """Delegate a task to a specialized subagent.
 
@@ -58,218 +160,193 @@ The subagent runs autonomously and returns its final answer.
 Pass resume_agent_uuid to continue a previous subagent session.
 
 Args:
-    agent_name: Name of the subagent to invoke. Must be one of the available names above.
+    agent_name: Name of the subagent to invoke.
     task: The task or question to delegate.
     resume_agent_uuid: Optional UUID from a previous subagent run to resume it.
 """
 
     def __init__(
         self,
-        agents: Dict[str, "AnthropicAgent"],
-        docstring_template: Optional[str] = None,
-        schema_override: Optional[dict] = None,
+        agents: dict[str, SubAgentSpec | "AnthropicAgent"],
+        child_agent_builder: ChildAgentBuilder | None = None,
+        docstring_template: str | None = None,
+        schema_override: dict | None = None,
     ):
-        """Initialize the SubAgentTool.
-
-        Args:
-            agents: Dict mapping agent names to pre-configured AnthropicAgent
-                instances. Each agent **must** have a non-empty ``description``
-                attribute.
-            docstring_template: Optional custom docstring template.
-            schema_override: Optional complete Anthropic tool schema dict.
-
-        Raises:
-            ValueError: If any agent lacks a ``description`` attribute.
-        """
         super().__init__(
             docstring_template=docstring_template,
             schema_override=schema_override,
         )
-
-        # Validate that every agent has a description
-        for name, agent in agents.items():
-            desc = getattr(agent, "description", None)
-            if not desc:
+        self.specs = {
+            name: self._coerce_spec(name, agent_or_spec)
+            for name, agent_or_spec in agents.items()
+        }
+        for name, spec in self.specs.items():
+            if not spec.description:
                 raise ValueError(
-                    f"Subagent '{name}' must have a non-empty `description` attribute. "
-                    f"Set it via AnthropicAgent(description='...')."
+                    f"Subagent '{name}' must have a non-empty `description` attribute."
                 )
+        self._child_agent_builder = child_agent_builder or self._default_child_agent_builder
+        self._parent_context = SubAgentParentContext()
 
-        self.agents = agents
+    @staticmethod
+    def _coerce_spec(
+        name: str,
+        agent_or_spec: SubAgentSpec | "AnthropicAgent",
+    ) -> SubAgentSpec:
+        if isinstance(agent_or_spec, SubAgentSpec):
+            return copy.deepcopy(agent_or_spec)
+        return SubAgentSpec.from_template_agent(name, agent_or_spec)
 
-        # Runtime context injected by the parent agent at each run()
-        self._current_queue: Optional[asyncio.Queue] = None
-        self._current_formatter: Optional[str | StreamFormatter] = None
-
-        # Parent agent UUID for hierarchy tracking (set via set_agent_uuid)
-        self._parent_agent_uuid: Optional[str] = None
-
-    # ------------------------------------------------------------------
-    # ConfigurableToolBase interface
-    # ------------------------------------------------------------------
-
-    def _get_template_context(self) -> Dict[str, Any]:
-        """Return placeholder values for the docstring template."""
+    def _get_template_context(self) -> dict[str, Any]:
         lines = []
-        for name, agent in self.agents.items():
-            desc = getattr(agent, "description", "") or "(no description)"
-            model = getattr(agent, "model", "unknown")
-            lines.append(f"- **{name}** ({model}): {desc}")
+        for name, spec in self.specs.items():
+            model = spec.model or "unknown"
+            description = spec.description or "(no description)"
+            lines.append(f"- **{name}** ({model}): {description}")
         return {"agent_definitions": "\n".join(lines)}
-
-    # ------------------------------------------------------------------
-    # Runtime context injection (called by parent agent)
-    # ------------------------------------------------------------------
 
     def set_run_context(
         self,
-        queue: Optional[asyncio.Queue],
-        formatter: Optional[str | StreamFormatter],
+        queue: asyncio.Queue | None,
+        formatter: str | "StreamFormatter" | None,
     ) -> None:
-        """Inject or clear the parent's queue and formatter.
-
-        Called by ``AnthropicAgent._inject_subagent_context()`` at the start
-        of each ``_resume_loop()`` and cleared in its finally block.
-
-        Args:
-            queue: The async queue for SSE streaming (or None to clear).
-            formatter: The formatter type/instance (or None to clear).
-        """
-        self._current_queue = queue
-        self._current_formatter = formatter
+        self._parent_context.queue = queue
+        self._parent_context.formatter = formatter
 
     def set_agent_uuid(self, parent_uuid: str) -> None:
-        """Receive the parent agent's UUID for hierarchy tracking.
+        self._parent_context.parent_agent_uuid = parent_uuid
 
-        Called via the existing ``__tool_instance__`` / ``set_agent_uuid``
-        duck-typed protocol in ``AnthropicAgent._inject_agent_uuid_to_tools``.
+    def set_parent_context(self, context: SubAgentParentContext) -> None:
+        self._parent_context = context
 
-        Args:
-            parent_uuid: The parent agent's UUID string.
+    def set_cancellation_event(self, event: asyncio.Event | None) -> None:
+        """Share the parent's cancellation event with spawned children.
+
+        Called from the owning agent's ``_inject_stream_context_to_tools``
+        each time the resume loop (re)starts, so the event reference
+        tracks the parent's per-run cancellation primitive.
         """
-        self._parent_agent_uuid = parent_uuid
+        self._parent_context.parent_cancellation_event = event
 
-    # ------------------------------------------------------------------
-    # Child agent factory
-    # ------------------------------------------------------------------
-
-    def _create_child_agent(
+    def _default_child_agent_builder(
         self,
-        template: "AnthropicAgent",
-        resume_uuid: Optional[str] = None,
+        spec: SubAgentSpec,
+        resume_uuid: str | None,
+        parent_context: SubAgentParentContext,
     ) -> "AnthropicAgent":
-        """Create a new child agent instance from a template.
-
-        If ``resume_uuid`` is provided, the child is created with that UUID
-        so it loads persisted state from storage adapters.
-
-        Args:
-            template: The template agent to clone config from.
-            resume_uuid: Optional UUID to resume a previous session.
-
-        Returns:
-            A new AnthropicAgent instance configured as a child.
-        """
         from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
 
         child = AnthropicAgent(
-            system_prompt=template.system_prompt,
-            description=template.description,
-            model=template.model,
-            config=copy.copy(template.config),
-            max_steps=int(template.max_steps) if template.max_steps != float('inf') else None,
-            tools=template._constructor_tools,
-            subagents=(
-                template._sub_agent_tool.agents
-                if template._sub_agent_tool
-                else None
-            ),
-            max_retries=template.max_retries,
-            base_delay=template.base_delay,
-            max_parallel_tool_calls=template.max_parallel_tool_calls,
-            max_tool_result_tokens=template.max_tool_result_tokens,
-            memory_store=template.memory_store,
-            sandbox=self._sandbox,  # share parent's sandbox
-            sandbox_factory=getattr(template, "_sandbox_factory", None),
-            agent_uuid=resume_uuid,  # None → new session, str → resume
-            config_adapter=template.config_adapter,
-            conversation_adapter=template.conversation_adapter,
-            run_adapter=template.run_adapter,
-            media_backend=template.media_backend,
+            system_prompt=spec.system_prompt,
+            description=spec.description,
+            model=spec.model,
+            config=copy.copy(spec.config),
+            compaction_config=copy.copy(spec.compaction_config),
+            externalization_config=copy.copy(spec.externalization_config),
+            max_steps=spec.max_steps,
+            tools=list(spec.tools or []),
+            frontend_tools=list(spec.frontend_tools or []),
+            subagents=copy.deepcopy(spec.subagents),
+            max_retries=spec.max_retries,
+            base_delay=spec.base_delay,
+            max_parallel_tool_calls=spec.max_parallel_tool_calls,
+            max_tool_result_tokens=spec.max_tool_result_tokens,
+            memory_store=spec.memory_store or parent_context.memory_store,
+            sandbox=parent_context.sandbox,
+            sandbox_factory=parent_context.sandbox_factory,
+            agent_uuid=resume_uuid,
+            config_adapter=parent_context.config_adapter,
+            conversation_adapter=parent_context.conversation_adapter,
+            run_adapter=parent_context.run_adapter,
+            media_backend=parent_context.media_backend,
         )
-        # Establish hierarchy for SSE demultiplexing
-        child._parent_agent_uuid = self._parent_agent_uuid or "unknown"
+        child._parent_agent_uuid = parent_context.parent_agent_uuid or "unknown"
         return child
 
-    # ------------------------------------------------------------------
-    # Result formatting
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _format_result(agent_name: str, agent_uuid: str, result: "AgentResult") -> str:
-        """Format an AgentResult into a human-readable tool result string.
-
-        Args:
-            agent_name: The name of the subagent that produced the result.
-            agent_uuid: The UUID of the subagent session.
-            result: The AgentResult returned by the child agent's run().
-
-        Returns:
-            Formatted string summarising the subagent's output.
-        """
-        parts = [f"[Subagent '{agent_name}' completed]"]
-        parts.append(f"Agent UUID: {agent_uuid}")
-        if result.final_answer:
-            parts.append(f"\n{result.final_answer}")
-        else:
-            parts.append("\n(No final answer extracted)")
-        parts.append(
-            f"\n[stop_reason={result.stop_reason}, steps={result.total_steps}]"
-        )
-        return "\n".join(parts)
-
-    # ------------------------------------------------------------------
-    # Tool factory
-    # ------------------------------------------------------------------
-
-    def get_tool(self) -> Callable:
-        """Return an async ``spawn_subagent`` function decorated with the tool schema.
-
-        The returned function is suitable for registration with
-        ``ToolRegistry.register_tools()``.
-
-        Returns:
-            An async callable with ``__tool_instance__`` set for UUID injection.
-        """
+    def get_tool(self) -> Callable[..., Awaitable[ToolResultEnvelope]]:
         instance = self
 
         async def spawn_subagent(
             agent_name: str,
             task: str,
             resume_agent_uuid: str | None = None,
-        ) -> str:
-            """Placeholder docstring — replaced by template."""
-            if agent_name not in instance.agents:
-                available = ", ".join(instance.agents.keys())
-                return f"Error: Unknown agent '{agent_name}'. Available: {available}"
+        ) -> ToolResultEnvelope:
+            if agent_name not in instance.specs:
+                available = ", ".join(instance.specs.keys())
+                return ToolResultEnvelope.error(
+                    "spawn_subagent",
+                    "",
+                    f"Unknown agent '{agent_name}'. Available: {available}",
+                )
 
-            template_agent = instance.agents[agent_name]
+            spec = instance.specs[agent_name]
+            child = instance._child_agent_builder(
+                spec,
+                resume_agent_uuid,
+                instance._parent_context,
+            )
 
-            # Build child agent — either fresh or resumed
-            child = instance._create_child_agent(template_agent, resume_agent_uuid)
+            # Inline-await relay for fresh children: their frontend pauses
+            # park on an asyncio.Future instead of returning stop_reason="relay"
+            # upward as a completed SubAgentEnvelope (which would leave them
+            # stranded). Rehydrated (resume_agent_uuid) children keep the
+            # default persist-return path so existing cold-resume flows work.
+            if resume_agent_uuid is None:
+                child._relay_mode = "inline_await"
+
+            # Propagate owner snapshot (organization_id, member_id,
+            # root_agent_uuid) through ``agent_config.extras["owner"]`` so
+            # the relay registry has auth context at registration time.
+            # The host (e.g. nova_backend) populates it on the root agent;
+            # we copy it down the tree here. We defer the copy until after
+            # ``child.initialize()`` runs, because fresh ``child.agent_config``
+            # may not exist yet. For resume, ``agent_config`` already exists
+            # but we still wait — ``run_stream`` calls ``initialize()`` which
+            # will respect the parent's extras via the pre-run hook below.
+            parent_agent = instance._parent_context.parent_agent
+            parent_owner = None
+            if parent_agent is not None and parent_agent.agent_config is not None:
+                parent_owner = parent_agent.agent_config.extras.get("owner")
+
+            # Share cumulative usage/cost upward so credits deducted from
+            # the root ``AgentResult.cost`` reflect the whole subtree.
+            if parent_agent is not None:
+                child._parent_usage_forward = parent_agent
+
+            async def _propagate_owner() -> None:
+                if not child._initialized:
+                    await child.initialize()
+                if parent_owner is not None and child.agent_config is not None:
+                    child.agent_config.extras.setdefault("owner", parent_owner)
 
             try:
-                if instance._current_queue is not None:
+                await _propagate_owner()
+                if instance._parent_context.queue is not None:
                     result = await child.run_stream(
                         prompt=task,
-                        queue=instance._current_queue,
-                        stream_formatter=instance._current_formatter or "json",
+                        queue=instance._parent_context.queue,
+                        stream_formatter=instance._parent_context.formatter or "json",
+                        cancellation_event=instance._parent_context.parent_cancellation_event,
                     )
                 else:
                     result = await child.run(prompt=task)
-                return instance._format_result(agent_name, child.agent_uuid, result)
-            except Exception as e:
-                return f"Subagent '{agent_name}' error: {type(e).__name__}: {e}"
+            except Exception as exc:
+                return ToolResultEnvelope.error(
+                    "spawn_subagent",
+                    "",
+                    f"Subagent '{agent_name}' error: {type(exc).__name__}: {exc}",
+                )
+
+            return SubAgentEnvelope(
+                agent_name=agent_name,
+                child_agent_uuid=child.agent_uuid or "",
+                final_answer=result.final_answer,
+                stop_reason=result.stop_reason,
+                total_steps=result.total_steps,
+                child_model=result.model,
+                child_provider=result.provider,
+                nested_conversation=result.conversation_log,
+            )
 
         spawn_subagent.__tool_instance__ = instance
         return self._apply_schema(spawn_subagent)

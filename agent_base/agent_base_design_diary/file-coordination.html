@@ -493,6 +493,7 @@
     <a href="storage.html" class="nav-tab">Storage</a>
     <a href="streaming.html" class="nav-tab">Streaming</a>
     <a href="providers.html" class="nav-tab">Providers</a>
+    <a href="async-communication.html" class="nav-tab">Async Comms</a>
     <a href="planned-systems.html" class="nav-tab">Planned</a>
   </div>
   <a href="storage.html" class="nav-arrow">&rarr;</a>
@@ -790,7 +791,7 @@
   <p>The fix: give each system its half of the coordination.</p>
 
   <ul style="margin: 0 0 16px 24px;">
-    <li><strong>Sandbox</strong> gets two abstract methods: <code>import_file()</code> and <code>get_exported_files()</code>. These are <em>semantic</em> &mdash; they say what to do, not how to lay out zones.</li>
+    <li><strong>Sandbox</strong> gets a small cluster of semantic abstract methods: <code>import_file()</code> on the ingress side, and <code>list_exported_files()</code> / <code>get_exported_file()</code> / <code>get_exported_file_metadata()</code> on the egress side. They say what to do, not how to lay out zones.</li>
     <li><strong>MediaBackend</strong> gets three <em>concrete</em> methods: <code>attach_sandbox()</code>, <code>materialize()</code>, and <code>flush_exports()</code>. These compose abstract storage operations with sandbox coordination.</li>
     <li><strong>The bridge class, the manifest, the lifecycle enum, the file record</strong> &mdash; all deleted. Zero new classes.</li>
   </ul>
@@ -813,26 +814,38 @@
   <div class="cw">
     <div class="ch">
       <div class="dt"><span></span><span></span><span></span></div>
-      <span class="fn">sandbox/types.py</span>
+      <span class="fn">sandbox/sandbox_types.py</span>
       <span class="tg tg-abc">ABC</span>
     </div>
 <pre>
 <span class="c"># Added to the Sandbox ABC</span>
 
 <span class="k">@abstractmethod</span>
-<span class="k">async def</span> <span class="f">import_file</span>(<span class="p">self</span>, file_id: <span class="t">str</span>, filename: <span class="t">str</span>, content: <span class="t">bytes</span>) -> <span class="t">str</span>:
-    <span class="s">"""Accept a file for tool use. Idempotent &mdash; skips write if already imported.
-    Returns sandbox-relative path. Callers must not assume path structure."""</span>
+<span class="k">async def</span> <span class="f">import_file</span>(<span class="p">self</span>, filename: <span class="t">str</span>,
+                      data: <span class="t">AsyncIterator</span>[<span class="t">bytes</span>]) -> <span class="t">str</span>:
+    <span class="s">"""Accept a file for tool use. Streams bytes in — no full buffering.
+    Idempotent per (sandbox, filename). Returns the sandbox-relative path.
+    Callers must not assume path structure."""</span>
     ...
 
+<span class="c"># Egress is split into three methods so callers can stream content</span>
+<span class="c"># independently of listing / metadata.</span>
+
 <span class="k">@abstractmethod</span>
-<span class="k">async def</span> <span class="f">get_exported_files</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">tuple</span>[<span class="t">str</span>, <span class="t">bytes</span>]]:
-    <span class="s">"""Collect files tools produced for export.
-    Returns (relative_filename, content) pairs sorted by name."""</span>
-    ...</pre>
+<span class="k">async def</span> <span class="f">list_exported_files</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">str</span>]: ...
+
+<span class="k">@abstractmethod</span>
+<span class="k">async def</span> <span class="f">get_exported_file</span>(<span class="p">self</span>, path: <span class="t">str</span>)
+    -> <span class="t">AsyncIterator</span>[<span class="t">bytes</span>]: ...
+
+<span class="k">@abstractmethod</span>
+<span class="k">async def</span> <span class="f">get_exported_file_metadata</span>(<span class="p">self</span>)
+    -> <span class="t">list</span>[<span class="t">ExportedFileMetadata</span>]: ...</pre>
   </div>
 
-  <p>Idempotency is handled by the filesystem: <code>import_file()</code> checks if the path exists before writing. No manifest needed. No lifecycle enum. The filesystem <em>is</em> the state tracker.</p>
+  <p>Two design choices worth calling out. First, <strong>import and export speak streams, not buffers</strong> &mdash; an <code>AsyncIterator[bytes]</code> on the way in, another one on the way out &mdash; so a 100&nbsp;MB image never materialises as a single <code>bytes</code> blob in memory. Second, <strong>egress is deliberately split into three calls</strong>: a cheap name list, a streamed content fetch, and a metadata bundle (size, BLAKE3 hash, extension). This lets <code>flush_exports()</code> decide which files to persist before committing to transferring their bytes.</p>
+
+  <p>Idempotency is still handled by the filesystem: <code>import_file()</code> checks if the path exists before writing. No manifest needed. No lifecycle enum. The filesystem <em>is</em> the state tracker.</p>
 
   <div class="cw">
     <div class="ch">
@@ -841,30 +854,37 @@
       <span class="tg tg-impl">Implementation</span>
     </div>
 <pre>
-<span class="k">async def</span> <span class="f">import_file</span>(<span class="p">self</span>, file_id: <span class="t">str</span>, filename: <span class="t">str</span>, content: <span class="t">bytes</span>) -> <span class="t">str</span>:
-    rel = <span class="k">f</span><span class="s">".imported/{file_id}/{filename}"</span>
-    target = self._resolve(rel)     <span class="c"># path containment check</span>
+<span class="k">async def</span> <span class="f">import_file</span>(<span class="p">self</span>, filename: <span class="t">str</span>,
+                      data: <span class="t">AsyncIterator</span>[<span class="t">bytes</span>]) -> <span class="t">str</span>:
+    rel = <span class="k">f</span><span class="s">".imported/{filename}"</span>
+    target = self._resolve(rel)       <span class="c"># path containment check</span>
 
-    <span class="k">if</span> target.exists():              <span class="c"># idempotent &mdash; already imported</span>
+    <span class="k">if</span> target.exists():                <span class="c"># idempotent &mdash; already imported</span>
         <span class="k">return</span> rel
 
     target.parent.mkdir(parents=<span class="n">True</span>, exist_ok=<span class="n">True</span>)
-    target.write_bytes(content)
+    <span class="k">async with</span> aiofiles.<span class="f">open</span>(target, <span class="s">"wb"</span>) <span class="k">as</span> f:
+        <span class="k">async for</span> chunk <span class="k">in</span> data:
+            <span class="k">await</span> f.<span class="f">write</span>(chunk)
     <span class="k">return</span> rel
 
-<span class="k">async def</span> <span class="f">get_exported_files</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">tuple</span>[<span class="t">str</span>, <span class="t">bytes</span>]]:
-    <span class="k">return await</span> self._collect_exports()
-
-<span class="k">async def</span> <span class="f">_collect_exports</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">tuple</span>[<span class="t">str</span>, <span class="t">bytes</span>]]:
+<span class="k">async def</span> <span class="f">list_exported_files</span>(<span class="p">self</span>) -> <span class="t">list</span>[<span class="t">str</span>]:
     exports_dir = self.root / <span class="s">".exports"</span>
     <span class="k">if not</span> exports_dir.exists():
         <span class="k">return</span> []
-    results = []
-    <span class="k">for</span> path <span class="k">in</span> sorted(exports_dir.rglob(<span class="s">"*"</span>)):
-        <span class="k">if</span> path.is_file():
-            rel = <span class="t">str</span>(path.relative_to(exports_dir))
-            results.append((rel, path.read_bytes()))
-    <span class="k">return</span> results</pre>
+    <span class="k">return</span> [<span class="t">str</span>(p.relative_to(exports_dir))
+            <span class="k">for</span> p <span class="k">in</span> sorted(exports_dir.rglob(<span class="s">"*"</span>))
+            <span class="k">if</span> p.is_file()]
+
+<span class="k">async def</span> <span class="f">get_exported_file</span>(<span class="p">self</span>, path: <span class="t">str</span>)
+    -> <span class="t">AsyncIterator</span>[<span class="t">bytes</span>]:
+    <span class="c"># streams .exports/{path} back to the caller in chunks</span>
+    ...
+
+<span class="k">async def</span> <span class="f">get_exported_file_metadata</span>(<span class="p">self</span>)
+    -> <span class="t">list</span>[<span class="t">ExportedFileMetadata</span>]:
+    <span class="c"># walks .exports/, returns filename + size + BLAKE3 hash + extension</span>
+    ...</pre>
   </div>
 
   <h3>MediaBackend: Compose, Don't Bridge</h3>
@@ -889,19 +909,20 @@ _sandbox: <span class="t">Sandbox</span> | <span class="n">None</span> = <span c
 <span class="k">async def</span> <span class="f">materialize</span>(<span class="p">self</span>, media_id: <span class="t">str</span>, agent_uuid: <span class="t">str</span>) -> <span class="t">str</span>:
     <span class="s">"""Retrieve from storage, import into sandbox. Idempotent."""</span>
 <span class="hl">    metadata = <span class="k">await</span> self.get_metadata(media_id, agent_uuid)</span>
-<span class="hl">    content = <span class="k">await</span> self.retrieve(media_id, agent_uuid)</span>
+<span class="hl">    stream   = self.retrieve(media_id, agent_uuid)   <span class="c"># AsyncIterator[bytes]</span></span>
 <span class="hl">    <span class="k">return await</span> self._sandbox.import_file(</span>
-<span class="hl">        media_id, metadata.media_filename, content)</span>
+<span class="hl">        metadata.media_filename, stream)</span>
 
 <span class="k">async def</span> <span class="f">flush_exports</span>(<span class="p">self</span>, agent_uuid: <span class="t">str</span>) -> <span class="t">list</span>[<span class="t">MediaMetadata</span>]:
     <span class="s">"""Collect exported files, store each in backend."""</span>
     results = []
-<span class="hl">    <span class="k">for</span> rel_path, content <span class="k">in await</span> self._sandbox.get_exported_files():</span>
-<span class="hl">        basename = os.path.basename(rel_path)</span>
-<span class="hl">        mime = mimetypes.guess_type(basename)[<span class="n">0</span>] <span class="k">or</span> <span class="s">"application/octet-stream"</span></span>
-<span class="hl">        meta = <span class="k">await</span> self.store(content, basename, mime, agent_uuid)</span>
-<span class="hl">        <span class="k">if</span> rel_path != basename:</span>
-<span class="hl">            meta.extras[<span class="s">"export_path"</span>] = rel_path</span>
+<span class="hl">    <span class="k">for</span> info <span class="k">in await</span> self._sandbox.get_exported_file_metadata():</span>
+<span class="hl">        stream = self._sandbox.get_exported_file(info.path)   <span class="c"># streamed</span></span>
+<span class="hl">        mime   = mimetypes.guess_type(info.filename)[<span class="n">0</span>] \</span>
+<span class="hl">                 <span class="k">or</span> <span class="s">"application/octet-stream"</span></span>
+<span class="hl">        meta = <span class="k">await</span> self.store(stream, info.filename, mime, agent_uuid)</span>
+<span class="hl">        <span class="k">if</span> info.path != info.filename:</span>
+<span class="hl">            meta.extras[<span class="s">"export_path"</span>] = info.path</span>
         results.append(meta)
     <span class="k">return</span> results</pre>
   </div>
@@ -913,27 +934,30 @@ _sandbox: <span class="t">Sandbox</span> | <span class="n">None</span> = <span c
 
   <h3>Zone Encapsulation</h3>
 
-  <p>The critical invariant: <strong>MediaBackend never knows about zone paths</strong>. It calls <code>sandbox.import_file(id, name, bytes)</code> and gets back a path. It calls <code>sandbox.get_exported_files()</code> and gets back <code>(filename, bytes)</code> pairs. A <code>DockerSandbox</code> could organize files completely differently from <code>LocalSandbox</code> &mdash; the media backend wouldn't notice.</p>
+  <p>The critical invariant: <strong>MediaBackend never knows about zone paths</strong>. It calls <code>sandbox.import_file(name, stream)</code> and gets back an opaque sandbox-relative path. It asks for <code>list_exported_files()</code> / <code>get_exported_file_metadata()</code> to decide what to persist, and streams each file back through <code>get_exported_file()</code>. A <code>DockerSandbox</code> could organize files completely differently from <code>LocalSandbox</code> &mdash; the media backend wouldn't notice.</p>
 
   <div class="dw">
 <pre style="background: transparent; color: var(--ink); font-size: 13px; line-height: 1.6;">
     ┌─────────────────────┐         ┌─────────────────────────────────┐
     │   MediaBackend      │         │   Sandbox                       │
     │                     │         │                                 │
-    │  store()            │         │   .imported/{id}/{filename}     │
+    │  store()            │         │   .imported/{filename}          │
     │  retrieve()    ─────┼── attach_sandbox() ──►   workspace/      │
     │  get_metadata()     │         │   .exports/...                  │
     │                     │         │                                 │
-    │  materialize() ─────┼── import_file(id, name, bytes) ──►       │
-    │  flush_exports() ◄──┼── get_exported_files() ────────          │
+    │  materialize() ─────┼── import_file(name, stream) ──►          │
     │                     │         │                                 │
+    │  flush_exports()  ──┼── list_exported_files() ──────►          │
+    │                  ◄──┼── get_exported_file_metadata() ─         │
+    │                  ◄──┼── get_exported_file(path) ────           │
     └─────────────────────┘         └─────────────────────────────────┘
 
-    MediaBackend sees:               Sandbox owns:
-      import_file(id, name, bytes)     Zone layout (.imported/, .exports/)
-      get_exported_files()             Path containment
-      → str                           Idempotency (filesystem check)
-      → list[(str, bytes)]            Internal directory structure</pre>
+    MediaBackend sees:                 Sandbox owns:
+      import_file(name, stream)          Zone layout (.imported/, .exports/)
+      list_exported_files()              Path containment
+      get_exported_file_metadata()       Idempotency (filesystem check)
+      get_exported_file(path)            Internal directory structure
+      → streams, never buffers           BLAKE3 hashing of exports</pre>
     <div class="dc">Zone encapsulation: MediaBackend calls semantic methods, Sandbox owns the layout</div>
   </div>
 

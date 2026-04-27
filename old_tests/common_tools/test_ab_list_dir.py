@@ -1,8 +1,8 @@
-"""Tests for agent_base.common_tools.list_dir."""
+"""Smoke tests for the agent_base list_dir_tree tool."""
 
 import pytest
 
-from agent_base.common_tools.list_dir import ListDirTool
+from agent_base.common_tools import ListDirTreeTool
 from agent_base.sandbox.local import LocalSandbox
 
 
@@ -12,75 +12,45 @@ async def sandbox(tmp_path):
     async with sb:
         await sb.write_file("workspace/README.md", "# README\n")
         await sb.write_file("workspace/docs/guide.md", "# Guide\n")
-        await sb.write_file("workspace/docs/api.md", "# API\n")
         await sb.write_file("workspace/src/main.py", "print('hi')\n")
-        await sb.write_file("workspace/src/utils.md", "# Utils\n")
+        await sb.write_file("workspace/src/utils/helpers.py", "pass\n")
         yield sb
 
 
 @pytest.fixture()
 def tool(sandbox):
-    t = ListDirTool(max_depth=3, allowed_extensions={".md"})
-    t.set_sandbox(sandbox)
-    return t
-
-
-# ─── Registration ──────────────────────────────────────────────────
+    instance = ListDirTreeTool(max_depth=3)
+    instance.set_sandbox(sandbox)
+    return instance
 
 
 def test_tool_has_schema(tool) -> None:
     func = tool.get_tool()
     assert hasattr(func, "__tool_schema__")
-    assert func.__tool_schema__.name == "list_dir"
-
-
-# ─── Happy Path ────────────────────────────────────────────────────
+    assert func.__tool_schema__.name == "list_dir_tree"
 
 
 @pytest.mark.asyncio
-async def test_list_dir_basic(sandbox, tool) -> None:
+async def test_list_dir_tree_basic(tool) -> None:
     func = tool.get_tool()
-    result = await func(target_directory="workspace")
-    assert "workspace/" in result
+    result = await func(target_directory=".")
     assert "README.md" in result
-
-
-@pytest.mark.asyncio
-async def test_list_dir_shows_subdirectories(sandbox, tool) -> None:
-    func = tool.get_tool()
-    result = await func(target_directory="workspace")
     assert "docs/" in result
-
-
-@pytest.mark.asyncio
-async def test_list_dir_filters_by_extension(sandbox, tool) -> None:
-    """Should only show .md files (not .py)."""
-    func = tool.get_tool()
-    result = await func(target_directory="workspace")
-    assert "main.py" not in result
-
-
-@pytest.mark.asyncio
-async def test_list_dir_shows_allowed_in_subdirs(sandbox, tool) -> None:
-    func = tool.get_tool()
-    result = await func(target_directory="workspace")
-    # src/ should be shown because it contains utils.md
     assert "src/" in result
-    assert "utils.md" in result
-
-
-# ─── Error Cases ──────────────────────────────────────────────────
+    assert "main.py" in result
 
 
 @pytest.mark.asyncio
-async def test_list_dir_not_found(sandbox, tool) -> None:
+async def test_list_dir_tree_specific_subdir(tool) -> None:
     func = tool.get_tool()
-    result = await func(target_directory="nonexistent")
-    assert "does not exist" in result
+    result = await func(target_directory="src")
+    assert "src/" in result
+    assert "main.py" in result
+    assert "utils/" in result
 
 
 @pytest.mark.asyncio
-async def test_list_dir_file_not_dir(sandbox, tool) -> None:
+async def test_list_dir_tree_not_found(tool) -> None:
     func = tool.get_tool()
-    result = await func(target_directory="workspace/README.md")
-    assert "not a directory" in result.lower()
+    result = await func(target_directory="missing")
+    assert "does not exist" in result.lower()

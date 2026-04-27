@@ -61,7 +61,99 @@ logger = get_logger(__name__)
 class AnthropicMessageFormatter(MessageFormatter):
     """Translates canonical Messages to/from Anthropic API wire format."""
 
+    _WEB_FETCH_RESULT_KEYS = {"type", "url", "retrieved_at", "content"}
+    _WEB_FETCH_ERROR_KEYS = {"type", "error_code"}
+    _WEB_FETCH_ERROR_CODE = "invalid_tool_input"
+    _WEB_FETCH_DOCUMENT_KEYS = {
+        "type",
+        "source",
+        "title",
+        "context",
+        "citations",
+        "cache_control",
+    }
+
     # -- Source resolution helpers ------------------------------------------
+
+    @staticmethod
+    def _strip_none_values(obj: Any) -> Any:
+        """Recursively drop ``None`` values from provider payloads."""
+        if isinstance(obj, dict):
+            return {
+                key: AnthropicMessageFormatter._strip_none_values(value)
+                for key, value in obj.items()
+                if value is not None
+            }
+        if isinstance(obj, list):
+            return [
+                AnthropicMessageFormatter._strip_none_values(item)
+                for item in obj
+                if item is not None
+            ]
+        if hasattr(obj, "model_dump"):
+            return AnthropicMessageFormatter._strip_none_values(
+                obj.model_dump(exclude_none=True)
+            )
+        return obj
+
+    @classmethod
+    def _normalize_web_fetch_tool_result_content(cls, content: Any) -> Any:
+        """Coerce ``web_fetch_tool_result`` content into Anthropic's request shape."""
+        normalized = cls._strip_none_values(content)
+
+        if isinstance(normalized, list):
+            if len(normalized) == 1:
+                normalized = normalized[0]
+            else:
+                return cls._web_fetch_tool_result_error()
+
+        if not isinstance(normalized, dict):
+            return cls._web_fetch_tool_result_error()
+
+        block_type = normalized.get("type")
+        if block_type == "web_fetch_tool_result_error":
+            error_block = {
+                key: value
+                for key, value in normalized.items()
+                if key in cls._WEB_FETCH_ERROR_KEYS
+            }
+            if "error_code" not in error_block:
+                return cls._web_fetch_tool_result_error()
+            return error_block
+
+        if block_type == "web_fetch_result":
+            result = {
+                key: value
+                for key, value in normalized.items()
+                if key in cls._WEB_FETCH_RESULT_KEYS
+            }
+            document = result.get("content")
+            if isinstance(document, dict):
+                result["content"] = {
+                    key: value
+                    for key, value in document.items()
+                    if key in cls._WEB_FETCH_DOCUMENT_KEYS
+                }
+            else:
+                return cls._web_fetch_tool_result_error()
+
+            if (
+                not result.get("url")
+                or result["content"].get("type") != "document"
+                or not isinstance(result["content"].get("source"), dict)
+            ):
+                return cls._web_fetch_tool_result_error()
+            return result
+
+        return cls._web_fetch_tool_result_error()
+
+    @classmethod
+    def _web_fetch_tool_result_error(cls) -> dict[str, str]:
+        """Return a valid fallback error block for malformed replay payloads."""
+        return {
+            "type": "web_fetch_tool_result_error",
+            "error_code": cls._WEB_FETCH_ERROR_CODE,
+        }
 
     @staticmethod
     def _resolve_image_source(block: ImageContent) -> dict[str, Any]:
@@ -258,10 +350,15 @@ class AnthropicMessageFormatter(MessageFormatter):
 
             # -- Server tool results (assistant-side, NOT "tool_result") ----
             case ServerToolResultContent():
+                content = block.tool_result
+                if block.tool_name == "web_fetch_tool_result":
+                    content = self._normalize_web_fetch_tool_result_content(
+                        block.tool_result
+                    )
                 d: dict[str, Any] = {
                     "type": block.tool_name,
                     "tool_use_id": block.tool_id,
-                    "content": block.tool_result,
+                    "content": content,
                 }
                 if block.kwargs.get("caller"):
                     d["caller"] = block.kwargs["caller"]

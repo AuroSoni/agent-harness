@@ -482,19 +482,21 @@
     <a href="storage.html" class="nav-tab">Storage</a>
     <a href="streaming.html" class="nav-tab">Streaming</a>
     <a href="providers.html" class="nav-tab active">Providers</a>
+    <a href="async-communication.html" class="nav-tab">Async Comms</a>
     <a href="planned-systems.html" class="nav-tab">Planned</a>
   </div>
-  <a href="planned-systems.html" class="nav-arrow">&rarr;</a>
+  <a href="async-communication.html" class="nav-arrow">&rarr;</a>
 </nav>
 
 <!-- HERO -->
 <div class="hero">
   <span class="icon">&#x1F50C;</span>
   <h1>The <em>Provider Layer</em></h1>
-  <div class="sub">Developer Diary &middot; From ABC to Anthropic</div>
+  <div class="sub">Developer Diary &middot; From ABC to Anthropic &amp; LiteLLM</div>
   <p class="tagline">
-    Provider, Formatter, Retry, Relay, Pricing &mdash; the five subsystems that sit between
-    the agent loop and the raw LLM API. This is how we drew the boundary and what lives on each side.
+    Provider, Formatter, Retry, Relay, Pricing &mdash; the subsystems that sit between
+    the agent loop and the raw LLM API. Anthropic was the first concrete implementation;
+    LiteLLM is the second, proving the ABC boundary was drawn in the right place.
   </p>
   <span class="status status-impl">Implemented</span>
 </div>
@@ -511,6 +513,7 @@
     <li><a href="#ch6"><span class="num">6</span> Pricing &amp; Cost</a></li>
     <li><a href="#ch7"><span class="num">7</span> AnthropicLLMConfig</a></li>
     <li><a href="#ch8"><span class="num">8</span> The Agent Loop</a></li>
+    <li><a href="#ch9"><span class="num">9</span> LiteLLM &mdash; Second Provider</a></li>
   </ul>
 </nav>
 
@@ -1555,12 +1558,21 @@ web_fetch_cost = web_fetch_reqs * pricing.web_fetch_per_request</pre>
   ├── anthropic_agent.py     AnthropicAgent (loop, relay, init),
   │                          AnthropicLLMConfig
   ├── formatters.py          AnthropicMessageFormatter (wire translation)
+  ├── compaction.py          CompactionController (LLM summarization)
   └── retry.py               retry_with_backoff, anthropic_stream_with_backoff,
                              _process_stream_events
 
+  providers/litellm/
+  ├── provider.py            LiteLLMProvider (completion/streaming via LiteLLM SDK)
+  ├── litellm_agent.py       LiteLLMAgent (loop, relay, init),
+  │                          LiteLLMConfig
+  ├── formatters.py          LiteLLMMessageFormatter (canonical ↔ OpenAI-shape)
+  ├── compaction.py          CompactionController (shared contract, LiteLLM-aware)
+  └── retry.py               retry_with_backoff adapted for LiteLLM exceptions
+
   pricing/
   ├── calculator.py          ModelPricing, load_pricing(), calculate_step_cost()
-  └── models.csv             Bundled pricing data</pre>
+  └── models.csv             Bundled pricing data (both provider families)</pre>
     <div class="dc">Provider layer module layout</div>
   </div>
 
@@ -1602,6 +1614,107 @@ web_fetch_cost = web_fetch_reqs * pricing.web_fetch_per_request</pre>
     </tbody>
   </table>
 
+</section>
+
+
+<!-- ================================================================ -->
+<!-- CHAPTER 9: LITELLM — SECOND PROVIDER                             -->
+<!-- ================================================================ -->
+<div class="chap" id="ch9"><span>Chapter 9 &mdash; LiteLLM, the Second Provider</span></div>
+
+<section class="entry">
+  <div class="entry-tag">Provider Breadth</div>
+  <h2>LiteLLM &mdash; Proving the Boundary</h2>
+
+  <p>A single concrete implementation is an anecdote; a second is a test of the abstraction. <code>providers/litellm/</code> implements the same ABCs &mdash; <code>Provider</code>, <code>MessageFormatter</code>, <code>Agent</code>, <code>CompactionController</code> &mdash; against the <a href="https://github.com/BerriAI/litellm">LiteLLM</a> SDK, which itself speaks a dozen backends through an OpenAI-compatible facade. The agent loop, tool system, sandbox, media backend, and storage adapters are reused unchanged.</p>
+
+  <div class="ins emerald">
+    <span class="il">What the second provider proved</span>
+    <p>No changes were required in <code>core/</code>, <code>tools/</code>, <code>sandbox/</code>, <code>media_backend/</code>, <code>storage/</code>, <code>streaming/</code>, or <code>pricing/</code> to add LiteLLM. The only new code lives in <code>providers/litellm/</code>. That is exactly what the "axes of change" table in the hub promised.</p>
+  </div>
+
+  <h3>What Differs From Anthropic</h3>
+
+  <div class="table-wrap" style="margin-top: 12px;">
+    <table class="ctbl">
+      <thead>
+        <tr><th>Concern</th><th>Anthropic</th><th>LiteLLM</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Wire format</td>
+          <td>Anthropic Messages API (content-block list)</td>
+          <td>OpenAI-compatible chat completions (flat messages + <code>tool_calls</code>)</td>
+        </tr>
+        <tr>
+          <td>Streaming shape</td>
+          <td>Content-block deltas, <code>message_start</code>/<code>_stop</code></td>
+          <td>OpenAI chunk deltas with <code>delta.content</code> / <code>tool_calls</code></td>
+        </tr>
+        <tr>
+          <td>Thinking blocks</td>
+          <td>Native <code>thinking</code> content type</td>
+          <td>Routed through provider-specific extensions (when available)</td>
+        </tr>
+        <tr>
+          <td>Cache control</td>
+          <td>Explicit <code>cache_control</code> markers on blocks</td>
+          <td>Delegated to LiteLLM router / backend capability</td>
+        </tr>
+        <tr>
+          <td>Retry taxonomy</td>
+          <td>Anthropic SDK exception classes</td>
+          <td>LiteLLM's unified exception hierarchy</td>
+        </tr>
+        <tr>
+          <td>Compaction</td>
+          <td><code>CompactionController</code> summarizes via Anthropic</td>
+          <td><code>CompactionController</code> summarizes via LiteLLM routing</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>The Same Seams, Different Filling</h3>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dt"><span></span><span></span><span></span></div>
+      <span class="fn">providers/litellm/provider.py</span>
+      <span class="tg tg-impl">Implementation</span>
+    </div>
+<pre>
+<span class="k">class</span> <span class="t">LiteLLMProvider</span>(<span class="t">Provider</span>):
+    formatter: <span class="t">LiteLLMMessageFormatter</span>
+
+    <span class="k">async def</span> <span class="f">generate</span>(<span class="p">self</span>, system_prompt, messages, tool_schemas,
+                       llm_config, model, max_retries, base_delay, agent_uuid=<span class="s">""</span>):
+        wire_messages = <span class="p">self</span>.formatter.<span class="f">format_blocks_to_wire</span>(...)
+        wire_tools    = <span class="p">self</span>.formatter.<span class="f">format_tool_schemas</span>(tool_schemas)
+        response = <span class="k">await</span> <span class="f">retry_with_backoff</span>(
+            <span class="k">lambda</span>: litellm.<span class="f">acompletion</span>(model=model, messages=wire_messages, ...),
+            max_retries=max_retries, base_delay=base_delay,
+        )
+        <span class="k">return</span> <span class="p">self</span>.formatter.<span class="f">parse_wire_to_message</span>(response)
+
+    <span class="k">async def</span> <span class="f">generate_stream</span>(<span class="p">self</span>, ..., queue, stream_formatter,
+                              stream_tool_results=<span class="k">True</span>):
+        <span class="c"># OpenAI-style chunk assembly → emit canonical StreamDeltas</span>
+        ...</pre>
+  </div>
+
+  <h3>The AnthropicLLMConfig / LiteLLMConfig Split</h3>
+
+  <p>Both configs subclass <code>LLMConfig</code> and carry the parameters only their transport understands. <code>AnthropicLLMConfig</code> holds <code>thinking_tokens</code>, <code>beta_headers</code>, <code>container_id</code>. <code>LiteLLMConfig</code> holds routing parameters (provider override, fallback list, router key), timeout, and any OpenAI-shape passthrough. The agent loop never reads them directly &mdash; it hands them to the provider, which knows what to do.</p>
+
+  <div class="th">
+    <span class="tl">Developer's inner voice</span>
+    "The fact that <code>LiteLLMAgent</code> ended up as a near-identical twin to <code>AnthropicAgent</code> is a good sign, not a bad one. The orchestration loop <em>should</em> be near-identical &mdash; it's the same architecture. The difference is in the four other files."
+  </div>
+
+  <h3>What About Native OpenAI?</h3>
+
+  <p>LiteLLM can already proxy to OpenAI today, so the urgency of a native <code>providers/openai/</code> is lower. A native implementation would unlock tighter integration with OpenAI-specific features (structured outputs, Assistants API) that LiteLLM's lowest-common-denominator surface cannot expose. It remains on the roadmap in <a href="planned-systems.html#planned">planned-systems</a>.</p>
 </section>
 
 </div><!-- .wrap -->

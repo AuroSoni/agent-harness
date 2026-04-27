@@ -26,6 +26,10 @@ class AgentPhase(str, Enum):
     AWAITING_RELAY = "awaiting_relay"
 
 
+STREAM_ABORT_TEXT = "Agent run was aborted by the user."
+TOOL_ABORT_TEXT = "Tool execution was aborted by the user."
+
+
 @dataclass
 class RunningAgentHandle:
     """Handle to a running agent, stored in the AbortSteerRegistry.

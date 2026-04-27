@@ -9,7 +9,17 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import aiofiles
-import blake3
+try:
+    import blake3
+except ImportError:  # pragma: no cover - exercised only when optional dep is missing
+    import hashlib
+
+    class _Blake3Compat:
+        @staticmethod
+        def blake3():
+            return hashlib.blake2b(digest_size=32)
+
+    blake3 = _Blake3Compat()
 
 from .sandbox_types import (
     ExecResult,
@@ -137,6 +147,7 @@ class LocalSandbox(Sandbox):
             "workspace/.imported",
             ".exports",
             ".plans",
+            ".context",
             ".tool_results",
         ):
             (self.root / zone).mkdir(exist_ok=True)

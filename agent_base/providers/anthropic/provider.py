@@ -195,13 +195,46 @@ class AnthropicProvider(Provider):
         self,
         client: anthropic.AsyncAnthropic | None = None,
         formatter: AnthropicMessageFormatter | None = None,
+        fallback_api_keys: list[str] | None = None,
     ) -> None:
         self.client = client or anthropic.AsyncAnthropic()
         self.formatter = formatter or AnthropicMessageFormatter()
         self.token_estimator = AnthropicTokenEstimator(self.formatter)
-        # TODO: No need to accept external client or formatter.
-        # Just initialize internally.
-        
+        self._fallback_api_keys = fallback_api_keys or []
+        self._fallback_clients: list[anthropic.AsyncAnthropic] = []
+
+    # -- API key fallback ----------------------------------------------------
+
+    @staticmethod
+    def _is_credits_exhausted(error: Exception) -> bool:
+        """Check if an API error indicates credit/billing exhaustion."""
+        msg = str(error).lower()
+        return any(phrase in msg for phrase in (
+            "credit balance is too low",
+            "credits exhausted",
+            "insufficient credits",
+            "billing_error",
+            "your api key does not have enough credits",
+        ))
+
+    def _get_fallback_client(self, index: int) -> anthropic.AsyncAnthropic | None:
+        """Get or lazily create a fallback client by index."""
+        if index >= len(self._fallback_api_keys):
+            return None
+        while len(self._fallback_clients) <= index:
+            key = self._fallback_api_keys[len(self._fallback_clients)]
+            self._fallback_clients.append(anthropic.AsyncAnthropic(api_key=key))
+        return self._fallback_clients[index]
+
+    def _clients_to_try(self) -> list[anthropic.AsyncAnthropic]:
+        """Return [primary, fallback_0, fallback_1, ...] client list."""
+        clients = [self.client]
+        for i in range(len(self._fallback_api_keys)):
+            c = self._get_fallback_client(i)
+            if c is not None:
+                clients.append(c)
+        return clients
+
     # -- Request / response building ----------------------------------------
 
     def _build_request_params(
@@ -403,13 +436,24 @@ class AnthropicProvider(Provider):
             wire_messages, system_prompt, model, llm_config, formatted_tool_schemas
         )
 
-        @retry_with_backoff(max_retries=max_retries, base_delay=base_delay)
-        async def _create() -> Any:
-            return await self.client.beta.messages.create(**request_params)
+        clients = self._clients_to_try()
+        for client_idx, client in enumerate(clients):
+            @retry_with_backoff(max_retries=max_retries, base_delay=base_delay)
+            async def _create(_client=client) -> Any:
+                return await _client.beta.messages.create(**request_params)
 
-        raw_response = await _create()
-        content_blocks = self.formatter.parse_wire_to_blocks(raw_response.content)
-        return self._build_response_message(raw_response, content_blocks)
+            try:
+                raw_response = await _create()
+                if client_idx > 0:
+                    self.client = client
+                    logger.info("api_key_fallback_activated", fallback_index=client_idx)
+                content_blocks = self.formatter.parse_wire_to_blocks(raw_response.content)
+                return self._build_response_message(raw_response, content_blocks)
+            except anthropic.BadRequestError as e:
+                if self._is_credits_exhausted(e) and client_idx < len(clients) - 1:
+                    logger.warning("credits_exhausted_fallback", fallback_index=client_idx + 1)
+                    continue
+                raise
 
     async def generate_stream(
         self,
@@ -458,26 +502,36 @@ class AnthropicProvider(Provider):
             wire_messages, system_prompt, model, llm_config, formatted_tool_schemas
         )
 
-        stream_result = await anthropic_stream_with_backoff(
-            client=self.client,
-            request_params=request_params,
-            queue=queue,
-            max_retries=max_retries,
-            base_delay=base_delay,
-            stream_formatter=stream_formatter,
-            stream_tool_results=stream_tool_results,
-            agent_uuid=agent_uuid,
-            cancellation_event=cancellation_event,
-        )
-
-        content_blocks = self.formatter.parse_wire_to_blocks(
-            stream_result.message.content
-        )
-        response_message = self._build_response_message(
-            stream_result.message, content_blocks
-        )
-        return StreamResult(
-            message=response_message,
-            completed_blocks=stream_result.completed_blocks,
-            was_cancelled=stream_result.was_cancelled,
-        )
+        clients = self._clients_to_try()
+        for client_idx, client in enumerate(clients):
+            try:
+                stream_result = await anthropic_stream_with_backoff(
+                    client=client,
+                    request_params=request_params,
+                    queue=queue,
+                    max_retries=max_retries,
+                    base_delay=base_delay,
+                    stream_formatter=stream_formatter,
+                    stream_tool_results=stream_tool_results,
+                    agent_uuid=agent_uuid,
+                    cancellation_event=cancellation_event,
+                )
+                if client_idx > 0:
+                    self.client = client
+                    logger.info("api_key_fallback_activated", fallback_index=client_idx)
+                content_blocks = self.formatter.parse_wire_to_blocks(
+                    stream_result.message.content
+                )
+                response_message = self._build_response_message(
+                    stream_result.message, content_blocks
+                )
+                return StreamResult(
+                    message=response_message,
+                    completed_blocks=stream_result.completed_blocks,
+                    was_cancelled=stream_result.was_cancelled,
+                )
+            except anthropic.BadRequestError as e:
+                if self._is_credits_exhausted(e) and client_idx < len(clients) - 1:
+                    logger.warning("credits_exhausted_fallback", fallback_index=client_idx + 1)
+                    continue
+                raise

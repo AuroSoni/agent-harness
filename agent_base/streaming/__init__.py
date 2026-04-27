@@ -27,6 +27,7 @@ from .types import (
     ToolResultDelta,
     CitationDelta,
     MetaDelta,
+    RollbackDelta,
     ErrorDelta,
 )
 from .base import StreamFormatter, StreamFormatterType
@@ -72,6 +73,7 @@ __all__ = [
     "ToolResultDelta",
     "CitationDelta",
     "MetaDelta",
+    "RollbackDelta",
     "ErrorDelta",
     # ABC / types
     "StreamFormatter",

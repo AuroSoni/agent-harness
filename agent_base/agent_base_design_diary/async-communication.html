@@ -1,0 +1,1825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Developer Diary — The Async Boundary</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;0,800;1,400;1,600&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #18181b;
+    --paper: #fafaf7;
+    --paper-warm: #f2f0ea;
+    --paper-deep: #eae7df;
+    --accent: #be123c;
+    --accent-soft: #be123c14;
+    --accent-mid: #be123c40;
+    --purple: #7c3aed;
+    --purple-soft: #7c3aed14;
+    --teal: #0d9488;
+    --teal-soft: #0d948814;
+    --amber: #d97706;
+    --amber-soft: #d9770614;
+    --blue: #2563eb;
+    --blue-soft: #2563eb14;
+    --emerald: #059669;
+    --emerald-soft: #05966914;
+    --crimson: #be123c;
+    --crimson-soft: #be123c14;
+    --slate: #64748b;
+    --slate-soft: #64748b14;
+    --code-bg: #1a1b26;
+    --code-fg: #c0caf5;
+    --muted: #94a3b8;
+    --border: #d4d0c8;
+    --border-light: #e5e2da;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Playfair Display', Georgia, serif;
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 18.5px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ─── Navigation Bar ─── */
+  .nav-bar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(250, 250, 247, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-light);
+    font-family: 'Inter', sans-serif;
+    font-size: 12.5px;
+  }
+  .nav-arrow {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 32px;
+    text-align: center;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.2s, opacity 0.2s;
+  }
+  .nav-arrow:hover { background: rgba(0,0,0,0.05); }
+  .nav-arrow.disabled {
+    color: var(--muted);
+    pointer-events: none;
+    opacity: 0.35;
+  }
+  .nav-tabs {
+    display: flex;
+    gap: 1px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .nav-tab {
+    padding: 5px 11px;
+    border-radius: 6px;
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .nav-tab:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--ink);
+  }
+  .nav-tab.active {
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+  }
+
+  /* ─── Hero ─── */
+  .hero {
+    padding: 68px 40px 50px;
+    text-align: center;
+    border-bottom: 3px double var(--border);
+    background: linear-gradient(175deg, #f2e5e9 0%, var(--paper) 60%);
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: -40px;
+    right: -40px;
+    width: 200px;
+    height: 200px;
+    background: radial-gradient(circle, var(--accent-soft) 0%, transparent 70%);
+    border-radius: 50%;
+  }
+  .hero::after {
+    content: '';
+    position: absolute;
+    bottom: -30px;
+    left: -30px;
+    width: 160px;
+    height: 160px;
+    background: radial-gradient(circle, var(--purple-soft) 0%, transparent 70%);
+    border-radius: 50%;
+  }
+  .hero .icon {
+    font-size: 46px;
+    margin-bottom: 14px;
+    display: block;
+    position: relative;
+    z-index: 1;
+  }
+  .hero h1 {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(26px, 4.4vw, 46px);
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    line-height: 1.16;
+    margin-bottom: 10px;
+    position: relative;
+    z-index: 1;
+  }
+  .hero h1 em { font-style: italic; color: var(--accent); }
+  .hero .sub {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    font-weight: 600;
+    position: relative;
+    z-index: 1;
+  }
+  .hero .tagline {
+    font-size: 17px;
+    color: var(--slate);
+    margin-top: 14px;
+    max-width: 640px;
+    margin-left: auto;
+    margin-right: auto;
+    font-style: italic;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ─── Status badge ─── */
+  .status {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 14px;
+    border-radius: 20px;
+    display: inline-block;
+    margin-top: 16px;
+    position: relative;
+    z-index: 1;
+  }
+  .status-impl { background: var(--emerald-soft); color: var(--emerald); }
+  .status-plan { background: var(--amber-soft); color: var(--amber); }
+
+  /* ─── TOC ─── */
+  .toc {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 28px 28px 0;
+  }
+  .toc-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  .toc-list {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 6px;
+  }
+  .toc-list a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    text-decoration: none;
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  .toc-list a:hover { background: var(--paper-warm); }
+  .toc-list .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+
+  /* ─── Content ─── */
+  .content { max-width: 860px; margin: 0 auto; padding: 0 28px; }
+
+  .section {
+    padding: 44px 0;
+    border-bottom: 1px solid var(--border-light);
+  }
+  .section:last-child { border-bottom: none; }
+  .section-tag {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: var(--muted);
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  h2 {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 18px;
+    line-height: 1.25;
+  }
+  h3 {
+    font-size: 21px;
+    font-weight: 600;
+    margin: 30px 0 12px;
+    color: var(--ink);
+  }
+  h4 {
+    font-family: 'Inter', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    margin: 24px 0 10px;
+    letter-spacing: 0.2px;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  p { margin-bottom: 14px; }
+  p strong { color: var(--accent); font-weight: 700; }
+  ul, ol { margin: 0 0 14px 24px; }
+  li { margin-bottom: 4px; }
+
+  /* ─── Chapter dividers ─── */
+  .chap {
+    text-align: center;
+    padding: 36px 0 6px;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    color: var(--muted);
+    font-weight: 700;
+    border-top: 3px double var(--border);
+  }
+  .chap span {
+    background: var(--paper);
+    padding: 0 16px;
+  }
+
+  /* ─── Thought callouts ─── */
+  .thought {
+    background: var(--paper-warm);
+    border-left: 4px solid var(--accent);
+    padding: 16px 22px;
+    margin: 22px 0;
+    border-radius: 0 10px 10px 0;
+    font-style: italic;
+    position: relative;
+  }
+  .thought::before {
+    content: '💭';
+    position: absolute;
+    top: -12px;
+    left: -15px;
+    font-size: 19px;
+    font-style: normal;
+  }
+  .thought .label {
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-style: normal;
+    font-weight: 700;
+    display: block;
+    margin-bottom: 5px;
+    color: var(--accent);
+  }
+  .thought.amber { border-left-color: var(--amber); }
+  .thought.amber .label { color: var(--amber); }
+  .thought.amber::before { content: '💡'; }
+  .thought.emerald { border-left-color: var(--emerald); }
+  .thought.emerald .label { color: var(--emerald); }
+  .thought.emerald::before { content: '✅'; }
+  .thought.crimson { border-left-color: var(--crimson); }
+  .thought.crimson .label { color: var(--crimson); }
+  .thought.crimson::before { content: '⚠️'; }
+  .thought.teal { border-left-color: var(--teal); }
+  .thought.teal .label { color: var(--teal); }
+  .thought.teal::before { content: '🔑'; }
+
+  /* ─── Pattern cards ─── */
+  .pattern {
+    background: white;
+    border: 1px solid var(--border-light);
+    border-radius: 14px;
+    padding: 26px 30px;
+    margin: 24px 0;
+    box-shadow: var(--shadow-sm);
+    position: relative;
+  }
+  .pattern-num {
+    position: absolute;
+    top: -14px;
+    left: 22px;
+    background: var(--accent);
+    color: white;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 20px;
+    letter-spacing: 1px;
+  }
+  .pattern h3 {
+    margin-top: 6px;
+    margin-bottom: 10px;
+  }
+  .pattern .desc {
+    color: var(--slate);
+    font-size: 16px;
+    margin-bottom: 18px;
+  }
+  .pattern .verdict {
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    font-weight: 600;
+    padding: 10px 16px;
+    border-radius: 8px;
+    background: var(--paper-warm);
+    margin-top: 16px;
+    border-left: 4px solid var(--slate);
+  }
+  .pattern .verdict.good { border-left-color: var(--emerald); }
+  .pattern .verdict.ok { border-left-color: var(--amber); }
+  .pattern .verdict.bad { border-left-color: var(--crimson); }
+  .pattern .verdict .v-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--muted);
+    margin-right: 8px;
+    font-weight: 700;
+  }
+
+  /* ─── Pros/cons grid ─── */
+  .pc {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 16px 0;
+  }
+  .pc > div {
+    padding: 14px 18px;
+    border-radius: 10px;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .pc .pros {
+    background: var(--emerald-soft);
+    border: 1px solid var(--emerald);
+  }
+  .pc .cons {
+    background: var(--crimson-soft);
+    border: 1px solid var(--crimson);
+  }
+  .pc h5 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .pc .pros h5 { color: var(--emerald); }
+  .pc .cons h5 { color: var(--crimson); }
+  .pc ul { margin: 0 0 0 18px; padding: 0; }
+  .pc li { margin-bottom: 4px; }
+
+  /* ─── Tables ─── */
+  .table-wrap {
+    margin: 24px 0;
+    overflow-x: auto;
+    border-radius: 12px;
+    border: 1px solid var(--border-light);
+    box-shadow: var(--shadow-sm);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+  }
+  thead { background: var(--paper-warm); }
+  th {
+    padding: 12px 14px;
+    text-align: left;
+    font-weight: 700;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--slate);
+    border-bottom: 2px solid var(--border);
+  }
+  td {
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border-light);
+    line-height: 1.5;
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--paper-warm); }
+  td code, td.mono {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: var(--paper-deep);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+
+  /* ─── Verdict chips inside comparison table ─── */
+  .chip {
+    display: inline-block;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 3px 9px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+  .chip-good { background: var(--emerald-soft); color: var(--emerald); border: 1px solid var(--emerald); }
+  .chip-ok { background: var(--amber-soft); color: var(--amber); border: 1px solid var(--amber); }
+  .chip-bad { background: var(--crimson-soft); color: var(--crimson); border: 1px solid var(--crimson); }
+  .chip-neutral { background: var(--slate-soft); color: var(--slate); border: 1px solid var(--slate); }
+
+  /* ─── Inline code ─── */
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82em;
+    background: var(--paper-deep);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+
+  /* ─── Code blocks ─── */
+  .cw {
+    margin: 22px 0;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+  }
+  .ch {
+    background: #24243a;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .ch .dots { display: flex; gap: 6px; }
+  .ch .dots span { width: 10px; height: 10px; border-radius: 50%; }
+  .ch .dots span:nth-child(1) { background: #ff5f56; }
+  .ch .dots span:nth-child(2) { background: #ffbd2e; }
+  .ch .dots span:nth-child(3) { background: #27c93f; }
+  .ch .fn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #8888a8;
+    font-weight: 500;
+  }
+  .ch .tag {
+    margin-left: auto;
+    font-family: 'Inter', sans-serif;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .tag-sketch { background: #be123c30; color: #fda4af; }
+  .tag-abc { background: #7c3aed30; color: #c4b5fd; }
+  .tag-impl { background: #2563eb30; color: #93c5fd; }
+
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    tab-size: 4;
+  }
+  pre .c { color: #565f89; font-style: italic; }
+  pre .k { color: #bb9af7; }
+  pre .t { color: #7dcfff; }
+  pre .s { color: #9ece6a; }
+  pre .f { color: #e0af68; }
+  pre .p { color: #7aa2f7; }
+  pre .n { color: #ff9e64; }
+  pre .r { color: #f7768e; }
+  pre .hl {
+    background: rgba(190, 18, 60, 0.08);
+    display: inline-block;
+    width: 100%;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+
+  /* ─── Ladder ─── */
+  .ladder {
+    counter-reset: step;
+    list-style: none;
+    margin: 26px 0;
+    padding: 0;
+  }
+  .ladder li {
+    counter-increment: step;
+    position: relative;
+    padding: 18px 22px 18px 62px;
+    margin-bottom: 12px;
+    background: white;
+    border: 1px solid var(--border-light);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+  }
+  .ladder li::before {
+    content: counter(step);
+    position: absolute;
+    left: 18px;
+    top: 18px;
+    width: 32px;
+    height: 32px;
+    background: var(--accent);
+    color: white;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 14px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ladder .step-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 17px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .ladder .step-body {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    color: var(--slate);
+    line-height: 1.6;
+  }
+
+  /* ─── Figures ─── */
+  .figure {
+    margin: 28px 0;
+    padding: 22px 22px 18px;
+    background: white;
+    border: 1px solid var(--border-light);
+    border-radius: 14px;
+    box-shadow: var(--shadow-sm);
+  }
+  .figure svg {
+    display: block;
+    margin: 0 auto;
+    max-width: 100%;
+    height: auto;
+  }
+  .fig-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 2.5px;
+    color: var(--muted);
+    font-weight: 700;
+    text-align: center;
+    margin-bottom: 14px;
+  }
+  .fig-caption {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    color: var(--slate);
+    text-align: center;
+    margin-top: 16px;
+    line-height: 1.6;
+    max-width: 640px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .fig-caption strong { color: var(--accent); font-weight: 700; }
+
+  /* ─── Footer ─── */
+  .footer {
+    text-align: center;
+    padding: 44px 28px;
+    border-top: 3px double var(--border);
+    margin-top: 16px;
+    font-style: italic;
+    color: var(--slate);
+    font-size: 16px;
+    line-height: 1.8;
+  }
+  .footer .mark {
+    font-family: 'Playfair Display', serif;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 8px;
+    font-style: normal;
+  }
+  .footer .note {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+    font-style: normal;
+  }
+
+  @media (max-width: 640px) {
+    .hero { padding: 46px 18px 36px; }
+    .content { padding: 0 16px; }
+    .pc { grid-template-columns: 1fr; }
+    pre { font-size: 11.5px; padding: 14px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav-bar">
+  <a href="providers.html" class="nav-arrow">&larr;</a>
+  <div class="nav-tabs">
+    <a href="index.html" class="nav-tab">Hub</a>
+    <a href="core-domain-model.html" class="nav-tab">Domain</a>
+    <a href="tool-system.html" class="nav-tab">Tools</a>
+    <a href="sandbox.html" class="nav-tab">Sandbox</a>
+    <a href="media-backend.html" class="nav-tab">Media</a>
+    <a href="file-coordination.html" class="nav-tab">Files</a>
+    <a href="storage.html" class="nav-tab">Storage</a>
+    <a href="streaming.html" class="nav-tab">Streaming</a>
+    <a href="providers.html" class="nav-tab">Providers</a>
+    <a href="async-communication.html" class="nav-tab active">Async Comms</a>
+    <a href="planned-systems.html" class="nav-tab">Planned</a>
+  </div>
+  <a href="planned-systems.html" class="nav-arrow">&rarr;</a>
+</nav>
+
+<!-- ━━━━━━━━━━ HERO ━━━━━━━━━━ -->
+<div class="hero">
+  <span class="icon">🔀</span>
+  <h1>The <em>Async Boundary</em></h1>
+  <div class="sub">Developer Diary &middot; Communication Patterns</div>
+  <p class="tagline">
+    How does a tool call survive a crash, a reconnect, and a sub-agent four levels deep?
+    Six patterns for the front-end / back-end boundary &mdash; ranked against simplicity,
+    robustness, and the path to multi-server.
+  </p>
+  <span class="status status-plan">Planned &middot; Design Diary</span>
+</div>
+
+<!-- ━━━━━━━━━━ TOC ━━━━━━━━━━ -->
+<nav class="toc">
+  <div class="toc-title">Chapters</div>
+  <ul class="toc-list">
+    <li><a href="#ch1"><span class="num">1</span> The Prison of Sync RPC</a></li>
+    <li><a href="#ch2"><span class="num">2</span> Six Patterns</a></li>
+    <li><a href="#ch3"><span class="num">3</span> Side-by-Side Comparison</a></li>
+    <li><a href="#ch4"><span class="num">4</span> The Recommendation</a></li>
+    <li><a href="#ch5"><span class="num">5</span> Migration Ladder</a></li>
+    <li><a href="#ch6"><span class="num">6</span> What We Don't Commit To</a></li>
+  </ul>
+</nav>
+
+<div class="content">
+
+<!-- ━━━━━━━━━━ CHAPTER 1 ━━━━━━━━━━ -->
+<div class="chap" id="ch1"><span>Chapter 1 &mdash; The Prison</span></div>
+
+<section class="section">
+  <div class="section-tag">Origin of the Problem</div>
+  <h2>The Prison of Synchronous RPC</h2>
+
+  <p>
+    The first instinct when a tool call needs to reach the front-end is the obvious one:
+    emit a <code>tool_call</code> event, park the agent on an
+    <code>asyncio.Future</code>, wait for the front-end to reply, resume. It's RPC over
+    a streaming transport &mdash; familiar, trivial to implement, and perfectly serviceable
+    for a single-user demo.
+  </p>
+
+  <p>It breaks along two axes at once:</p>
+
+  <div class="thought crimson">
+    <span class="label">Failure mode 1 &mdash; Sub-agent nesting</span>
+    When a sub-agent spawned by <code>SubAgentTool</code> also needs front-end tool results,
+    its relay calls must <em>bubble up</em> through the parent's channel. That introduces
+    scope semantics (whose reply is this?), interleaving rules (can a parent reply while
+    a child is waiting?), and bidirectional plumbing inside a tool's implementation &mdash;
+    all for a pattern that should be invisible.
+  </div>
+
+  <div class="thought crimson">
+    <span class="label">Failure mode 2 &mdash; Multi-server deployment</span>
+    The <code>map[correlation_id &rarr; Future]</code> lives inside one Python process.
+    The moment a second application server exists &mdash; for redundancy, rolling deploys,
+    or horizontal scale &mdash; a reply can land on the node that never sent the request.
+    The request times out. The agent dies. &ldquo;Sticky sessions&rdquo; buys you a week
+    of simplicity and a decade of operational pain.
+  </div>
+
+  <div class="figure">
+    <div class="fig-title">Figure 1 &middot; The Two Prisons</div>
+    <svg viewBox="0 0 820 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Two failure modes of synchronous RPC: sub-agent bubble-up and multi-server split">
+      <defs>
+        <marker id="m1-cr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#be123c"/></marker>
+        <marker id="m1-sl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+      </defs>
+
+      <text x="205" y="22" fill="#94a3b8" font-family="Inter, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle" letter-spacing="2">FAILURE MODE 1 — SUB-AGENT BUBBLE-UP</text>
+      <text x="620" y="22" fill="#94a3b8" font-family="Inter, sans-serif" font-size="10.5" font-weight="700" text-anchor="middle" letter-spacing="2">FAILURE MODE 2 — MULTI-SERVER SPLIT</text>
+      <line x1="410" y1="38" x2="410" y2="342" stroke="#d4d0c8" stroke-dasharray="3 6"/>
+
+      <!-- LEFT: Sub-agent tangle -->
+      <rect x="60" y="50" width="290" height="34" rx="6" fill="#f2e5e9" stroke="#be123c"/>
+      <text x="205" y="72" fill="#18181b" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Frontend &middot; one relay channel</text>
+
+      <rect x="85" y="108" width="240" height="44" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="205" y="128" fill="#18181b" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Parent agent &mdash; run R</text>
+      <text x="205" y="144" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">_pending[cid_A] = Future</text>
+
+      <rect x="110" y="176" width="190" height="44" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="205" y="196" fill="#18181b" font-family="Inter, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Sub-agent &mdash; R.1</text>
+      <text x="205" y="212" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">_pending[cid_B] = Future</text>
+
+      <rect x="135" y="244" width="140" height="44" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="205" y="264" fill="#18181b" font-family="Inter, sans-serif" font-size="11.5" font-weight="600" text-anchor="middle">Sub-sub-agent &middot; R.1.1</text>
+      <text x="205" y="280" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">_pending[cid_C]</text>
+
+      <path d="M 140 244 Q 62 220, 76 152 Q 80 120, 108 100" fill="none" stroke="#be123c" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#m1-cr)"/>
+      <path d="M 152 176 Q 88 152, 104 100" fill="none" stroke="#be123c" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#m1-cr)"/>
+      <text x="48" y="200" fill="#be123c" font-family="Inter, sans-serif" font-size="10" font-weight="600" transform="rotate(-90 48 200)">relay &middot; cid_B, cid_C</text>
+
+      <text x="370" y="175" fill="#64748b" font-family="Inter, sans-serif" font-size="10.5" text-anchor="end" font-style="italic">scope?</text>
+      <text x="370" y="190" fill="#64748b" font-family="Inter, sans-serif" font-size="10.5" text-anchor="end" font-style="italic">interleaving?</text>
+      <text x="370" y="250" fill="#64748b" font-family="Inter, sans-serif" font-size="10.5" text-anchor="end" font-style="italic">bidirectional</text>
+      <text x="370" y="265" fill="#64748b" font-family="Inter, sans-serif" font-size="10.5" text-anchor="end" font-style="italic">inside a tool?</text>
+
+      <text x="205" y="322" fill="#be123c" font-family="Inter, sans-serif" font-size="11.5" font-weight="600" text-anchor="middle">Every nesting level adds coupling.</text>
+
+      <!-- RIGHT: Multi-server split -->
+      <rect x="555" y="50" width="130" height="44" rx="8" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+      <text x="620" y="70" fill="#18181b" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Client</text>
+      <text x="620" y="85" fill="#64748b" font-family="Inter, sans-serif" font-size="10" text-anchor="middle">Browser &middot; WebSocket</text>
+
+      <rect x="560" y="114" width="120" height="22" rx="4" fill="#f2f0ea" stroke="#d4d0c8"/>
+      <text x="620" y="129" fill="#64748b" font-family="Inter, sans-serif" font-size="9.5" font-weight="600" text-anchor="middle">Load balancer &middot; round-robin</text>
+
+      <rect x="440" y="166" width="150" height="74" rx="8" fill="#ffffff" stroke="#be123c" stroke-width="1.8"/>
+      <text x="515" y="188" fill="#18181b" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Server A</text>
+      <text x="515" y="206" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">pending[cid_A] = ⏳</text>
+      <text x="515" y="224" fill="#be123c" font-family="Inter, sans-serif" font-size="10.5" font-style="italic" text-anchor="middle">waiting forever…</text>
+
+      <rect x="650" y="166" width="150" height="74" rx="8" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+      <text x="725" y="188" fill="#18181b" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Server B</text>
+      <text x="725" y="206" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="10" text-anchor="middle">pending = { }</text>
+      <text x="725" y="224" fill="#be123c" font-family="Inter, sans-serif" font-size="10.5" font-style="italic" text-anchor="middle">"who is cid_A?"</text>
+
+      <path d="M 595 138 Q 560 152, 528 164" fill="none" stroke="#64748b" stroke-width="1.4" marker-end="url(#m1-sl)"/>
+      <text x="500" y="154" fill="#64748b" font-family="Inter, sans-serif" font-size="10.5" font-weight="500" text-anchor="end">tool_call(cid_A)</text>
+
+      <path d="M 645 138 Q 685 152, 712 164" fill="none" stroke="#be123c" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#m1-cr)"/>
+      <text x="757" y="150" fill="#be123c" font-family="Inter, sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">reply ↯ wrong node</text>
+
+      <circle cx="620" cy="278" r="14" fill="#be123c"/>
+      <text x="620" y="283" fill="#ffffff" font-family="Inter, sans-serif" font-size="15" font-weight="700" text-anchor="middle">✕</text>
+      <text x="620" y="302" fill="#be123c" font-family="Inter, sans-serif" font-size="10" font-weight="600" text-anchor="middle">timeout</text>
+
+      <text x="620" y="322" fill="#be123c" font-family="Inter, sans-serif" font-size="11.5" font-weight="600" text-anchor="middle">State in process &rarr; reply must come home.</text>
+    </svg>
+    <div class="fig-caption">
+      Both failure modes come from the same assumption: the reply must land in the same
+      memory space that issued the call. <strong>Once you break that assumption</strong>,
+      both prisons open at once.
+    </div>
+  </div>
+
+  <p>
+    Both failure modes share the same root cause: we're treating the front-end/back-end
+    boundary as an <strong>in-process RPC</strong> when it's really a <strong>distributed
+    coordination problem</strong>. The rest of this diary is about picking the right mental
+    model for that coordination &mdash; without overbuilding on day one.
+  </p>
+</section>
+
+<!-- ━━━━━━━━━━ CHAPTER 2 ━━━━━━━━━━ -->
+<div class="chap" id="ch2"><span>Chapter 2 &mdash; Six Patterns</span></div>
+
+<section class="section">
+  <div class="section-tag">The Design Space</div>
+  <h2>Six Ways to Cross the Boundary</h2>
+
+  <p>
+    Each pattern below is a genuine alternative &mdash; not a straw man. We characterise
+    each with a one-line description, a pseudo-code sketch, the trade-offs, and a verdict.
+    The pattern we eventually recommend (Chapter 4) is assembled from two of these.
+  </p>
+
+  <!-- ─── Pattern 1 ─── -->
+  <div class="pattern">
+    <div class="pattern-num">Pattern 01</div>
+    <h3>Synchronous RPC + in-memory correlation</h3>
+    <p class="desc">
+      The baseline. Emit a tool call, park an <code>asyncio.Future</code> keyed by
+      <code>correlation_id</code>, the front-end replies over the same connection, resolve
+      the future, resume the loop.
+    </p>
+
+    <div class="cw">
+      <div class="ch">
+        <div class="dots"><span></span><span></span><span></span></div>
+        <span class="fn">agent_loop.py &mdash; baseline</span>
+        <span class="tag tag-sketch">Sketch</span>
+      </div>
+<pre>
+<span class="k">async def</span> <span class="f">call_frontend_tool</span>(<span class="p">name</span>, <span class="p">args</span>):
+    cid = <span class="f">uuid4</span>().<span class="f">hex</span>
+    <span class="p">self</span>._pending[cid] = <span class="p">asyncio</span>.<span class="f">Future</span>()
+    <span class="k">await</span> <span class="p">self</span>.stream.<span class="f">emit</span>(<span class="f">ToolCallDelta</span>(cid, name, args))
+    <span class="k">return await</span> <span class="p">self</span>._pending[cid]   <span class="c"># blocks here</span>
+
+<span class="k">async def</span> <span class="f">on_frontend_reply</span>(<span class="p">self</span>, cid, result):
+    <span class="p">self</span>._pending[cid].<span class="f">set_result</span>(result)
+</pre>
+    </div>
+
+    <div class="pc">
+      <div class="pros">
+        <h5>Pros</h5>
+        <ul>
+          <li>Trivially implemented. No infra, no schema changes.</li>
+          <li>Latency is minimal &mdash; single in-process await.</li>
+          <li>Perfect for single-process demos and local development.</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h5>Cons</h5>
+        <ul>
+          <li>Dies instantly at two or more servers without sticky sessions.</li>
+          <li>Sub-agent relay requires hand-rolled nesting semantics.</li>
+          <li>A process crash loses every in-flight run. No replay.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="verdict bad">
+      <span class="v-label">Verdict</span> The prison we're escaping. Keep it as the
+      day-zero implementation; replace the primitive underneath without changing the
+      call-site.
+    </div>
+  </div>
+
+  <!-- ─── Pattern 2 ─── -->
+  <div class="pattern">
+    <div class="pattern-num">Pattern 02</div>
+    <h3>Correlation-ID inbox</h3>
+    <p class="desc">
+      Decouple &ldquo;send&rdquo; from &ldquo;receive&rdquo;. Every tool call gets a
+      <code>correlation_id</code>; both sides use a shared inbox (log, queue, table) to
+      publish and consume events. The agent awaits on a predicate, not a process-local
+      future.
+    </p>
+
+    <div class="cw">
+      <div class="ch">
+        <div class="dots"><span></span><span></span><span></span></div>
+        <span class="fn">agent_loop.py &mdash; correlation inbox</span>
+        <span class="tag tag-sketch">Sketch</span>
+      </div>
+<pre>
+<span class="k">async def</span> <span class="f">call_frontend_tool</span>(<span class="p">name</span>, <span class="p">args</span>):
+    cid = <span class="f">uuid4</span>().<span class="f">hex</span>
+    <span class="k">await</span> log.<span class="f">append</span>(run_id, <span class="f">ToolCallRequested</span>(cid, name, args))
+    reply = <span class="k">await</span> log.<span class="f">wait_for</span>(
+        run_id,
+        <span class="k">lambda</span> e: <span class="f">isinstance</span>(e, <span class="t">ToolCallReplied</span>) <span class="k">and</span> e.cid == cid,
+    )
+    <span class="k">return</span> reply.result
+</pre>
+    </div>
+
+    <div class="pc">
+      <div class="pros">
+        <h5>Pros</h5>
+        <ul>
+          <li>Any server can receive the reply &mdash; the log is shared state.</li>
+          <li>Sub-agents get their own IDs; nesting semantics vanish.</li>
+          <li>Replay and audit come almost for free.</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h5>Cons</h5>
+        <ul>
+          <li>Needs a shared event log (even if in-memory for tests).</li>
+          <li>Still imperative &mdash; every tool call is a round-trip.</li>
+          <li>Write amplification versus a bare in-memory future.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="verdict good">
+      <span class="v-label">Verdict</span> Foundational. Every pattern below 3&ndash;6
+      either extends this or is orthogonal to it.
+    </div>
+  </div>
+
+  <!-- ─── Pattern 3 ─── -->
+  <div class="pattern">
+    <div class="pattern-num">Pattern 03</div>
+    <h3>Subscribe, don't call</h3>
+    <p class="desc">
+      Flip the polarity for front-end-owned state (selection, cursor, viewport, open file).
+      The front-end publishes streams; the agent subscribes. A &ldquo;tool call&rdquo;
+      becomes &ldquo;read the latest value&rdquo; or &ldquo;wait for the next one&rdquo;.
+    </p>
+
+    <div class="cw">
+      <div class="ch">
+        <div class="dots"><span></span><span></span><span></span></div>
+        <span class="fn">subscriptions.py &mdash; topic streams</span>
+        <span class="tag tag-sketch">Sketch</span>
+      </div>
+<pre>
+<span class="c"># front-end pushes whenever state changes, whether asked or not</span>
+front_end.<span class="f">publish</span>(<span class="s">"selection"</span>, <span class="f">SelectionChanged</span>(range=...))
+
+<span class="c"># back-end reads the latest cached value or blocks for next</span>
+<span class="k">async def</span> <span class="f">get_selection</span>():
+    <span class="k">return await</span> subs.<span class="f">latest_or_next</span>(<span class="s">"selection"</span>)
+</pre>
+    </div>
+
+    <div class="pc">
+      <div class="pros">
+        <h5>Pros</h5>
+        <ul>
+          <li>Matches the data model &mdash; front-end owns UI state natively.</li>
+          <li>No duplicate polling; state is always fresh.</li>
+          <li>Sub-agents subscribe to the same topics &mdash; no relay machinery.</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h5>Cons</h5>
+        <ul>
+          <li>Commands (&ldquo;open URL&rdquo;, &ldquo;prompt user&rdquo;) don't fit this shape.</li>
+          <li>Topic discovery / lifecycle adds a second protocol surface.</li>
+          <li>Subscriptions must be garbage-collected when runs end.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="verdict ok">
+      <span class="v-label">Verdict</span> Right tool for a <em>subset</em> of front-end tools
+      &mdash; UI-state reads. Wrong tool for imperative commands. Layer it on top of the inbox.
+    </div>
+  </div>
+
+  <!-- ─── Pattern 4 ─── -->
+  <div class="pattern">
+    <div class="pattern-num">Pattern 04</div>
+    <h3>Event-sourced conversation log</h3>
+    <p class="desc">
+      Treat the entire conversation as an append-only log of events authored by either side.
+      Agents are reducers over the log; tool calls, replies, interrupts, and message edits
+      are all entries. State at any time = fold over events up to sequence&nbsp;<em>N</em>.
+    </p>
+
+    <div class="cw">
+      <div class="ch">
+        <div class="dots"><span></span><span></span><span></span></div>
+        <span class="fn">reducer.py &mdash; log-driven agent</span>
+        <span class="tag tag-sketch">Sketch</span>
+      </div>
+<pre>
+state = <span class="f">initial_state</span>()
+<span class="k">async for</span> event <span class="k">in</span> log.<span class="f">subscribe</span>(run_id):
+    state = <span class="f">reduce</span>(state, event)
+    <span class="k">if</span> <span class="f">needs_action</span>(state):
+        <span class="k">await</span> log.<span class="f">append</span>(run_id, <span class="f">determine_next</span>(state))
+</pre>
+    </div>
+
+    <div class="pc">
+      <div class="pros">
+        <h5>Pros</h5>
+        <ul>
+          <li>Perfect audit trail &mdash; every transition is durable.</li>
+          <li>Time-travel debugging and replay are first-class features.</li>
+          <li>Handles concurrent writers (user interrupts, sub-agents) naturally.</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h5>Cons</h5>
+        <ul>
+          <li>Log management surface: snapshots, compaction, schema evolution.</li>
+          <li>Every actor must be reducer-shaped &mdash; a real refactor.</li>
+          <li>Overkill for a project that hasn't proven product fit yet.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="verdict ok">
+      <span class="v-label">Verdict</span> The right answer at scale; the wrong answer on
+      day one. Pattern&nbsp;2 is a strict subset &mdash; grow into this only if the audit
+      / replay needs materialise.
+    </div>
+  </div>
+
+  <!-- ─── Pattern 5 ─── -->
+  <div class="pattern">
+    <div class="pattern-num">Pattern 05</div>
+    <h3>Durable-workflow continuations</h3>
+    <p class="desc">
+      The agent loop is no longer a live coroutine. At each step it writes a checkpoint
+      (&ldquo;awaiting event matching&nbsp;P&rdquo;) and releases the worker. When a matching
+      event arrives, <em>any</em> worker can pick the run up and advance it. This is the
+      shape Temporal / Restate / Inngest productise.
+    </p>
+
+    <div class="cw">
+      <div class="ch">
+        <div class="dots"><span></span><span></span><span></span></div>
+        <span class="fn">workflow.py &mdash; park &amp; resume</span>
+        <span class="tag tag-sketch">Sketch</span>
+      </div>
+<pre>
+<span class="k">@workflow</span>
+<span class="k">async def</span> <span class="f">agent_run</span>(run_id):
+    msg = <span class="k">await</span> workflow.<span class="f">await_event</span>(<span class="s">"user_message"</span>)
+    call = <span class="f">llm</span>(msg)
+    <span class="k">while</span> call.has_tool_call:
+        result = <span class="k">await</span> workflow.<span class="f">await_event</span>(<span class="s">"tool_reply"</span>, cid=call.cid)
+        call = <span class="f">llm</span>(result)
+    <span class="k">return</span> call.text
+</pre>
+    </div>
+
+    <div class="pc">
+      <div class="pros">
+        <h5>Pros</h5>
+        <ul>
+          <li>Crash-tolerant by construction &mdash; restart-safe at every step.</li>
+          <li>Rolling deploys and horizontal scale are free.</li>
+          <li>Sub-agents are child workflows; scheduler handles them uniformly.</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h5>Cons</h5>
+        <ul>
+          <li>Adopting Temporal-class infra is a step change in operational surface.</li>
+          <li>Workflow code is non-deterministic-by-default &mdash; discipline required.</li>
+          <li>Debugging crosses a scheduler you didn't write.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="verdict ok">
+      <span class="v-label">Verdict</span> The ceiling. Adopt only when operational pain
+      from other patterns is real &mdash; not before.
+    </div>
+  </div>
+
+  <!-- ─── Pattern 6 ─── -->
+  <div class="pattern">
+    <div class="pattern-num">Pattern 06</div>
+    <h3>Shared CRDT document</h3>
+    <p class="desc">
+      No request/response at all. Both sides observe mutations to a shared,
+      convergent document (Yjs / Automerge). A &ldquo;tool call&rdquo; is a write of
+      an intent node; a &ldquo;reply&rdquo; is a write of a result node. The protocol
+      <em>is</em> the document.
+    </p>
+
+    <div class="cw">
+      <div class="ch">
+        <div class="dots"><span></span><span></span><span></span></div>
+        <span class="fn">crdt.py &mdash; convergent state</span>
+        <span class="tag tag-sketch">Sketch</span>
+      </div>
+<pre>
+<span class="c"># back-end writes an intent</span>
+doc[<span class="s">"tool_calls"</span>][cid] = {<span class="s">"name"</span>: <span class="s">"open_url"</span>, <span class="s">"args"</span>: ...}
+
+<span class="c"># front-end observes, writes the result</span>
+doc[<span class="s">"tool_replies"</span>][cid] = {<span class="s">"ok"</span>: <span class="k">True</span>, <span class="s">"data"</span>: ...}
+
+<span class="c"># back-end observes the reply appear &mdash; no RPC framing needed</span>
+</pre>
+    </div>
+
+    <div class="pc">
+      <div class="pros">
+        <h5>Pros</h5>
+        <ul>
+          <li>Convergent under partitions; offline-capable by default.</li>
+          <li>Elegant when the UX is genuinely collaborative.</li>
+          <li>Unified model for state, commands, and conflicts.</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h5>Cons</h5>
+        <ul>
+          <li>High learning curve; CRDT semantics are hard to introspect.</li>
+          <li>Overkill for predominantly imperative tool dispatch.</li>
+          <li>Debugging &ldquo;why did this value converge this way&rdquo; is hard.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="verdict bad">
+      <span class="v-label">Verdict</span> Right tool for collaborative documents.
+      Wrong tool for an agent-tool boundary. Parked.
+    </div>
+  </div>
+
+  <div class="thought teal">
+    <span class="label">The axis that matters</span>
+    Patterns&nbsp;1&ndash;6 vary along a single hidden axis: <em>where state lives</em>
+    &mdash; in a process (1), in a shared log (2, 4, 5), in a publication stream (3),
+    or in a convergent document (6). Multi-server robustness is really just &ldquo;state
+    does not live in any single process&rdquo;.
+  </div>
+</section>
+
+<!-- ━━━━━━━━━━ CHAPTER 3 ━━━━━━━━━━ -->
+<div class="chap" id="ch3"><span>Chapter 3 &mdash; Comparison</span></div>
+
+<section class="section">
+  <div class="section-tag">Side-by-Side</div>
+  <h2>Patterns on Six Axes</h2>
+
+  <p>
+    Scoring is deliberately coarse &mdash; three levels per axis. The axes chosen are the
+    ones the user flagged as load-bearing: robustness and multi-server readiness, plus
+    the usual suspects (complexity, sub-agent fit, observability, ops overhead).
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Pattern</th>
+          <th>Build Complexity</th>
+          <th>Crash Robustness</th>
+          <th>Multi-Server</th>
+          <th>Sub-Agent Fit</th>
+          <th>Observability</th>
+          <th>Ops Overhead</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>01</strong> Sync RPC</td>
+          <td><span class="chip chip-good">Low</span></td>
+          <td><span class="chip chip-bad">None</span></td>
+          <td><span class="chip chip-bad">No</span></td>
+          <td><span class="chip chip-bad">Poor</span></td>
+          <td><span class="chip chip-ok">Logs only</span></td>
+          <td><span class="chip chip-good">None</span></td>
+        </tr>
+        <tr>
+          <td><strong>02</strong> Correlation inbox</td>
+          <td><span class="chip chip-ok">Medium</span></td>
+          <td><span class="chip chip-good">Good</span></td>
+          <td><span class="chip chip-good">Yes</span></td>
+          <td><span class="chip chip-good">Excellent</span></td>
+          <td><span class="chip chip-good">Log-backed</span></td>
+          <td><span class="chip chip-ok">Postgres</span></td>
+        </tr>
+        <tr>
+          <td><strong>03</strong> Subscribe</td>
+          <td><span class="chip chip-ok">Medium</span></td>
+          <td><span class="chip chip-ok">Partial</span></td>
+          <td><span class="chip chip-good">Yes</span></td>
+          <td><span class="chip chip-good">Excellent</span></td>
+          <td><span class="chip chip-ok">Stream taps</span></td>
+          <td><span class="chip chip-ok">Pub/sub</span></td>
+        </tr>
+        <tr>
+          <td><strong>04</strong> Event-sourced log</td>
+          <td><span class="chip chip-bad">High</span></td>
+          <td><span class="chip chip-good">Excellent</span></td>
+          <td><span class="chip chip-good">Yes</span></td>
+          <td><span class="chip chip-good">Excellent</span></td>
+          <td><span class="chip chip-good">First-class</span></td>
+          <td><span class="chip chip-bad">Snapshot + compact</span></td>
+        </tr>
+        <tr>
+          <td><strong>05</strong> Durable workflow</td>
+          <td><span class="chip chip-bad">High</span></td>
+          <td><span class="chip chip-good">Excellent</span></td>
+          <td><span class="chip chip-good">Yes</span></td>
+          <td><span class="chip chip-good">Excellent</span></td>
+          <td><span class="chip chip-good">Built-in UI</span></td>
+          <td><span class="chip chip-bad">Scheduler op</span></td>
+        </tr>
+        <tr>
+          <td><strong>06</strong> CRDT doc</td>
+          <td><span class="chip chip-bad">High</span></td>
+          <td><span class="chip chip-good">Excellent</span></td>
+          <td><span class="chip chip-good">Yes</span></td>
+          <td><span class="chip chip-ok">Fine</span></td>
+          <td><span class="chip chip-bad">Opaque</span></td>
+          <td><span class="chip chip-ok">CRDT runtime</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="thought">
+    <span class="label">Reading the table</span>
+    Pattern&nbsp;2 is the only one that scores <em>good</em> on every axis without
+    scoring <em>bad</em> on build-complexity or ops-overhead. That's not an accident
+    &mdash; it's the minimum design that crosses the &ldquo;state lives outside a single
+    process&rdquo; threshold.
+  </div>
+</section>
+
+<!-- ━━━━━━━━━━ CHAPTER 4 ━━━━━━━━━━ -->
+<div class="chap" id="ch4"><span>Chapter 4 &mdash; The Recommendation</span></div>
+
+<section class="section">
+  <div class="section-tag">The Floor, Not the Ceiling</div>
+  <h2>Correlation-ID Inbox on a Durable Log</h2>
+
+  <p>
+    The recommendation is <strong>Pattern&nbsp;2 as the primary mechanism</strong>, with
+    <strong>Pattern&nbsp;3 layered in for UI-state tools</strong>. The agent loop stays a
+    plain <code>async def</code> &mdash; no Temporal, no workflow DSL, no CRDT runtime.
+    The multi-server escape hatch is a fourth storage adapter that the application code
+    never has to care about directly.
+  </p>
+
+  <h3>Extend the three-adapter pattern to four</h3>
+
+  <p>
+    The <code>agent_base/storage/</code> module already enforces a three-adapter discipline
+    for agent config, conversations, and run logs. Each adapter has memory, filesystem,
+    and Postgres backends. We add a fourth peer:
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="fn">storage/base.py &mdash; proposed EventLogAdapter</span>
+      <span class="tag tag-abc">Planned ABC</span>
+    </div>
+<pre>
+<span class="k">class</span> <span class="t">EventLogAdapter</span>(<span class="t">ABC</span>):
+    <span class="s">"""Durable, run-scoped event log.
+
+    All cross-boundary coordination (tool calls, replies, interrupts,
+    reconnect replay) flows through append/read/wait primitives.
+    """</span>
+
+<span class="hl">    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">append</span>(<span class="p">self</span>, run_id: <span class="t">str</span>, event: <span class="t">Event</span>) -> <span class="t">int</span>: ...</span>
+    <span class="c">#                                                     ^ monotonic seq</span>
+
+<span class="hl">    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">read_after</span>(
+        <span class="p">self</span>, run_id: <span class="t">str</span>, seq: <span class="t">int</span>
+    ) -> <span class="t">AsyncIterator</span>[<span class="t">Event</span>]: ...</span>
+
+<span class="hl">    <span class="k">@abstractmethod</span>
+    <span class="k">async def</span> <span class="f">wait_for</span>(
+        <span class="p">self</span>,
+        run_id: <span class="t">str</span>,
+        predicate: <span class="t">Callable</span>[[<span class="t">Event</span>], <span class="t">bool</span>],
+        timeout: <span class="t">float</span> | <span class="t">None</span> = <span class="k">None</span>,
+    ) -> <span class="t">Event</span>: ...</span>
+</pre>
+  </div>
+
+  <h3>One call-site helper</h3>
+
+  <p>
+    The agent loop gets a single helper that hides the log behind the same shape a future
+    used to take &mdash; making the migration a drop-in replacement:
+  </p>
+
+  <div class="cw">
+    <div class="ch">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="fn">core/agent_base.py &mdash; await_correlation</span>
+      <span class="tag tag-impl">Helper</span>
+    </div>
+<pre>
+<span class="k">async def</span> <span class="f">await_correlation</span>(<span class="p">self</span>, cid: <span class="t">str</span>) -> <span class="t">ToolReply</span>:
+    <span class="k">return await</span> <span class="p">self</span>.event_log.<span class="f">wait_for</span>(
+        <span class="p">self</span>.run_id,
+        <span class="k">lambda</span> e: <span class="f">isinstance</span>(e, <span class="t">ToolCallReplied</span>) <span class="k">and</span> e.cid == cid,
+        timeout=<span class="p">self</span>.config.frontend_tool_timeout,
+    )
+</pre>
+  </div>
+
+  <h3>Backend choices stay swappable</h3>
+
+  <table>
+    <thead>
+      <tr><th>Backend</th><th>When</th><th>How it works</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="mono">memory.py</td>
+        <td>Tests, local dev, single-process demos</td>
+        <td><code>asyncio.Queue</code> per <code>run_id</code>. Zero infra.</td>
+      </tr>
+      <tr>
+        <td class="mono">postgres.py</td>
+        <td>Production, multi-server</td>
+        <td><code>events(run_id, seq, payload)</code> table with
+        <code>LISTEN/NOTIFY</code> for push, <code>FOR UPDATE SKIP LOCKED</code> for
+        worker pull.</td>
+      </tr>
+      <tr>
+        <td class="mono">redis.py</td>
+        <td>If Postgres throughput ceilings are hit</td>
+        <td>Redis Streams with consumer groups. Same <code>EventLogAdapter</code>
+        interface &mdash; application code untouched.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Anatomy of the stream bus</h3>
+
+  <p>
+    The log's runtime shape is three streams keyed by <code>run_id</code>, with producers
+    and consumers on opposite sides. Inbound events (user messages, tool replies, reconnects)
+    flow left-to-right; outbound events (deltas, tool calls, checkpoints) flow right-to-left;
+    a global control stream handles lifecycle. Postgres shadows the critical events as the
+    durable book of record.
+  </p>
+
+  <div class="figure">
+    <div class="fig-title">Figure 2 &middot; The Stream Bus</div>
+    <svg viewBox="0 0 820 450" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Stream topology: clients, edge pool, three streams, worker pool, Postgres">
+      <defs>
+        <marker id="m2-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#0d9488"/></marker>
+        <marker id="m2-em" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
+        <marker id="m2-am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
+        <marker id="m2-sl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+      </defs>
+
+      <!-- Top labels -->
+      <text x="75" y="22" fill="#94a3b8" font-family="Inter, sans-serif" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="1.8">CLIENTS</text>
+      <text x="240" y="22" fill="#94a3b8" font-family="Inter, sans-serif" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="1.8">EDGE POOL</text>
+      <text x="510" y="22" fill="#94a3b8" font-family="Inter, sans-serif" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="1.8">STREAM BUS · KEYED BY run_id</text>
+      <text x="765" y="22" fill="#94a3b8" font-family="Inter, sans-serif" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="1.8">WORKERS</text>
+
+      <!-- Client -->
+      <rect x="20" y="44" width="110" height="60" rx="8" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+      <text x="75" y="65" fill="#18181b" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Browser</text>
+      <text x="75" y="82" fill="#64748b" font-family="Inter, sans-serif" font-size="10" text-anchor="middle">WebSocket</text>
+      <text x="75" y="96" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="middle">last_seen seq</text>
+
+      <!-- Edge pool -->
+      <rect x="170" y="44" width="140" height="60" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="240" y="65" fill="#18181b" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Edge servers</text>
+      <text x="240" y="82" fill="#64748b" font-family="Inter, sans-serif" font-size="10" text-anchor="middle">stateless · any pod</text>
+      <text x="240" y="96" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="9" text-anchor="middle">group: edge-{pod}</text>
+
+      <path d="M 130 74 L 164 74" fill="none" stroke="#64748b" stroke-width="1.4" marker-end="url(#m2-sl)"/>
+      <text x="147" y="66" fill="#64748b" font-family="Inter, sans-serif" font-size="9" text-anchor="middle">WS</text>
+
+      <!-- Worker pool -->
+      <rect x="720" y="180" width="90" height="90" rx="8" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+      <text x="765" y="202" fill="#18181b" font-family="Inter, sans-serif" font-size="12.5" font-weight="600" text-anchor="middle">Workers</text>
+      <text x="765" y="219" fill="#64748b" font-family="Inter, sans-serif" font-size="10" text-anchor="middle">agent loop</text>
+      <text x="765" y="234" fill="#64748b" font-family="Inter, sans-serif" font-size="10" text-anchor="middle">per run</text>
+      <text x="765" y="252" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="9" text-anchor="middle">group:</text>
+      <text x="765" y="264" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="9" text-anchor="middle">workers</text>
+
+      <!-- STREAM LANES -->
+      <!-- run:{id}:in -->
+      <rect x="340" y="135" width="340" height="60" rx="10" fill="#0d948810" stroke="#0d9488" stroke-width="1.5"/>
+      <text x="352" y="152" fill="#0d9488" font-family="JetBrains Mono, monospace" font-size="10.5" font-weight="700">run:{id}:in</text>
+      <text x="352" y="165" fill="#64748b" font-family="Inter, sans-serif" font-size="9.5">inbound · client → worker</text>
+      <g font-family="JetBrains Mono, monospace" font-size="8.5" text-anchor="middle">
+        <rect x="440" y="172" width="48" height="16" rx="3" fill="#ffffff" stroke="#0d9488"/><text x="464" y="183" fill="#0d9488">user.msg</text>
+        <rect x="494" y="172" width="54" height="16" rx="3" fill="#ffffff" stroke="#0d9488"/><text x="521" y="183" fill="#0d9488">tool.reply</text>
+        <rect x="554" y="172" width="62" height="16" rx="3" fill="#ffffff" stroke="#0d9488"/><text x="585" y="183" fill="#0d9488">reconnect</text>
+        <rect x="622" y="172" width="52" height="16" rx="3" fill="#ffffff" stroke="#0d9488"/><text x="648" y="183" fill="#0d9488">interrupt</text>
+      </g>
+
+      <!-- run:{id}:out -->
+      <rect x="340" y="210" width="340" height="60" rx="10" fill="#05966910" stroke="#059669" stroke-width="1.5"/>
+      <text x="352" y="227" fill="#059669" font-family="JetBrains Mono, monospace" font-size="10.5" font-weight="700">run:{id}:out</text>
+      <text x="352" y="240" fill="#64748b" font-family="Inter, sans-serif" font-size="9.5">outbound · worker → client</text>
+      <g font-family="JetBrains Mono, monospace" font-size="8.5" text-anchor="middle">
+        <rect x="440" y="247" width="40" height="16" rx="3" fill="#ffffff" stroke="#059669"/><text x="460" y="258" fill="#059669">delta</text>
+        <rect x="486" y="247" width="52" height="16" rx="3" fill="#ffffff" stroke="#059669"/><text x="512" y="258" fill="#059669">tool.call</text>
+        <rect x="544" y="247" width="60" height="16" rx="3" fill="#ffffff" stroke="#059669"/><text x="574" y="258" fill="#059669">subagent</text>
+        <rect x="610" y="247" width="52" height="16" rx="3" fill="#ffffff" stroke="#059669"/><text x="636" y="258" fill="#059669">turn.end</text>
+      </g>
+
+      <!-- runs:global:control -->
+      <rect x="340" y="285" width="340" height="52" rx="10" fill="#d9770610" stroke="#d97706" stroke-width="1.5"/>
+      <text x="352" y="302" fill="#d97706" font-family="JetBrains Mono, monospace" font-size="10.5" font-weight="700">runs:global:control</text>
+      <text x="352" y="315" fill="#64748b" font-family="Inter, sans-serif" font-size="9.5">lifecycle · start · cancel · timeout</text>
+      <g font-family="JetBrains Mono, monospace" font-size="8.5" text-anchor="middle">
+        <rect x="510" y="318" width="40" height="16" rx="3" fill="#ffffff" stroke="#d97706"/><text x="530" y="329" fill="#d97706">start</text>
+        <rect x="556" y="318" width="48" height="16" rx="3" fill="#ffffff" stroke="#d97706"/><text x="580" y="329" fill="#d97706">cancel</text>
+        <rect x="610" y="318" width="52" height="16" rx="3" fill="#ffffff" stroke="#d97706"/><text x="636" y="329" fill="#d97706">timeout</text>
+      </g>
+
+      <!-- Arrows: Edge → :in -->
+      <path d="M 310 82 Q 326 100, 338 148" fill="none" stroke="#0d9488" stroke-width="1.6" marker-end="url(#m2-teal)"/>
+      <text x="312" y="132" fill="#0d9488" font-family="JetBrains Mono, monospace" font-size="9" font-weight="700">XADD</text>
+
+      <!-- :in → Worker -->
+      <path d="M 682 162 L 716 198" fill="none" stroke="#0d9488" stroke-width="1.6" marker-end="url(#m2-teal)"/>
+      <text x="708" y="175" fill="#0d9488" font-family="JetBrains Mono, monospace" font-size="8.5" text-anchor="middle" font-weight="700">XREADGROUP</text>
+
+      <!-- Worker → :out -->
+      <path d="M 720 240 L 682 240" fill="none" stroke="#059669" stroke-width="1.6" marker-end="url(#m2-em)"/>
+      <text x="700" y="232" fill="#059669" font-family="JetBrains Mono, monospace" font-size="9" text-anchor="middle" font-weight="700">XADD</text>
+
+      <!-- :out → Edge -->
+      <path d="M 338 238 Q 320 150, 312 110" fill="none" stroke="#059669" stroke-width="1.6" marker-end="url(#m2-em)"/>
+      <text x="331" y="172" fill="#059669" font-family="JetBrains Mono, monospace" font-size="8.5" text-anchor="end" font-weight="700">XREADGROUP</text>
+
+      <!-- Watchdog -->
+      <rect x="170" y="298" width="140" height="44" rx="8" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+      <text x="240" y="316" fill="#18181b" font-family="Inter, sans-serif" font-size="11.5" font-weight="600" text-anchor="middle">Watchdog / cron</text>
+      <text x="240" y="330" fill="#64748b" font-family="Inter, sans-serif" font-size="10" text-anchor="middle">timeouts · scheduled resume</text>
+
+      <path d="M 310 318 L 336 318" fill="none" stroke="#d97706" stroke-width="1.6" marker-end="url(#m2-am)"/>
+      <path d="M 682 314 Q 720 314, 740 272" fill="none" stroke="#d97706" stroke-width="1.6" marker-end="url(#m2-am)"/>
+      <text x="716" y="300" fill="#d97706" font-family="JetBrains Mono, monospace" font-size="8.5" font-weight="700" text-anchor="middle">XREADGROUP</text>
+
+      <!-- Postgres -->
+      <rect x="20" y="380" width="200" height="50" rx="8" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+      <text x="120" y="402" fill="#18181b" font-family="Inter, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Postgres &mdash; book of record</text>
+      <text x="120" y="418" fill="#64748b" font-family="Inter, sans-serif" font-size="9.5" text-anchor="middle">checkpoints + durable events</text>
+
+      <path d="M 765 278 Q 765 440, 222 430" fill="none" stroke="#64748b" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#m2-sl)"/>
+      <rect x="398" y="386" width="204" height="18" rx="3" fill="#ffffff"/>
+      <text x="500" y="399" fill="#64748b" font-family="Inter, sans-serif" font-size="10" font-style="italic" text-anchor="middle">dual-write critical events</text>
+
+      <!-- Observability tap -->
+      <rect x="610" y="380" width="200" height="50" rx="8" fill="#ffffff" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4 3"/>
+      <text x="710" y="402" fill="#18181b" font-family="Inter, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Observability tap</text>
+      <text x="710" y="418" fill="#64748b" font-family="Inter, sans-serif" font-size="9.5" text-anchor="middle">passive XREAD · never acks</text>
+
+      <path d="M 608 276 L 640 378" fill="none" stroke="#64748b" stroke-width="1" stroke-dasharray="3 3"/>
+    </svg>
+    <div class="fig-caption">
+      Stream lanes keyed by <code>run_id</code> replace the per-process correlation map.
+      <strong>The bus is the rendezvous</strong>; edges and workers are fungible pods that
+      attach to it via consumer groups. Postgres shadows the critical events as the durable
+      book of record.
+    </div>
+  </div>
+
+  <h3>Why this also solves sub-agents</h3>
+
+  <p>
+    Sub-agents spawned by <code>agent_base/common_tools/sub_agent_tool.py</code> write
+    to the same log scoped by <code>parent_run_id / child_run_id</code>. A sub-agent's
+    awaiting tool call is the same shape as the root agent's &mdash; one
+    <code>ToolCallRequested</code> event, one matching <code>ToolCallReplied</code> event,
+    picked up by whichever worker is free. The &ldquo;relay&rdquo; concept disappears
+    because nesting is just another partition key.
+  </p>
+
+  <div class="figure">
+    <div class="fig-title">Figure 3 &middot; One Primitive, Three Rescues</div>
+    <svg viewBox="0 0 820 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Three scenarios resolved by the shared event log: sub-agent nesting, worker crash, client reconnect">
+      <defs>
+        <marker id="m3-em" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
+        <marker id="m3-pu" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+        <marker id="m3-sl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+        <marker id="m3-bl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker>
+      </defs>
+
+      <!-- Dividers -->
+      <line x1="272" y1="40" x2="272" y2="380" stroke="#d4d0c8" stroke-dasharray="3 6"/>
+      <line x1="546" y1="40" x2="546" y2="380" stroke="#d4d0c8" stroke-dasharray="3 6"/>
+
+      <!-- Column headers -->
+      <text x="136" y="22" fill="#059669" font-family="Inter, sans-serif" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="1.8">RESCUE 1 — SUB-AGENT NESTING</text>
+      <text x="409" y="22" fill="#059669" font-family="Inter, sans-serif" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="1.8">RESCUE 2 — WORKER CRASH</text>
+      <text x="683" y="22" fill="#059669" font-family="Inter, sans-serif" font-size="10" font-weight="700" text-anchor="middle" letter-spacing="1.8">RESCUE 3 — CLIENT RECONNECT</text>
+
+      <!-- ========== COLUMN 1 · SUB-AGENT FLATTENED ========== -->
+      <rect x="30" y="50" width="94" height="28" rx="6" fill="#ffffff" stroke="#7c3aed" stroke-width="1.3"/>
+      <text x="77" y="69" fill="#18181b" font-family="Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle">Parent &middot; R</text>
+
+      <rect x="42" y="90" width="82" height="26" rx="6" fill="#ffffff" stroke="#7c3aed" stroke-width="1.3"/>
+      <text x="83" y="108" fill="#18181b" font-family="Inter, sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Child &middot; R.1</text>
+
+      <rect x="54" y="128" width="70" height="26" rx="6" fill="#ffffff" stroke="#7c3aed" stroke-width="1.3"/>
+      <text x="89" y="146" fill="#18181b" font-family="Inter, sans-serif" font-size="10" font-weight="600" text-anchor="middle">R.1.1</text>
+
+      <!-- Shared stream -->
+      <rect x="30" y="185" width="232" height="68" rx="8" fill="#05966910" stroke="#059669" stroke-width="1.3"/>
+      <text x="146" y="203" fill="#059669" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" text-anchor="middle">run:R:out &mdash; shared log</text>
+      <g font-family="JetBrains Mono, monospace" font-size="8.5" text-anchor="middle">
+        <rect x="38" y="213" width="52" height="16" rx="3" fill="#ffffff" stroke="#059669"/><text x="64" y="224" fill="#059669">cid_A·R</text>
+        <rect x="94" y="213" width="58" height="16" rx="3" fill="#ffffff" stroke="#059669"/><text x="123" y="224" fill="#059669">cid_B·R.1</text>
+        <rect x="156" y="213" width="68" height="16" rx="3" fill="#ffffff" stroke="#059669"/><text x="190" y="224" fill="#059669">cid_C·R.1.1</text>
+        <rect x="38" y="233" width="56" height="16" rx="3" fill="#f2e5e9" stroke="#be123c"/><text x="66" y="244" fill="#be123c">reply B</text>
+        <rect x="98" y="233" width="56" height="16" rx="3" fill="#f2e5e9" stroke="#be123c"/><text x="126" y="244" fill="#be123c">reply A</text>
+        <rect x="158" y="233" width="60" height="16" rx="3" fill="#f2e5e9" stroke="#be123c"/><text x="188" y="244" fill="#be123c">reply C</text>
+      </g>
+
+      <!-- Arrows from each agent into stream -->
+      <path d="M 76 78 Q 56 130, 54 180" fill="none" stroke="#7c3aed" stroke-width="1.3" marker-end="url(#m3-pu)"/>
+      <path d="M 84 116 Q 90 150, 118 180" fill="none" stroke="#7c3aed" stroke-width="1.3" marker-end="url(#m3-pu)"/>
+      <path d="M 90 154 Q 140 170, 184 180" fill="none" stroke="#7c3aed" stroke-width="1.3" marker-end="url(#m3-pu)"/>
+
+      <!-- Caption -->
+      <text x="146" y="280" fill="#18181b" font-family="Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle">Each agent awaits its own cid.</text>
+      <text x="146" y="296" fill="#64748b" font-family="Inter, sans-serif" font-size="10.5" text-anchor="middle">Nesting is a partition key.</text>
+      <text x="146" y="326" fill="#059669" font-family="Inter, sans-serif" font-size="11" font-weight="700" text-anchor="middle">No relay.</text>
+      <text x="146" y="344" fill="#059669" font-family="Inter, sans-serif" font-size="11" font-weight="700" text-anchor="middle">No bubble-up.</text>
+
+      <!-- ========== COLUMN 2 · WORKER CRASH ========== -->
+      <!-- Worker A -->
+      <rect x="292" y="50" width="96" height="40" rx="6" fill="#ffffff" stroke="#7c3aed" stroke-width="1.3"/>
+      <text x="340" y="68" fill="#18181b" font-family="Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle">Worker A</text>
+      <text x="340" y="82" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="9" text-anchor="middle">seq ≤ 42</text>
+
+      <!-- Crash marker -->
+      <circle cx="404" cy="70" r="12" fill="#be123c"/>
+      <text x="404" y="75" fill="#ffffff" font-family="Inter, sans-serif" font-size="13" font-weight="700" text-anchor="middle">✕</text>
+      <text x="404" y="98" fill="#be123c" font-family="Inter, sans-serif" font-size="9.5" font-weight="600" text-anchor="middle">crash</text>
+
+      <!-- XAUTOCLAIM arrow -->
+      <path d="M 418 70 L 435 70" fill="none" stroke="#64748b" stroke-width="1.4" marker-end="url(#m3-sl)"/>
+      <text x="425" y="42" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="8" text-anchor="middle" font-weight="700">XAUTOCLAIM</text>
+
+      <!-- Worker B -->
+      <rect x="440" y="50" width="96" height="40" rx="6" fill="#ffffff" stroke="#7c3aed" stroke-width="1.3"/>
+      <text x="488" y="68" fill="#18181b" font-family="Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle">Worker B</text>
+      <text x="488" y="82" fill="#64748b" font-family="JetBrains Mono, monospace" font-size="9" text-anchor="middle">claims run</text>
+
+      <!-- Stream -->
+      <rect x="292" y="215" width="244" height="52" rx="8" fill="#05966910" stroke="#059669" stroke-width="1.3"/>
+      <text x="414" y="232" fill="#059669" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" text-anchor="middle">event log &mdash; survives</text>
+      <g font-family="JetBrains Mono, monospace" font-size="8" text-anchor="middle">
+        <rect x="300" y="242" width="26" height="18" rx="2" fill="#059669" stroke="#059669"/><text x="313" y="254" fill="#ffffff" font-weight="700">30✓</text>
+        <rect x="330" y="242" width="20" height="18" rx="2" fill="#ffffff" stroke="#059669"/><text x="340" y="254" fill="#059669">31</text>
+        <rect x="354" y="242" width="20" height="18" rx="2" fill="#ffffff" stroke="#059669"/><text x="364" y="254" fill="#059669">32</text>
+        <rect x="378" y="242" width="20" height="18" rx="2" fill="#ffffff" stroke="#059669"/><text x="388" y="254" fill="#059669">…</text>
+        <rect x="402" y="242" width="20" height="18" rx="2" fill="#ffffff" stroke="#059669"/><text x="412" y="254" fill="#059669">42</text>
+        <rect x="440" y="242" width="20" height="18" rx="2" fill="#ffffff" stroke="#d97706" stroke-dasharray="2 2"/><text x="450" y="254" fill="#d97706">43</text>
+        <rect x="464" y="242" width="20" height="18" rx="2" fill="#ffffff" stroke="#d97706" stroke-dasharray="2 2"/><text x="474" y="254" fill="#d97706">44</text>
+      </g>
+      <text x="313" y="208" fill="#059669" font-family="Inter, sans-serif" font-size="8.5" font-weight="700" text-anchor="middle">checkpoint</text>
+      <path d="M 313 211 L 313 239" fill="none" stroke="#059669" stroke-width="0.8" stroke-dasharray="2 2"/>
+
+      <!-- Worker B reads from checkpoint -->
+      <path d="M 488 92 Q 470 150, 440 212" fill="none" stroke="#059669" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#m3-em)"/>
+      <text x="500" y="145" fill="#059669" font-family="JetBrains Mono, monospace" font-size="9" font-weight="700">read from 30</text>
+      <text x="500" y="160" fill="#64748b" font-family="Inter, sans-serif" font-size="9.5" font-style="italic">replay 31→42</text>
+      <text x="500" y="175" fill="#64748b" font-family="Inter, sans-serif" font-size="9.5" font-style="italic">emit 43…</text>
+
+      <!-- Caption -->
+      <text x="414" y="296" fill="#18181b" font-family="Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle">Worker dies. Run survives.</text>
+      <text x="414" y="312" fill="#64748b" font-family="Inter, sans-serif" font-size="10.5" text-anchor="middle">XAUTOCLAIM + checkpoint replay</text>
+      <text x="414" y="340" fill="#059669" font-family="Inter, sans-serif" font-size="11" font-weight="700" text-anchor="middle">Workers are fungible.</text>
+
+      <!-- ========== COLUMN 3 · CLIENT RECONNECT ========== -->
+      <rect x="560" y="50" width="74" height="30" rx="6" fill="#ffffff" stroke="#64748b" stroke-width="1.3"/>
+      <text x="597" y="69" fill="#18181b" font-family="Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle">Client</text>
+
+      <!-- Edge 1 (dropped) -->
+      <rect x="656" y="50" width="70" height="30" rx="6" fill="#ffffff" stroke="#64748b" stroke-width="1" stroke-dasharray="3 3" opacity="0.55"/>
+      <text x="691" y="69" fill="#18181b" font-family="Inter, sans-serif" font-size="10.5" font-style="italic" text-anchor="middle">Edge-1</text>
+
+      <!-- Edge 2 (new) -->
+      <rect x="738" y="50" width="70" height="30" rx="6" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+      <text x="773" y="69" fill="#18181b" font-family="Inter, sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Edge-2</text>
+
+      <!-- Original connection line (now broken) -->
+      <path d="M 634 65 L 654 65" fill="none" stroke="#be123c" stroke-width="1.4" stroke-dasharray="2 2"/>
+      <text x="644" y="58" fill="#be123c" font-family="Inter, sans-serif" font-size="10" text-anchor="middle" font-weight="700">↯</text>
+
+      <!-- Reconnect arrow client → edge-2 -->
+      <path d="M 634 72 Q 700 112, 744 78" fill="none" stroke="#2563eb" stroke-width="1.4" marker-end="url(#m3-bl)"/>
+      <text x="700" y="108" fill="#2563eb" font-family="JetBrains Mono, monospace" font-size="9" text-anchor="middle" font-weight="700">reconnect</text>
+
+      <!-- Stream -->
+      <rect x="560" y="160" width="250" height="60" rx="8" fill="#05966910" stroke="#059669" stroke-width="1.3"/>
+      <text x="685" y="177" fill="#059669" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" text-anchor="middle">run:{id}:out</text>
+      <g font-family="JetBrains Mono, monospace" font-size="8" text-anchor="middle">
+        <rect x="568" y="188" width="22" height="18" rx="2" fill="#059669" stroke="#059669" opacity="0.55"/><text x="579" y="201" fill="#ffffff" font-weight="700">1</text>
+        <rect x="592" y="188" width="22" height="18" rx="2" fill="#059669" stroke="#059669" opacity="0.55"/><text x="603" y="201" fill="#ffffff" font-weight="700">…</text>
+        <rect x="616" y="188" width="26" height="18" rx="2" fill="#059669" stroke="#059669" opacity="0.55"/><text x="629" y="201" fill="#ffffff" font-weight="700">20</text>
+        <rect x="652" y="188" width="22" height="18" rx="2" fill="#ffffff" stroke="#059669"/><text x="663" y="201" fill="#059669">21</text>
+        <rect x="676" y="188" width="22" height="18" rx="2" fill="#ffffff" stroke="#059669"/><text x="687" y="201" fill="#059669">22</text>
+        <rect x="700" y="188" width="22" height="18" rx="2" fill="#ffffff" stroke="#059669"/><text x="711" y="201" fill="#059669">23</text>
+        <rect x="724" y="188" width="22" height="18" rx="2" fill="#ffffff" stroke="#059669"/><text x="735" y="201" fill="#059669">24</text>
+        <rect x="748" y="188" width="22" height="18" rx="2" fill="#ffffff" stroke="#059669"/><text x="759" y="201" fill="#059669">25</text>
+      </g>
+      <text x="605" y="216" fill="#94a3b8" font-family="Inter, sans-serif" font-size="8.5" text-anchor="middle">already seen</text>
+      <text x="710" y="216" fill="#059669" font-family="Inter, sans-serif" font-size="8.5" font-weight="700" text-anchor="middle">catch-up from 21</text>
+
+      <!-- last_seen arrow -->
+      <path d="M 596 82 Q 590 130, 610 158" fill="none" stroke="#2563eb" stroke-width="1.3" marker-end="url(#m3-bl)"/>
+      <text x="578" y="124" fill="#2563eb" font-family="JetBrains Mono, monospace" font-size="8.5" text-anchor="end" font-weight="700">last_seen=20</text>
+
+      <!-- XRANGE arrow -->
+      <path d="M 773 82 Q 773 128, 756 158" fill="none" stroke="#059669" stroke-width="1.3" marker-end="url(#m3-em)"/>
+      <text x="800" y="120" fill="#059669" font-family="JetBrains Mono, monospace" font-size="8.5" font-weight="700" text-anchor="middle">XRANGE 21→</text>
+
+      <!-- Caption -->
+      <text x="685" y="252" fill="#18181b" font-family="Inter, sans-serif" font-size="11" font-weight="600" text-anchor="middle">Any edge, any run, any time.</text>
+      <text x="685" y="268" fill="#64748b" font-family="Inter, sans-serif" font-size="10.5" text-anchor="middle">last_seen &rarr; replay &rarr; live tail</text>
+      <text x="685" y="298" fill="#059669" font-family="Inter, sans-serif" font-size="11" font-weight="700" text-anchor="middle">No sticky sessions.</text>
+      <text x="685" y="316" fill="#059669" font-family="Inter, sans-serif" font-size="11" font-weight="700" text-anchor="middle">Edge is stateless.</text>
+    </svg>
+    <div class="fig-caption">
+      The same primitive &mdash; <code>append</code>, <code>read_after</code>,
+      <code>wait_for</code> on a run-scoped log &mdash; turns three different crises into
+      the same non-event. <strong>Nesting, crashes, and disconnects all dissolve into
+      sequence numbers.</strong>
+    </div>
+  </div>
+
+  <div class="thought emerald">
+    <span class="label">What this gets you</span>
+    <strong>Crash survival</strong> (runs resume from last seq), <strong>reconnect
+    replay</strong> (client subscribes from last acknowledged seq, no sticky session),
+    <strong>uniform sub-agent semantics</strong> (same primitive at any depth), and
+    <strong>user interrupts for free</strong> (just another inbound event with no pending
+    correlation).
+  </div>
+</section>
+
+<!-- ━━━━━━━━━━ CHAPTER 5 ━━━━━━━━━━ -->
+<div class="chap" id="ch5"><span>Chapter 5 &mdash; Migration Ladder</span></div>
+
+<section class="section">
+  <div class="section-tag">How We Get There</div>
+  <h2>Four Steps, No Big-Bang Rewrites</h2>
+
+  <p>
+    The recommendation is designed so every step is independently shippable and preserves
+    the application code's shape. We climb the ladder only as the next rung's pain becomes
+    real.
+  </p>
+
+  <ol class="ladder">
+    <li>
+      <div class="step-title">Today &mdash; in-process correlation</div>
+      <div class="step-body">
+        Keep Pattern&nbsp;1. <code>asyncio.Future</code> keyed by <code>cid</code>.
+        Works for the FastAPI demo, works for single-box deployments. No change required.
+      </div>
+    </li>
+    <li>
+      <div class="step-title">Step 1 &mdash; introduce <code>EventLogAdapter</code></div>
+      <div class="step-body">
+        Add the ABC with in-memory and Postgres backends. Replace
+        <code>self._pending[cid] = Future()</code> with <code>await_correlation(cid)</code>.
+        Single-process behaviour is unchanged. <strong>Multi-server deployment now
+        possible</strong> &mdash; any worker can complete any run.
+      </div>
+    </li>
+    <li>
+      <div class="step-title">Step 2 &mdash; reconnect-safe front-end</div>
+      <div class="step-body">
+        Edge servers become stateless: a WebSocket / SSE connection just tails
+        <code>read_after(run_id, last_seq)</code>. Clients reconnect to a different
+        server transparently. No sticky sessions; rolling deploys are free.
+      </div>
+    </li>
+    <li>
+      <div class="step-title">Step 3 &mdash; only if scale demands</div>
+      <div class="step-body">
+        Swap the Postgres backend for Redis Streams / NATS JetStream, or promote the
+        whole loop to a durable-workflow engine (Pattern&nbsp;5). The
+        <code>EventLogAdapter</code> interface doesn't change; the agent loop doesn't
+        change. We earn the operational complexity only when it pays for itself.
+      </div>
+    </li>
+  </ol>
+
+  <div class="thought amber">
+    <span class="label">A note on timing</span>
+    Step 1 is the only step we're signing up for near-term. Steps 2 and 3 are
+    <em>affordances</em> the design preserves &mdash; not commitments. The point is to
+    avoid painting ourselves into a corner, not to build everything at once.
+  </div>
+</section>
+
+<!-- ━━━━━━━━━━ CHAPTER 6 ━━━━━━━━━━ -->
+<div class="chap" id="ch6"><span>Chapter 6 &mdash; Non-Commitments</span></div>
+
+<section class="section">
+  <div class="section-tag">Guard Rails</div>
+  <h2>What This Page Does <em>Not</em> Commit To</h2>
+
+  <p>
+    The constraint from day one was: <em>simple, maintainable, flexible &mdash; no
+    over-engineering</em>. The recommendation is the floor. This chapter enumerates
+    the ceilings we deliberately do not commit to.
+  </p>
+
+  <div class="thought crimson">
+    <span class="label">Not adopting</span>
+    <strong>Temporal / Restate / Inngest.</strong> A workflow engine is a step change
+    in operational surface. We preserve the <em>option</em> to adopt one via the
+    <code>EventLogAdapter</code> abstraction, but we do not build on one day one.
+  </div>
+
+  <div class="thought crimson">
+    <span class="label">Not building</span>
+    <strong>A CRDT layer.</strong> Our domain is agent-tool dispatch, not collaborative
+    document editing. The introspection cost is not worth the theoretical elegance.
+  </div>
+
+  <div class="thought crimson">
+    <span class="label">Not forcing</span>
+    <strong>All tools into subscribe semantics.</strong> Imperative commands stay
+    imperative. Subscribe is an <em>additional</em> shape available for front-end-owned
+    state, not a replacement for request/reply everywhere.
+  </div>
+
+  <div class="thought crimson">
+    <span class="label">Not promising</span>
+    <strong>Effectively-once semantics at the application layer.</strong> The log gives
+    at-least-once delivery plus idempotency keys. Tool handlers are responsible for
+    idempotency on their side &mdash; a deliberate, documented constraint, not a hidden
+    invariant.
+  </div>
+
+  <div class="thought teal">
+    <span class="label">The principle</span>
+    Build the smallest thing that makes the right thing possible. The <code>EventLogAdapter</code>
+    is that smallest thing. Everything beyond it is an option we've kept open &mdash; not a
+    promise we've made.
+  </div>
+</section>
+
+</div><!-- .content -->
+
+<!-- ━━━━━━━━━━ FOOTER ━━━━━━━━━━ -->
+<footer class="footer">
+  <div class="mark">agent_base</div>
+  <p>
+    Synchronous was a prison dressed as simplicity.<br>
+    A log-backed inbox is the smallest key that fits the lock &mdash;<br>
+    and leaves the door open for everything after it.
+  </p>
+  <div class="note">The Async Boundary &middot; Design Diary &middot; April 2026</div>
+</footer>
+
+</body>
+</html>
