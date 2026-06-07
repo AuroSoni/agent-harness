@@ -3,7 +3,11 @@
     "allow": [
       "mcp__filesystem__directory_tree",
       "mcp__firecrawl__firecrawl_scrape",
-      "Bash(uv run python -m pytest:*)"
+      "Bash(uv run python -m pytest:*)",
+      "WebSearch",
+      "Bash(grep -c '```mermaid' AGENT_ARCHITECTURE_EVALUATION.md)",
+      "Bash(grep -c '```' AGENT_ARCHITECTURE_EVALUATION.md)",
+      "Bash(grep -c '^\\\\s*end\\\\s*$' AGENT_ARCHITECTURE_EVALUATION.md)"
     ]
   }
 }
