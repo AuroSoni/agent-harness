@@ -14,7 +14,6 @@ from agent_base.tools.tool_types import ToolResultEnvelope, ToolSchema
 if TYPE_CHECKING:
     from agent_base.core.result import AgentResult
     from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
-    from agent_base.streaming.base import StreamFormatter
     from agent_base.storage.base import (
         AgentConfigAdapter,
         AgentRunAdapter,
@@ -90,8 +89,10 @@ class SubAgentSpec:
 @dataclass
 class SubAgentParentContext:
     parent_agent_uuid: str | None = None
-    queue: asyncio.Queue | None = None
-    formatter: str | "StreamFormatter" | None = None
+    # The parent's Rung-1 stream queue (R30 -- the legacy queue/formatter
+    # pair is deleted, G0); children share it so their deltas reach the same
+    # ``agent.stream()`` read path.
+    stream_queue: asyncio.Queue | None = None
     config_adapter: "AgentConfigAdapter | None" = None
     conversation_adapter: "ConversationAdapter | None" = None
     run_adapter: "AgentRunAdapter | None" = None
@@ -206,13 +207,9 @@ Args:
             lines.append(f"- **{name}** ({model}): {description}")
         return {"agent_definitions": "\n".join(lines)}
 
-    def set_run_context(
-        self,
-        queue: asyncio.Queue | None,
-        formatter: str | "StreamFormatter" | None,
-    ) -> None:
-        self._parent_context.queue = queue
-        self._parent_context.formatter = formatter
+    def set_run_context(self, stream_queue: asyncio.Queue | None) -> None:
+        """Receive the parent's live stream queue (or ``None`` to clear)."""
+        self._parent_context.stream_queue = stream_queue
 
     def set_agent_uuid(self, parent_uuid: str) -> None:
         self._parent_context.parent_agent_uuid = parent_uuid
@@ -300,7 +297,7 @@ Args:
         # we copy it down the tree here. We defer the copy until after
         # ``child.initialize()`` runs, because fresh ``child.agent_config``
         # may not exist yet. For resume, ``agent_config`` already exists
-        # but we still wait — ``run_stream`` calls ``initialize()`` which
+        # but we still wait — ``run()`` calls ``initialize()`` which
         # will respect the parent's extras via the pre-run hook below.
         parent_agent = self._parent_context.parent_agent
         parent_owner = None
@@ -320,15 +317,14 @@ Args:
 
         try:
             await _propagate_owner()
-            if self._parent_context.queue is not None:
-                result = await child.run_stream(
-                    prompt=task,
-                    queue=self._parent_context.queue,
-                    stream_formatter=self._parent_context.formatter or "json",
-                    cancellation_event=self._parent_context.parent_cancellation_event,
-                )
-            else:
-                result = await child.run(prompt=task)
+            if self._parent_context.stream_queue is not None:
+                # Share the parent's Rung-1 stream so the child's deltas land
+                # on the same agent.stream() read path (R30).
+                child._stream_queue = self._parent_context.stream_queue
+            result = await child.run(
+                task,
+                cancellation_event=self._parent_context.parent_cancellation_event,
+            )
         except Exception as exc:
             return ToolResultEnvelope.error(
                 "spawn_subagent",

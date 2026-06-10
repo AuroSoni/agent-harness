@@ -1,44 +1,74 @@
+"""``AnthropicAgent`` — the concrete Anthropic runtime (providers.md Fork P-A).
+
+The P-A lift (RECONCILIATION R29, sequenced last): the agent derives its turn
+machinery from :class:`~agent_base.core.runtime.AgentRuntime` — ``record_turn``,
+the hook engine, ``checkpoint``, ``await_external``, ``submit`` — and the loop
+is written against the NEW ``Provider`` protocol only:
+
+- generation goes through ``AgentRuntime._provider_turn`` (chain repair +
+  ``classify_error`` normalisation + ``_Recompact`` overflow routing — §2.2),
+- streaming rides a ``DeltaSink`` into the Rung-1 ``agent.stream()`` queue
+  (R30/G0 — the ``(queue, stream_formatter)`` pair is DELETED, not shimmed),
+- the provider-touch-points in finalize shrink to ``provider.name``,
+  ``provider.collect_api_files`` and ``provider.default_model()`` (the single
+  change that collapses B2),
+- per-turn cost is settled once via ``settle_turn`` and attached to
+  ``AgentResult.settlement``; ``UsageReport.of(settlement)`` auto-emits exactly
+  once per turn (pricing-cost.md §2.4; B6),
+- memory call sites use the O13 signatures with the documented failure
+  contract (memory.md §6),
+- ``_await_inline_relay`` and the ``agent_base.relay`` shim are DELETED
+  (relay-await.md §6 / O3 / G0) — the one relay primitive is the runtime's
+  ``await_external`` over the cid-keyed ``AwaitTable``.
+"""
 from __future__ import annotations
 
 import asyncio
 import copy
-import dataclasses
 import inspect
 import json
-import mimetypes
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
-import anthropic
-
+from agent_base.await_table.types import (
+    AWAIT_REASON_CONFIRMATION,
+    AWAIT_REASON_FRONTEND_TOOL,
+)
 from agent_base.core.abort_types import AgentPhase, STREAM_ABORT_TEXT
-from agent_base.core.conversation_log import ConversationLog, ToolLogProjection
+from agent_base.core.config import (
+    AgentConfig,
+    Conversation,
+    CostBreakdown,
+    PendingToolRelay,
+)
+from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.end_turn_hook import (
     EndTurnContext,
     EndTurnHook,
     EndTurnHookEvent,
     EndTurnHookResult,
 )
-from agent_base.providers.anthropic.abort_types import StreamResult
-from agent_base.core.agent_base import Agent
-from agent_base.core.config import AgentConfig, Conversation, CostBreakdown, LLMConfig, PendingToolRelay
+from agent_base.core.errors import ErrorCode
 from agent_base.core.messages import Message, Usage
+from agent_base.core.provider import ProviderTurn
 from agent_base.core.result import AgentResult, LogEntry
+from agent_base.core.runtime import AgentRuntime, _Recompact
 from agent_base.core.types import (
     ContentBlock,
     Contribution,
     ContributionPosition,
     Role,
-    ServerToolResultContent,
     TextContent,
     ToolResultBase,
     ToolResultContent,
     ToolUseBase,
-    ToolUseContent,
 )
+from agent_base.logging import get_logger
+from agent_base.media_backend.local import LocalMediaBackend
 from agent_base.memory.stores import NoOpMemoryStore
+from agent_base.pricing.settlement import CsvPricingPolicy, settle_turn
 from agent_base.sandbox import sandbox_from_config
 from agent_base.sandbox.local import LocalSandbox
 from agent_base.storage.adapters.memory import (
@@ -46,21 +76,31 @@ from agent_base.storage.adapters.memory import (
     MemoryConversationAdapter,
     MemoryAgentRunAdapter,
 )
-from agent_base.media_backend.local import LocalMediaBackend
-from agent_base.media_backend.media_types import MediaMetadata
-from agent_base.tools.registry import ToolCallInfo, ToolRegistry
-from agent_base.streaming.types import MetaDelta, RollbackDelta
+from agent_base.streaming.meta import (
+    Custom,
+    ErrorReport,
+    FilesUpdated,
+    FrontendCallView,
+    Rollback,
+    RunCompleted,
+    RunStarted,
+    UsageReport,
+)
+from agent_base.streaming.types import ToolResultDelta
+from agent_base.tools.registry import ToolRegistry
 from agent_base.tools.tool_types import ToolResultEnvelope
-from agent_base.logging import get_logger
-from .compaction import CompactionConfig, CompactionController
-from .context_externalizer import ContextExternalizer, ExternalizationConfig
-from .formatters import AnthropicMessageFormatter
 
-logger = get_logger(__name__)
+from .compaction import CompactionConfig, CompactionController
+from .config import AnthropicLLMConfig
+from .context_externalizer import ContextExternalizer, ExternalizationConfig
 from .provider import AnthropicProvider
 
+logger = get_logger(__name__)
+
 if TYPE_CHECKING:
-    from agent_base.media_backend.media_types import MediaBackend
+    from agent_base.core.cost import TurnSettlement
+    from agent_base.core.provider import Provider
+    from agent_base.media_backend.media_types import MediaBackend, MediaMetadata
     from agent_base.memory.base import MemoryStore
     from agent_base.sandbox.sandbox_types import Sandbox
     from agent_base.storage.base import (
@@ -68,13 +108,10 @@ if TYPE_CHECKING:
         ConversationAdapter,
         AgentRunAdapter,
     )
-    from agent_base.streaming.base import StreamFormatter
+    from agent_base.streaming.wire import DeltaSink
 
 MAX_PARALLEL_TOOL_CALLS = 5
-DEFAULT_MAX_RETRIES = 5
-DEFAULT_BASE_DELAY = 1.0
 DEFAULT_MAX_STEPS = 50
-DEFAULT_STREAM_FORMATTER = "json"
 DEFAULT_MAX_TOOL_RESULT_TOKENS = 25000
 
 
@@ -102,34 +139,48 @@ def _strip_binary_data(obj: Any) -> Any:
     return obj
 
 
-@dataclass
-class AnthropicLLMConfig(LLMConfig):
-    """Anthropic-specific LLM configuration.
+class _RuntimeDeltaSink:
+    """``DeltaSink`` wired into the agent's Rung-1 stream (R30).
 
-    Extends the base ``LLMConfig`` with fields specific to the
-    Anthropic API (extended thinking, server tools, skills, etc.).
+    ``emit`` forwards content deltas onto the ``agent.stream()`` queue;
+    ``emit_meta`` routes through the runtime's ``_hook_emit`` so the §3
+    ``MetaEnvelope`` header is stamped by the runtime (providers never
+    construct envelopes).
     """
-    thinking_tokens: Optional[int] = None
-    max_tokens: Optional[int] = None
-    server_tools: list[dict[str, Any]] | None = None
-    skills: list[dict[str, Any]] | None = None
-    beta_headers: list[str] | None = None
-    container_id: str | None = None
-    enable_caching: bool = True
-    context_management: dict[str, Any] | None = None
-    inference_geo: Optional[str] = None
-    speed: Optional[str] = None
-    service_tier: Optional[str] = None
-    api_kwargs: dict[str, Any] | None = None
 
-class AnthropicAgent(Agent):
+    def __init__(self, agent: "AnthropicAgent") -> None:
+        self._agent = agent
+
+    def emit(self, delta: Any) -> None:
+        self._agent._emit_stream_item(delta)
+
+    def emit_meta(
+        self,
+        body: Any,
+        *,
+        correlation_id: str | None = None,
+        expects_reply: bool = False,
+    ) -> None:
+        self._agent._hook_emit(
+            body, correlation_id=correlation_id, expects_reply=expects_reply
+        )
+
+
+class AnthropicAgent(AgentRuntime):
+    """Concrete Anthropic runtime: ``AgentRuntime`` + ``AnthropicProvider``.
+
+    Style-3 construction (providers.md §2.4): ``AnthropicAgent(...)`` is the
+    canonical factory that pre-binds ``provider=AnthropicProvider(...)``;
+    ``LiteLLMAgent`` is the same class with ``provider=LiteLLMProvider()``.
+    """
+
     def __init__(
         self,
         # LLM Related Configurations.
         system_prompt: Optional[str] = None,
         model: Optional[str] = None,
         messages: list[Message] | None = None,
-        config: AnthropicLLMConfig = AnthropicLLMConfig(),
+        config: Any = None,
         compaction_config: CompactionConfig | None = None,
         externalization_config: ExternalizationConfig | None = None,
         # Agent Orchestration Configurations.
@@ -139,33 +190,40 @@ class AnthropicAgent(Agent):
         tools: list[Callable[..., Any]] | None = None,
         frontend_tools: list[Callable[..., Any]] | None = None,
         subagents: dict[str, "AnthropicAgent"] | None = None,
-        max_retries: int = DEFAULT_MAX_RETRIES,
-        base_delay: float = DEFAULT_BASE_DELAY,
+        max_retries: int = 5,
+        base_delay: float = 1.0,
         max_parallel_tool_calls: int = MAX_PARALLEL_TOOL_CALLS,
         max_tool_result_tokens: int = DEFAULT_MAX_TOOL_RESULT_TOKENS,
-        memory_store: MemoryStore | None = None,
-        sandbox: Sandbox | None = None,
-        sandbox_factory: Callable[[str], Sandbox] | None = None,
+        memory_store: "MemoryStore | None" = None,
+        sandbox: "Sandbox | None" = None,
+        sandbox_factory: Callable[[str], "Sandbox"] | None = None,
         end_turn_hook: EndTurnHook | None = None,
         agent_uuid: str | None = None,
         # Storage and Media Adapter Configurations.
-        config_adapter: AgentConfigAdapter | None = None,
-        conversation_adapter: ConversationAdapter | None = None,
-        run_adapter: AgentRunAdapter | None = None,
-        media_backend: MediaBackend | None = None,
+        config_adapter: "AgentConfigAdapter | None" = None,
+        conversation_adapter: "ConversationAdapter | None" = None,
+        run_adapter: "AgentRunAdapter | None" = None,
+        media_backend: "MediaBackend | None" = None,
         fallback_api_keys: list[str] | None = None,
-        ):
+        # Fork P-A: the provider VALUE (Style-3 factory subclasses pre-bind it).
+        provider_value: "Provider | None" = None,
+        pricing_policy: Any | None = None,
+    ) -> None:
+        # ── AgentRuntime base: hooks engine, mailbox/audit (submit planes),
+        #    profiles, principal, stream state (Fork P-A derivation).
+        super().__init__(
+            agent_uuid=agent_uuid,
+            max_steps=int(max_steps) if max_steps else DEFAULT_MAX_STEPS,
+        )
+        # Restore lazy-uuid semantics: ``None`` means "create in initialize()"
+        # (the base generated an eager uuid through the property setter).
+        self._agent_uuid = agent_uuid
+        # The live config is created/loaded by initialize(); the base's eager
+        # placeholder would mask the load-vs-create branch.
+        self._agent_config = None
 
         ####################################################################
-        # Non serializable params that are not loaded from database.
-        # These are initialized per Agent instance.
-        # Take special care to provide exact same params on agent initialization
-        # if you want to resume an agent from a previous session.
-        ####################################################################
-
-        ####################################################################
-        # Storage adapters - None means memory-only (no persistence)
-        # Each adapter is independently optional for granular control.
+        # Storage adapters - default to memory adapters.
         ####################################################################
         self.config_adapter = config_adapter or MemoryAgentConfigAdapter()
         self.conversation_adapter = conversation_adapter or MemoryConversationAdapter()
@@ -200,7 +258,9 @@ class AnthropicAgent(Agent):
         if subagents:
             from agent_base.common_tools.sub_agent_tool import SubAgentTool
             self._sub_agent_tool = SubAgentTool(agents=subagents)
-            subagent_func = self._sub_agent_tool.get_tool()
+            # tools.md G0: ``get_tool`` is deleted — ``as_tool()`` is the one
+            # compilation seam.
+            subagent_func = self._sub_agent_tool.as_tool()
             self.tool_registry.register_tools([subagent_func])
 
         ####################################################################
@@ -213,6 +273,8 @@ class AnthropicAgent(Agent):
 
         self.max_parallel_tool_calls = max_parallel_tool_calls
         self.max_tool_result_tokens = max_tool_result_tokens
+        # O12(c): retained as the provider's retry-budget INPUT (and for
+        # SubAgentSpec cloning) — never threaded into generate calls.
         self.max_retries = max_retries
         self.base_delay = base_delay
 
@@ -228,77 +290,93 @@ class AnthropicAgent(Agent):
         # Per-run runtime contributions (memory, future system_help, etc.).
         # Applied to the target user message at render time only — never
         # persisted into context_messages. Reset at the start of each run.
-        # NOTE: instance state, lost on cold-load resume — known v1 limitation.
         self._runtime_contributions: list[Contribution] = []
         self._runtime_target_msg_id: str | None = None
 
-        # Composition
-        self.provider = AnthropicProvider(fallback_api_keys=fallback_api_keys)
+        # Composition (Fork P-A): the provider is a VALUE on the runtime.
+        # O12(c): the ctor retry scalars land on the provider's RetryPolicy.
+        if provider_value is not None:
+            self.provider = provider_value
+        else:
+            from agent_base.core.provider import RetryPolicy
 
-        # Abort/steer state — cooperative cancellation
-        self._phase: AgentPhase = AgentPhase.IDLE
-        self._cancellation_event: asyncio.Event | None = None
+            self.provider = AnthropicProvider(
+                fallback_api_keys=fallback_api_keys,
+                retry_policy=RetryPolicy(max_retries=max_retries, base_delay=base_delay),
+            )
+
+        # Pricing policy for settle_turn (pricing-cost.md §2.5; CSV default).
+        self.pricing_policy = pricing_policy or CsvPricingPolicy()
+
+        # Abort/steer state — cooperative cancellation.
         self._abort_completion: asyncio.Event | None = None
+        self._run_task: asyncio.Task | None = None
 
         # Relay mode for frontend-tool pauses. Root agents ``persist_return``
-        # (serialize ``pending_relay``, close SSE, resume via a new stream on
-        # ``/tool_results``). Inline-await children pause on an
-        # ``asyncio.Future`` and continue the loop when it resolves, without
-        # ever returning from ``_resume_loop``. Set at spawn time by
-        # ``SubAgentTool`` for fresh children only (not rehydrated resumes).
+        # (serialize ``pending_relay``, close the stream, resume via
+        # ``resume_with_relay_results`` / ``submit(ToolReply)``). Inline-await
+        # children park on the cid-keyed AwaitTable through the runtime's
+        # ``await_external`` and continue the loop on resume.
         self._relay_mode: str = "persist_return"
 
         # Optional upstream forward for cumulative usage/cost so inline-await
-        # children fold their per-step tokens and $ into the root's
-        # ``_run_cumulative_usage`` and ``_cumulative_cost`` — credits are
-        # deducted from the root ``AgentResult.cost``.
+        # children fold their per-step tokens and $ into the root's sinks.
         self._parent_usage_forward: "AnthropicAgent | None" = None
 
         ####################################################################
-        # The agent's persistable state. This is the state that is saved to the database.
+        # The agent's persistable state.
         ####################################################################
 
         self.system_prompt = system_prompt
         self.model = model
         self.messages = messages
-        self.config = config
+        # O12(b): the ONE LLMConfig landing path.
+        self.config = self.provider.make_llm_config(config)
         self._compaction_config = compaction_config
         self._externalization_config = externalization_config
         self.description = description
         self.max_steps = max_steps if max_steps is not None else float('inf')
-        self._agent_uuid = agent_uuid
 
         # Per-run tracking state (initialized in initialize_run).
-        self._run_id: str = ""
         self._run_logs: list[LogEntry] = []
         self._run_cumulative_usage: Usage = Usage()
         self._cumulative_usage: Usage = Usage()
+        self._cumulative_cost: CostBreakdown = CostBreakdown()
+        # The turn's provider steps — settle_turn input (pricing-cost §2.4).
+        self._turn_steps: list[Message] = []
 
         # These are set during initialize().
-        self.agent_config: AgentConfig | None = None
         self.conversation: Conversation | None = None
 
-        # NOTE: Agent Construction needs to be followed by an async call to initialize()
-        # to make sure the agent is properly initialized.
-        # This is done automatically in the run() method, but can be called explicitly
-        # to access agent state before run().
-        # Both agent config and conversation will be initialized by the initialize() method.
+    # ── identity plumbing (legacy property surface kept) ──────────────────
 
     @property
     def agent_uuid(self) -> str | None:
-        if self.agent_config is not None and self.agent_config.agent_uuid:
-            return self.agent_config.agent_uuid
-        return self._agent_uuid
+        config = getattr(self, "_agent_config", None)
+        if config is not None and config.agent_uuid:
+            return config.agent_uuid
+        return getattr(self, "_agent_uuid", None)
 
     @agent_uuid.setter
     def agent_uuid(self, value: str | None) -> None:
         self._agent_uuid = value
 
-    def _default_sandbox_factory(self, agent_uuid: str) -> Sandbox:
+    @property
+    def agent_config(self) -> AgentConfig | None:
+        """The live config (maps onto the runtime's ``_agent_config``)."""
+        return self._agent_config
+
+    @agent_config.setter
+    def agent_config(self, value: AgentConfig | None) -> None:
+        self._agent_config = value
+
+    # ── sandbox ────────────────────────────────────────────────────────────
+
+    def _default_sandbox_factory(self, agent_uuid: str) -> "Sandbox":
         """Create the default LocalSandbox for an agent UUID."""
         return LocalSandbox(sandbox_id=agent_uuid, base_dir="./sandbox_data")
 
-    def _get_or_create_sandbox(self, agent_uuid: str) -> Sandbox:
+    def _get_or_create_sandbox(self, agent_uuid: str) -> "Sandbox":
         """Resolve the sandbox instance for this agent session."""
         if self._sandbox is not None:
             sandbox = self._sandbox
@@ -323,6 +401,7 @@ class AnthropicAgent(Agent):
         self._inject_agent_uuid_to_tools()
         self._configure_context_externalizer()
 
+    # ── initialize / per-run setup ─────────────────────────────────────────
 
     async def initialize(self) -> tuple[AgentConfig, Conversation | None]:
         if self._initialized:
@@ -346,11 +425,11 @@ class AnthropicAgent(Agent):
             loaded_config = await self.config_adapter.load(self._agent_uuid)
             if loaded_config is None:
                 raise RuntimeError(f"Agent config not found for UUID: {self._agent_uuid}")
-            # Re-parse llm_config as AnthropicLLMConfig (storage deserializes as base LLMConfig).
-            if not isinstance(loaded_config.llm_config, AnthropicLLMConfig):
-                loaded_config.llm_config = AnthropicLLMConfig.from_dict(
-                    loaded_config.llm_config.to_dict()
-                )
+            # O12(b): re-land the persisted llm_config as the provider's
+            # NATIVE config class (storage deserializes the base LLMConfig).
+            loaded_config.llm_config = self.provider.make_llm_config(
+                loaded_config.llm_config
+            )
             self.agent_config = loaded_config
             raw_session_usage = self.agent_config.extras.get("session_cumulative_usage")
             if isinstance(raw_session_usage, dict):
@@ -411,9 +490,9 @@ class AnthropicAgent(Agent):
 
         # Populate AgentConfig with constructor params.
         self.agent_config.system_prompt = self.system_prompt
-        self.agent_config.model = self.model or "claude-sonnet-4-5"
+        self.agent_config.model = self.model or self.provider.default_model()
         self.agent_config.llm_config = self.config
-        self.agent_config.provider = "anthropic"
+        self.agent_config.provider = self.provider.name
         self.agent_config.description = self.description
         self.agent_config.max_steps = int(self.max_steps) if self.max_steps != float('inf') else 0
         self.agent_config.last_run_at = now
@@ -434,6 +513,7 @@ class AnthropicAgent(Agent):
         self._run_logs = []
         self._run_cumulative_usage = Usage()
         self._cumulative_cost = CostBreakdown()
+        self._turn_steps = []
         self._ensure_registered_agent()
 
     def _reset_cancellation_state(
@@ -460,12 +540,11 @@ class AnthropicAgent(Agent):
             self._compaction_controller = None
             return
 
+        # O12(c): no retry scalars — the provider reads self.retry_policy.
         self._compaction_controller = CompactionController(
             config=resolved_config,
             provider=self.provider,
             token_estimator=self.provider.token_estimator,
-            max_retries=self.max_retries,
-            base_delay=self.base_delay,
         )
 
     def _build_default_externalization_config(self) -> ExternalizationConfig:
@@ -522,26 +601,42 @@ class AnthropicAgent(Agent):
         self.agent_config.context_messages.append(context_message)
         self._append_message_to_logs(history_variant)
 
+    # ── memory (O13 — memory.md §6) ────────────────────────────────────────
+
+    def _memory_hook_context(self) -> Any:
+        """The locked ``HookContext`` passed directly to memory stores (O13 —
+        the bespoke retrieve/update context types are deleted)."""
+        from agent_base.core.hooks.context import HookContext
+
+        return HookContext(**self._base_hook_kwargs())
+
     async def _build_runtime_contributions(self, prompt: Message) -> list[Contribution]:
         """Collect per-run augmentations (memory, future hooks) as Contributions.
 
-        Returns a fresh list each run; callers store it on instance state and
-        apply it to the target user message at render time only. The Contributions
-        produced here are NEVER appended to ``prompt.contributions`` directly,
-        which would cause them to be persisted in ``context_messages`` and then
-        re-injected on every replay turn.
+        O13: ``store.retrieve(hook_ctx, user_message) -> MemoryContribution``.
+        Failure contract (memory.md §6): retrieve is best-effort — any
+        exception is swallowed + logged and the turn proceeds with no
+        contribution.
         """
         runtime: list[Contribution] = []
-        if self.memory_store:
-            memories = await self.memory_store.retrieve(
-                user_message=prompt,
-                messages=self.agent_config.context_messages,
-            )
-            if memories:
+        if self.memory_store is not None:
+            contribution = None
+            try:
+                contribution = await self.memory_store.retrieve(
+                    self._memory_hook_context(), prompt
+                )
+            except Exception:
+                logger.warning(
+                    "memory_retrieve_failed",
+                    agent_uuid=self.agent_uuid,
+                    exc_info=True,
+                )
+            blocks = list(getattr(contribution, "blocks", None) or [])
+            if blocks:
                 runtime.append(
                     Contribution(
                         slot="memory",
-                        content=memories,
+                        content=blocks,
                         source="memory",
                         position=ContributionPosition.BEFORE.value,
                     )
@@ -549,22 +644,12 @@ class AnthropicAgent(Agent):
         return runtime
 
     def _select_tail_for_mode(self) -> str | None:
-        """Return the tail instruction for the current agent mode.
-
-        Base implementation returns ``None`` so the renderer falls back to its
-        default (``DEFAULT_TAIL_INSTRUCTION``). Subclasses (e.g. NovaAgent) can
-        override to vary the tail per mode (plan/ask/full).
-        """
+        """Return the tail instruction for the current agent mode."""
         return None
 
     def _build_render_view(self, messages: list[Message]) -> list[Message]:
         """Render every message for the LLM wire, applying runtime contributions
-        to the target user message only.
-
-        Runtime contributions (memory, etc.) are applied transiently — they are
-        never persisted — so each provider call within a single run sees the same
-        rendered shape, but the underlying ``context_messages`` stays clean.
-        """
+        to the target user message only."""
         target_id = self._runtime_target_msg_id
         runtime = self._runtime_contributions
         tail = self._select_tail_for_mode()
@@ -578,43 +663,31 @@ class AnthropicAgent(Agent):
             rendered.append(view_msg.render(tail_instruction=tail))
         return rendered
 
-    async def run(self, prompt: str | Message) -> AgentResult:
-        if not self._initialized:
-            await self.initialize()
+    # ── streaming plumbing (R30 — DeltaSink over the Rung-1 stream) ────────
 
-        self._reset_cancellation_state()
+    def _active_sink(self) -> "DeltaSink | None":
+        """The loop's DeltaSink when a stream read-path exists (a subscriber
+        claimed ``stream()`` or a parent shared its queue); None otherwise."""
+        if self._stream_queue is not None:
+            return _RuntimeDeltaSink(self)
+        return None
 
-        if isinstance(prompt, str):
-            prompt = Message.user(prompt)
+    def _emit_ctx(self) -> Any:
+        """Minimal emit-capable ctx for the runtime's ``await_external``."""
+        return SimpleNamespace(emit=self._hook_emit)
 
-        self.initialize_run(prompt)
+    # ── run entrypoints ────────────────────────────────────────────────────
 
-        self._runtime_contributions = await self._build_runtime_contributions(prompt)
-        self._runtime_target_msg_id = prompt.id
-
-        if self._context_externalizer is not None:
-            context_prompt = await self._context_externalizer.externalize_prompt(prompt)
-        else:
-            context_prompt = prompt
-
-        self._append_message_variants(context_prompt, prompt)
-
-        # Agent Loop
-        return await self._resume_loop()
-
-
-    async def run_stream(
+    async def run(
         self,
         prompt: str | Message,
-        queue: asyncio.Queue,
-        stream_formatter: str | StreamFormatter = DEFAULT_STREAM_FORMATTER,
+        *,
         cancellation_event: asyncio.Event | None = None,
     ) -> AgentResult:
         if not self._initialized:
             await self.initialize()
 
-        # Store the cancellation event (injected from caller or create a new one).
-        self._cancellation_event = cancellation_event or asyncio.Event()
+        self._reset_cancellation_state(cancellation_event)
 
         if isinstance(prompt, str):
             prompt = Message.user(prompt)
@@ -631,23 +704,23 @@ class AnthropicAgent(Agent):
 
         self._append_message_variants(context_prompt, prompt)
 
-        # Resolve formatter and emit meta_init before the loop.
-        if isinstance(stream_formatter, str):
-            from agent_base.streaming import get_formatter
-            stream_formatter = get_formatter(stream_formatter)
-        await self._emit_meta_init(prompt, queue, stream_formatter)
+        sink = self._active_sink()
+        if sink is not None:
+            self._emit_run_started(prompt, sink)
 
         # Agent Loop
-        return await self._resume_loop(queue, stream_formatter)
+        return await self._resume_loop(sink)
 
     async def resume_with_relay_results(
         self,
         relay_results: list[ContentBlock],
-        queue: asyncio.Queue | None = None,
-        stream_formatter: str | StreamFormatter | None = DEFAULT_STREAM_FORMATTER,
         cancellation_event: asyncio.Event | None = None,
     ) -> AgentResult:
+        """Resume a ``persist_return`` relay pause with frontend results.
 
+        The hot/resident path is ``submit(ToolReply(cid))`` resolving the
+        parked ``await_external``; this is the COLD rehydrate path.
+        """
         if not self._initialized:
             await self.initialize()
 
@@ -662,45 +735,49 @@ class AnthropicAgent(Agent):
         self._run_logs = []
         self._run_cumulative_usage = Usage()
         self._cumulative_cost = CostBreakdown()
+        self._turn_steps = []
 
-        # Resolve string formatter names to actual StreamFormatter instances
-        # before the on_relay_result loop so hooks can use queue/formatter.
-        if isinstance(stream_formatter, str):
-            from agent_base.streaming import get_formatter
-            stream_formatter = get_formatter(stream_formatter)
+        await self._splice_relay_results(
+            pending.cid, list(relay_results), self._emit_ctx()
+        )
 
-        await self._splice_relay_results(relay_results, queue, stream_formatter)
-
+        sink = self._active_sink()
         # Resume the agent loop.
-        return await self._resume_loop(queue, stream_formatter)
+        return await self._resume_loop(sink)
 
     async def _splice_relay_results(
         self,
-        relay_results: list[ContentBlock],
-        queue: asyncio.Queue | None,
-        stream_formatter: StreamFormatter | None,
+        cid: str | None,
+        results: list[ContentBlock],
+        ctx: Any = None,
     ) -> None:
         """Fold completed backend + incoming frontend results into context.
 
-        Shared by the rehydrated root resume path (``resume_with_relay_results``)
-        and the inline-await subagent branch in ``_resume_loop``. Assumes
-        ``self.agent_config.pending_relay`` is populated; clears it on success.
+        Overrides the runtime's relay splice with the externalizer-aware fold:
+        ``pending_relay.completed_results`` + the incoming reply land as ONE
+        user message; ``on_relay_result`` fires per incoming ToolResult;
+        ``pending_relay`` clears on success.
         """
+        del ctx
         pending = self.agent_config.pending_relay
         if pending is None:
             raise RuntimeError("_splice_relay_results called without pending_relay")
+        if pending.cid is not None and cid is not None and pending.cid != cid:
+            logger.warning(
+                "relay_cid_mismatch", expected=pending.cid, received=cid
+            )
 
         all_result_blocks: list[ContentBlock] = []
         for completed_msg in pending.completed_results:
             all_result_blocks.extend(completed_msg.content)
-        if isinstance(relay_results, list):
-            all_result_blocks.extend(relay_results)
+        if isinstance(results, list):
+            all_result_blocks.extend(results)
 
         if self._context_externalizer is not None:
             combined_message, context_message = (
                 await self._context_externalizer.externalize_relay_results(
                     pending.completed_results,
-                    relay_results,
+                    results,
                 )
             )
         else:
@@ -709,7 +786,7 @@ class AnthropicAgent(Agent):
 
         self._append_message_variants(context_message, combined_message)
 
-        for block in relay_results:
+        for block in results:
             if isinstance(block, ToolResultBase):
                 tool_name = block.tool_name or self._get_relay_tool_name(block.tool_id, pending)
                 tool_input = self._get_relay_tool_input(block.tool_id, pending)
@@ -717,23 +794,12 @@ class AnthropicAgent(Agent):
                     tool_name=tool_name,
                     tool_input=tool_input,
                     result=block,
-                    queue=queue,
-                    stream_formatter=stream_formatter,
                 )
 
         self.agent_config.pending_relay = None
 
-        if queue and stream_formatter:
-            await self._emit_meta_init(combined_message, queue, stream_formatter)
-
     def _tool_ctx_factory(self):
-        """Build a per-call ``ToolContext`` factory for the current run.
-
-        Tools that declare a ``ctx`` parameter receive idempotency + replay
-        identity; tools that do not are unaffected. The ``OnceStore`` is
-        session-scoped (lazily created) so ``ctx.once(...)`` dedupes within a
-        process. Plumbed in Rung 1; enforcement is Rung 2.
-        """
+        """Build a per-call ``ToolContext`` factory for the current run."""
         from agent_base.tools.context import ToolContext, OnceStore
 
         if getattr(self, "_once_store", None) is None:
@@ -746,322 +812,116 @@ class AnthropicAgent(Agent):
 
         return factory
 
+    # ── session-tree identity ──────────────────────────────────────────────
+
     def _root_session_id(self) -> str:
         """The owning root-session tree id (== root agent_uuid).
 
-        For a sub-agent this is the root's uuid (carried in ``extras['owner']``);
-        for a root agent it is the agent's own uuid.
+        Prefers the runtime's spawn-stamped ``_root_session_id_value``; falls
+        back to the legacy ``extras['owner']`` snapshot for hosts that still
+        populate it; a root is its own root.
         """
-        owner = (self.agent_config.extras or {}).get("owner")
+        if self._root_session_id_value:
+            return self._root_session_id_value
+        extras = (self.agent_config.extras if self.agent_config else None) or {}
+        owner = extras.get("owner")
         if isinstance(owner, dict) and owner.get("root_agent_uuid"):
             return str(owner["root_agent_uuid"])
-        return self.agent_config.agent_uuid
+        if self.agent_config is not None:
+            return self.agent_config.agent_uuid
+        return self.agent_uuid or self._agent_uuid or ""
+
+    def _nothing_in_flight(self) -> bool:
+        """§2.4 idle check — a persisted ``pending_relay`` pause counts as
+        in-flight (an Abort must repair it), even while the loop is idle."""
+        if self.agent_config is not None and self.agent_config.pending_relay is not None:
+            return False
+        return super()._nothing_in_flight()
 
     async def _repair_self_chain(self) -> None:
-        """Repair this agent's own chain when a parked await wakes cancelled (5b).
-
-        A node that loses its await must synthesize tool_results for its pending
-        relay so its ``tool_use`` is not left orphaned — the nested-repair
-        obligation. The root's ``AwaitTable.interrupt`` cancels every future in
-        the subtree, so each parked node runs this and repairs its own level.
-        No-op if nothing is pending.
-        """
+        """Repair this agent's own chain when a parked await wakes cancelled."""
         if self.agent_config.pending_relay is not None:
             await self._abort_awaiting_relay()
 
-    async def await_external(
-        self,
-        cid: str,
-        tool_use_ids: list[str],
-        classification,
-        queue: asyncio.Queue | None,
-        stream_formatter: StreamFormatter | None,
-        child_agent_id: str | None = None,
-    ) -> AgentResult | None:
-        """Suspend on a correlation id until results arrive — the one relay primitive.
+    # ── the loop (written ONCE against the Provider protocol — §2.2) ───────
 
-        Generalises ``_await_inline_relay`` from "park a sub-agent by uuid on the
-        InlineRelayRegistry" to "park any computation on a ``cid`` in the
-        cid-keyed AwaitTable." Returns ``None`` on successful resume (the caller
-        ``continue``s the loop), or an aborted ``AgentResult`` if cancelled while
-        waiting. The await is recorded under the current await-generation; a
-        ``ToolReply`` for a retired generation is dropped by ``resolve`` (the
-        Phase 5a race fix). ``finally`` always pops the table entry.
-        """
-        from agent_base.await_table import get_await_table
-
-        table = get_await_table()
-        root_session_id = self._root_session_id()
-        join = await table.open(
-            cid=cid,
-            root_session_id=root_session_id,
-            owner_agent_id=self.agent_config.agent_uuid,
-            tool_use_ids=tool_use_ids,
-            child_agent_id=child_agent_id,
-        )
-
-        # Emit the awaiting_frontend_tools delta (same shape as the relay paths),
-        # now carrying the cid the client replies to.
-        if queue is not None:
-            fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
-            pending_tools = [
-                {"tool_use_id": tc.tool_id, "name": tc.name, "input": tc.input}
-                for tc in (*classification.frontend_calls, *classification.confirmation_calls)
-            ]
-            delta = MetaDelta(
-                agent_uuid=self.agent_config.agent_uuid,
-                type="awaiting_frontend_tools",
-                payload={"tools": pending_tools, "cid": cid},
-                is_final=True,
-            )
-            await fmt.format_delta(delta, queue)
-
-        cancel_event = self._cancellation_event
-        try:
-            if cancel_event is not None:
-                cancel_task = asyncio.create_task(cancel_event.wait())
-                done, pending = await asyncio.wait(
-                    {join.future, cancel_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if cancel_task in done and join.future not in done:
-                    for p in pending:
-                        p.cancel()
-                    await self._repair_self_chain()
-                    self._phase = AgentPhase.IDLE
-                    if self._abort_completion is not None:
-                        self._abort_completion.set()
-                    return self._build_aborted_result()
-                for p in pending:
-                    p.cancel()
-            else:
-                try:
-                    await join.future
-                except asyncio.CancelledError:
-                    pass
-
-            if join.future.cancelled():
-                await self._repair_self_chain()
-                self._phase = AgentPhase.IDLE
-                if self._abort_completion is not None:
-                    self._abort_completion.set()
-                return self._build_aborted_result()
-
-            relay_results = join.future.result()
-        finally:
-            table.pop(cid)
-
-        await self._splice_relay_results(relay_results, queue, stream_formatter)
-        await self._persist_state()
-        return None
-
-    async def _await_inline_relay(
-        self,
-        pending_tool_ids: list[str],
-        classification,
-        queue: asyncio.Queue | None,
-        stream_formatter: StreamFormatter | None,
-    ) -> AgentResult | None:
-        """Pause this subagent on the relay registry until results arrive.
-
-        Returns ``None`` on successful resume (the caller should ``continue``
-        the ``_resume_loop`` to make the next LLM call), or an
-        ``AgentResult`` if the child was cancelled while waiting (the caller
-        should return it upward like the normal cancel path).
-
-        The Future wait races against ``self._cancellation_event`` so an
-        abort/steer on the parent wakes every blocked child; ``finally``
-        guarantees the registry entry is cleaned up on every exit path.
-        """
-        from agent_base.relay import get_inline_relay_registry
-
-        owner = (self.agent_config.extras or {}).get("owner")
-        if not isinstance(owner, dict):
-            raise RuntimeError(
-                "inline-await subagent missing agent_config.extras['owner']; "
-                "the host must populate it on the root agent before run_stream"
-            )
-        organization_id = str(owner["organization_id"])
-        member_id = str(owner["member_id"])
-        root_agent_uuid = str(owner["root_agent_uuid"])
-
-        registry = get_inline_relay_registry()
-        future = await registry.register(
-            child_agent_uuid=self.agent_config.agent_uuid,
-            root_agent_uuid=root_agent_uuid,
-            organization_id=organization_id,
-            member_id=member_id,
-            pending_tool_use_ids=set(pending_tool_ids),
-        )
-
-        # Emit the awaiting_frontend_tools delta so the client sees the
-        # pause and knows which tools to run — same event shape the root
-        # uses, just carrying this child's agent_uuid.
-        if queue is not None:
-            fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
-            pending_tools = [
-                {"tool_use_id": tc.tool_id, "name": tc.name, "input": tc.input}
-                for tc in (*classification.frontend_calls, *classification.confirmation_calls)
-            ]
-            delta = MetaDelta(
-                agent_uuid=self.agent_config.agent_uuid,
-                type="awaiting_frontend_tools",
-                payload={"tools": pending_tools},
-                is_final=True,
-            )
-            await fmt.format_delta(delta, queue)
-
-        cancel_event = self._cancellation_event
-        try:
-            if cancel_event is not None:
-                cancel_task = asyncio.create_task(cancel_event.wait())
-                done, pending = await asyncio.wait(
-                    {future, cancel_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if cancel_task in done and future not in done:
-                    # Abort/steer/disconnect reached us before results did.
-                    for p in pending:
-                        p.cancel()
-                    self._phase = AgentPhase.IDLE
-                    if self._abort_completion is not None:
-                        self._abort_completion.set()
-                    return self._build_aborted_result()
-                # Future done; tidy up the cancel waiter.
-                for p in pending:
-                    p.cancel()
-            else:
-                try:
-                    await future
-                except asyncio.CancelledError:
-                    # drop_tree (client disconnect / turn teardown) cancelled
-                    # the future — fall through to the aborted-result path
-                    # rather than letting the cancellation propagate.
-                    pass
-
-            if future.cancelled():
-                # Registry dropped us (e.g. client disconnect drop_tree).
-                self._phase = AgentPhase.IDLE
-                if self._abort_completion is not None:
-                    self._abort_completion.set()
-                return self._build_aborted_result()
-
-            relay_results = future.result()
-        finally:
-            registry.pop(self.agent_config.agent_uuid)
-
-        # Splice backend + incoming frontend results and persist once so a
-        # subsequent turn can resume by ``resume_agent_uuid=<child>``.
-        await self._splice_relay_results(relay_results, queue, stream_formatter)
-        await self._persist_state()
-        return None
-
-    async def _resume_loop(self, queue: asyncio.Queue | None = None, stream_formatter: str | StreamFormatter | None = None) -> AgentResult:
-
-        # Resolve string formatter names to actual StreamFormatter instances.
-        from agent_base.streaming import get_formatter
-        if isinstance(stream_formatter, str):
-            stream_formatter = get_formatter(stream_formatter)
-
+    async def _resume_loop(self, sink: "DeltaSink | None" = None) -> AgentResult:
         # Initialize cancellation primitives.
         if self._cancellation_event is None:
             self._cancellation_event = asyncio.Event()
-        self._abort_completion = asyncio.Event()
+        if self._abort_completion is None:
+            self._abort_completion = asyncio.Event()
 
-        # Inject queue/formatter into tools that support streaming.
-        self._inject_stream_context_to_tools(queue, stream_formatter)
+        # Inject the live stream queue into tools that support streaming.
+        self._inject_stream_context_to_tools(self._stream_queue)
 
         # Record the driving task so an out-of-band abort can hard-cancel it
         # after the cooperative grace window (ABORT_GRACE_MS).
         self._run_task = asyncio.current_task()
 
+        response_message: Message | None = None
         try:
             while self.agent_config.current_step < self.max_steps:
                 self._phase = AgentPhase.STREAMING
 
                 # --- Proactive compaction check ---
                 estimated_tokens = self.estimate_current_context_tokens()
-                should_compact = (
+                if (
                     self._compaction_controller is not None
                     and self._compaction_controller.should_compact(
                         self.agent_config.context_messages,
                         estimated_tokens,
                     )
-                )
-                if (
-                    self._compaction_controller is not None
-                    and should_compact
                 ):
                     compacted_messages = await self._compaction_controller.compact(
                         context_messages=self.agent_config.context_messages,
                         model=self.agent_config.model,
                         agent_uuid=self.agent_config.agent_uuid,
-                        queue=queue,
-                        stream_formatter=stream_formatter,
+                        sink=sink,
                         reason="threshold",
                     )
                     if compacted_messages != self.agent_config.context_messages:
                         self._replace_context_messages(compacted_messages)
 
+                # --- The ONE provider invocation (runtime seam, §2.2) ---
                 try:
                     render_view = self._build_render_view(self.agent_config.context_messages)
-                    if queue:
-                        stream_result: StreamResult = await self.provider.generate_stream(
-                            system_prompt=self.agent_config.system_prompt,
-                            messages=render_view,
-                            tool_schemas=self.agent_config.tool_schemas,
-                            llm_config=self.agent_config.llm_config,
-                            model=self.agent_config.model,
-                            max_retries=self.max_retries,
-                            base_delay=self.base_delay,
-                            queue=queue,
-                            stream_formatter=stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER),
-                            stream_tool_results=self.stream_meta_history_and_tool_results,
-                            agent_uuid=self.agent_config.agent_uuid,
-                            cancellation_event=self._cancellation_event,
-                        )
-
-                        # Handle stream cancellation (Scenario A)
-                        if stream_result.was_cancelled:
-                            return await self._handle_stream_abort(
-                                stream_result, queue, stream_formatter,
-                            )
-
-                        response_message: Message = stream_result.message
-                    else:
-                        response_message = await self.provider.generate(
-                            system_prompt=self.agent_config.system_prompt,
-                            messages=render_view,
-                            tool_schemas=self.agent_config.tool_schemas,
-                            llm_config=self.agent_config.llm_config,
-                            model=self.agent_config.model,
-                            max_retries=self.max_retries,
-                            base_delay=self.base_delay,
-                            agent_uuid=self.agent_config.agent_uuid,
-                        )
-                except (anthropic.BadRequestError, anthropic.APIStatusError) as e:
-                    is_413 = (
-                        isinstance(e, anthropic.APIStatusError) and e.status_code == 413
-                    ) or (
-                        isinstance(e, anthropic.BadRequestError)
-                        and "request_too_large" in str(e)
+                    turn: ProviderTurn = await self._provider_turn(
+                        render_view=render_view, sink=sink
                     )
-                    if is_413 and self._compaction_controller is not None:
-                        compacted_messages = await self._compaction_controller.compact(
-                            context_messages=self.agent_config.context_messages,
-                            model=self.agent_config.model,
-                            agent_uuid=self.agent_config.agent_uuid,
-                            queue=queue,
-                            stream_formatter=stream_formatter,
-                            reason="request_too_large",
+                except _Recompact as recompact:
+                    compacted_messages = await self._compaction_controller.compact(
+                        context_messages=self.agent_config.context_messages,
+                        model=self.agent_config.model,
+                        agent_uuid=self.agent_config.agent_uuid,
+                        sink=sink,
+                        reason=recompact.reason,
+                    )
+                    if compacted_messages != self.agent_config.context_messages:
+                        self._replace_context_messages(compacted_messages)
+                        continue
+                    raise (recompact.__cause__ or recompact)
+
+                # Handle stream cancellation (Scenario A).
+                if turn.was_cancelled:
+                    return await self._handle_stream_abort(turn, sink)
+
+                # O12(d): cooperative mid-stream failure — partials kept,
+                # typed report emitted, content survives into the chain.
+                if turn.partial_error is not None and sink is not None:
+                    sink.emit_meta(
+                        ErrorReport(
+                            code=turn.partial_error.code,
+                            message=turn.partial_error.message,
+                            retriable=turn.partial_error.retriable,
                         )
-                        if compacted_messages != self.agent_config.context_messages:
-                            self._replace_context_messages(compacted_messages)
-                            continue
-                    raise
+                    )
+
+                response_message = turn.message
 
                 self.agent_config.current_step += 1
                 self._accumulate_usage(response_message.usage)
+                self._turn_steps.append(response_message)
 
                 self.agent_config.context_messages.append(response_message)
                 self._append_message_to_logs(response_message)
@@ -1074,8 +934,7 @@ class AnthropicAgent(Agent):
                             context_messages=self.agent_config.context_messages,
                             model=self.agent_config.model,
                             agent_uuid=self.agent_config.agent_uuid,
-                            queue=queue,
-                            stream_formatter=stream_formatter,
+                            sink=sink,
                             reason="context_window_exceeded",
                         )
                         if compacted_messages != self.agent_config.context_messages:
@@ -1084,286 +943,210 @@ class AnthropicAgent(Agent):
                     return await self._finalize_run(
                         response_message,
                         "context_window_exceeded",
-                        queue,
-                        stream_formatter,
+                        sink,
                     )
 
-                # Handle pause_turn from Skills (long-running operations)
+                # Handle pause_turn from Skills (long-running operations).
                 if stop_reason == "pause_turn":
                     continue
 
                 elif stop_reason == "tool_use":
-                    tool_calls = self._extract_tool_calls(response_message)
+                    tool_calls = self.provider.extract_tool_calls(response_message)
 
                     if not tool_calls:
-                        # No tool calls found despite tool_use stop reason — treat as end_turn.
-                        return await self._finalize_run(response_message, "end_turn")
+                        # No tool calls found despite tool_use stop reason.
+                        return await self._finalize_run(response_message, "end_turn", sink)
 
                     classification = self.tool_registry.classify_tool_calls(tool_calls)
 
                     if classification.needs_relay:
-                        # Execute backend calls immediately.
-                        backend_results = []
-                        if classification.backend_calls:
-                            backend_results = await self.tool_registry.execute_tools(
-                                classification.backend_calls, self.max_parallel_tool_calls,
-                                cancellation_event=self._cancellation_event,
-                                ctx_factory=self._tool_ctx_factory(),
-                            )
-
-                        # Stream backend tool results in relay path.
-                        if queue and self.stream_meta_history_and_tool_results and backend_results:
-                            fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
-                            await self._stream_tool_results(backend_results, queue, fmt)
-
-                        # Build completed result messages from backend calls.
-                        completed_result_messages = []
-                        if backend_results:
-                            completed_result_messages.append(
-                                self._build_tool_result_message(backend_results)
-                            )
-
-                        # ---- Awaiting relay phase ----
-                        self._phase = AgentPhase.AWAITING_RELAY
-
-                        # Create pending relay state.
-                        self.agent_config.pending_relay = PendingToolRelay(
-                            frontend_calls=classification.frontend_calls,
-                            confirmation_calls=classification.confirmation_calls,
-                            completed_results=completed_result_messages,
-                            run_id=self._run_id,
+                        result = await self._run_relay_pause(
+                            response_message, classification, sink
                         )
+                        if result is not None:
+                            return result
+                        continue
 
-                        pending_tool_ids = [
-                            tc.tool_id
-                            for tc in (*classification.frontend_calls, *classification.confirmation_calls)
-                        ]
+                    # ---- Tool execution phase ----
+                    self._phase = AgentPhase.EXECUTING_TOOLS
 
-                        if self._relay_mode == "inline_await":
-                            # Subagent branch: do NOT persist pending_relay (the
-                            # parent's ``asyncio.gather`` still holds this child
-                            # coroutine, so it cannot serialize mid-run). Park on
-                            # the cid-keyed AwaitTable (cid == this child's uuid)
-                            # via the one relay primitive; a ToolReply(cid) wakes
-                            # us. ``_relay_mode`` stays the hot/cold selector until
-                            # SessionManager lands (Phase 6).
-                            relay_result = await self.await_external(
-                                cid=self.agent_config.agent_uuid,
-                                tool_use_ids=pending_tool_ids,
-                                classification=classification,
-                                queue=queue,
-                                stream_formatter=stream_formatter,
-                                child_agent_id=self.agent_config.agent_uuid,
+                    tool_results = await self.tool_registry.execute_tools(
+                        tool_calls, self.max_parallel_tool_calls,
+                        cancellation_event=self._cancellation_event,
+                        ctx_factory=self._tool_ctx_factory(),
+                    )
+
+                    # Fire _on_tool_results hook for subclass side-effects.
+                    if sink is not None:
+                        await self._on_tool_results(tool_results, sink)
+
+                    # Stream client tool results.
+                    if sink is not None and self.stream_meta_history_and_tool_results:
+                        self._stream_tool_results(tool_results, sink)
+
+                    if self._context_externalizer is not None:
+                        tool_result_message, context_tool_result_message = (
+                            await self._context_externalizer.externalize_tool_results(
+                                tool_results
                             )
-                            if relay_result is not None:
-                                return relay_result
-                            # Results spliced in; continue the loop for the next LLM call.
-                            continue
-
-                        # Root branch (persist_return): serialize state, emit
-                        # the frontend notification, close the turn with
-                        # stop_reason="relay"; the client's POST to
-                        # ``/tool_results`` rehydrates and continues.
-                        await self._persist_state()
-
-                        if queue is not None:
-                            fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
-                            pending_tools = [
-                                {"tool_use_id": tc.tool_id, "name": tc.name, "input": tc.input}
-                                for tc in (*classification.frontend_calls, *classification.confirmation_calls)
-                            ]
-                            delta = MetaDelta(
-                                agent_uuid=self.agent_config.agent_uuid,
-                                type="awaiting_frontend_tools",
-                                payload={"tools": pending_tools},
-                                is_final=True,
-                            )
-                            await fmt.format_delta(delta, queue)
-
-                        return self._build_agent_result(response_message, "relay")
-
+                        )
                     else:
-                        # ---- Tool execution phase ----
-                        self._phase = AgentPhase.EXECUTING_TOOLS
+                        tool_result_message = self._build_tool_result_message(tool_results)
+                        context_tool_result_message = tool_result_message
 
-                        tool_results = await self.tool_registry.execute_tools(
-                            tool_calls, self.max_parallel_tool_calls,
-                            cancellation_event=self._cancellation_event,
-                            ctx_factory=self._tool_ctx_factory(),
-                        )
+                    self.agent_config.context_messages.append(context_tool_result_message)
+                    self._append_tool_results_to_logs(tool_results)
 
-                        # Fire _on_tool_results hook for subclass side-effects.
-                        if queue:
-                            fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
-                            await self._on_tool_results(tool_results, queue, fmt)
+                    # Check if we were cancelled during tool execution (Scenario B).
+                    if self._cancellation_event.is_set():
+                        self._phase = AgentPhase.IDLE
+                        self._abort_completion.set()
+                        await self._persist_state()
+                        return self._build_aborted_result()
 
-                        # Stream client tool results to SSE queue.
-                        if queue and self.stream_meta_history_and_tool_results:
-                            fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
-                            await self._stream_tool_results(tool_results, queue, fmt)
-
-                        if self._context_externalizer is not None:
-                            tool_result_message, context_tool_result_message = (
-                                await self._context_externalizer.externalize_tool_results(
-                                    tool_results
-                                )
-                            )
-                        else:
-                            tool_result_message = self._build_tool_result_message(tool_results)
-                            context_tool_result_message = tool_result_message
-
-                        self.agent_config.context_messages.append(context_tool_result_message)
-                        self._append_tool_results_to_logs(tool_results)
-
-                        # Check if we were cancelled during tool execution (Scenario B)
-                        if self._cancellation_event.is_set():
-                            self._phase = AgentPhase.IDLE
-                            self._abort_completion.set()
-                            await self._persist_state()
-                            return self._build_aborted_result()
-
-                elif stop_reason == "end_turn":
+                elif stop_reason in ("end_turn", "stop", None):
                     should_retry = await self._run_end_turn_hook(
                         response_message,
                         stop_reason="end_turn",
-                        queue=queue,
-                        stream_formatter=stream_formatter,
+                        sink=sink,
                     )
                     if should_retry:
                         continue
 
-                    return await self._finalize_run(response_message, "end_turn", queue, stream_formatter)
+                    return await self._finalize_run(response_message, "end_turn", sink)
+
+                elif stop_reason == "max_tokens":
+                    return await self._finalize_run(response_message, "max_tokens", sink)
 
             # Max steps reached.
-            last_message = response_message if 'response_message' in dir() else Message.assistant("Max steps reached.")
-            return await self._finalize_run(last_message, "max_steps", queue, stream_formatter)
+            last_message = response_message or Message.assistant("Max steps reached.")
+            return await self._finalize_run(last_message, "max_steps", sink)
         finally:
             self._phase = AgentPhase.IDLE
             self._run_task = None
             # Always clear streaming context to avoid stale references.
-            self._inject_stream_context_to_tools(None, None)
+            self._inject_stream_context_to_tools(None)
 
-    # ─── Submit: single input handler (mailbox · joins · control) ──────
+    async def _run_relay_pause(
+        self,
+        response_message: Message,
+        classification: Any,
+        sink: "DeltaSink | None",
+    ) -> AgentResult | None:
+        """One relay pause: execute backend calls, persist the pause, then
+        either park (inline children) or persist-and-return (root).
 
-    def _ensure_actor_state(self) -> None:
-        """Lazily initialise the per-session actor structures."""
-        if getattr(self, "_mailbox", None) is None:
-            from agent_base.session.mailbox import Mailbox
-            self._mailbox = Mailbox(capacity=getattr(self, "_mailbox_capacity", 32))
-        if getattr(self, "_audit", None) is None:
-            from agent_base.core.audit import InMemoryCommandAuditLog
-            self._audit = InMemoryCommandAuditLog()
-        if getattr(self, "_seq_counter", None) is None:
-            self._seq_counter = 0
-        if not hasattr(self, "_last_control_result"):
-            self._last_control_result = None
-
-    def _next_seq(self) -> int:
-        self._seq_counter += 1
-        return self._seq_counter
-
-    def _audit_command(self, seq, command, disposition, detail=None) -> None:
-        from agent_base.core.audit import CommandAuditRecord
-        meta = getattr(command, "meta", None)
-        self._audit.record(CommandAuditRecord(
-            seq=seq,
-            kind=type(command).__name__,
-            command_id=getattr(meta, "command_id", ""),
-            client_seq=getattr(meta, "client_seq", 0),
-            disposition=disposition.value,
-            detail=detail,
-        ))
-
-    async def submit(self, command: "AgentInput") -> "Ack":
-        """The single entry point for driving an agent.
-
-        Routes a command to one of the three planes by consumption discipline:
-        ``UserMessage`` → mailbox (deferred), ``ToolReply`` → joins (immediate),
-        ``Abort`` / ``Steer`` → control (preemptive). Returns an ``Ack``
-        immediately; output flows on the separate streaming path.
-
-        ``seq`` is a session-global audit/replay order — NOT an execution order.
+        Returns ``None`` when the loop should ``continue`` (inline resume),
+        else the AgentResult to surface (root persist_return / abort).
         """
-        from agent_base.core.commands import UserMessage, ToolReply, Abort, Steer, SteerMode
-        from agent_base.core.ack import Ack, Disposition
+        # Execute backend calls immediately.
+        backend_results: list[ToolResultEnvelope] = []
+        if classification.backend_calls:
+            backend_results = await self.tool_registry.execute_tools(
+                classification.backend_calls, self.max_parallel_tool_calls,
+                cancellation_event=self._cancellation_event,
+                ctx_factory=self._tool_ctx_factory(),
+            )
 
-        self._ensure_actor_state()
-        seq = self._next_seq()
+        # Stream backend tool results in relay path.
+        if sink is not None and self.stream_meta_history_and_tool_results and backend_results:
+            self._stream_tool_results(backend_results, sink)
 
-        if isinstance(command, UserMessage):
-            ok = self._mailbox.offer(command)
-            disp = Disposition.ACCEPTED if ok else Disposition.REJECTED
-            detail = None if ok else "mailbox_full"
-            self._audit_command(seq, command, disp, detail)
-            return Ack(seq=seq, disposition=disp, detail=detail)
+        # Build completed result messages from backend calls.
+        completed_result_messages: list[Message] = []
+        if backend_results:
+            completed_result_messages.append(
+                self._build_tool_result_message(backend_results)
+            )
 
-        if isinstance(command, ToolReply):
-            # Joins plane: deliver to the await parked under this cid. Unknown or
-            # closed cid → IGNORED_STALE; double delivery → IGNORED_DUP.
-            from agent_base.await_table import get_await_table
-            disp = await get_await_table().resolve(command.cid, command.results)
-            self._audit_command(seq, command, disp)
-            return Ack(seq=seq, disposition=disp)
+        # ---- Awaiting relay phase ----
+        self._phase = AgentPhase.AWAITING_RELAY
 
-        if isinstance(command, Abort):
-            if not self._is_root():
-                self._audit_command(seq, command, Disposition.REJECTED, "not_root")
-                return Ack(seq=seq, disposition=Disposition.REJECTED, detail="not_root")
-            self._last_control_result = await self._do_abort()
-            self._audit_command(seq, command, Disposition.CANCELLING)
-            return Ack(seq=seq, disposition=Disposition.CANCELLING)
+        pending_calls = (*classification.frontend_calls, *classification.confirmation_calls)
+        pending_tool_ids = [tc.tool_id for tc in pending_calls]
+        outbound = [
+            FrontendCallView(
+                tool_use_id=tc.tool_id,
+                tool_name=tc.name,
+                input=dict(tc.input or {}),
+            )
+            for tc in pending_calls
+        ]
+        reason = (
+            AWAIT_REASON_CONFIRMATION
+            if classification.confirmation_calls
+            else AWAIT_REASON_FRONTEND_TOOL
+        )
 
-        if isinstance(command, Steer):
-            if not self._is_root():
-                self._audit_command(seq, command, Disposition.REJECTED, "not_root")
-                return Ack(seq=seq, disposition=Disposition.REJECTED, detail="not_root")
-            # Steer = (forceful) abort the open round + restart, or (cooperative)
-            # let the in-flight round finish; either way enqueue the steer message
-            # so the actor loop (Phase 4) picks it up as the next turn.
-            if command.mode is SteerMode.FORCEFUL:
-                self._last_control_result = await self._do_abort()
-            self._mailbox.offer(UserMessage(message=command.instruction))
-            self._audit_command(seq, command, Disposition.STEERING)
-            return Ack(seq=seq, disposition=Disposition.STEERING)
+        if self._relay_mode == "inline_await":
+            # Inline child: park on the cid-keyed AwaitTable through the ONE
+            # relay primitive (the runtime's await_external). No persistence
+            # of pending_relay (the parent still holds this coroutine).
+            cid = self.agent_config.agent_uuid
+            self.agent_config.pending_relay = PendingToolRelay(
+                frontend_calls=classification.frontend_calls,
+                confirmation_calls=classification.confirmation_calls,
+                completed_results=completed_result_messages,
+                run_id=self._run_id,
+                cid=cid,
+            )
+            outcome = await self.await_external(
+                cid=cid,
+                tool_use_ids=pending_tool_ids,
+                outbound=outbound,
+                reason=reason,
+                ctx=self._emit_ctx(),
+                child_agent_id=self.agent_config.agent_uuid,
+            )
+            if outcome.status == "aborted":
+                self._phase = AgentPhase.IDLE
+                if self._abort_completion is not None:
+                    self._abort_completion.set()
+                return self._build_aborted_result()
+            # Results spliced in; continue the loop for the next LLM call.
+            return None
 
-        raise TypeError(f"Unknown AgentInput: {type(command).__name__}")
+        # Root branch (persist_return): serialize state, emit the ONE await
+        # frame (B5 — AwaitInput is the only await frame), close the turn with
+        # stop_reason="relay"; submit(ToolReply(cid)) / the client's POST to
+        # ``/tool_results`` rehydrates and continues.
+        cid = self._allocate_relay_cid(classification)
+        self.agent_config.pending_relay = PendingToolRelay(
+            frontend_calls=classification.frontend_calls,
+            confirmation_calls=classification.confirmation_calls,
+            completed_results=completed_result_messages,
+            run_id=self._run_id,
+            cid=cid,
+        )
 
-    async def say(self, text_or_message) -> "Ack":
-        """Friendly wrapper: enqueue a user message (delegates to ``submit``)."""
-        from agent_base.core.commands import UserMessage
-        msg = text_or_message if isinstance(text_or_message, Message) else Message.user(text_or_message)
-        return await self.submit(UserMessage(message=msg))
-
-    async def reply(self, cid: str, results, is_error: bool = False) -> "Ack":
-        """Friendly wrapper: deliver tool results for a relay pause (``cid``)."""
-        from agent_base.core.commands import ToolReply
-        return await self.submit(ToolReply(cid=cid, results=results, is_error=is_error))
-
-    # ─── Actor loop & checkpoint ───────────────────────────────────────
-
-    async def checkpoint(self) -> None:
-        """Persist session state at a turn boundary (the write-through seam).
-
-        Rung 1 delegates to ``_persist_state``; Rung 2 routes the hot copy to a
-        write-through cache behind the same call.
-        """
         await self._persist_state()
 
-    async def _actor_loop(
-        self,
-        queue: asyncio.Queue | None = None,
-        stream_formatter: str | StreamFormatter | None = None,
-    ) -> "AgentResult | None":
-        """Single-writer driver: drain the mailbox oldest-first, one turn at a time.
+        from agent_base.streaming.meta import AwaitInput
 
-        Each queued ``UserMessage`` becomes a turn (run via the existing per-turn
-        executor) and is checkpointed at the turn boundary. A single
-        ``_actor_running`` guard ensures only one drainer runs, so turns never
-        interleave for one session. The streamed-output integration with
-        SessionManager lands in Phase 6.
-        """
+        self._hook_emit(
+            AwaitInput(tools=outbound), correlation_id=cid, expects_reply=True
+        )
+
+        return self._build_agent_result(response_message, "relay")
+
+    # ── Actor loop & checkpoint ────────────────────────────────────────────
+
+    def _ensure_actor_state(self) -> None:
+        """The actor structures are created in ``AgentRuntime.__init__``;
+        retained as a no-op compat hook for callers that primed lazily."""
+        return None
+
+    async def checkpoint(self) -> None:
+        """Persist session state at a turn boundary (the write-through seam)."""
+        if self.agent_config is None:
+            return
+        await self._persist_state()
+
+    async def _actor_loop(self) -> "AgentResult | None":
+        """Single-writer driver: drain the mailbox oldest-first, one turn at a
+        time, checkpointing at each turn boundary."""
         self._ensure_actor_state()
-        if getattr(self, "_actor_running", False):
+        if self._actor_running:
             return None  # already draining — never double-drive a session
         self._actor_running = True
         last_result = None
@@ -1372,30 +1155,19 @@ class AnthropicAgent(Agent):
                 msg = self._mailbox.take()
                 if msg is None:
                     break
-                if queue is not None:
-                    last_result = await self.run_stream(
-                        msg.message, queue=queue, stream_formatter=stream_formatter
-                        if stream_formatter is not None
-                        else DEFAULT_STREAM_FORMATTER,
-                    )
-                else:
-                    last_result = await self.run(msg.message)
+                last_result = await self.run(msg.message)
                 await self.checkpoint()
         finally:
             self._actor_running = False
         return last_result
 
-    # ─── Abort / Steer ─────────────────────────────────────────────────
+    # ── Abort / Steer ──────────────────────────────────────────────────────
 
     async def abort(self) -> AgentResult:
         """Back-compat wrapper over ``submit(Abort())`` (returns AgentResult)."""
         from agent_base.core.commands import Abort
         await self.submit(Abort())
         return self._last_control_result or self._build_aborted_result()
-
-    def _is_root(self) -> bool:
-        """True if this agent is the root of its session tree (not a sub-agent)."""
-        return self._root_session_id() == self.agent_config.agent_uuid
 
     def _abort_grace_seconds(self) -> float:
         from agent_base.core.abort_types import ABORT_GRACE_MS
@@ -1415,14 +1187,13 @@ class AnthropicAgent(Agent):
 
     async def _run_on_abort_hooks(self) -> None:
         """Invoke tool ``on_abort`` cleanup hooks, bounded by the grace window."""
-        import inspect as _inspect
         coros = []
         for hook in self._collect_on_abort_hooks():
             try:
                 res = hook()
             except Exception:
                 continue
-            if _inspect.isawaitable(res):
+            if inspect.isawaitable(res):
                 coros.append(res)
         if not coros:
             return
@@ -1444,24 +1215,19 @@ class AnthropicAgent(Agent):
         """Cancel the current agent turn and produce a valid message chain.
 
         Runs as a non-reentrant **interrupt critical section**: freeze the
-        mailbox, retire the await-generation (so any in-flight ``ToolReply`` for
-        this turn becomes a no-op and parked awaits wake cancelled — the :789
-        race fix), drop queued messages, run tool ``on_abort()`` hooks, then wait
-        for the loop to self-clean with a bounded hard-cancel backstop
-        (``ABORT_GRACE_MS``). Safe to call from any context.
-
-        Returns:
-            AgentResult with stop_reason="aborted".
+        mailbox, retire the await-generation (so any in-flight ``ToolReply``
+        for this turn becomes a no-op and parked awaits wake cancelled), drop
+        queued messages, run tool ``on_abort()`` hooks, then wait for the loop
+        to self-clean with a bounded hard-cancel backstop (``ABORT_GRACE_MS``).
         """
         if self._cancellation_event is None:
             self._cancellation_event = asyncio.Event()
-        self._ensure_actor_state()
 
         async with self._interrupt_lock():
             self._mailbox.freeze()
             try:
                 # Retire the generation: cancels parked awaits and makes any
-                # racing ToolReply a no-op (generation is the resolution authority).
+                # racing ToolReply a no-op.
                 from agent_base.await_table import get_await_table
                 await get_await_table().interrupt(self._root_session_id())
 
@@ -1482,10 +1248,13 @@ class AnthropicAgent(Agent):
                                 timeout=self._abort_grace_seconds(),
                             )
                         except asyncio.TimeoutError:
-                            task = getattr(self, "_run_task", None)
+                            task = self._run_task
                             if task is not None and not task.done():
                                 task.cancel()
-                elif phase == AgentPhase.AWAITING_RELAY:
+                elif phase == AgentPhase.AWAITING_RELAY or (
+                    self.agent_config is not None
+                    and self.agent_config.pending_relay is not None
+                ):
                     # Paused (not running): fix up this agent's chain directly.
                     await self._abort_awaiting_relay()
 
@@ -1496,23 +1265,9 @@ class AnthropicAgent(Agent):
     async def steer(
         self,
         new_instruction: str,
-        queue: asyncio.Queue | None = None,
-        stream_formatter: str | StreamFormatter | None = DEFAULT_STREAM_FORMATTER,
         cancellation_event: asyncio.Event | None = None,
     ) -> AgentResult:
-        """Abort the current turn and redirect with a new instruction.
-
-        This is the "steer" operation: stop what you're doing, here's
-        what I want instead.
-
-        Args:
-            new_instruction: The user's new direction.
-            queue: SSE queue for streaming output.
-            stream_formatter: Output formatter.
-
-        Returns:
-            AgentResult from the redirected run.
-        """
+        """Abort the current turn and redirect with a new instruction."""
         # Step 1: Abort cleanly (produces valid chain)
         await self._do_abort()
 
@@ -1524,44 +1279,25 @@ class AnthropicAgent(Agent):
         # Step 3: Reset cancellation for the new run
         self._reset_cancellation_state(cancellation_event)
 
-        # Step 4: Resolve formatter
-        if isinstance(stream_formatter, str):
-            from agent_base.streaming import get_formatter
-            stream_formatter = get_formatter(stream_formatter)
-
-        # Step 5: Resume the agent loop
-        return await self._resume_loop(queue, stream_formatter)
+        # Step 4: Resume the agent loop
+        return await self._resume_loop(self._active_sink())
 
     async def _handle_stream_abort(
         self,
-        stream_result: StreamResult,
-        queue: asyncio.Queue | None,
-        stream_formatter: StreamFormatter | None,
+        turn: ProviderTurn,
+        sink: "DeltaSink | None" = None,
     ) -> AgentResult:
         """Handle abort during streaming (Scenario A).
 
-        Sanitizes the partial assistant message, synthesizes tool_result
-        blocks for orphaned tool_use blocks, and produces a valid chain.
+        ``provider.plan_stream_abort(turn)`` reads the provider-private
+        ``stream_bookkeeping`` (O12a) and synthesizes tool_results for
+        orphaned tool_use blocks, producing a valid chain.
         """
-        from agent_base.providers.anthropic.message_sanitizer import (
-            plan_stream_abort,
-        )
-
-        patch = plan_stream_abort(
-            partial_message=stream_result.message,
-            completed_block_indices=stream_result.completed_blocks,
-        )
+        patch = self.provider.plan_stream_abort(turn)
         self._append_messages_to_histories(patch.append_messages)
 
-        # Emit aborted MetaDelta to the stream queue
-        if queue and stream_formatter:
-            delta = MetaDelta(
-                agent_uuid=self.agent_config.agent_uuid,
-                type="aborted",
-                payload={"phase": "streaming"},
-                is_final=True,
-            )
-            await stream_formatter.format_delta(delta, queue)
+        if sink is not None:
+            sink.emit_meta(Custom(name="aborted", data={"phase": "streaming"}))
 
         self._phase = AgentPhase.IDLE
         if self._abort_completion:
@@ -1571,12 +1307,7 @@ class AnthropicAgent(Agent):
         return self._build_aborted_result()
 
     async def _abort_awaiting_relay(self) -> None:
-        """Handle abort during relay wait (Scenario C).
-
-        Synthesizes tool_result blocks for pending frontend/confirmation
-        calls, combines with existing backend results, and appends to the
-        chain. Clears pending_relay state.
-        """
+        """Handle abort during relay wait (Scenario C)."""
         from agent_base.providers.anthropic.message_sanitizer import plan_relay_abort
         from agent_base.providers.anthropic.message_sanitizer import AbortToolCall
 
@@ -1604,13 +1335,12 @@ class AnthropicAgent(Agent):
 
     def _build_aborted_result(self) -> AgentResult:
         """Build an AgentResult for an aborted run."""
-        # Prefer the last persisted assistant message; if the abort only
-        # produced tool_result markers, fall back to a synthetic assistant note.
         last_msg = None
-        for msg in reversed(self.agent_config.context_messages):
-            if msg.role.value == "assistant":
-                last_msg = msg
-                break
+        if self.agent_config is not None:
+            for msg in reversed(self.agent_config.context_messages):
+                if msg.role.value == "assistant":
+                    last_msg = msg
+                    break
 
         if last_msg is None:
             last_msg = Message.assistant(STREAM_ABORT_TEXT)
@@ -1620,13 +1350,16 @@ class AnthropicAgent(Agent):
         return AgentResult(
             final_message=last_msg,
             final_answer=final_text,
-            conversation_log=copy.deepcopy(self.agent_config.conversation_log),
+            conversation_log=copy.deepcopy(
+                self.agent_config.conversation_log
+                if self.agent_config is not None
+                else ConversationLog()
+            ),
             stop_reason="aborted",
-            model=self.agent_config.model,
-            provider="anthropic",
+            model=self.agent_config.model if self.agent_config else (self.model or ""),
+            provider=self.provider.name,
             usage=last_msg.usage or Usage(),
-            cumulative_usage=self._cumulative_usage,
-            total_steps=self.agent_config.current_step,
+            total_steps=self.agent_config.current_step if self.agent_config else 0,
             agent_logs=list(self._run_logs) if self._run_logs else None,
             was_aborted=True,
             abort_phase=self._phase.value if self._phase != AgentPhase.IDLE else None,
@@ -1797,6 +1530,8 @@ class AnthropicAgent(Agent):
                 timestamp=timestamp,
             )
 
+    # ─── End-turn validation hook (legacy single-callable seam) ───────
+
     def _build_end_turn_context(
         self,
         response_message: Message,
@@ -1825,74 +1560,53 @@ class AnthropicAgent(Agent):
             memory_store=self.memory_store,
         )
 
-    async def _emit_end_turn_validation(
+    def _emit_end_turn_validation(
         self,
         status: str,
-        queue: asyncio.Queue | None,
-        stream_formatter: StreamFormatter | None,
+        sink: "DeltaSink | None",
         *,
         result: str | None = None,
     ) -> None:
-        if queue is None or stream_formatter is None:
+        if sink is None:
             return
-
-        delta = MetaDelta(
-            agent_uuid=self.agent_config.agent_uuid,
-            type="meta_end_turn_validation",
-            payload={
-                "status": status,
-                "result": result,
-                "hook": "end_turn_hook",
-            },
-            is_final=True,
+        sink.emit_meta(
+            Custom(
+                name="meta_end_turn_validation",
+                data={
+                    "status": status,
+                    "result": result,
+                    "hook": "end_turn_hook",
+                },
+            )
         )
-        await stream_formatter.format_delta(delta, queue)
 
-    async def _emit_rollback_delta(
+    def _emit_rollback(
         self,
         rollback_message: str,
-        queue: asyncio.Queue | None,
-        stream_formatter: StreamFormatter | None,
-        *,
-        rollback_code: str | None = None,
-        details: dict[str, Any] | None = None,
+        sink: "DeltaSink | None",
     ) -> None:
-        if queue is None or stream_formatter is None:
+        """Emit the ``Rollback`` MetaBody (O3/G0 — ``RollbackDelta`` deleted;
+        rollback rides the control channel)."""
+        if sink is None:
             return
-
-        delta = RollbackDelta(
-            agent_uuid=self.agent_config.agent_uuid,
-            message=rollback_message,
-            code=rollback_code,
-            details=details or {},
-            collapse_previous_assistant=True,
-            is_final=True,
+        sink.emit_meta(
+            Rollback(message=rollback_message, collapse_previous_assistant=True)
         )
-        await stream_formatter.format_delta(delta, queue)
 
-    async def _emit_hook_event(
+    def _emit_hook_event(
         self,
         stream_type: str,
         payload: dict[str, Any],
-        queue: asyncio.Queue | None,
-        stream_formatter: StreamFormatter | None,
+        sink: "DeltaSink | None",
     ) -> None:
-        if queue is None or stream_formatter is None:
+        if sink is None:
             return
-
-        delta = MetaDelta(
-            agent_uuid=self.agent_config.agent_uuid,
-            type=stream_type,
-            payload=payload,
-            is_final=True,
-        )
-        await stream_formatter.format_delta(delta, queue)
+        sink.emit_meta(Custom(name=stream_type, data=dict(payload)))
 
     async def _apply_end_turn_hook_events(
         self,
         events: list[EndTurnHookEvent],
-        queue: asyncio.Queue | None,
-        stream_formatter: StreamFormatter | None,
+        sink: "DeltaSink | None",
     ) -> None:
         for event in events:
             if event.persist_to_conversation_log:
@@ -1900,11 +1614,10 @@ class AnthropicAgent(Agent):
                     event.stream_type,
                     event.payload,
                 )
-            await self._emit_hook_event(
+            self._emit_hook_event(
                 event.stream_type,
                 event.payload,
-                queue,
-                stream_formatter,
+                sink,
             )
 
     async def _resolve_end_turn_hook_result(
@@ -1936,17 +1649,12 @@ class AnthropicAgent(Agent):
         response_message: Message,
         *,
         stop_reason: str,
-        queue: asyncio.Queue | None,
-        stream_formatter: StreamFormatter | None,
+        sink: "DeltaSink | None" = None,
     ) -> bool:
         if self.end_turn_hook is None:
             return False
 
-        await self._emit_end_turn_validation(
-            "start",
-            queue,
-            stream_formatter,
-        )
+        self._emit_end_turn_validation("start", sink)
 
         try:
             hook_result = await self._resolve_end_turn_hook_result(
@@ -1954,27 +1662,13 @@ class AnthropicAgent(Agent):
                 stop_reason=stop_reason,
             )
         except Exception:
-            await self._emit_end_turn_validation(
-                "end",
-                queue,
-                stream_formatter,
-                result="error",
-            )
+            self._emit_end_turn_validation("end", sink, result="error")
             raise
 
         if hook_result is None or hook_result.action == "pass":
             if hook_result is not None and hook_result.events:
-                await self._apply_end_turn_hook_events(
-                    hook_result.events,
-                    queue,
-                    stream_formatter,
-                )
-            await self._emit_end_turn_validation(
-                "end",
-                queue,
-                stream_formatter,
-                result="pass",
-            )
+                await self._apply_end_turn_hook_events(hook_result.events, sink)
+            self._emit_end_turn_validation("end", sink, result="pass")
             return False
 
         rollback_message = hook_result.rollback_message or ""
@@ -1997,19 +1691,8 @@ class AnthropicAgent(Agent):
             rollback_code=hook_result.rollback_code,
             details=rollback_details,
         )
-        await self._emit_rollback_delta(
-            rollback_message,
-            queue,
-            stream_formatter,
-            rollback_code=hook_result.rollback_code,
-            details=rollback_details,
-        )
-        await self._emit_end_turn_validation(
-            "end",
-            queue,
-            stream_formatter,
-            result="retry",
-        )
+        self._emit_rollback(rollback_message, sink)
+        self._emit_end_turn_validation("end", sink, result="retry")
         await self._persist_state()
         return True
 
@@ -2020,14 +1703,7 @@ class AnthropicAgent(Agent):
             self._append_message_to_logs(message)
 
     def _inject_agent_uuid_to_tools(self) -> None:
-        """Inject agent UUID into tools that need it.
-
-        Iterates registered tools and calls ``set_agent_uuid()`` on any tool
-        instance that implements this duck-typed method. Used by tools like
-        ``CodeExecutionTool`` and ``SubAgentTool`` for agent-scoped operations.
-
-        Called at the end of ``initialize()`` after UUID is assigned.
-        """
+        """Inject agent UUID into tools that need it (duck-typed seam)."""
         for registered in self.tool_registry._tools.values():
             tool_instance = getattr(registered.func, '__tool_instance__', None)
             if tool_instance is not None:
@@ -2058,19 +1734,7 @@ class AnthropicAgent(Agent):
         frontend_tools: list[Callable] | None = None,
         system_prompt: str | None = None,
     ) -> None:
-        """Swap tools and/or system prompt mid-run.
-
-        Builds a fresh ``ToolRegistry`` when tools are provided, preserving
-        the other tool type (backend/frontend) when only one is specified.
-        Updates ``agent_config`` so the next LLM call picks up the changes.
-
-        Args:
-            tools: New backend tools. ``None`` keeps current backend tools.
-                An empty list removes all backend tools.
-            frontend_tools: New frontend/confirmation tools. ``None`` keeps
-                current frontend tools. An empty list removes all.
-            system_prompt: New system prompt. ``None`` keeps current prompt.
-        """
+        """Swap tools and/or system prompt mid-run."""
         if tools is not None or frontend_tools is not None:
             old_registry = self.tool_registry
             new_registry = ToolRegistry()
@@ -2107,41 +1771,24 @@ class AnthropicAgent(Agent):
         tool_name: str,
         tool_input: dict[str, Any],
         result: ContentBlock,
-        queue: asyncio.Queue | None = None,
-        stream_formatter: StreamFormatter | None = None,
     ) -> None:
         """Lifecycle hook fired after each frontend/confirmation tool result.
 
-        Called once per relay result in ``resume_with_relay_results()``, after
-        results are combined into the context but before ``_resume_loop()``
-        resumes. Override in subclasses to trigger ``reconfigure()`` or
-        perform side-effects.
-
-        Args:
-            tool_name: Name of the tool that produced this result.
-            tool_input: Original input dict from the tool call.
-            result: The ``ToolResultContent`` block from the relay.
-            queue: SSE streaming queue (if streaming).
-            stream_formatter: Resolved stream formatter instance (if streaming).
+        Called once per relay result in the splice path, after results are
+        combined into the context but before the loop resumes. Override in
+        subclasses to trigger ``reconfigure()`` or perform side-effects.
         """
         pass
 
     async def _on_tool_results(
         self,
         envelopes: list[ToolResultEnvelope],
-        queue: asyncio.Queue,
-        stream_formatter: StreamFormatter,
+        sink: "DeltaSink",
     ) -> None:
         """Hook called after tool execution in ``_resume_loop()``.
 
-        Override in subclasses to emit streaming events (e.g. mode changes,
-        todo updates) based on tool results. The default implementation is a
-        no-op.
-
-        Args:
-            envelopes: Tool result envelopes from the just-completed execution.
-            queue: SSE streaming queue.
-            stream_formatter: Resolved stream formatter instance.
+        Override in subclasses to emit control events (e.g. mode changes,
+        todo updates) based on tool results. Default is a no-op.
         """
         pass
 
@@ -2163,47 +1810,22 @@ class AnthropicAgent(Agent):
                 return call_info.input
         return {}
 
-    def _inject_stream_context_to_tools(
-        self,
-        queue: asyncio.Queue | None,
-        formatter: str | StreamFormatter | None,
-    ) -> None:
-        """Inject or clear streaming context into tools that support it.
+    def _inject_stream_context_to_tools(self, stream_queue: Any) -> None:
+        """Inject or clear the live stream queue into tools that support it.
 
-        Iterates registered tools and calls ``set_run_context()`` on any tool
-        instance that implements this duck-typed method.  Used by tools like
-        ``SubAgentTool`` and ``TodoWriteTool`` for real-time streaming.
-
-        Called at the start of ``_resume_loop()`` to share streaming context,
-        and in its finally block to clear stale references.
+        Tools like ``SubAgentTool`` use the queue so child agents emit into
+        the same ``agent.stream()`` read path (R30 — formatter plumbing is
+        deleted).
         """
         for registered in self.tool_registry._tools.values():
             tool_instance = getattr(registered.func, '__tool_instance__', None)
             if tool_instance is not None:
                 set_ctx = getattr(tool_instance, 'set_run_context', None)
                 if callable(set_ctx):
-                    set_ctx(queue, formatter)
+                    set_ctx(stream_queue)
                 set_cancel = getattr(tool_instance, 'set_cancellation_event', None)
                 if callable(set_cancel):
                     set_cancel(self._cancellation_event)
-
-    def _extract_tool_calls(self, message: Message) -> list[ToolCallInfo]:
-        """Extract local client tool calls from an assistant message.
-
-        Server tools such as ``web_search`` / ``web_fetch`` are executed by the
-        Anthropic API and surface as ``ServerToolUseContent``.  Routing them
-        through the local tool registry creates invalid client-side
-        ``tool_result`` blocks for ``srvtoolu_*`` ids.
-        """
-        tool_calls = []
-        for block in message.content:
-            if isinstance(block, ToolUseContent):
-                tool_calls.append(ToolCallInfo(
-                    name=block.tool_name,
-                    tool_id=block.tool_id,
-                    input=block.tool_input,
-                ))
-        return tool_calls
 
     def _build_tool_result_message(self, envelopes: list[ToolResultEnvelope]) -> Message:
         """Convert ToolResultEnvelope list into a user Message with ToolResultContent blocks."""
@@ -2218,15 +1840,12 @@ class AnthropicAgent(Agent):
             ))
         return Message.user(result_blocks)
 
-    async def _stream_tool_results(
+    def _stream_tool_results(
         self,
         envelopes: list[ToolResultEnvelope],
-        queue: asyncio.Queue,
-        stream_formatter: StreamFormatter,
+        sink: "DeltaSink",
     ) -> None:
         """Emit ToolResultDelta events for client-executed tool results."""
-        from agent_base.streaming.types import ToolResultDelta
-
         for envelope in envelopes:
             context_blocks = envelope.for_context_window()
             text_parts = []
@@ -2237,16 +1856,17 @@ class AnthropicAgent(Agent):
                     text_parts.append(json.dumps(block.to_dict(), default=str))
             result_content = "\n".join(text_parts) if text_parts else ""
 
-            delta = ToolResultDelta(
-                agent_uuid=self.agent_uuid,
-                tool_name=envelope.tool_name,
-                tool_id=envelope.tool_id,
-                result_content=result_content,
-                envelope_log=envelope.for_conversation_log().to_dict(),
-                is_server_tool=False,
-                is_final=True,
+            sink.emit(
+                ToolResultDelta(
+                    agent_uuid=self.agent_uuid,
+                    tool_name=envelope.tool_name,
+                    tool_id=envelope.tool_id,
+                    result_content=result_content,
+                    envelope_log=envelope.for_conversation_log().to_dict(),
+                    is_server_tool=False,
+                    is_final=True,
+                )
             )
-            await stream_formatter.format_delta(delta, queue)
 
     @staticmethod
     def _extract_text(message: Message) -> str:
@@ -2308,7 +1928,6 @@ class AnthropicAgent(Agent):
                 (self._run_cumulative_usage.cache_write_tokens or 0)
                 + step_usage.cache_write_tokens
             )
-        if step_usage.cache_write_tokens:
             self._cumulative_usage.cache_write_tokens = (
                 (self._cumulative_usage.cache_write_tokens or 0) + step_usage.cache_write_tokens
             )
@@ -2317,7 +1936,6 @@ class AnthropicAgent(Agent):
                 (self._run_cumulative_usage.cache_read_tokens or 0)
                 + step_usage.cache_read_tokens
             )
-        if step_usage.cache_read_tokens:
             self._cumulative_usage.cache_read_tokens = (
                 (self._cumulative_usage.cache_read_tokens or 0) + step_usage.cache_read_tokens
             )
@@ -2326,7 +1944,6 @@ class AnthropicAgent(Agent):
                 (self._run_cumulative_usage.thinking_tokens or 0)
                 + step_usage.thinking_tokens
             )
-        if step_usage.thinking_tokens:
             self._cumulative_usage.thinking_tokens = (
                 (self._cumulative_usage.thinking_tokens or 0) + step_usage.thinking_tokens
             )
@@ -2344,9 +1961,7 @@ class AnthropicAgent(Agent):
                 )
 
         # Bubble this step into the parent's sinks for inline-await children
-        # so credits deducted from the root ``AgentResult.cost`` reflect the
-        # whole tree. Pass the already-computed ``step_cost`` to avoid
-        # re-pricing with the parent's (possibly different) model.
+        # so the subtree's usage reaches the root's settlement aggregation.
         if self._parent_usage_forward is not None:
             self._parent_usage_forward._ingest_child_usage(step_usage, step_cost)
 
@@ -2355,13 +1970,7 @@ class AnthropicAgent(Agent):
         step_usage: Usage,
         step_cost: "CostBreakdown | None",
     ) -> None:
-        """Fold an inline-await child's step usage/cost into this agent's sinks.
-
-        Mirrors ``_accumulate_usage`` but skips the ``calculate_step_cost``
-        call (the child already priced with its own model) and does not
-        touch ``last_known_*_tokens`` or ``session_cumulative_usage``
-        (those describe this agent's own last step).
-        """
+        """Fold an inline-await child's step usage/cost into this agent's sinks."""
         self._run_cumulative_usage.input_tokens += step_usage.input_tokens
         self._run_cumulative_usage.output_tokens += step_usage.output_tokens
         self._cumulative_usage.input_tokens += step_usage.input_tokens
@@ -2412,7 +2021,12 @@ class AnthropicAgent(Agent):
         response_message: Message,
         stop_reason: str,
     ) -> AgentResult:
-        """Construct the AgentResult returned to the caller."""
+        """Construct the AgentResult returned to the caller.
+
+        pricing-cost.md §6 / B6 / G0: no ``cost`` / ``cumulative_usage`` —
+        per-turn cost rides ``result.settlement`` (attached in
+        ``_finalize_run``); cumulative rides the ``SettlementAggregator``.
+        """
         final_answer = self._extract_text(response_message)
 
         return AgentResult(
@@ -2425,97 +2039,61 @@ class AnthropicAgent(Agent):
             ),
             stop_reason=stop_reason,
             model=self.agent_config.model,
-            provider="anthropic",
+            provider=self.provider.name,
             usage=response_message.usage or Usage(),
-            cumulative_usage=self._cumulative_usage,
             total_steps=self.agent_config.current_step,
             agent_logs=self._run_logs if self._run_logs else None,
             generated_files=None,
-            cost=self._compute_cost(),
         )
 
     def _compute_cost(self) -> CostBreakdown | None:
-        """Return the accumulated per-step cost breakdown."""
+        """Return the accumulated per-step cost breakdown (Conversation record)."""
         if self._cumulative_cost.total_cost == 0.0 and not self._cumulative_cost.breakdown:
             return None
         return self._cumulative_cost
 
-    def _collect_file_ids(self, obj: Any, file_ids: set[str]) -> None:
-        """Recursively collect Anthropic file_ids from serialized tool result content."""
-        if isinstance(obj, dict):
-            fid = obj.get("file_id")
-            if fid and isinstance(fid, str):
-                file_ids.add(fid)
-            for v in obj.values():
-                if isinstance(v, (dict, list)):
-                    self._collect_file_ids(v, file_ids)
-        elif isinstance(obj, list):
-            for item in obj:
-                if isinstance(item, (dict, list)):
-                    self._collect_file_ids(item, file_ids)
+    # ── settlement (pricing-cost.md §2.4 — the unified chokepoint) ─────────
 
-    async def _extract_and_store_api_files(self) -> list[MediaMetadata]:
-        """Extract file_ids from Anthropic API responses and store them via media backend.
+    def _settle_turn(self) -> "TurnSettlement":
+        """Compute the once-per-turn billing fact via pricing's
+        ``settle_turn(ctx, steps)`` (O14d module function)."""
+        ctx = SimpleNamespace(
+            pricing_policy=self.pricing_policy,
+            model=self.agent_config.model,
+            agent_id=self.agent_config.agent_uuid,
+            run_id=self._run_id or None,
+            parent_agent_id=self._parent_agent_uuid,
+            principal=self.principal,
+        )
+        return settle_turn(ctx, list(self._turn_steps))
 
-        Scans conversation messages for ``ServerToolResultContent`` blocks
-        (e.g. ``code_execution_tool_result``) that contain ``file_id``
-        references from the Anthropic Files API.  Downloads each file and
-        stores it through ``self.media_backend``.
-        """
-        # Collect all file_ids from current conversation messages.
-        file_ids: set[str] = set()
-        messages = self.agent_config.context_messages
-        for message in messages:
-            for block in message.content:
-                if isinstance(block, ServerToolResultContent):
-                    self._collect_file_ids(block.tool_result, file_ids)
-
-        if not file_ids:
-            return []
-
-        # Skip file_ids already processed in a previous run.
-        existing_api_file_ids = {
-            meta.extras.get("anthropic_file_id")
-            for meta in self.agent_config.media_registry.values()
-            if meta.extras.get("anthropic_file_id")
-        }
-        new_file_ids = file_ids - existing_api_file_ids
-        if not new_file_ids:
-            return []
-
-        results: list[MediaMetadata] = []
-        for file_id in new_file_ids:
+    async def _emit_usage_report(self, settlement: "TurnSettlement") -> None:
+        """Auto-emit ``UsageReport.of(settlement)`` exactly once per turn and
+        deliver to ``on_usage_report`` subscribers (Fork G / B1)."""
+        self._hook_emit(UsageReport.of(settlement))
+        for callback in list(self._usage_report_callbacks):
             try:
-                # Download from Anthropic Files API (streamed).
-                response = await self.provider.client.beta.files.download(file_id)
-                file_metadata_api = await self.provider.client.beta.files.retrieve_metadata(file_id)
-
-                filename = getattr(file_metadata_api, "filename", None) or f"file_{file_id}"
-                mime_type = (
-                    mimetypes.guess_type(filename)[0] or "application/octet-stream"
-                )
-
-                metadata = await self.media_backend.store(
-                    response.iter_bytes(), filename, mime_type, self.agent_config.agent_uuid
-                )
-                metadata.extras["anthropic_file_id"] = file_id
-                results.append(metadata)
+                outcome = callback(settlement)
+                if inspect.isawaitable(outcome):
+                    await outcome
             except Exception:
-                # Log warning but continue processing other files.
-                import traceback
-                traceback.print_exc()
-                continue
+                logger.warning(
+                    "usage_report_callback_failed",
+                    agent_uuid=self.agent_uuid,
+                    exc_info=True,
+                )
 
-        return results
+    # ── finalize (written ONCE — kills B2's duplication) ───────────────────
 
     async def _finalize_run(
         self,
         response_message: Message,
         stop_reason: str,
-        queue: asyncio.Queue | None = None,
-        stream_formatter: StreamFormatter | None = None,
+        sink: "DeltaSink | None" = None,
     ) -> AgentResult:
-        """Finalize the run: flush exports, update memory, persist, return result."""
+        """Finalize the run: flush exports, update memory, settle the turn,
+        persist, emit — provider-touch-points reduced to ``provider.name`` /
+        ``provider.collect_api_files`` (providers.md §2.2)."""
         now = datetime.now(timezone.utc).isoformat()
 
         # Flush exported files from sandbox (returns [] if no sandbox attached).
@@ -2523,24 +2101,39 @@ class AnthropicAgent(Agent):
             self.agent_config.agent_uuid
         )
 
-        # Extract and store files from Anthropic Files API responses.
-        api_files = await self._extract_and_store_api_files()
+        # Provider-hosted artifacts (R31): Anthropic Files API; LiteLLM = [].
+        api_files = await self.provider.collect_api_files(self)
         generated_files.extend(api_files)
 
         # Register generated files in media registry.
         for media_meta in generated_files:
             self.agent_config.media_registry[media_meta.media_id] = media_meta
 
-        # Update memory store.
-        if self.memory_store:
-            await self.memory_store.update(
-                messages=self.agent_config.context_messages,
-                conversation_log=(
-                    self.conversation.conversation_log
-                    if self.conversation
-                    else self.agent_config.conversation_log
-                ),
+        # Update memory store (O13: update(ctx, log, stop_reason); failure =
+        # ErrorReport via the control channel, never turn-fatal — memory.md §6).
+        if self.memory_store is not None:
+            log = (
+                self.conversation.conversation_log
+                if self.conversation
+                else self.agent_config.conversation_log
             )
+            try:
+                await self.memory_store.update(
+                    self._memory_hook_context(), log, stop_reason
+                )
+            except Exception as exc:
+                logger.warning(
+                    "memory_update_failed",
+                    agent_uuid=self.agent_uuid,
+                    exc_info=True,
+                )
+                self._hook_emit(
+                    ErrorReport(
+                        code=ErrorCode.INTERNAL,
+                        message=f"memory update failed: {exc}",
+                        retriable=False,
+                    )
+                )
 
         # Compute cost before persisting so it's saved with the conversation.
         cost = self._compute_cost()
@@ -2558,9 +2151,7 @@ class AnthropicAgent(Agent):
 
         self.agent_config.conversation_log.mark_agent_completed(self.agent_uuid)
 
-        # Validate tool_use / tool_result pairing in context_messages before
-        # persisting.  An orphaned tool_use without a subsequent tool_result will
-        # cause the Anthropic API to reject the next request in this session.
+        # Validate tool_use / tool_result pairing before persisting.
         self._warn_orphaned_tool_uses(self.agent_config.context_messages)
 
         # Persist state.
@@ -2588,12 +2179,35 @@ class AnthropicAgent(Agent):
 
         result = self._build_agent_result(response_message, stop_reason)
         result.generated_files = generated_files
-        result.cost = cost
 
-        # Emit meta events to the stream.
-        if queue and stream_formatter:
-            await self._emit_meta_files(generated_files, queue, stream_formatter)
-            await self._emit_meta_final(result, queue, stream_formatter)
+        # ── Settlement chokepoint (pricing-cost.md §2.4 / B6): settle once,
+        # attach to the result, auto-emit UsageReport exactly once per turn.
+        settlement = self._settle_turn()
+        result.settlement = settlement
+        await self._emit_usage_report(settlement)
+
+        # Emit control events to the stream.
+        if sink is not None:
+            if generated_files:
+                sink.emit_meta(
+                    FilesUpdated(files=[f.to_dict() for f in generated_files])
+                )
+            if self.stream_meta_history_and_tool_results:
+                sink.emit_meta(
+                    RunCompleted(
+                        stop_reason=result.stop_reason,
+                        total_steps=result.total_steps,
+                        generated_files=(
+                            [f.to_dict() for f in generated_files]
+                            if generated_files else None
+                        ),
+                        cost=settlement.turn_cost.to_dict(),
+                        cumulative_usage=self._run_cumulative_usage.to_dict(),
+                        conversation_log=_strip_binary_data(
+                            result.conversation_log.to_dict()
+                        ),
+                    )
+                )
 
         return result
 
@@ -2613,7 +2227,7 @@ class AnthropicAgent(Agent):
         max_len = 72
         if len(text) <= max_len:
             return text
-        return text[: max_len - 1].rstrip() + "\u2026"
+        return text[: max_len - 1].rstrip() + "…"
 
     async def _persist_state(self) -> None:
         """Save agent config, conversation, and run logs to storage adapters."""
@@ -2646,13 +2260,7 @@ class AnthropicAgent(Agent):
             )
 
     def _warn_orphaned_tool_uses(self, messages: list[Message]) -> None:
-        """Log a warning if any tool_use block lacks a matching tool_result.
-
-        Scans *messages* for assistant tool_use ids and checks that each one
-        has a corresponding tool_result in a subsequent user message.  This is
-        a diagnostic aid — the Anthropic API requires strict pairing and will
-        reject a request where the invariant is violated.
-        """
+        """Log a warning if any tool_use block lacks a matching tool_result."""
         pending_tool_ids: set[str] = set()
         for msg in messages:
             for block in msg.content:
@@ -2673,86 +2281,27 @@ class AnthropicAgent(Agent):
                 ),
             )
 
-    # ─── Meta Event Emission ─────────────────────────────────────────
+    # ─── Run lifecycle control events (RunStarted supersedes meta_init) ───
 
-    async def _emit_meta_init(
-        self,
-        prompt: Message,
-        queue: asyncio.Queue,
-        stream_formatter: StreamFormatter,
-    ) -> None:
-        """Emit meta_init at stream start with run metadata."""
-        # Extract user query text for the payload.
+    def _emit_run_started(self, prompt: Message, sink: "DeltaSink") -> None:
+        """Emit ``RunStarted`` at stream start (streaming-and-meta §6 — the
+        ``meta_init`` MetaDelta and the private ``_emit_meta_init`` are
+        deleted per G0)."""
         text_parts = [b.text for b in prompt.content if isinstance(b, TextContent)]
         user_query = " ".join(text_parts) if text_parts else json.dumps(
             _strip_binary_data(prompt.to_dict()), ensure_ascii=False
         )
 
-        payload: dict[str, Any] = {
-            "format": "json",
-            "user_query": user_query,
-            "agent_uuid": self.agent_config.agent_uuid,
-            "parent_agent_uuid": self._parent_agent_uuid,
-            "model": self.agent_config.model,
-        }
-
+        conversation_log = None
         if self.stream_meta_history_and_tool_results:
-            payload["conversation_log"] = _strip_binary_data(
+            conversation_log = _strip_binary_data(
                 self.agent_config.conversation_log.to_dict()
             )
 
-        delta = MetaDelta(
-            agent_uuid=self.agent_config.agent_uuid,
-            type="meta_init",
-            payload=payload,
-            is_final=True,
+        sink.emit_meta(
+            RunStarted(
+                user_query=user_query,
+                model=self.agent_config.model,
+                conversation_log=conversation_log,
+            )
         )
-        await stream_formatter.format_delta(delta, queue)
-
-    async def _emit_meta_final(
-        self,
-        result: AgentResult,
-        queue: asyncio.Queue,
-        stream_formatter: StreamFormatter,
-    ) -> None:
-        """Emit meta_final at stream end (only when stream_meta_history_and_tool_results is True)."""
-        if not self.stream_meta_history_and_tool_results:
-            return
-
-        payload: dict[str, Any] = {
-            "stop_reason": result.stop_reason,
-            "total_steps": result.total_steps,
-            "generated_files": [f.to_dict() for f in result.generated_files] if result.generated_files else None,
-            "cost": dataclasses.asdict(result.cost) if result.cost else None,
-            "cumulative_usage": result.cumulative_usage.to_dict() if result.cumulative_usage else None,
-        }
-
-        payload["conversation_log"] = _strip_binary_data(
-            result.conversation_log.to_dict()
-        )
-
-        delta = MetaDelta(
-            agent_uuid=self.agent_config.agent_uuid,
-            type="meta_final",
-            payload=payload,
-            is_final=True,
-        )
-        await stream_formatter.format_delta(delta, queue)
-
-    async def _emit_meta_files(
-        self,
-        generated_files: list[MediaMetadata],
-        queue: asyncio.Queue,
-        stream_formatter: StreamFormatter,
-    ) -> None:
-        """Emit meta_files with generated file metadata."""
-        if not generated_files:
-            return
-
-        delta = MetaDelta(
-            agent_uuid=self.agent_config.agent_uuid,
-            type="meta_files",
-            payload={"files": [f.to_dict() for f in generated_files]},
-            is_final=True,
-        )
-        await stream_formatter.format_delta(delta, queue)

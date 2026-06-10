@@ -4,6 +4,7 @@ import pytest
 from agent_base.core import Message
 from agent_base.core.commands import Abort, ToolReply, UserMessage
 from agent_base.core.ack import Disposition
+from agent_base.session.mailbox import Mailbox
 from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
 
 
@@ -22,7 +23,9 @@ async def test_user_message_accepted_and_enqueued(agent):
 
 
 async def test_mailbox_backpressure_rejects(agent):
-    agent._mailbox_capacity = 1
+    # session-control.md SS2.3: the bounded plane-1 mailbox is fixed at
+    # construction (AgentRuntime owns it) -- swap the instance to shrink it.
+    agent._mailbox = Mailbox(capacity=1)
     a1 = await agent.submit(UserMessage(message=Message.user("a")))
     a2 = await agent.submit(UserMessage(message=Message.user("b")))
     assert a1.disposition is Disposition.ACCEPTED
@@ -35,9 +38,11 @@ async def test_tool_reply_unknown_cid_is_stale(agent):
     assert ack.disposition is Disposition.IGNORED_STALE
 
 
-async def test_abort_returns_cancelling_and_wrapper_returns_result(agent):
+async def test_abort_idle_returns_not_running_and_wrapper_returns_result(agent):
+    # session-control.md SS2.4: submit(Abort()) with nothing in flight returns
+    # a typed NOT_RUNNING WITHOUT running the teardown (closes A10).
     ack = await agent.submit(Abort())
-    assert ack.disposition is Disposition.CANCELLING
+    assert ack.disposition is Disposition.NOT_RUNNING
     result = await agent.abort()  # back-compat wrapper
     assert result.stop_reason == "aborted"
 
@@ -57,3 +62,5 @@ async def test_seq_increments_and_commands_audited(agent):
     assert snap[0].kind == "UserMessage"
     assert snap[0].disposition == "accepted"
     assert snap[1].kind == "Abort"
+    # SS2.4: with a queued (not in-flight) message the idle Abort is typed.
+    assert snap[1].disposition == "not_running"

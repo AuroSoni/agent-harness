@@ -11,8 +11,9 @@ through ``submit(Abort()/Steer())`` on the runtime, routed by
 ``SessionManager`` — no caller-owned task/queue/cancellation-event handle
 remains.
 
-Provider-specific types (e.g. StreamResult) live in their respective
-provider packages — see ``agent_base.providers.anthropic.abort_types``.
+The per-provider ``StreamResult`` dataclasses are DELETED (providers.md
+§6 / O12a / G0) — the loop consumes the shared ``ProviderTurn`` from
+``agent_base.core.provider``.
 """
 from __future__ import annotations
 

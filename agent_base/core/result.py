@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from agent_base.core.config import CostBreakdown, _media_metadata_from_dict
+from agent_base.core.config import _media_metadata_from_dict
 from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.messages import Message, Usage
 from agent_base.core.serializable import _stamp
@@ -100,18 +100,16 @@ class AgentResult:
         model: Model identifier used for this run.
         provider: Provider name (e.g., ``"anthropic"``, ``"openai"``).
         usage: Token usage from the final LLM turn.
-        cumulative_usage: Token usage summed across all LLM turns
-            in this run.
         total_steps: Number of agent loop iterations completed.
         agent_logs: Step-by-step execution log entries, if logging
             was enabled.
         generated_files: Media files created during this run.
-        cost: Cost breakdown for this run.
         settlement: The awaited-caller copy of the once-per-turn billing
             fact (``TurnSettlement``). The runtime ALWAYS attaches it (B6 —
             ``as_settlement()`` is deleted; there is no builder fallback).
-            Cumulative totals live here / in the ``SettlementAggregator``,
-            not on ``TurnSettlement`` (O14(d)).
+            Per-turn cost rides here (pricing-cost.md §6 / G0: the legacy
+            ``cost`` / ``cumulative_usage`` fields are DELETED); cumulative
+            totals live in the ``SettlementAggregator`` (O14(d)).
     """
     final_message: Message
     final_answer: str
@@ -120,11 +118,9 @@ class AgentResult:
     model: str
     provider: str
     usage: Usage
-    cumulative_usage: Usage = field(default_factory=Usage)
     total_steps: int = 1
     agent_logs: list[LogEntry] | None = None
     generated_files: list[MediaMetadata] | None = None
-    cost: CostBreakdown | None = None
     settlement: "TurnSettlement | None" = None
     was_aborted: bool = False
     abort_phase: str | None = None
@@ -139,11 +135,9 @@ class AgentResult:
             "model": self.model,
             "provider": self.provider,
             "usage": self.usage.to_dict(),
-            "cumulative_usage": self.cumulative_usage.to_dict(),
             "total_steps": self.total_steps,
             "agent_logs": [e.to_dict() for e in self.agent_logs] if self.agent_logs else None,
             "generated_files": [m.to_dict() for m in self.generated_files] if self.generated_files else None,
-            "cost": self.cost.to_dict() if self.cost else None,
             "settlement": self.settlement.to_dict() if self.settlement else None,
             "was_aborted": self.was_aborted,
             "abort_phase": self.abort_phase,
@@ -159,7 +153,6 @@ class AgentResult:
             from agent_base.core.cost import TurnSettlement
 
             settlement = TurnSettlement.from_dict(raw_settlement)
-        raw_cost = data.get("cost")
         raw_logs = data.get("agent_logs")
         raw_files = data.get("generated_files")
         return cls(
@@ -170,17 +163,11 @@ class AgentResult:
             model=data.get("model", ""),
             provider=data.get("provider", ""),
             usage=Usage.from_dict(data["usage"]) if data.get("usage") else Usage(),
-            cumulative_usage=(
-                Usage.from_dict(data["cumulative_usage"])
-                if data.get("cumulative_usage")
-                else Usage()
-            ),
             total_steps=data.get("total_steps", 1),
             agent_logs=[LogEntry.from_dict(e) for e in raw_logs] if raw_logs else None,
             generated_files=(
                 [_media_metadata_from_dict(f) for f in raw_files] if raw_files else None
             ),
-            cost=CostBreakdown.from_dict(raw_cost) if raw_cost else None,
             settlement=settlement,
             was_aborted=bool(data.get("was_aborted", False)),
             abort_phase=data.get("abort_phase"),

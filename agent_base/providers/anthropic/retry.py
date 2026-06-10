@@ -2,11 +2,8 @@
 
 Provides exponential backoff with jitter for transient failures, and
 stream event processing that translates Anthropic events into canonical
-``StreamDelta`` objects.
-
-Ported from ``anthropic_agent/core/retry.py``, adapted to use the
-``StreamDelta`` → ``StreamFormatter`` pipeline instead of function-based
-formatters.
+``StreamDelta`` objects pushed into a ``DeltaSink`` (R30 — the legacy
+``(queue, stream_formatter)`` pair is deleted per G0, not shimmed).
 """
 from __future__ import annotations
 
@@ -17,7 +14,9 @@ from typing import Any, Awaitable, Callable, TypeVar, TYPE_CHECKING
 
 import anthropic
 
-from agent_base.providers.anthropic.abort_types import StreamResult
+from dataclasses import dataclass, field
+
+from agent_base.core.errors import ErrorCode
 from agent_base.logging import get_logger
 from agent_base.streaming.types import (
     TextDelta,
@@ -29,7 +28,19 @@ from agent_base.streaming.types import (
 )
 
 if TYPE_CHECKING:
-    from agent_base.streaming.base import StreamFormatter
+    from agent_base.streaming.wire import DeltaSink
+
+
+@dataclass
+class RawStreamOutcome:
+    """Raw outcome of one Anthropic stream: the accumulated SDK message plus
+    cancellation bookkeeping. The provider converts this into the shared
+    ``ProviderTurn`` (completed block indices ride ``stream_bookkeeping`` --
+    O12a)."""
+
+    message: Any
+    completed_blocks: set[int] = field(default_factory=set)
+    was_cancelled: bool = False
 
 logger = get_logger(__name__)
 
@@ -81,18 +92,18 @@ def _is_retryable_api_status_error(error: anthropic.APIStatusError) -> bool:
 async def anthropic_stream_with_backoff(
     client: anthropic.AsyncAnthropic,
     request_params: dict[str, Any],
-    queue: asyncio.Queue,
+    *,
     max_retries: int = 5,
     base_delay: float = 5.0,
-    stream_formatter: StreamFormatter | None = None,
+    sink: "DeltaSink | None" = None,
     stream_tool_results: bool = True,
     agent_uuid: str = "",
     cancellation_event: asyncio.Event | None = None,
-) -> StreamResult:
+) -> RawStreamOutcome:
     """Execute Anthropic streaming with exponential backoff.
 
     Translates Anthropic stream events into ``StreamDelta`` objects and
-    formats them via ``stream_formatter.format_delta(delta, queue)``.
+    pushes them to ``sink.emit(delta)`` (R30).
 
     Retryable errors:
         ``RateLimitError``, ``APIConnectionError``, ``APITimeoutError``,
@@ -106,18 +117,17 @@ async def anthropic_stream_with_backoff(
     Args:
         client: Anthropic async client instance.
         request_params: Dict for ``client.beta.messages.stream(**params)``.
-        queue: Async queue for formatted stream output.
         max_retries: Maximum retry attempts.
         base_delay: Base delay in seconds for backoff.
-        stream_formatter: Formatter for serializing ``StreamDelta`` objects.
+        sink: ``DeltaSink`` receiving translated ``StreamDelta`` objects.
         stream_tool_results: Whether to stream server tool results.
         agent_uuid: Agent UUID stamped on every ``StreamDelta``.
         cancellation_event: Optional event that, when set, signals the
             stream to stop processing events and return partial state.
 
     Returns:
-        StreamResult containing the message, completed block indices,
-        and whether the stream was cancelled.
+        RawStreamOutcome with the accumulated message, completed block
+        indices, and whether the stream was cancelled.
     """
     for attempt in range(max_retries):
         try:
@@ -125,9 +135,9 @@ async def anthropic_stream_with_backoff(
                 completed_blocks: set[int] = set()
                 was_cancelled = False
 
-                if queue and stream_formatter:
+                if sink is not None:
                     completed_blocks, was_cancelled = await _process_stream_events(
-                        stream, queue, stream_formatter,
+                        stream, sink,
                         stream_tool_results, agent_uuid,
                         cancellation_event=cancellation_event,
                     )
@@ -143,7 +153,7 @@ async def anthropic_stream_with_backoff(
                     accumulated = stream.current_message_snapshot
                 else:
                     accumulated = await stream.get_final_message()
-                return StreamResult(
+                return RawStreamOutcome(
                     message=accumulated,
                     completed_blocks=completed_blocks,
                     was_cancelled=was_cancelled,
@@ -216,17 +226,15 @@ async def anthropic_stream_with_backoff(
 
 async def _process_stream_events(
     stream: Any,
-    queue: asyncio.Queue,
-    stream_formatter: StreamFormatter,
+    sink: "DeltaSink",
     stream_tool_results: bool,
     agent_uuid: str,
     cancellation_event: asyncio.Event | None = None,
 ) -> tuple[set[int], bool]:
     """Translate Anthropic stream events into StreamDelta objects.
 
-    Ported from ``json_formatter()`` in ``anthropic_agent/streaming/formatters.py``
-    but produces ``StreamDelta`` objects instead of JSON envelopes directly.
-    The ``StreamFormatter`` handles serialization to the wire format.
+    Produces typed ``StreamDelta`` objects and pushes them to
+    ``sink.emit(...)`` -- framing/format is downstream (R30).
 
     Event types handled:
         - ``content_block_start``: Track block types, initialize tool buffers
@@ -259,9 +267,12 @@ async def _process_stream_events(
             error_data = getattr(event, "error", event)
             delta = ErrorDelta(
                 agent_uuid=agent_uuid,
-                error_payload={"error": json.dumps(error_data, default=str)},
+                code=ErrorCode.PROVIDER_STATUS,
+                message=json.dumps(error_data, default=str),
+                retriable=False,
+                terminal=False,
             )
-            await stream_formatter.format_delta(delta, queue)
+            sink.emit(delta)
             continue
 
         # Content block start
@@ -297,13 +308,13 @@ async def _process_stream_events(
                 text = getattr(delta_obj, "text", "")
                 if text:
                     d = TextDelta(agent_uuid=agent_uuid, text=text)
-                    await stream_formatter.format_delta(d, queue)
+                    sink.emit(d)
 
             elif delta_type == "thinking_delta":
                 thinking = getattr(delta_obj, "thinking", "")
                 if thinking:
                     d = ThinkingDelta(agent_uuid=agent_uuid, thinking=thinking)
-                    await stream_formatter.format_delta(d, queue)
+                    sink.emit(d)
 
             elif delta_type == "signature_delta":
                 pass  # Captured but not streamed
@@ -329,7 +340,7 @@ async def _process_stream_events(
                     d = TextDelta(agent_uuid=agent_uuid, text="", is_final=True)
                 else:
                     d = ThinkingDelta(agent_uuid=agent_uuid, thinking="", is_final=True)
-                await stream_formatter.format_delta(d, queue)
+                sink.emit(d)
 
                 # Emit citations after text final marker
                 if bt == "text":
@@ -362,7 +373,7 @@ async def _process_stream_events(
                                 extras=extras,
                                 is_final=(i == len(citations) - 1),
                             )
-                            await stream_formatter.format_delta(cd, queue)
+                            sink.emit(cd)
 
             # Buffered blocks: tool_use
             elif bt == "tool_use":
@@ -384,7 +395,7 @@ async def _process_stream_events(
                         is_server_tool=False,
                         is_final=True,
                     )
-                    await stream_formatter.format_delta(td, queue)
+                    sink.emit(td)
 
             # Buffered blocks: server_tool_use
             elif bt == "server_tool_use":
@@ -406,7 +417,7 @@ async def _process_stream_events(
                         is_server_tool=True,
                         is_final=True,
                     )
-                    await stream_formatter.format_delta(td, queue)
+                    sink.emit(td)
 
             # Buffered blocks: *_tool_result
             elif bt.endswith("_tool_result"):
@@ -428,7 +439,7 @@ async def _process_stream_events(
                             is_server_tool=True,
                             is_final=True,
                         )
-                        await stream_formatter.format_delta(trd, queue)
+                        sink.emit(trd)
                 else:
                     tool_buffers.pop(api_idx, None)
             continue

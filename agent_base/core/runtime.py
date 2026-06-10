@@ -99,6 +99,18 @@ if TYPE_CHECKING:
 _STREAM_CLOSED = object()
 
 
+class _Recompact(Exception):
+    """INTERNAL mechanics (I10): raised by :meth:`AgentRuntime._provider_turn`
+    when the provider classifies an overflow (``ErrorCode.CONTEXT_OVERFLOW``)
+    and a compaction controller is available.  The loop catches it, runs
+    ``compact(reason=...)`` and retries; it never escapes the loop.
+    """
+
+    def __init__(self, reason: str = "request_too_large") -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class _AwaitCancelled(Exception):
     """Internal: a parked await woke cancelled (abort / disconnect) — §2.2.
 
@@ -317,6 +329,19 @@ class AgentRuntime:
         return self.agent_uuid
 
     @property
+    def provider_name(self) -> str:
+        """The provider identity string (providers.md Fork P-A).
+
+        ``self.provider`` is either a name string (base runtime construction)
+        or a ``Provider`` VALUE carried by a concrete runtime — in which case
+        the string identity is ``provider.name``.
+        """
+        provider = self.provider
+        if isinstance(provider, str):
+            return provider
+        return str(getattr(provider, "name", "") or "")
+
+    @property
     def agent_config(self) -> AgentConfig:
         """The live :class:`AgentConfig` handle (read-only for hooks; the
         runtime owns writes)."""
@@ -471,7 +496,7 @@ class AgentRuntime:
         assistant_message = Message.assistant(list(assistant_blocks))
         assistant_message.stop_reason = stop_reason
         assistant_message.model = self.model
-        assistant_message.provider = self.provider
+        assistant_message.provider = self.provider_name
 
         # Splice (the library guarantee — never a consumer responsibility).
         self._context_messages.append(user_message)
@@ -501,15 +526,17 @@ class AgentRuntime:
         end_outcome = await self._run_hook("on_turn_end", end_ctx)
         self._emit_outcome_events(end_outcome)
 
+        # pricing-cost.md §6 / B6 / G0: no `cost` / `cumulative_usage` on
+        # AgentResult — per-turn cost rides `settlement`, cumulative rides the
+        # SettlementAggregator.
         return AgentResult(
             final_message=assistant_message,
             final_answer=final_answer,
             conversation_log=self._conversation_log,
             stop_reason=stop_reason,
             model=self.model,
-            provider=self.provider,
+            provider=self.provider_name,
             usage=Usage(),  # scripted turn — no provider call
-            cumulative_usage=Usage(),
             total_steps=self._turn_count,
         )
 
@@ -880,6 +907,14 @@ class AgentRuntime:
         self._seq_counter += 1
         return self._seq_counter
 
+    def _nothing_in_flight(self) -> bool:
+        """§2.4 idle check: True when there is nothing an Abort could cancel.
+
+        Concrete runtimes extend this (e.g. a persisted ``pending_relay``
+        pause counts as in-flight even while the loop itself is idle).
+        """
+        return self._phase is AgentPhase.IDLE and not self._actor_running
+
     def _audit_command(
         self,
         seq: int,
@@ -942,7 +977,7 @@ class AgentRuntime:
                 return Ack(
                     seq=seq, disposition=Disposition.REJECTED, detail="not_root"
                 )
-            if self._phase is AgentPhase.IDLE and not self._actor_running:
+            if self._nothing_in_flight():
                 # Nothing to abort — typed, and NO teardown runs (§2.4).
                 self._audit_command(seq, command, Disposition.NOT_RUNNING)
                 return Ack(seq=seq, disposition=Disposition.NOT_RUNNING)
@@ -1011,6 +1046,76 @@ class AgentRuntime:
         finally:
             self._mailbox.unfreeze()
         return None
+
+    # ── provider-agnostic generation step (providers.md §2.2 — the lift) ───
+
+    async def _provider_turn(
+        self,
+        *,
+        render_view: list[Message],
+        sink: Any | None = None,
+    ) -> Any:
+        """The ONE place a Provider is invoked (providers.md §2.2).
+
+        Wraps ``generate``/``generate_stream``, applies the pre-generate
+        chain-repair guarantee (B1/C5/X13 via ``provider.sanitize_chain``)
+        and normalises errors through ``provider.classify_error`` (D3/R8).
+        Overflow routes through the internal :class:`_Recompact` (I10) when a
+        compaction controller is present; every other failure surfaces as a
+        typed ``ProviderError``.
+
+        Returns the provider's ``ProviderTurn``.
+        """
+        cfg = self.agent_config
+        # B1/C5/X13: chain integrity before EVERY call — provider-supplied
+        # shape, loop-owned policy.
+        cfg.context_messages[:] = self.provider.sanitize_chain(cfg.context_messages)
+        # O12(c): no retry scalars threaded — the provider reads its own
+        # self.retry_policy.
+        try:
+            if sink is not None:
+                turn = await self.provider.generate_stream(
+                    system_prompt=cfg.system_prompt,
+                    messages=render_view,
+                    tool_schemas=cfg.tool_schemas,
+                    llm_config=cfg.llm_config,
+                    model=cfg.model,
+                    sink=sink,
+                    stream_tool_results=getattr(
+                        self, "stream_meta_history_and_tool_results", True
+                    ),
+                    agent_uuid=cfg.agent_uuid,
+                    cancellation_event=self._cancellation_event,
+                )
+            else:
+                turn = await self.provider.generate(
+                    system_prompt=cfg.system_prompt,
+                    messages=render_view,
+                    tool_schemas=cfg.tool_schemas,
+                    llm_config=cfg.llm_config,
+                    model=cfg.model,
+                    agent_uuid=cfg.agent_uuid,
+                )
+        except Exception as exc:
+            from agent_base.core.provider import ProviderError
+
+            if isinstance(exc, ProviderError):
+                perr = exc
+            else:
+                # D3: normalise here → ProviderError(code: ErrorCode).
+                perr = self.provider.classify_error(exc)
+            if (
+                perr.code is ErrorCode.CONTEXT_OVERFLOW
+                and getattr(self, "_compaction_controller", None) is not None
+            ):
+                # I10: overflow routes through compact+retry (_Recompact is
+                # internal mechanics; the hook seam is the trigger value).
+                raise _Recompact(reason="request_too_large") from perr
+            raise perr from exc
+        # O12(d): a cooperative mid-stream failure keeps partials on
+        # turn.message and sets turn.partial_error; the LOOP emits the typed
+        # ErrorReport without discarding the partials.
+        return turn
 
     # ── the awaited entrypoint (Fork E — relocation sequenced last) ────────
 

@@ -7,7 +7,7 @@ their respective modules to avoid circular imports:
 
 - ``agent_base.core.config``: AgentConfig, Conversation, LLMConfig, etc.
 - ``agent_base.core.result``: AgentResult, AgentRunLog, LogEntry
-- ``agent_base.core.agent_base``: Agent
+- ``agent_base.core.runtime``: AgentRuntime (the ONE agent class -- Fork P-A)
 - ``agent_base.core.provider``: Provider
 """
 

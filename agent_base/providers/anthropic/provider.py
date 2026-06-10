@@ -3,30 +3,38 @@
 Handles authentication, request building, retry/backoff, response parsing,
 and stream event translation.
 
-The AnthropicProvider is injected into ``AnthropicAgent`` and called by the
-agent loop. It never owns the orchestration logic — that lives in the agent.
+Conforms to the expanded ``Provider`` protocol (providers.md §2.1 / Fork
+P-A): a provider is a VALUE injected into the runtime.  ``generate`` /
+``generate_stream`` are keyword-only, return a normalised ``ProviderTurn``,
+read ``self.retry_policy`` (O12c — no threaded retry scalars) and emit into a
+``DeltaSink`` (R30 — the legacy ``(queue, stream_formatter)`` pair is deleted
+per G0).
 """
 from __future__ import annotations
 
 import asyncio
+import mimetypes
 from typing import Any, TYPE_CHECKING
 
 import anthropic
 
-from agent_base.providers.anthropic.abort_types import StreamResult
+from agent_base.core.chain import ChainPatch, ensure_chain_validity
+from agent_base.core.errors import ErrorCode
 from agent_base.core.messages import Message, Usage
-from agent_base.core.provider import Provider
-from agent_base.core.types import ContentBlock, Role
+from agent_base.core.provider import Provider, ProviderError, ProviderTurn, RetryPolicy
+from agent_base.core.types import ContentBlock, Role, ServerToolResultContent, ToolUseContent
 from agent_base.logging import get_logger
+from agent_base.tools.registry import ToolCallInfo
 
+from .config import AnthropicLLMConfig
 from .formatters import AnthropicMessageFormatter
 from .retry import anthropic_stream_with_backoff, retry_with_backoff
 from .token_estimation import AnthropicTokenEstimator
 
 if TYPE_CHECKING:
     from agent_base.core.config import LLMConfig
-    from agent_base.providers.anthropic.anthropic_agent import AnthropicLLMConfig
-    from agent_base.streaming.base import StreamFormatter
+    from agent_base.media_backend.media_types import MediaMetadata
+    from agent_base.streaming.wire import DeltaSink
     from agent_base.tools.tool_types import ToolSchema
 
 logger = get_logger(__name__)
@@ -34,6 +42,7 @@ logger = get_logger(__name__)
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BASE_DELAY = 1.0
 DEFAULT_MAX_TOKENS = 16384
+DEFAULT_MODEL = "claude-sonnet-4-5"
 
 # ---------------------------------------------------------------------------
 # Cache control (pure dict→dict utility)
@@ -191,17 +200,46 @@ class AnthropicProvider(Provider):
         formatter: Message formatter. If ``None``, creates a default one.
     """
 
+    name = "anthropic"
+
     def __init__(
         self,
         client: anthropic.AsyncAnthropic | None = None,
         formatter: AnthropicMessageFormatter | None = None,
         fallback_api_keys: list[str] | None = None,
+        retry_policy: RetryPolicy | None = None,
     ) -> None:
         self.client = client or anthropic.AsyncAnthropic()
         self.formatter = formatter or AnthropicMessageFormatter()
         self.token_estimator = AnthropicTokenEstimator(self.formatter)
+        # O12(c): the provider carries its own retry budget.
+        self.retry_policy = retry_policy or RetryPolicy(
+            max_retries=DEFAULT_MAX_RETRIES, base_delay=DEFAULT_BASE_DELAY
+        )
         self._fallback_api_keys = fallback_api_keys or []
         self._fallback_clients: list[anthropic.AsyncAnthropic] = []
+
+    # -- identity / config defaults (providers.md §2.1) ----------------------
+
+    def default_model(self) -> str:
+        """The provider's config-default model id."""
+        return DEFAULT_MODEL
+
+    def make_llm_config(self, loaded: "dict | LLMConfig | None") -> AnthropicLLMConfig:
+        """Land the native ``AnthropicLLMConfig`` (O12b — the ONE factory)."""
+        from agent_base.core.config import LLMConfig
+
+        if loaded is None:
+            return AnthropicLLMConfig()
+        if isinstance(loaded, AnthropicLLMConfig):
+            return loaded
+        if isinstance(loaded, LLMConfig):
+            return AnthropicLLMConfig.from_dict(loaded.to_dict())
+        if isinstance(loaded, dict):
+            return AnthropicLLMConfig.from_dict(loaded)
+        raise TypeError(
+            f"make_llm_config expects dict | LLMConfig | None, got {type(loaded).__name__}"
+        )
 
     # -- API key fallback ----------------------------------------------------
 
@@ -357,71 +395,33 @@ class AnthropicProvider(Provider):
             usage_kwargs=usage_kwargs,
         )
 
-    # -- Defensive sanitization --------------------------------------------
+    # -- Chain repair (R18a — shared, provider-agnostic default) -------------
 
-    @staticmethod
-    def _defensive_sanitize(messages: list[Message]) -> list[Message]:
-        """Run chain-validity checks before sending to the API.
+    def sanitize_chain(self, messages: list[Message]) -> list[Message]:
+        """Pure, idempotent pre-generate chain repair (B1/C5/X13).
 
-        This is a safety net — if the message chain is already valid (the
-        normal case), this is a no-op.  If it detects and repairs any
-        violations, it logs a warning so we can track down the root cause
-        and updates the caller's message list in place so the repair
-        persists for future turns.
+        Delegates to the shared :func:`agent_base.core.chain.ensure_chain_validity`
+        (R18a) so Anthropic/LiteLLM never diverge.
         """
-        from agent_base.providers.anthropic.message_sanitizer import (
-            ensure_chain_validity,
-        )
+        return ensure_chain_validity(messages)
 
-        sanitized = ensure_chain_validity(messages)
-        chain_repaired = len(sanitized) != len(messages)
-
-        if chain_repaired:
-            logger.warning(
-                "defensive_sanitize_repaired_chain",
-                original_count=len(messages),
-                sanitized_count=len(sanitized),
-            )
-        else:
-            for orig, fixed in zip(messages, sanitized):
-                if orig is not fixed:
-                    chain_repaired = True
-                    logger.warning(
-                        "defensive_sanitize_repaired_message",
-                        role=orig.role.value,
-                    )
-                    break
-
-        if chain_repaired:
-            messages[:] = sanitized
-
-        return messages
-
-    # -- Public API ---------------------------------------------------------
+    # -- Public API (providers.md §2.1 — keyword-only, ProviderTurn) ---------
 
     async def generate(
         self,
+        *,
         system_prompt: str | None,
         messages: list[Message],
         tool_schemas: list[ToolSchema],
         llm_config: LLMConfig,
         model: str,
-        max_retries: int = DEFAULT_MAX_RETRIES,
-        base_delay: float = DEFAULT_BASE_DELAY,
         agent_uuid: str = "",
-    ) -> Message:
-        """Non-streaming Anthropic API call with retry.
+    ) -> ProviderTurn:
+        """Non-streaming Anthropic API call with retry → ``ProviderTurn``.
 
-        1. Format tool schemas and message content blocks via the formatter.
-        2. Build the full request dict (provider's responsibility).
-        3. Call ``client.beta.messages.create()`` with retry.
-        4. Parse response content blocks via the formatter.
-        5. Build the canonical ``Message`` (provider's responsibility).
-
-        Returns:
-            Canonical ``Message`` with content, usage, stop_reason.
+        O12(c): retry budget comes from ``self.retry_policy`` — no threaded
+        ``max_retries``/``base_delay`` scalars.
         """
-        messages = self._defensive_sanitize(messages)
         formatted_tool_schemas = self.formatter.format_tool_schemas(tool_schemas)
 
         wire_messages = [
@@ -438,7 +438,10 @@ class AnthropicProvider(Provider):
 
         clients = self._clients_to_try()
         for client_idx, client in enumerate(clients):
-            @retry_with_backoff(max_retries=max_retries, base_delay=base_delay)
+            @retry_with_backoff(
+                max_retries=self.retry_policy.max_retries,
+                base_delay=self.retry_policy.base_delay,
+            )
             async def _create(_client=client) -> Any:
                 return await _client.beta.messages.create(**request_params)
 
@@ -448,7 +451,9 @@ class AnthropicProvider(Provider):
                     self.client = client
                     logger.info("api_key_fallback_activated", fallback_index=client_idx)
                 content_blocks = self.formatter.parse_wire_to_blocks(raw_response.content)
-                return self._build_response_message(raw_response, content_blocks)
+                return ProviderTurn(
+                    message=self._build_response_message(raw_response, content_blocks)
+                )
             except anthropic.BadRequestError as e:
                 if self._is_credits_exhausted(e) and client_idx < len(clients) - 1:
                     logger.warning("credits_exhausted_fallback", fallback_index=client_idx + 1)
@@ -457,37 +462,25 @@ class AnthropicProvider(Provider):
 
     async def generate_stream(
         self,
+        *,
         system_prompt: str | None,
         messages: list[Message],
         tool_schemas: list[ToolSchema],
         llm_config: LLMConfig,
         model: str,
-        max_retries: int,
-        base_delay: float,
-        queue: asyncio.Queue,
-        stream_formatter: StreamFormatter,
+        sink: "DeltaSink",
         stream_tool_results: bool = True,
         agent_uuid: str = "",
         cancellation_event: asyncio.Event | None = None,
-    ) -> StreamResult:
-        """Streaming Anthropic API call with retry.
+    ) -> ProviderTurn:
+        """Streaming Anthropic API call with retry → ``ProviderTurn``.
 
-        1. Format tool schemas and message content blocks via the formatter.
-        2. Build the full request dict (provider's responsibility).
-        3. Call ``anthropic_stream_with_backoff()`` which handles retry
-           and processes stream events → ``StreamDelta`` → ``format_delta()``.
-        4. Parse response content blocks via the formatter.
-        5. Build the canonical ``Message`` (provider's responsibility).
-
-        Args:
-            cancellation_event: Optional event that, when set, signals the
-                stream to stop and return partial state.
-
-        Returns:
-            StreamResult containing the canonical Message, completed block
-            indices, and whether the stream was cancelled.
+        R30/G0: ``sink`` replaces the deleted ``(queue, stream_formatter)``
+        pair — native events translate to typed ``StreamDelta`` objects pushed
+        to ``sink.emit(...)``.  Completed block indices ride the
+        provider-private ``stream_bookkeeping`` field (O12a) for
+        :meth:`plan_stream_abort`.
         """
-        messages = self._defensive_sanitize(messages)
         formatted_tool_schemas = self.formatter.format_tool_schemas(tool_schemas)
 
         wire_messages = [
@@ -505,13 +498,12 @@ class AnthropicProvider(Provider):
         clients = self._clients_to_try()
         for client_idx, client in enumerate(clients):
             try:
-                stream_result = await anthropic_stream_with_backoff(
+                outcome = await anthropic_stream_with_backoff(
                     client=client,
                     request_params=request_params,
-                    queue=queue,
-                    max_retries=max_retries,
-                    base_delay=base_delay,
-                    stream_formatter=stream_formatter,
+                    max_retries=self.retry_policy.max_retries,
+                    base_delay=self.retry_policy.base_delay,
+                    sink=sink,
                     stream_tool_results=stream_tool_results,
                     agent_uuid=agent_uuid,
                     cancellation_event=cancellation_event,
@@ -520,18 +512,173 @@ class AnthropicProvider(Provider):
                     self.client = client
                     logger.info("api_key_fallback_activated", fallback_index=client_idx)
                 content_blocks = self.formatter.parse_wire_to_blocks(
-                    stream_result.message.content
+                    outcome.message.content
                 )
                 response_message = self._build_response_message(
-                    stream_result.message, content_blocks
+                    outcome.message, content_blocks
                 )
-                return StreamResult(
+                return ProviderTurn(
                     message=response_message,
-                    completed_blocks=stream_result.completed_blocks,
-                    was_cancelled=stream_result.was_cancelled,
+                    was_cancelled=outcome.was_cancelled,
+                    stream_bookkeeping=outcome.completed_blocks,
                 )
             except anthropic.BadRequestError as e:
                 if self._is_credits_exhausted(e) and client_idx < len(clients) - 1:
                     logger.warning("credits_exhausted_fallback", fallback_index=client_idx + 1)
                     continue
                 raise
+
+    # -- Error classification (O5/O6/R8 — built directly, no shadow enum) ----
+
+    def classify_error(self, exc: Exception) -> ProviderError:
+        """Map an Anthropic SDK exception to a typed :class:`ProviderError`.
+
+        Plain ``if/elif`` over SDK exception types (O5); ``code`` is the single
+        8-member ``ErrorCode`` taxonomy (O6).
+        """
+        if isinstance(exc, ProviderError):
+            return exc
+        native = ""
+        status_code = getattr(exc, "status_code", None)
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            inner = body.get("error")
+            if isinstance(inner, dict) and isinstance(inner.get("type"), str):
+                native = inner["type"]
+        message = str(exc)
+
+        if isinstance(exc, anthropic.RateLimitError):
+            return ProviderError(
+                code=ErrorCode.RATE_LIMITED, native_code=native or "rate_limit_error",
+                message=message, retriable=True, raw=exc,
+            )
+        if isinstance(exc, anthropic.APITimeoutError):
+            return ProviderError(
+                code=ErrorCode.PROVIDER_TIMEOUT, native_code=native or "timeout",
+                message=message, retriable=True, raw=exc,
+            )
+        if isinstance(exc, anthropic.APIConnectionError):
+            return ProviderError(
+                code=ErrorCode.PROVIDER_TIMEOUT, native_code=native or "connection_error",
+                message=message, retriable=True, raw=exc,
+            )
+        if isinstance(exc, anthropic.InternalServerError) or native == "overloaded_error":
+            return ProviderError(
+                code=ErrorCode.PROVIDER_OVERLOADED, native_code=native or "overloaded_error",
+                message=message, retriable=True, raw=exc,
+            )
+        if isinstance(exc, (anthropic.BadRequestError, anthropic.APIStatusError)):
+            is_413 = status_code == 413
+            if is_413 or "request_too_large" in message or "context window" in message.lower():
+                return ProviderError(
+                    code=ErrorCode.CONTEXT_OVERFLOW, native_code=native or "request_too_large",
+                    message=message, retriable=False, raw=exc,
+                )
+            # O6: bad-request / auth / validation collapse into PROVIDER_STATUS.
+            return ProviderError(
+                code=ErrorCode.PROVIDER_STATUS, native_code=native or str(status_code or ""),
+                message=message, retriable=False, raw=exc,
+            )
+        return ProviderError(
+            code=ErrorCode.INTERNAL, native_code=native, message=message,
+            retriable=False, raw=exc,
+        )
+
+    # -- Abort planning (O12a — reads provider-private stream bookkeeping) ---
+
+    def plan_stream_abort(self, turn: ProviderTurn) -> ChainPatch:
+        """Synthesize tool_results for tool_uses left open by a mid-stream
+        abort.  Reads ``turn.stream_bookkeeping`` (the completed block indices
+        this provider stored on the way out — O12a)."""
+        from .message_sanitizer import plan_stream_abort as _plan
+
+        completed: set[int] = turn.stream_bookkeeping or set()
+        patch = _plan(
+            partial_message=turn.message,
+            completed_block_indices=completed,
+        )
+        return ChainPatch(append_messages=list(patch.append_messages))
+
+    # -- Tool-call extraction (providers.md §2.1 — lifted from the agents) ---
+
+    def extract_tool_calls(self, message: Message) -> list[ToolCallInfo]:
+        """Pull *local* client tool calls (server tools surface as
+        ``ServerToolUseContent`` and are skipped)."""
+        return [
+            ToolCallInfo(
+                name=block.tool_name,
+                tool_id=block.tool_id,
+                input=block.tool_input,
+            )
+            for block in message.content
+            if isinstance(block, ToolUseContent)
+        ]
+
+    # -- Provider-hosted files (R31 — the one finalize asymmetry) ------------
+
+    @staticmethod
+    def _collect_file_ids(obj: Any, file_ids: set[str]) -> None:
+        """Recursively collect Anthropic file_ids from serialized tool result content."""
+        if isinstance(obj, dict):
+            fid = obj.get("file_id")
+            if fid and isinstance(fid, str):
+                file_ids.add(fid)
+            for v in obj.values():
+                if isinstance(v, (dict, list)):
+                    AnthropicProvider._collect_file_ids(v, file_ids)
+        elif isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, (dict, list)):
+                    AnthropicProvider._collect_file_ids(item, file_ids)
+
+    async def collect_api_files(self, runtime: Any) -> "list[MediaMetadata]":
+        """Download Anthropic Files API artifacts and store them via
+        ``runtime.media_backend`` (providers.md §2.3; was the agent-private
+        ``_extract_and_store_api_files``)."""
+        agent_config = runtime.agent_config
+        if agent_config is None:
+            return []
+
+        file_ids: set[str] = set()
+        for message in agent_config.context_messages:
+            for block in message.content:
+                if isinstance(block, ServerToolResultContent):
+                    self._collect_file_ids(block.tool_result, file_ids)
+
+        if not file_ids:
+            return []
+
+        existing_api_file_ids = {
+            meta.extras.get("anthropic_file_id")
+            for meta in agent_config.media_registry.values()
+            if meta.extras.get("anthropic_file_id")
+        }
+        new_file_ids = file_ids - existing_api_file_ids
+        if not new_file_ids:
+            return []
+
+        results: "list[MediaMetadata]" = []
+        for file_id in new_file_ids:
+            try:
+                response = await self.client.beta.files.download(file_id)
+                file_metadata_api = await self.client.beta.files.retrieve_metadata(file_id)
+
+                filename = getattr(file_metadata_api, "filename", None) or f"file_{file_id}"
+                mime_type = (
+                    mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                )
+
+                metadata = await runtime.media_backend.store(
+                    response.iter_bytes(), filename, mime_type, agent_config.agent_uuid
+                )
+                metadata.extras["anthropic_file_id"] = file_id
+                results.append(metadata)
+            except Exception:
+                logger.warning(
+                    "collect_api_files_failed",
+                    file_id=file_id,
+                    exc_info=True,
+                )
+                continue
+
+        return results

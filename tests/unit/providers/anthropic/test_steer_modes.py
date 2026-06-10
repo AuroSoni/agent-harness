@@ -53,5 +53,7 @@ async def test_control_rejected_for_subagent(agent):
 
 async def test_control_allowed_for_root(agent):
     # No owner extras → this agent is its own root → control is accepted.
+    # session-control.md SS2.4: idle (nothing in flight) ⇒ typed NOT_RUNNING,
+    # NOT a rejection — the root-only guard passed.
     ack = await agent.submit(Abort())
-    assert ack.disposition is Disposition.CANCELLING
+    assert ack.disposition is Disposition.NOT_RUNNING

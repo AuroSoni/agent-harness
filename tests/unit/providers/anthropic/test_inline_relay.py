@@ -57,7 +57,9 @@ async def test_splice_relay_results_merges_completed_and_incoming(agent) -> None
     )
 
     incoming = [_tool_result("t2", "frontend-ok")]
-    await agent._splice_relay_results(incoming, queue=None, stream_formatter=None)
+    # P-A lift: runtime splice signature (cid, results, ctx) -- the legacy
+    # (queue, stream_formatter) pair is deleted (streaming-and-meta.md SS6/G0).
+    await agent._splice_relay_results(None, incoming, None)
 
     last = agent.agent_config.context_messages[-1]
     assert last.role.value == "user"
@@ -72,9 +74,7 @@ async def test_splice_relay_results_merges_completed_and_incoming(agent) -> None
 async def test_splice_relay_results_raises_without_pending_relay(agent) -> None:
     agent.agent_config.pending_relay = None
     with pytest.raises(RuntimeError):
-        await agent._splice_relay_results(
-            [_tool_result("t1")], queue=None, stream_formatter=None
-        )
+        await agent._splice_relay_results(None, [_tool_result("t1")], None)
 
 
 # ---------------------------------------------------------------------------

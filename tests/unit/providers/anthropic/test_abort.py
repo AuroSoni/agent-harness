@@ -4,6 +4,16 @@ Tests ``abort()``, ``steer()``, ``_handle_stream_abort()``,
 ``_abort_awaiting_relay()``, and ``_build_aborted_result()`` by directly
 manipulating agent internal state.  Uses default memory adapters — no
 API calls or external dependencies.
+
+UPDATED (2026-06-10, P-A lift):
+- ``StreamResult`` is DELETED; the loop consumes the shared ``ProviderTurn``
+  with provider-private ``stream_bookkeeping`` (providers.md §6 / O12a / G0).
+- ``_handle_stream_abort(turn, sink)`` — the (queue, stream_formatter) pair is
+  deleted (R30/G0).
+- idle ``submit(Abort())`` returns typed NOT_RUNNING WITHOUT teardown
+  (session-control.md §2.4) — the cancellation-event side effects of an idle
+  abort are gone by design.
+- ``provider.generate`` returns a ``ProviderTurn`` (providers.md §2.1).
 """
 from __future__ import annotations
 
@@ -20,8 +30,8 @@ from agent_base.core.types import (
     ToolResultContent,
     ToolUseContent,
 )
+from agent_base.core.provider import ProviderTurn
 from agent_base.providers.anthropic import AnthropicAgent
-from agent_base.providers.anthropic.abort_types import StreamResult
 from agent_base.tools.registry import ToolCallClassification, ToolCallInfo
 from agent_base.tools.tool_types import GenericTextEnvelope, ToolResultEnvelope
 
@@ -87,16 +97,23 @@ class TestAbort:
         result = await agent.abort()
         assert result.final_answer == STREAM_ABORT_TEXT
 
-    async def test_abort_sets_cancellation_event(self, agent):
-        agent._phase = AgentPhase.IDLE
-        await agent.abort()
-        assert agent._cancellation_event.is_set()
+    async def test_abort_when_idle_runs_no_teardown(self, agent):
+        # session-control.md §2.4: nothing in flight ⇒ typed NOT_RUNNING and
+        # NO teardown — the cancellation event is left untouched.
+        from agent_base.core.ack import Disposition
+        from agent_base.core.commands import Abort
 
-    async def test_abort_creates_event_if_none(self, agent):
-        agent._cancellation_event = None
         agent._phase = AgentPhase.IDLE
+        agent._cancellation_event = None
+        ack = await agent.submit(Abort())
+        assert ack.disposition is Disposition.NOT_RUNNING
+        assert agent._cancellation_event is None
+
+    async def test_abort_in_flight_sets_cancellation_event(self, agent):
+        # With something in flight the full teardown runs and signals cancel.
+        agent._phase = AgentPhase.AWAITING_RELAY
+        agent._cancellation_event = asyncio.Event()
         await agent.abort()
-        assert agent._cancellation_event is not None
         assert agent._cancellation_event.is_set()
 
     async def test_abort_awaiting_relay_synthesizes_results(self, agent):
@@ -188,13 +205,13 @@ class TestHandleStreamAbort:
         blocks = [_text("partial"), _tool_use("t1"), _text("done")]
         msg = Message.assistant(blocks)
         msg.usage = Usage()
-        stream_result = StreamResult(
+        turn = ProviderTurn(
             message=msg,
-            completed_blocks={0, 2},  # text blocks completed, tool_use didn't
             was_cancelled=True,
+            stream_bookkeeping={0, 2},  # text blocks completed, tool_use didn't
         )
 
-        await agent._handle_stream_abort(stream_result, queue=None, stream_formatter=None)
+        await agent._handle_stream_abort(turn, sink=None)
 
         # Should have appended an assistant message with only the 2 completed blocks
         assistant_msgs = [
@@ -211,13 +228,13 @@ class TestHandleStreamAbort:
         blocks = [_text("ok"), _tool_use("t1")]
         msg = Message.assistant(blocks)
         msg.usage = Usage()
-        stream_result = StreamResult(
+        turn = ProviderTurn(
             message=msg,
-            completed_blocks={0, 1},  # both completed
             was_cancelled=True,
+            stream_bookkeeping={0, 1},  # both completed
         )
 
-        await agent._handle_stream_abort(stream_result, queue=None, stream_formatter=None)
+        await agent._handle_stream_abort(turn, sink=None)
 
         assert [msg.role.value for msg in agent.agent_config.context_messages] == [
             "assistant",
@@ -240,14 +257,14 @@ class TestHandleStreamAbort:
         blocks = [_text("partial")]
         msg = Message.assistant(blocks)
         msg.usage = Usage()
-        stream_result = StreamResult(
+        turn = ProviderTurn(
             message=msg,
-            completed_blocks=set(),  # nothing completed
             was_cancelled=True,
+            stream_bookkeeping=set(),  # nothing completed
         )
 
         msg_count_before = len(agent.agent_config.context_messages)
-        await agent._handle_stream_abort(stream_result, queue=None, stream_formatter=None)
+        await agent._handle_stream_abort(turn, sink=None)
         msg_count_after = len(agent.agent_config.context_messages)
 
         assert msg_count_after == msg_count_before + 1
@@ -261,13 +278,13 @@ class TestHandleStreamAbort:
         blocks = [_text("ok")]
         msg = Message.assistant(blocks)
         msg.usage = Usage()
-        stream_result = StreamResult(
+        turn = ProviderTurn(
             message=msg,
-            completed_blocks={0},
             was_cancelled=True,
+            stream_bookkeeping={0},
         )
 
-        await agent._handle_stream_abort(stream_result, queue=None, stream_formatter=None)
+        await agent._handle_stream_abort(turn, sink=None)
 
         assert agent._phase == AgentPhase.IDLE
         assert agent._abort_completion.is_set()
@@ -277,13 +294,13 @@ class TestHandleStreamAbort:
         blocks = [_text("ok")]
         msg = Message.assistant(blocks)
         msg.usage = Usage()
-        stream_result = StreamResult(
+        turn = ProviderTurn(
             message=msg,
-            completed_blocks={0},
             was_cancelled=True,
+            stream_bookkeeping={0},
         )
 
-        result = await agent._handle_stream_abort(stream_result, queue=None, stream_formatter=None)
+        result = await agent._handle_stream_abort(turn, sink=None)
         assert result.stop_reason == "aborted"
         assert result.was_aborted is True
 
@@ -291,13 +308,13 @@ class TestHandleStreamAbort:
         agent._abort_completion = asyncio.Event()
         msg = Message.assistant([_text("ready"), _tool_use("t1")])
         msg.usage = Usage()
-        stream_result = StreamResult(
+        turn = ProviderTurn(
             message=msg,
-            completed_blocks={0},
             was_cancelled=True,
+            stream_bookkeeping={0},
         )
 
-        await agent._handle_stream_abort(stream_result, queue=None, stream_formatter=None)
+        await agent._handle_stream_abort(turn, sink=None)
 
         assert len(agent.agent_config.context_messages) == 1
         stored_message = agent.agent_config.context_messages[0]
@@ -328,7 +345,10 @@ class TestHandleStreamAbort:
                 ToolResultEnvelope.error("calc", "t2", TOOL_ABORT_TEXT),
             ]
 
-        with patch.object(agent.provider, "generate", AsyncMock(return_value=response_message)), \
+        with patch.object(
+            agent.provider, "generate",
+            AsyncMock(return_value=ProviderTurn(message=response_message)),
+        ), \
              patch.object(agent.tool_registry, "classify_tool_calls", return_value=classification), \
              patch.object(agent.tool_registry, "execute_tools", side_effect=fake_execute_tools), \
              patch.object(agent, "_persist_state", AsyncMock()):

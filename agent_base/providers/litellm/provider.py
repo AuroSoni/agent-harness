@@ -1,22 +1,37 @@
-"""LiteLLM provider implementation."""
+"""LiteLLM provider implementation.
+
+Conforms to the expanded ``Provider`` protocol (providers.md §2.1 / Fork
+P-A): keyword-only ``generate``/``generate_stream`` returning a normalised
+``ProviderTurn``; streaming emits typed ``StreamDelta`` objects into a
+``DeltaSink`` (R30 — the ``(queue, stream_formatter)`` pair is deleted, G0);
+the retry budget rides ``self.retry_policy`` (O12c).
+"""
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import litellm
 
+from agent_base.core.chain import ChainPatch, ensure_chain_validity
+from agent_base.core.errors import ErrorCode
 from agent_base.core.messages import Message, Usage
-from agent_base.core.provider import Provider
+from agent_base.core.provider import Provider, ProviderError, ProviderTurn, RetryPolicy
 from agent_base.core.types import Role, TextContent, ToolResultContent, ToolUseContent
 from agent_base.streaming.types import TextDelta, ThinkingDelta, ToolCallDelta
+from agent_base.tools.registry import ToolCallInfo
 
-from .abort_types import StreamResult
 from .formatters import LiteLLMMessageFormatter
 from .litellm_config import LiteLLMConfig
 from .message_sanitizer import AbortToolCall
 from .token_estimation import LiteLLMTokenEstimator
+
+if TYPE_CHECKING:
+    from agent_base.core.config import LLMConfig
+    from agent_base.streaming.wire import DeltaSink
+
+DEFAULT_MODEL = "openai/gpt-4o-mini"
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -28,22 +43,146 @@ def _get_value(obj: Any, key: str, default: Any = None) -> Any:
 class LiteLLMProvider(Provider):
     """Concrete Provider implementation backed by ``litellm.acompletion``."""
 
-    def __init__(self, formatter: LiteLLMMessageFormatter | None = None) -> None:
+    name = "litellm"
+
+    def __init__(
+        self,
+        formatter: LiteLLMMessageFormatter | None = None,
+        retry_policy: RetryPolicy | None = None,
+    ) -> None:
         self.formatter = formatter or LiteLLMMessageFormatter()
         self.token_estimator = LiteLLMTokenEstimator(self.formatter)
+        # O12(c): the provider carries its own retry budget.
+        self.retry_policy = retry_policy or RetryPolicy()
+
+    # -- identity / config defaults (providers.md §2.1) ----------------------
+
+    def default_model(self) -> str:
+        """The provider's config-default model id."""
+        return DEFAULT_MODEL
+
+    def make_llm_config(self, loaded: "dict | LLMConfig | None") -> LiteLLMConfig:
+        """Land the native ``LiteLLMConfig`` (O12b — the ONE factory)."""
+        from agent_base.core.config import LLMConfig
+
+        if loaded is None:
+            return LiteLLMConfig()
+        if isinstance(loaded, LiteLLMConfig):
+            return loaded
+        if isinstance(loaded, LLMConfig):
+            return LiteLLMConfig.from_dict(loaded.to_dict())
+        if isinstance(loaded, dict):
+            return LiteLLMConfig.from_dict(loaded)
+        raise TypeError(
+            f"make_llm_config expects dict | LLMConfig | None, got {type(loaded).__name__}"
+        )
+
+    # -- Chain repair (R18a — shared default) --------------------------------
+
+    def sanitize_chain(self, messages: list[Message]) -> list[Message]:
+        """Pure, idempotent pre-generate chain repair (B1/C5/X13) via the
+        shared :func:`agent_base.core.chain.ensure_chain_validity` (R18a)."""
+        return ensure_chain_validity(messages)
+
+    # -- Error classification (O5/O6/R8) --------------------------------------
+
+    def classify_error(self, exc: Exception) -> ProviderError:
+        """Map a LiteLLM exception to a typed :class:`ProviderError` (plain
+        if/elif over SDK exceptions — O5; 8-member ``ErrorCode`` — O6)."""
+        if isinstance(exc, ProviderError):
+            return exc
+        message = str(exc)
+        native = type(exc).__name__
+        lowered = message.lower()
+
+        if isinstance(exc, litellm.ContextWindowExceededError):
+            return ProviderError(
+                code=ErrorCode.CONTEXT_OVERFLOW, native_code=native,
+                message=message, retriable=False, raw=exc,
+            )
+        if isinstance(exc, litellm.RateLimitError):
+            return ProviderError(
+                code=ErrorCode.RATE_LIMITED, native_code=native,
+                message=message, retriable=True, raw=exc,
+            )
+        if isinstance(exc, litellm.Timeout):
+            return ProviderError(
+                code=ErrorCode.PROVIDER_TIMEOUT, native_code=native,
+                message=message, retriable=True, raw=exc,
+            )
+        if isinstance(exc, (litellm.ServiceUnavailableError, litellm.InternalServerError)):
+            return ProviderError(
+                code=ErrorCode.PROVIDER_OVERLOADED, native_code=native,
+                message=message, retriable=True, raw=exc,
+            )
+        if isinstance(exc, litellm.BadRequestError):
+            if any(
+                marker in lowered
+                for marker in (
+                    "request too large", "context length",
+                    "maximum context", "too many tokens",
+                )
+            ):
+                return ProviderError(
+                    code=ErrorCode.CONTEXT_OVERFLOW, native_code=native,
+                    message=message, retriable=False, raw=exc,
+                )
+            return ProviderError(
+                code=ErrorCode.PROVIDER_STATUS, native_code=native,
+                message=message, retriable=False, raw=exc,
+            )
+        if isinstance(exc, litellm.APIError):
+            return ProviderError(
+                code=ErrorCode.PROVIDER_STATUS, native_code=native,
+                message=message, retriable=False, raw=exc,
+            )
+        return ProviderError(
+            code=ErrorCode.INTERNAL, native_code=native,
+            message=message, retriable=False, raw=exc,
+        )
+
+    # -- Abort planning (O12a) -------------------------------------------------
+
+    def plan_stream_abort(self, turn: ProviderTurn) -> ChainPatch:
+        """Synthesize tool_results for tool_uses left open by a mid-stream
+        abort.  Reads ``turn.stream_bookkeeping`` (the completed tool-call ids
+        this provider stored on the way out — O12a)."""
+        from .message_sanitizer import plan_stream_abort as _plan
+
+        completed: list[AbortToolCall] = list(turn.stream_bookkeeping or [])
+        patch = _plan(
+            partial_message=turn.message,
+            completed_tool_calls=completed,
+        )
+        return ChainPatch(append_messages=list(patch.append_messages))
+
+    # -- Tool-call extraction ----------------------------------------------------
+
+    def extract_tool_calls(self, message: Message) -> list[ToolCallInfo]:
+        """Pull *local* client tool calls from an assistant message."""
+        return [
+            ToolCallInfo(
+                name=block.tool_name,
+                tool_id=block.tool_id,
+                input=block.tool_input,
+            )
+            for block in message.content
+            if isinstance(block, ToolUseContent)
+        ]
+
+    # -- Generation primitives (keyword-only; ProviderTurn) -----------------------
 
     async def generate(
         self,
+        *,
         system_prompt: str | None,
         messages: list[Message],
         tool_schemas: list[Any],
         llm_config: LiteLLMConfig,
         model: str,
-        max_retries: int,
-        base_delay: float,
         agent_uuid: str = "",
-    ) -> Message:
-        del max_retries, base_delay, agent_uuid
+    ) -> ProviderTurn:
+        del agent_uuid
 
         params = self._build_request_params(
             system_prompt=system_prompt,
@@ -53,24 +192,24 @@ class LiteLLMProvider(Provider):
             model=model,
         )
         response = await litellm.acompletion(**params)
-        return self._parse_response(response, requested_model=model)
+        return ProviderTurn(
+            message=self._parse_response(response, requested_model=model)
+        )
 
     async def generate_stream(
         self,
+        *,
         system_prompt: str | None,
         messages: list[Message],
         tool_schemas: list[Any],
         llm_config: LiteLLMConfig,
         model: str,
-        max_retries: int,
-        base_delay: float,
-        queue: asyncio.Queue,
-        stream_formatter: Any,
+        sink: "DeltaSink",
         stream_tool_results: bool = True,
         agent_uuid: str = "",
         cancellation_event: asyncio.Event | None = None,
-    ) -> StreamResult:
-        del max_retries, base_delay, stream_tool_results
+    ) -> ProviderTurn:
+        del stream_tool_results
 
         params = self._build_request_params(
             system_prompt=system_prompt,
@@ -90,7 +229,7 @@ class LiteLLMProvider(Provider):
 
         async for chunk in response:
             if cancellation_event is not None and cancellation_event.is_set():
-                return StreamResult(
+                return ProviderTurn(
                     message=self._build_partial_stream_message(
                         text_parts=text_parts,
                         thinking_parts=thinking_parts,
@@ -98,8 +237,8 @@ class LiteLLMProvider(Provider):
                         completed_tool_calls=completed_tool_calls,
                         model=model,
                     ),
-                    completed_tool_calls=completed_tool_calls,
                     was_cancelled=True,
+                    stream_bookkeeping=completed_tool_calls,
                 )
 
             chunks.append(chunk)
@@ -110,21 +249,19 @@ class LiteLLMProvider(Provider):
             text_delta = _get_value(delta, "content")
             if isinstance(text_delta, str) and text_delta:
                 text_parts.append(text_delta)
-                await stream_formatter.format_delta(
-                    TextDelta(agent_uuid=agent_uuid, text=text_delta, is_final=False),
-                    queue,
+                sink.emit(
+                    TextDelta(agent_uuid=agent_uuid, text=text_delta, is_final=False)
                 )
 
             thinking_delta = _get_value(delta, "reasoning_content")
             if isinstance(thinking_delta, str) and thinking_delta:
                 thinking_parts.append(thinking_delta)
-                await stream_formatter.format_delta(
+                sink.emit(
                     ThinkingDelta(
                         agent_uuid=agent_uuid,
                         thinking=thinking_delta,
                         is_final=False,
-                    ),
-                    queue,
+                    )
                 )
 
             for raw_tool_call in _get_value(delta, "tool_calls", []) or []:
@@ -145,18 +282,17 @@ class LiteLLMProvider(Provider):
                     buffer["arguments"] += arguments_part
 
             if finish_reason == "tool_calls":
-                completed_tool_calls = await self._finalize_stream_tool_calls(
+                completed_tool_calls = self._finalize_stream_tool_calls(
                     tool_buffers,
                     agent_uuid,
-                    queue,
-                    stream_formatter,
+                    sink,
                 )
 
         raw_response = litellm.stream_chunk_builder(chunks)
-        return StreamResult(
+        return ProviderTurn(
             message=self._parse_response(raw_response, requested_model=model),
-            completed_tool_calls=completed_tool_calls,
             was_cancelled=False,
+            stream_bookkeeping=completed_tool_calls,
         )
 
     def _build_request_params(
@@ -326,12 +462,11 @@ class LiteLLMProvider(Provider):
             model=model,
         )
 
-    async def _finalize_stream_tool_calls(
+    def _finalize_stream_tool_calls(
         self,
         tool_buffers: dict[int, dict[str, Any]],
         agent_uuid: str,
-        queue: asyncio.Queue,
-        stream_formatter: Any,
+        sink: "DeltaSink",
     ) -> list[AbortToolCall]:
         completed_calls: list[AbortToolCall] = []
         for _, buffer in sorted(tool_buffers.items()):
@@ -341,15 +476,14 @@ class LiteLLMProvider(Provider):
             if not tool_id or not tool_name:
                 continue
             completed_calls.append(AbortToolCall(tool_id=tool_id, tool_name=tool_name))
-            await stream_formatter.format_delta(
+            sink.emit(
                 ToolCallDelta(
                     agent_uuid=agent_uuid,
                     tool_name=tool_name,
                     tool_id=tool_id,
                     arguments_json=arguments,
                     is_final=True,
-                ),
-                queue,
+                )
             )
         return completed_calls
 

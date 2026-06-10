@@ -339,38 +339,9 @@ class ErrorDelta(StreamDelta):
         )
 
 
-# ---------------------------------------------------------------------------
-# LEGACY deltas — pending deletion (O3/G0)
-# ---------------------------------------------------------------------------
-# MetaDelta and RollbackDelta are DELETED from the spec taxonomy
-# (streaming-and-meta.md §2.1 / §6; AMENDMENTS O3): meta events are
-# MetaEnvelope bodies (streaming/meta.py) and Rollback is a MetaBody.
-# They are kept TEMPORARILY because providers/* and common_tools/* (owned by
-# the providers/loop subsystems, migrating in their own cut) still import
-# them at module level.  They have NO wire mapping — StreamDelta.from_wire
-# does not dispatch to them — and must not be used in new code.
-
-
-@dataclass
-class MetaDelta(StreamDelta):
-    """DEPRECATED legacy meta event — superseded by ``MetaEnvelope`` bodies."""
-
-    payload: dict[str, Any] = field(default_factory=dict)
-
-    # type is set by the caller — no __post_init__ override.
-
-
-@dataclass
-class RollbackDelta(StreamDelta):
-    """DEPRECATED legacy rollback marker — superseded by the ``Rollback`` MetaBody."""
-
-    message: str = ""
-    code: str | None = None
-    details: dict[str, Any] = field(default_factory=dict)
-    collapse_previous_assistant: bool = True
-
-    def __post_init__(self) -> None:
-        self.type = "rollback"
+# LEGACY deltas DELETED (streaming-and-meta.md §6 / AMENDMENTS O3 / G0):
+# ``MetaDelta`` → ``MetaEnvelope`` bodies (streaming/meta.py);
+# ``RollbackDelta`` → the ``Rollback`` MetaBody.  No alias, no codec mapping.
 
 
 # ---------------------------------------------------------------------------

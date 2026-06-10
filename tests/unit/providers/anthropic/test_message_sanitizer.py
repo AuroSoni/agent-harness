@@ -330,32 +330,36 @@ class TestReorderUserContent:
 # ===========================================================================
 
 
-class TestDefensiveSanitize:
-    """Tests for the provider-level defensive sanitization.
+class TestSanitizeChain:
+    """Provider chain repair via ``sanitize_chain`` (providers.md §2.1 / R18a).
 
-    Verifies that ``_defensive_sanitize`` acts as a transparent pass-through
-    for valid chains and repairs invalid chains with a warning log.
+    UPDATED (2026-06-10, P-A lift): the ``_defensive_sanitize`` warning wrapper
+    is DELETED (G0); ``Provider.sanitize_chain`` delegates to the shared
+    ``agent_base.core.chain.ensure_chain_validity`` so Anthropic/LiteLLM never
+    diverge.  Pure + idempotent — a valid chain passes through; an invalid
+    chain is repaired.
     """
 
-    def test_valid_chain_passes_through(self):
+    def _provider(self):
         from agent_base.providers.anthropic.provider import AnthropicProvider
 
+        return AnthropicProvider.__new__(AnthropicProvider)  # no client needed
+
+    def test_valid_chain_passes_through(self):
         chain = [
             Message.user("hi"),
             Message.assistant([_text("hello")]),
         ]
-        result = AnthropicProvider._defensive_sanitize(chain)
+        result = self._provider().sanitize_chain(chain)
         assert len(result) == len(chain)
 
     def test_invalid_chain_repaired(self):
-        from agent_base.providers.anthropic.provider import AnthropicProvider
-
         # Trailing assistant with tool_use and no result → needs repair
         chain = [
             Message.user("go"),
             Message.assistant([_tool_use("t1")]),
         ]
-        result = AnthropicProvider._defensive_sanitize(chain)
+        result = self._provider().sanitize_chain(chain)
         assert len(result) == 3  # synthetic user message appended
         last = result[-1]
         assert last.role.value == "user"
@@ -363,43 +367,15 @@ class TestDefensiveSanitize:
         assert len(tool_results) == 1
         assert tool_results[0].is_error is True
 
-    def test_logs_warning_on_length_change(self, caplog):
-        import logging
-        from agent_base.providers.anthropic.provider import AnthropicProvider
-
+    def test_sanitize_chain_is_idempotent(self):
         chain = [
             Message.user("go"),
             Message.assistant([_tool_use("t1")]),
         ]
-        with caplog.at_level(logging.WARNING):
-            AnthropicProvider._defensive_sanitize(chain)
+        once = self._provider().sanitize_chain(chain)
+        twice = self._provider().sanitize_chain(once)
+        assert len(twice) == len(once)
 
-        # structlog uses stdlib logging as its backend, so the warning
-        # should appear in captured logs.
-        assert any("defensive_sanitize" in r.message for r in caplog.records) or len(caplog.records) > 0
-
-    def test_logs_warning_on_message_repair(self, caplog):
-        import logging
-        from agent_base.providers.anthropic.provider import AnthropicProvider
-
-        # Misorder: text before tool_result in user message following tool_use
-        chain = [
-            Message.user("go"),
-            Message.assistant([_tool_use("t1")]),
-            Message.user([_text("extra"), _tool_result("t1", "done")]),
-        ]
-        with caplog.at_level(logging.WARNING):
-            result = AnthropicProvider._defensive_sanitize(chain)
-
-        # Same length but a message was replaced (reordered content)
-        assert len(result) == 3
-        assert isinstance(result[2].content[0], ToolResultContent)
-
-    def test_empty_chain_no_warning(self, caplog):
-        import logging
-        from agent_base.providers.anthropic.provider import AnthropicProvider
-
-        with caplog.at_level(logging.WARNING):
-            result = AnthropicProvider._defensive_sanitize([])
-
+    def test_empty_chain_passes_through(self):
+        result = self._provider().sanitize_chain([])
         assert result == []

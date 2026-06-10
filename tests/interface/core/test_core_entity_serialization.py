@@ -44,6 +44,9 @@ _CONVERSATION_KEYS = {
     "extras",
 }
 
+# NOTE: no "cost"/"cumulative_usage" — those shims are DELETED per
+# pricing-cost.md §6 / G0 + B6; per-turn cost rides `settlement`, cumulative
+# rides the SettlementAggregator (O14(d)).
 _AGENT_RESULT_KEYS = {
     SCHEMA_VERSION_KEY,
     "final_message",
@@ -53,11 +56,9 @@ _AGENT_RESULT_KEYS = {
     "model",
     "provider",
     "usage",
-    "cumulative_usage",
     "total_steps",
     "agent_logs",
     "generated_files",
-    "cost",
     "settlement",
     "was_aborted",
     "abort_phase",
@@ -93,7 +94,6 @@ def _agent_result(
         model="claude-sonnet-4-5",
         provider="anthropic",
         usage=Usage(input_tokens=3, output_tokens=5),
-        cumulative_usage=Usage(input_tokens=30, output_tokens=50),
         total_steps=2,
         agent_logs=agent_logs,
         generated_files=generated_files,
@@ -261,7 +261,6 @@ def test_agent_result_round_trips_the_current_version():
     assert back.model == "claude-sonnet-4-5"
     assert back.provider == "anthropic"
     assert back.usage.input_tokens == 3
-    assert back.cumulative_usage.input_tokens == 30
     assert back.total_steps == 2
     assert back.settlement is not None
     assert back.settlement.agent_id == "agent-1"

@@ -5,17 +5,24 @@ with ``asyncio.wait(FIRST_COMPLETED)``; if a ``ToolReply`` and an interrupt
 completed together the future could win and splice into a chain being torn down.
 Now the await-generation is the resolution authority: an interrupt retires the
 generation, so any racing reply is dropped and the parked await wakes cancelled.
+
+UPDATED (2026-06-10, P-A lift): ``await_external`` is the runtime's keyword-only
+primitive returning ``ResumeOutcome`` (relay-await.md §2.2 / AMENDMENTS B3); the
+legacy ``(classification, queue, stream_formatter)`` surface is DELETED (R30/G0)
+and ``_await_inline_relay`` itself is gone (relay-await.md §6 / O3).
 """
 import asyncio
 
 import pytest
 
 from agent_base.await_table import AwaitTable, get_await_table, set_await_table
+from agent_base.await_table.types import AWAIT_REASON_FRONTEND_TOOL
 from agent_base.core.ack import Disposition
 from agent_base.core.config import PendingToolRelay
 from agent_base.core.types import ToolResultContent
 from agent_base.providers.anthropic import AnthropicAgent
-from agent_base.tools.registry import ToolCallClassification, ToolCallInfo
+from agent_base.streaming.meta import FrontendCallView
+from agent_base.tools.registry import ToolCallInfo
 
 
 @pytest.fixture()
@@ -36,11 +43,8 @@ def fresh_table():
         set_await_table(original)
 
 
-def _classification() -> ToolCallClassification:
-    return ToolCallClassification(
-        frontend_calls=[ToolCallInfo(name="excel", tool_id="t1", input={})],
-        confirmation_calls=[],
-    )
+def _outbound() -> list[FrontendCallView]:
+    return [FrontendCallView(tool_use_id="t1", tool_name="excel", input={})]
 
 
 async def _wait_registered(table, cid) -> bool:
@@ -60,8 +64,9 @@ async def test_racing_toolreply_after_interrupt_is_dropped(agent, fresh_table):
 
     task = asyncio.create_task(
         agent.await_external(
-            cid=cid, tool_use_ids=["t1"], classification=_classification(),
-            queue=None, stream_formatter=None, child_agent_id=cid,
+            cid=cid, tool_use_ids=["t1"], outbound=_outbound(),
+            reason=AWAIT_REASON_FRONTEND_TOOL, ctx=agent._emit_ctx(),
+            child_agent_id=cid,
         )
     )
     assert await _wait_registered(fresh_table, cid)
@@ -77,8 +82,8 @@ async def test_racing_toolreply_after_interrupt_is_dropped(agent, fresh_table):
     assert ack.disposition is not Disposition.RESOLVED
 
     # The parked await wakes cancelled and aborts.
-    result = await task
-    assert result is not None and result.stop_reason == "aborted"
+    outcome = await task
+    assert outcome.status == "aborted"
 
 
 async def test_interrupt_repairs_self_chain(agent, fresh_table):
@@ -90,16 +95,16 @@ async def test_interrupt_repairs_self_chain(agent, fresh_table):
 
     task = asyncio.create_task(
         agent.await_external(
-            cid=cid, tool_use_ids=["t1"], classification=_classification(),
-            queue=None, stream_formatter=None,
+            cid=cid, tool_use_ids=["t1"], outbound=_outbound(),
+            reason=AWAIT_REASON_FRONTEND_TOOL, ctx=agent._emit_ctx(),
         )
     )
     assert await _wait_registered(fresh_table, cid)
 
     await fresh_table.interrupt(agent._root_session_id())
-    result = await task
+    outcome = await task
 
-    assert result.stop_reason == "aborted"
+    assert outcome.status == "aborted"
     # 5b: the node repaired its own chain — pending relay cleared, tool_use matched.
     assert agent.agent_config.pending_relay is None
     tool_result_ids = [
@@ -122,8 +127,8 @@ async def test_full_abort_path_retires_generation(agent, fresh_table):
 
     task = asyncio.create_task(
         agent.await_external(
-            cid=cid, tool_use_ids=["t1"], classification=_classification(),
-            queue=None, stream_formatter=None,
+            cid=cid, tool_use_ids=["t1"], outbound=_outbound(),
+            reason=AWAIT_REASON_FRONTEND_TOOL, ctx=agent._emit_ctx(),
         )
     )
     assert await _wait_registered(fresh_table, cid)
@@ -136,5 +141,5 @@ async def test_full_abort_path_retires_generation(agent, fresh_table):
     )
     assert ack.disposition is not Disposition.RESOLVED
 
-    result = await task
-    assert result.stop_reason == "aborted"
+    outcome = await task
+    assert outcome.status == "aborted"

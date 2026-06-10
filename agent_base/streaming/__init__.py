@@ -14,6 +14,12 @@ The SSE transport factory ``sse_response`` lives in
 ``agent_base.streaming.transport`` (FastAPI optional extra — import it from
 there, not from this package root).
 
+The legacy formatter/queue surface (``MetaDelta``, ``RollbackDelta``,
+``StreamFormatter``, ``JsonStreamFormatter``, ``get_formatter``,
+``build_envelope``, ``chunk_and_emit``, ``emit_stream_delta``) is DELETED
+(streaming-and-meta.md §6 / AMENDMENTS O3 / G0) — ``DeltaSink`` is the only
+producer write path and ``WireCodec`` the only framing owner.
+
 Usage::
 
     from agent_base.streaming import StreamItem, decode_sse_lines
@@ -24,7 +30,7 @@ Usage::
     run.run_completed.stop_reason
     run.pending_frontend_tools                      # list[FrontendCallView]
 """
-from typing import Any, Union
+from typing import Union
 
 from .types import (
     WIRE_PROTOCOL_VERSION,
@@ -34,8 +40,6 @@ from .types import (
     ToolCallDelta,
     ToolResultDelta,
     CitationDelta,
-    MetaDelta,      # LEGACY — pending deletion (O3/G0); providers still import it
-    RollbackDelta,  # LEGACY — pending deletion (O3/G0); providers still import it
     ErrorDelta,
 )
 from .meta import (
@@ -72,44 +76,8 @@ from .decode import (
     decode_sse_text,
 )
 
-# LEGACY formatter/queue surface — pending deletion (G0, §6 migration table);
-# providers and consumers still on the (queue, stream_formatter) pair import
-# these until the providers/loop subsystems migrate to DeltaSink/WireCodec.
-from .base import StreamFormatter, StreamFormatterType
-from .formatters import JsonStreamFormatter
-from .utils import (
-    MAX_SSE_CHUNK_BYTES,
-    build_envelope,
-    chunk_and_emit,
-    emit_stream_delta,
-)
-
 #: §2.4 — the union a consumer reads; the wire is a downstream concern.
 StreamItem = Union[StreamDelta, MetaEnvelope]
-
-# Registry mapping string names to LEGACY formatter classes.
-FORMATTERS: dict[str, type[StreamFormatter]] = {
-    "json": JsonStreamFormatter,
-}
-
-
-def get_formatter(name: StreamFormatterType, **kwargs: Any) -> StreamFormatter:
-    """LEGACY: get a stream formatter instance by name (use ``get_codec``).
-
-    Args:
-        name: Formatter name (currently only ``"json"``).
-        **kwargs: Arguments passed to the formatter constructor.
-
-    Returns:
-        An instance of the requested formatter.
-
-    Raises:
-        ValueError: If the formatter name is not recognized.
-    """
-    if name not in FORMATTERS:
-        available = ", ".join(FORMATTERS.keys())
-        raise ValueError(f"Unknown formatter '{name}'. Available: {available}")
-    return FORMATTERS[name](**kwargs)
 
 
 def __getattr__(name: str):
@@ -167,16 +135,4 @@ __all__ = [
     "decode_sse_lines",
     # Re-exported from core.errors (R8)
     "classify_provider_error",
-    # LEGACY (pending deletion per G0/O3 once providers migrate)
-    "MetaDelta",
-    "RollbackDelta",
-    "StreamFormatter",
-    "StreamFormatterType",
-    "JsonStreamFormatter",
-    "MAX_SSE_CHUNK_BYTES",
-    "build_envelope",
-    "chunk_and_emit",
-    "emit_stream_delta",
-    "FORMATTERS",
-    "get_formatter",
 ]

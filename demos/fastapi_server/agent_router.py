@@ -25,9 +25,15 @@ from agent_base.core.types import ToolResultContent, TextContent
 from agent_base.core.messages import Message
 from agent_base.core.commands import Abort, Steer, SteerMode
 from agent_base.session import SessionManager
+from agent_base.streaming.wire import SseCodec
 from storage import config_adapter, conversation_adapter, run_adapter
 
 logger = logging.getLogger(__name__)
+
+# The ONE wire codec (streaming-and-meta.md §2.5): typed StreamItems → SSE
+# frames. Replaces the deleted get_formatter/JSON-string queue pipeline (G0).
+_SSE_CODEC = SseCodec()
+_STREAM_DONE = object()
 
 
 ########################################################
@@ -349,12 +355,12 @@ WORKSPACE_PATH = os.getenv("WORKSPACE_PATH", "./workspace")
 
 # Common tools (sandbox-based I/O — sandbox is attached by AnthropicAgent.initialize())
 COMMON_TOOL_FUNCTIONS = [
-    ReadFileTool().get_tool(),
-    GlobFileSearchTool().get_tool(),
-    GrepSearchTool().get_tool(),
-    ListDirTreeTool().get_tool(),
-    ApplyPatchTool().get_tool(),
-    CodeExecutionTool().get_tool(),
+    ReadFileTool().as_tool(),
+    GlobFileSearchTool().as_tool(),
+    GrepSearchTool().as_tool(),
+    ListDirTreeTool().as_tool(),
+    ApplyPatchTool().as_tool(),
+    CodeExecutionTool().as_tool(),
 ]
 
 # --- 1. Plain chat (no tools) ---
@@ -540,26 +546,28 @@ async def stream_agent_response(
         session_id = agent_uuid or f"agent_{_uuid.uuid4().hex}"
         agent = await session_manager.get_or_create(session_id)
 
-        # Create queue for streaming
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        # Fresh per-request read point on the resident agent's Rung-1 stream;
+        # the loop emits typed StreamItems into it (run_stream(queue, formatter)
+        # is DELETED — streaming-and-meta.md §6 / I3 / G0).
+        queue: asyncio.Queue = asyncio.Queue()
+        agent._stream_queue = queue
 
-        # Run the agent in background (this will populate the queue)
         async def run_agent_and_signal():
             try:
-                result = await agent.run_stream(user_prompt, queue)
-                return result
+                return await agent.run(user_prompt)
             finally:
-                await queue.put(None)  # Always signal completion
+                queue.put_nowait(_STREAM_DONE)  # Always signal completion
 
         agent_task = asyncio.create_task(run_agent_and_signal())
 
-        # Yield raw chunks as they arrive from the queue
+        # Encode typed StreamItems as SSE frames as they arrive
         try:
             while True:
-                chunk = await queue.get()
-                if chunk is None:
+                item = await queue.get()
+                if item is _STREAM_DONE:
                     break
-                yield f"data: {chunk}\n\n"
+                for frame in _SSE_CODEC.encode(item):
+                    yield _SSE_CODEC.render(frame)
                 queue.task_done()
         except asyncio.CancelledError:
             # 5c: a dropped SSE connection must NOT kill the resident turn.
@@ -571,7 +579,7 @@ async def stream_agent_response(
         await agent_task
 
         # Send final SSE marker to close stream
-        yield "data: [DONE]\n\n"
+        yield _SSE_CODEC.render(_SSE_CODEC.encode_terminal())
 
     except Exception as e:
         tb = traceback.format_exception(type(e), e, e.__traceback__)
@@ -606,8 +614,9 @@ async def stream_tool_results_response(
 
         agent = _create_agent(config, agent_uuid=request.agent_uuid)
 
-        # Create queue for streaming
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        # Fresh Rung-1 read point for the resumed turn (see above).
+        queue: asyncio.Queue = asyncio.Queue()
+        agent._stream_queue = queue
 
         # Build relay result content blocks from frontend tool results
         relay_blocks = []
@@ -622,23 +631,22 @@ async def stream_tool_results_response(
         # Continue the agent with frontend tool results
         async def run_continuation():
             try:
-                result = await agent.resume_with_relay_results(
+                return await agent.resume_with_relay_results(
                     relay_results=relay_blocks,
-                    queue=queue,
                 )
-                return result
             finally:
-                await queue.put(None)  # Always signal completion
+                queue.put_nowait(_STREAM_DONE)  # Always signal completion
 
         agent_task = asyncio.create_task(run_continuation())
 
-        # Yield chunks as they arrive
+        # Encode typed StreamItems as SSE frames as they arrive
         try:
             while True:
-                chunk = await queue.get()
-                if chunk is None:
+                item = await queue.get()
+                if item is _STREAM_DONE:
                     break
-                yield f"data: {chunk}\n\n"
+                for frame in _SSE_CODEC.encode(item):
+                    yield _SSE_CODEC.render(frame)
                 queue.task_done()
         except asyncio.CancelledError:
             agent_task.cancel()
@@ -648,7 +656,7 @@ async def stream_tool_results_response(
         await agent_task
 
         # Send final SSE marker
-        yield "data: [DONE]\n\n"
+        yield _SSE_CODEC.render(_SSE_CODEC.encode_terminal())
 
     except Exception as e:
         tb = traceback.format_exception(type(e), e, e.__traceback__)
