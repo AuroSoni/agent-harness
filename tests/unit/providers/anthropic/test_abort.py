@@ -310,9 +310,7 @@ class TestHandleStreamAbort:
     async def test_tool_execution_abort_preserves_completed_results_and_marks_missing_ones(self, agent):
         prompt = Message.user("calculate")
         agent.initialize_run(prompt)
-        agent.conversation.messages.append(prompt)
         agent.agent_config.context_messages.append(prompt)
-        agent.agent_config.conversation_history.append(prompt)
         agent._reset_cancellation_state()
 
         response_message = Message.assistant([_tool_use("t1"), _tool_use("t2")])
@@ -392,17 +390,19 @@ class TestSteer:
 
         call_order = []
 
-        original_abort = agent.abort
+        original_do_abort = agent._do_abort
 
         async def tracking_abort():
             call_order.append("abort")
-            return await original_abort()
+            return await original_do_abort()
 
         async def tracking_resume(*args, **kwargs):
             call_order.append("resume")
             return agent._build_aborted_result()
 
-        with patch.object(agent, "abort", side_effect=tracking_abort), \
+        # steer() performs its teardown via the internal _do_abort(); the public
+        # abort() is now a thin wrapper over submit(Abort()) for external callers.
+        with patch.object(agent, "_do_abort", side_effect=tracking_abort), \
              patch.object(agent, "_resume_loop", side_effect=tracking_resume):
             await agent.steer("redirect")
 

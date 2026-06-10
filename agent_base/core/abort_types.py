@@ -29,6 +29,11 @@ class AgentPhase(str, Enum):
 STREAM_ABORT_TEXT = "Agent run was aborted by the user."
 TOOL_ABORT_TEXT = "Tool execution was aborted by the user."
 
+# Cooperative-abort grace window: after an Abort signal, a non-cooperative tool
+# or a wedged stream is hard-cancelled once this elapses. Configurable per agent
+# via the ``_abort_grace_ms`` attribute.
+ABORT_GRACE_MS = 5000
+
 
 @dataclass
 class RunningAgentHandle:

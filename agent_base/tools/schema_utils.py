@@ -169,15 +169,23 @@ def _parse_google_format_docstring(
 
 
 def _convert_type_hints_to_json_schema(func: callable, error_on_missing_type_hints: bool = True) -> dict:
+    # ``ctx`` is a reserved injection parameter (ToolContext) — never exposed to
+    # the model, so it is skipped in both the type-hint and signature passes.
+    from agent_base.tools.context import CTX_PARAM_NAME
+
     type_hints = get_type_hints(func)
     signature = inspect.signature(func)
 
     properties = {}
     for param_name, param_type in type_hints.items():
+        if param_name == CTX_PARAM_NAME:
+            continue
         properties[param_name] = _parse_type_hint(param_type)
 
     required = []
     for param_name, param in signature.parameters.items():
+        if param_name == CTX_PARAM_NAME:
+            continue
         if param.annotation == inspect.Parameter.empty and error_on_missing_type_hints:
             raise TypeHintParsingException(f"Argument {param.name} is missing a type hint in function {func.__name__}")
         if param_name not in properties:

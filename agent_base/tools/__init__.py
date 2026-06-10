@@ -9,6 +9,7 @@ from .schema_utils import (
     TypeHintParsingException,
     DocstringParsingException,
 )
+from .context import ToolContext, OnceStore, stable_hash
 
 __all__ = [
     # Schema
@@ -31,4 +32,8 @@ __all__ = [
     "generate_tool_schema",
     "TypeHintParsingException",
     "DocstringParsingException",
+    # Tool context (dependency injection)
+    "ToolContext",
+    "OnceStore",
+    "stable_hash",
 ]

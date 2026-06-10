@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import functools
 import inspect
 import time
 from dataclasses import dataclass, field
@@ -12,9 +13,20 @@ from agent_base.core.abort_types import TOOL_ABORT_TEXT
 
 from .tool_types import ToolResultEnvelope, GenericTextEnvelope, ToolSchema
 from .decorators import ExecutorType
+from .context import CTX_PARAM_NAME
 
 if TYPE_CHECKING:
     from agent_base.sandbox.sandbox_types import Sandbox
+    from .context import ToolContext
+
+
+@functools.lru_cache(maxsize=None)
+def _accepts_ctx(func: Callable) -> bool:
+    """True if ``func`` declares the reserved ``ctx`` injection parameter."""
+    try:
+        return CTX_PARAM_NAME in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 # ─── Data Structures ───────────────────────────────────────────────────
@@ -157,6 +169,7 @@ class ToolRegistry:
         tool_name: str,
         tool_id: str,
         tool_input: dict[str, Any],
+        ctx: "ToolContext | None" = None,
     ) -> ToolResultEnvelope:
         """Execute a single registered tool and return a ``ToolResultEnvelope``.
 
@@ -180,11 +193,15 @@ class ToolRegistry:
         registered = self._tools[tool_name]
         start = time.monotonic()
 
+        call_kwargs = dict(tool_input)
+        if ctx is not None and _accepts_ctx(registered.func):
+            call_kwargs[CTX_PARAM_NAME] = ctx
+
         try:
             if inspect.iscoroutinefunction(registered.func):
-                result = await registered.func(**tool_input)
+                result = await registered.func(**call_kwargs)
             else:
-                result = await asyncio.to_thread(registered.func, **tool_input)
+                result = await asyncio.to_thread(registered.func, **call_kwargs)
 
             envelope = self._wrap_result(result, tool_name, tool_id)
 
@@ -201,6 +218,7 @@ class ToolRegistry:
         tool_calls: list[ToolCallInfo],
         max_parallel: int = 5,
         cancellation_event: asyncio.Event | None = None,
+        ctx_factory: "Callable[[ToolCallInfo], ToolContext] | None" = None,
     ) -> list[ToolResultEnvelope]:
         """Execute multiple tool calls with bounded parallelism and cancellation.
 
@@ -230,7 +248,8 @@ class ToolRegistry:
 
         async def _run_one(tc: ToolCallInfo) -> tuple[str, ToolResultEnvelope]:
             async with semaphore:
-                envelope = await self.execute(tc.name, tc.tool_id, tc.input)
+                ctx = ctx_factory(tc) if ctx_factory is not None else None
+                envelope = await self.execute(tc.name, tc.tool_id, tc.input, ctx=ctx)
                 return tc.tool_id, envelope
 
         # Create tasks and track full call info for each

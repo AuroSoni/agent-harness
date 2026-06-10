@@ -22,6 +22,9 @@ from agent_base.common_tools import (
 )
 from agent_base.tools import tool
 from agent_base.core.types import ToolResultContent, TextContent
+from agent_base.core.messages import Message
+from agent_base.core.commands import Abort, Steer, SteerMode
+from agent_base.session import SessionManager
 from storage import config_adapter, conversation_adapter, run_adapter
 
 logger = logging.getLogger(__name__)
@@ -323,6 +326,20 @@ def _create_agent(cfg: AgentConfig, agent_uuid: str | None = None) -> AnthropicA
     )
 
 
+def _build_session_agent(root_session_id: str) -> AnthropicAgent:
+    """Factory for the SessionManager: build a resident agent keyed by its uuid.
+
+    ``root_session_id == agent_uuid`` (ratified). The default config is a
+    template; ``initialize()`` cold-loads the real config for an existing uuid.
+    """
+    return _create_agent(AGENT_CONFIGS["agent_all_json"], agent_uuid=root_session_id)
+
+
+# Resident in-process sessions (replaces per-request cold-load). Idle sessions
+# are evicted (checkpointed) by the SessionManager; shutdown evicts all (main.py).
+session_manager = SessionManager(_build_session_agent)
+
+
 ########################################################
 # AGENT CONFIGURATIONS
 ########################################################
@@ -516,8 +533,12 @@ async def stream_agent_response(
         # Get config from registry (default to agent_all_json)
         config = AGENT_CONFIGS[agent_type or "agent_all_json"]
 
-        # Create the agent with config
-        agent = _create_agent(config, agent_uuid=agent_uuid)
+        # Resolve a RESIDENT agent (keyed by agent_uuid) instead of cold-loading.
+        # Generate an id for new sessions so the run is addressable by /abort and
+        # /steer. (config above is the template; initialize() loads existing state.)
+        import uuid as _uuid
+        session_id = agent_uuid or f"agent_{_uuid.uuid4().hex}"
+        agent = await session_manager.get_or_create(session_id)
 
         # Create queue for streaming
         queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -541,7 +562,9 @@ async def stream_agent_response(
                 yield f"data: {chunk}\n\n"
                 queue.task_done()
         except asyncio.CancelledError:
-            agent_task.cancel()
+            # 5c: a dropped SSE connection must NOT kill the resident turn.
+            # Detach from the stream and let the turn run to its checkpoint;
+            # teardown happens only via explicit /abort or idle-TTL eviction.
             raise
 
         # Wait for agent to complete (re-raises if agent.run() failed)
@@ -877,6 +900,32 @@ async def submit_tool_results(request: ToolResultsRequest) -> StreamingResponse:
             "X-Accel-Buffering": "no",  # Disable buffering in nginx
         },
     )
+
+
+class SteerRequest(BaseModel):
+    instruction: str
+    mode: Literal["forceful", "cooperative"] = "forceful"
+
+
+@router.post("/{agent_uuid}/abort")
+async def abort_agent(agent_uuid: str) -> dict[str, Any]:
+    """Abort a resident agent's current turn (control plane).
+
+    Resolves the same resident agent the run is using and submits an ``Abort``,
+    whose shared cancellation event the in-flight turn observes cooperatively.
+    """
+    agent = await session_manager.get_or_create(agent_uuid)
+    ack = await agent.submit(Abort())
+    return {"disposition": ack.disposition.value, "seq": ack.seq, "detail": ack.detail}
+
+
+@router.post("/{agent_uuid}/steer")
+async def steer_agent(agent_uuid: str, request: SteerRequest) -> dict[str, Any]:
+    """Steer a resident agent (forceful = preempt now; cooperative = next boundary)."""
+    agent = await session_manager.get_or_create(agent_uuid)
+    mode = SteerMode.FORCEFUL if request.mode == "forceful" else SteerMode.COOPERATIVE
+    ack = await agent.submit(Steer(instruction=Message.user(request.instruction), mode=mode))
+    return {"disposition": ack.disposition.value, "seq": ack.seq, "detail": ack.detail}
 
 
 @router.post("/upload")

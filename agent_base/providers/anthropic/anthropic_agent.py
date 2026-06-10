@@ -726,6 +726,135 @@ class AnthropicAgent(Agent):
         if queue and stream_formatter:
             await self._emit_meta_init(combined_message, queue, stream_formatter)
 
+    def _tool_ctx_factory(self):
+        """Build a per-call ``ToolContext`` factory for the current run.
+
+        Tools that declare a ``ctx`` parameter receive idempotency + replay
+        identity; tools that do not are unaffected. The ``OnceStore`` is
+        session-scoped (lazily created) so ``ctx.once(...)`` dedupes within a
+        process. Plumbed in Rung 1; enforcement is Rung 2.
+        """
+        from agent_base.tools.context import ToolContext, OnceStore
+
+        if getattr(self, "_once_store", None) is None:
+            self._once_store = OnceStore()
+        run_id = self._run_id or ""
+        store = self._once_store
+
+        def factory(tc):
+            return ToolContext(run_id=run_id, tool_call_id=tc.tool_id, _once_store=store)
+
+        return factory
+
+    def _root_session_id(self) -> str:
+        """The owning root-session tree id (== root agent_uuid).
+
+        For a sub-agent this is the root's uuid (carried in ``extras['owner']``);
+        for a root agent it is the agent's own uuid.
+        """
+        owner = (self.agent_config.extras or {}).get("owner")
+        if isinstance(owner, dict) and owner.get("root_agent_uuid"):
+            return str(owner["root_agent_uuid"])
+        return self.agent_config.agent_uuid
+
+    async def _repair_self_chain(self) -> None:
+        """Repair this agent's own chain when a parked await wakes cancelled (5b).
+
+        A node that loses its await must synthesize tool_results for its pending
+        relay so its ``tool_use`` is not left orphaned — the nested-repair
+        obligation. The root's ``AwaitTable.interrupt`` cancels every future in
+        the subtree, so each parked node runs this and repairs its own level.
+        No-op if nothing is pending.
+        """
+        if self.agent_config.pending_relay is not None:
+            await self._abort_awaiting_relay()
+
+    async def await_external(
+        self,
+        cid: str,
+        tool_use_ids: list[str],
+        classification,
+        queue: asyncio.Queue | None,
+        stream_formatter: StreamFormatter | None,
+        child_agent_id: str | None = None,
+    ) -> AgentResult | None:
+        """Suspend on a correlation id until results arrive — the one relay primitive.
+
+        Generalises ``_await_inline_relay`` from "park a sub-agent by uuid on the
+        InlineRelayRegistry" to "park any computation on a ``cid`` in the
+        cid-keyed AwaitTable." Returns ``None`` on successful resume (the caller
+        ``continue``s the loop), or an aborted ``AgentResult`` if cancelled while
+        waiting. The await is recorded under the current await-generation; a
+        ``ToolReply`` for a retired generation is dropped by ``resolve`` (the
+        Phase 5a race fix). ``finally`` always pops the table entry.
+        """
+        from agent_base.await_table import get_await_table
+
+        table = get_await_table()
+        root_session_id = self._root_session_id()
+        join = await table.open(
+            cid=cid,
+            root_session_id=root_session_id,
+            owner_agent_id=self.agent_config.agent_uuid,
+            tool_use_ids=tool_use_ids,
+            child_agent_id=child_agent_id,
+        )
+
+        # Emit the awaiting_frontend_tools delta (same shape as the relay paths),
+        # now carrying the cid the client replies to.
+        if queue is not None:
+            fmt = stream_formatter if stream_formatter is not None else get_formatter(DEFAULT_STREAM_FORMATTER)
+            pending_tools = [
+                {"tool_use_id": tc.tool_id, "name": tc.name, "input": tc.input}
+                for tc in (*classification.frontend_calls, *classification.confirmation_calls)
+            ]
+            delta = MetaDelta(
+                agent_uuid=self.agent_config.agent_uuid,
+                type="awaiting_frontend_tools",
+                payload={"tools": pending_tools, "cid": cid},
+                is_final=True,
+            )
+            await fmt.format_delta(delta, queue)
+
+        cancel_event = self._cancellation_event
+        try:
+            if cancel_event is not None:
+                cancel_task = asyncio.create_task(cancel_event.wait())
+                done, pending = await asyncio.wait(
+                    {join.future, cancel_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cancel_task in done and join.future not in done:
+                    for p in pending:
+                        p.cancel()
+                    await self._repair_self_chain()
+                    self._phase = AgentPhase.IDLE
+                    if self._abort_completion is not None:
+                        self._abort_completion.set()
+                    return self._build_aborted_result()
+                for p in pending:
+                    p.cancel()
+            else:
+                try:
+                    await join.future
+                except asyncio.CancelledError:
+                    pass
+
+            if join.future.cancelled():
+                await self._repair_self_chain()
+                self._phase = AgentPhase.IDLE
+                if self._abort_completion is not None:
+                    self._abort_completion.set()
+                return self._build_aborted_result()
+
+            relay_results = join.future.result()
+        finally:
+            table.pop(cid)
+
+        await self._splice_relay_results(relay_results, queue, stream_formatter)
+        await self._persist_state()
+        return None
+
     async def _await_inline_relay(
         self,
         pending_tool_ids: list[str],
@@ -841,6 +970,10 @@ class AnthropicAgent(Agent):
 
         # Inject queue/formatter into tools that support streaming.
         self._inject_stream_context_to_tools(queue, stream_formatter)
+
+        # Record the driving task so an out-of-band abort can hard-cancel it
+        # after the cooperative grace window (ABORT_GRACE_MS).
+        self._run_task = asyncio.current_task()
 
         try:
             while self.agent_config.current_step < self.max_steps:
@@ -975,6 +1108,7 @@ class AnthropicAgent(Agent):
                             backend_results = await self.tool_registry.execute_tools(
                                 classification.backend_calls, self.max_parallel_tool_calls,
                                 cancellation_event=self._cancellation_event,
+                                ctx_factory=self._tool_ctx_factory(),
                             )
 
                         # Stream backend tool results in relay path.
@@ -1006,24 +1140,24 @@ class AnthropicAgent(Agent):
                         ]
 
                         if self._relay_mode == "inline_await":
-                            # Subagent branch: do NOT persist pending_relay
-                            # (the parent's ``asyncio.gather`` still holds the
-                            # child coroutine; on a worker crash the root's
-                            # last checkpoint predates the spawn tool_use so
-                            # resuming from DB would give wrong state), do
-                            # NOT return — instead park on an asyncio.Future
-                            # keyed by this child's uuid and let the relay
-                            # registry wake us when results arrive.
-                            relay_result = await self._await_inline_relay(
-                                pending_tool_ids=pending_tool_ids,
+                            # Subagent branch: do NOT persist pending_relay (the
+                            # parent's ``asyncio.gather`` still holds this child
+                            # coroutine, so it cannot serialize mid-run). Park on
+                            # the cid-keyed AwaitTable (cid == this child's uuid)
+                            # via the one relay primitive; a ToolReply(cid) wakes
+                            # us. ``_relay_mode`` stays the hot/cold selector until
+                            # SessionManager lands (Phase 6).
+                            relay_result = await self.await_external(
+                                cid=self.agent_config.agent_uuid,
+                                tool_use_ids=pending_tool_ids,
                                 classification=classification,
                                 queue=queue,
                                 stream_formatter=stream_formatter,
+                                child_agent_id=self.agent_config.agent_uuid,
                             )
                             if relay_result is not None:
                                 return relay_result
-                            # Future resolved with results and were spliced in;
-                            # continue the loop to make the next LLM call.
+                            # Results spliced in; continue the loop for the next LLM call.
                             continue
 
                         # Root branch (persist_return): serialize state, emit
@@ -1055,6 +1189,7 @@ class AnthropicAgent(Agent):
                         tool_results = await self.tool_registry.execute_tools(
                             tool_calls, self.max_parallel_tool_calls,
                             cancellation_event=self._cancellation_event,
+                            ctx_factory=self._tool_ctx_factory(),
                         )
 
                         # Fire _on_tool_results hook for subclass side-effects.
@@ -1104,42 +1239,259 @@ class AnthropicAgent(Agent):
             return await self._finalize_run(last_message, "max_steps", queue, stream_formatter)
         finally:
             self._phase = AgentPhase.IDLE
+            self._run_task = None
             # Always clear streaming context to avoid stale references.
             self._inject_stream_context_to_tools(None, None)
+
+    # ─── Submit: single input handler (mailbox · joins · control) ──────
+
+    def _ensure_actor_state(self) -> None:
+        """Lazily initialise the per-session actor structures."""
+        if getattr(self, "_mailbox", None) is None:
+            from agent_base.session.mailbox import Mailbox
+            self._mailbox = Mailbox(capacity=getattr(self, "_mailbox_capacity", 32))
+        if getattr(self, "_audit", None) is None:
+            from agent_base.core.audit import InMemoryCommandAuditLog
+            self._audit = InMemoryCommandAuditLog()
+        if getattr(self, "_seq_counter", None) is None:
+            self._seq_counter = 0
+        if not hasattr(self, "_last_control_result"):
+            self._last_control_result = None
+
+    def _next_seq(self) -> int:
+        self._seq_counter += 1
+        return self._seq_counter
+
+    def _audit_command(self, seq, command, disposition, detail=None) -> None:
+        from agent_base.core.audit import CommandAuditRecord
+        meta = getattr(command, "meta", None)
+        self._audit.record(CommandAuditRecord(
+            seq=seq,
+            kind=type(command).__name__,
+            command_id=getattr(meta, "command_id", ""),
+            client_seq=getattr(meta, "client_seq", 0),
+            disposition=disposition.value,
+            detail=detail,
+        ))
+
+    async def submit(self, command: "AgentInput") -> "Ack":
+        """The single entry point for driving an agent.
+
+        Routes a command to one of the three planes by consumption discipline:
+        ``UserMessage`` → mailbox (deferred), ``ToolReply`` → joins (immediate),
+        ``Abort`` / ``Steer`` → control (preemptive). Returns an ``Ack``
+        immediately; output flows on the separate streaming path.
+
+        ``seq`` is a session-global audit/replay order — NOT an execution order.
+        """
+        from agent_base.core.commands import UserMessage, ToolReply, Abort, Steer, SteerMode
+        from agent_base.core.ack import Ack, Disposition
+
+        self._ensure_actor_state()
+        seq = self._next_seq()
+
+        if isinstance(command, UserMessage):
+            ok = self._mailbox.offer(command)
+            disp = Disposition.ACCEPTED if ok else Disposition.REJECTED
+            detail = None if ok else "mailbox_full"
+            self._audit_command(seq, command, disp, detail)
+            return Ack(seq=seq, disposition=disp, detail=detail)
+
+        if isinstance(command, ToolReply):
+            # Joins plane: deliver to the await parked under this cid. Unknown or
+            # closed cid → IGNORED_STALE; double delivery → IGNORED_DUP.
+            from agent_base.await_table import get_await_table
+            disp = await get_await_table().resolve(command.cid, command.results)
+            self._audit_command(seq, command, disp)
+            return Ack(seq=seq, disposition=disp)
+
+        if isinstance(command, Abort):
+            if not self._is_root():
+                self._audit_command(seq, command, Disposition.REJECTED, "not_root")
+                return Ack(seq=seq, disposition=Disposition.REJECTED, detail="not_root")
+            self._last_control_result = await self._do_abort()
+            self._audit_command(seq, command, Disposition.CANCELLING)
+            return Ack(seq=seq, disposition=Disposition.CANCELLING)
+
+        if isinstance(command, Steer):
+            if not self._is_root():
+                self._audit_command(seq, command, Disposition.REJECTED, "not_root")
+                return Ack(seq=seq, disposition=Disposition.REJECTED, detail="not_root")
+            # Steer = (forceful) abort the open round + restart, or (cooperative)
+            # let the in-flight round finish; either way enqueue the steer message
+            # so the actor loop (Phase 4) picks it up as the next turn.
+            if command.mode is SteerMode.FORCEFUL:
+                self._last_control_result = await self._do_abort()
+            self._mailbox.offer(UserMessage(message=command.instruction))
+            self._audit_command(seq, command, Disposition.STEERING)
+            return Ack(seq=seq, disposition=Disposition.STEERING)
+
+        raise TypeError(f"Unknown AgentInput: {type(command).__name__}")
+
+    async def say(self, text_or_message) -> "Ack":
+        """Friendly wrapper: enqueue a user message (delegates to ``submit``)."""
+        from agent_base.core.commands import UserMessage
+        msg = text_or_message if isinstance(text_or_message, Message) else Message.user(text_or_message)
+        return await self.submit(UserMessage(message=msg))
+
+    async def reply(self, cid: str, results, is_error: bool = False) -> "Ack":
+        """Friendly wrapper: deliver tool results for a relay pause (``cid``)."""
+        from agent_base.core.commands import ToolReply
+        return await self.submit(ToolReply(cid=cid, results=results, is_error=is_error))
+
+    # ─── Actor loop & checkpoint ───────────────────────────────────────
+
+    async def checkpoint(self) -> None:
+        """Persist session state at a turn boundary (the write-through seam).
+
+        Rung 1 delegates to ``_persist_state``; Rung 2 routes the hot copy to a
+        write-through cache behind the same call.
+        """
+        await self._persist_state()
+
+    async def _actor_loop(
+        self,
+        queue: asyncio.Queue | None = None,
+        stream_formatter: str | StreamFormatter | None = None,
+    ) -> "AgentResult | None":
+        """Single-writer driver: drain the mailbox oldest-first, one turn at a time.
+
+        Each queued ``UserMessage`` becomes a turn (run via the existing per-turn
+        executor) and is checkpointed at the turn boundary. A single
+        ``_actor_running`` guard ensures only one drainer runs, so turns never
+        interleave for one session. The streamed-output integration with
+        SessionManager lands in Phase 6.
+        """
+        self._ensure_actor_state()
+        if getattr(self, "_actor_running", False):
+            return None  # already draining — never double-drive a session
+        self._actor_running = True
+        last_result = None
+        try:
+            while True:
+                msg = self._mailbox.take()
+                if msg is None:
+                    break
+                if queue is not None:
+                    last_result = await self.run_stream(
+                        msg.message, queue=queue, stream_formatter=stream_formatter
+                        if stream_formatter is not None
+                        else DEFAULT_STREAM_FORMATTER,
+                    )
+                else:
+                    last_result = await self.run(msg.message)
+                await self.checkpoint()
+        finally:
+            self._actor_running = False
+        return last_result
 
     # ─── Abort / Steer ─────────────────────────────────────────────────
 
     async def abort(self) -> AgentResult:
+        """Back-compat wrapper over ``submit(Abort())`` (returns AgentResult)."""
+        from agent_base.core.commands import Abort
+        await self.submit(Abort())
+        return self._last_control_result or self._build_aborted_result()
+
+    def _is_root(self) -> bool:
+        """True if this agent is the root of its session tree (not a sub-agent)."""
+        return self._root_session_id() == self.agent_config.agent_uuid
+
+    def _abort_grace_seconds(self) -> float:
+        from agent_base.core.abort_types import ABORT_GRACE_MS
+        return getattr(self, "_abort_grace_ms", ABORT_GRACE_MS) / 1000.0
+
+    def _collect_on_abort_hooks(self) -> list:
+        """Gather ``on_abort`` callables from tool instances (duck-typed seam)."""
+        hooks = []
+        for registered in self.tool_registry._tools.values():
+            inst = getattr(registered.func, "__tool_instance__", None)
+            if inst is None:
+                continue
+            hook = getattr(inst, "on_abort", None)
+            if callable(hook):
+                hooks.append(hook)
+        return hooks
+
+    async def _run_on_abort_hooks(self) -> None:
+        """Invoke tool ``on_abort`` cleanup hooks, bounded by the grace window."""
+        import inspect as _inspect
+        coros = []
+        for hook in self._collect_on_abort_hooks():
+            try:
+                res = hook()
+            except Exception:
+                continue
+            if _inspect.isawaitable(res):
+                coros.append(res)
+        if not coros:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*coros, return_exceptions=True),
+                timeout=self._abort_grace_seconds(),
+            )
+        except asyncio.TimeoutError:
+            pass
+
+    def _interrupt_lock(self) -> asyncio.Lock:
+        """The non-reentrant interrupt critical-section lock (lazy)."""
+        if getattr(self, "_interrupt_lock_obj", None) is None:
+            self._interrupt_lock_obj = asyncio.Lock()
+        return self._interrupt_lock_obj
+
+    async def _do_abort(self) -> AgentResult:
         """Cancel the current agent turn and produce a valid message chain.
 
-        Safe to call from any context (another task, a signal handler, an
-        HTTP endpoint via the AbortSteerRegistry). The agent loop detects
-        the cancellation cooperatively and cleans up.
+        Runs as a non-reentrant **interrupt critical section**: freeze the
+        mailbox, retire the await-generation (so any in-flight ``ToolReply`` for
+        this turn becomes a no-op and parked awaits wake cancelled — the :789
+        race fix), drop queued messages, run tool ``on_abort()`` hooks, then wait
+        for the loop to self-clean with a bounded hard-cancel backstop
+        (``ABORT_GRACE_MS``). Safe to call from any context.
 
         Returns:
             AgentResult with stop_reason="aborted".
         """
         if self._cancellation_event is None:
             self._cancellation_event = asyncio.Event()
+        self._ensure_actor_state()
 
-        # Signal cancellation
-        self._cancellation_event.set()
+        async with self._interrupt_lock():
+            self._mailbox.freeze()
+            try:
+                # Retire the generation: cancels parked awaits and makes any
+                # racing ToolReply a no-op (generation is the resolution authority).
+                from agent_base.await_table import get_await_table
+                await get_await_table().interrupt(self._root_session_id())
 
-        phase = self._phase
+                # Bare abort drops queued user messages (steer re-enqueues after).
+                self._mailbox.drain()
 
-        if phase == AgentPhase.IDLE:
-            return self._build_aborted_result()
+                # Signal cancellation, then let cooperative tools clean up.
+                self._cancellation_event.set()
+                await self._run_on_abort_hooks()
 
-        if phase in (AgentPhase.STREAMING, AgentPhase.EXECUTING_TOOLS):
-            # The main loop handles cleanup. Wait for it to finish.
-            if self._abort_completion:
-                await self._abort_completion.wait()
+                phase = self._phase
+                if phase in (AgentPhase.STREAMING, AgentPhase.EXECUTING_TOOLS):
+                    # Cooperative self-clean with a bounded hard-cancel backstop.
+                    if self._abort_completion:
+                        try:
+                            await asyncio.wait_for(
+                                self._abort_completion.wait(),
+                                timeout=self._abort_grace_seconds(),
+                            )
+                        except asyncio.TimeoutError:
+                            task = getattr(self, "_run_task", None)
+                            if task is not None and not task.done():
+                                task.cancel()
+                elif phase == AgentPhase.AWAITING_RELAY:
+                    # Paused (not running): fix up this agent's chain directly.
+                    await self._abort_awaiting_relay()
 
-        elif phase == AgentPhase.AWAITING_RELAY:
-            # Agent is paused (not running). Fix up the chain directly.
-            await self._abort_awaiting_relay()
-
-        return self._build_aborted_result()
+                return self._build_aborted_result()
+            finally:
+                self._mailbox.unfreeze()
 
     async def steer(
         self,
@@ -1162,7 +1514,7 @@ class AnthropicAgent(Agent):
             AgentResult from the redirected run.
         """
         # Step 1: Abort cleanly (produces valid chain)
-        await self.abort()
+        await self._do_abort()
 
         # Step 2: Build a user message with the new instruction
         steer_message = Message.user(new_instruction)
