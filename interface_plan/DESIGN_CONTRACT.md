@@ -4,6 +4,8 @@
 
 Status: **ratified, pre-exercise.** Companion: `nova-backend-interface-smells.md` (the evidence base).
 
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
+
 ---
 
 ## 0. Cross-cutting principles
@@ -39,7 +41,8 @@ class HookContext:                              # available to EVERY hook
     storage: StorageHandles                     # config/conversation/run adapters
     media: MediaBackend | None
     memory: MemoryStore | None
-    emit: Callable[[MetaBody], None]            # → stamps & emits a MetaEnvelope (§3)
+    emit: Callable[..., None]                   # emit(body, *, correlation_id=None, expects_reply=False)
+                                                # → stamps & emits a MetaEnvelope (§3) (B8)
     once: Callable[[str, Callable], Awaitable]  # idempotency
 # subclasses add ONLY the capabilities legal for that hook (e.g. switch_profile, message)
 ```
@@ -85,9 +88,16 @@ Capability model = `HookOutcome` (§1.3). Registration = **both** styles, possib
 | `on_tool_error` | `ToolErrorContext(…, error, executor)` | tool name | `update=ToolResult` (synthesize recovery) · inject · emit |
 | `on_subagent_start` | `SubagentContext(spec, depth)` | agent type | **block/deny** · `update=SubAgentSpec` · inject · emit |
 | `on_subagent_end` | `SubagentContext(result)` | agent type | observe + emit |
-| `before_compact` | `CompactionContext(trigger)` | `trigger ∈ {auto,manual}` | observe · inject · **veto auto** · emit |
+| `before_compact` | `CompactionContext(trigger)` | `trigger ∈ {auto,manual,overflow}` | observe · inject · **veto auto/overflow** (block on `overflow` ⇒ the turn fails upward with a typed error) · emit |
 | `after_compact` | `CompactionContext(stats)` | `trigger` | observe + emit |
 | `on_abort` | `AbortContext` | — | observe + emit (shipped; tool-level `on_abort()` retained) |
+
+**Observer hooks (sugar over auto-emitted envelopes — observe + emit only, no block/update/switch):**
+
+| Hook | Context | Matcher | Notes |
+|---|---|---|---|
+| `on_profile_changed` | `ProfileChangedContext(old_profile, new_profile, source ∈ {restore, session_default, hook_switch}, is_initial)` | new profile name | Fires AFTER the swap is applied, for every source (incl. auto-restore + R20 precedence). The seam for consumer-specific FE payloads (replaces `Profile.ui_capabilities` — 2026-06-10 amendment). Cannot switch profiles (no cascades). |
+| `on_usage_report` | (callback over `UsageReport`) | — | Fork G sugar over the `UsageReport` channel. |
 
 **Dropped / unified:**
 - `on_checkpoint` — **dropped** (principal-scoped storage removes the org/member stamping that motivated it; custom extras stamped in `on_turn_end`/`after_tool` via handlers).
@@ -107,10 +117,11 @@ classify call → before_tool(ctx)
 - `after_tool` receives the FE-returned result and may transform it + `switch_profile` (was `on_relay_result`).
 - `ctx.executor ∈ {backend, frontend}` lets a hook branch. **No separate relay hook.**
 
-### 2.2 Registration (design BOTH + amalgamation)
-1. **Matcher registry:** `hooks={"after_tool": [HookMatcher(matcher="excel_*", hooks=[fn])], ...}` — composable, name-matched, multiple per event.
-2. **Overridable agent methods:** hooks declared as methods on the agent class, overridable by **subclass** *or* **per-instance**; matcher-bearing ones (e.g. `after_tool`) accept a matcher, others don't.
-3. **Amalgamation:** both resolve into one ordered hook chain per event. The subsystem doc must show all three and recommend a default.
+### 2.2 Registration (ONE composition engine; O8)
+Method-style hooks and matcher-registry entries are not two competing systems — they feed **one** matcher registry through **one** composition engine.
+1. **Matcher registry (the engine):** `hooks={"after_tool": [HookMatcher(matcher="excel_*", hooks=[fn])], ...}` — composable, name-matched, multiple per event.
+2. **Method-style hooks AUTO-REGISTER:** hooks declared as methods on the agent class are scanned via `__init_subclass__` and synthesized into the same registry as an implicit `HookMatcher(matcher=None, hooks=[bound_method])`. There is no separate "overridable method" resolution path — the method *becomes* a registry entry.
+3. **Deterministic order:** subclass-declared (method-synthesized) → constructor registry → per-instance. Per-instance assignment (`agent.hooks.add(...)` / assigning a hook) **APPENDS** (fixing the single-slot trap); explicit replacement is `agent.hooks.replace(event, ...)`. Outcomes fold by §1.3's composition rule.
 
 ---
 
@@ -129,7 +140,7 @@ class MetaEnvelope:
 
 class MetaBody: ...                                    # discriminated union:
 #   AwaitInput(tools: list[FrontendCallView])          expects_reply=True; FE → ToolReply(cid)
-#   ProfileChanged(profile, ui_capabilities)           notification
+#   ProfileChanged(profile)                            notification (minimal fact; consumer FE payloads via on_profile_changed → Custom)
 #   UsageReport(usage, cost, cumulative)               notification (auto-emitted per turn)
 #   ErrorReport(code, message, retriable, details)     notification (typed taxonomy)
 #   Rollback(message, collapse_previous_assistant)     notification (UI-only; never alters context append)
@@ -137,7 +148,7 @@ class MetaBody: ...                                    # discriminated union:
 ```
 - **Every** event carries the correlation header → sub-agent attribution (`agent_id`/`parent_agent_id`) and FE dedupe/ordering come free.
 - **Relay = request/response on this channel:** the runtime emits `AwaitInput` with `correlation_id=cid`; the FE replies via `submit(ToolReply(cid, results))`. Same mechanism as the await/suspend in §2.1. **No second relay endpoint, no uuid-spoofing.**
-- `ctx.emit(body)` stamps the header automatically.
+- `ctx.emit(body, *, correlation_id=None, expects_reply=False)` stamps the header automatically (B8). Hook-context `emit` is synchronous, lossy-by-policy (R21); `ToolContext.emit`'s unwired default RAISES.
 
 ---
 

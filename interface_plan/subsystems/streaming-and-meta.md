@@ -4,14 +4,17 @@
 > Resolves: **D1, D2, D3, D4, D5, C4, X5**, and the **meta side of C1**.
 
 > **Reconciled against `RECONCILIATION.md`** (this subsystem = §7.4). Fork outcomes relevant here:
+>
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
+>
 > - **Fork C (read surface) = merged `AsyncIterator[StreamItem]`** (deltas + envelopes interleaved by `seq`); split iterators are filtered views only; the caller-owned queue is a one-major bridge. Fork F-3 below is **decided in favour of Variant A**.
-> - **Fork D (Rollback channel) = `Rollback` is a `MetaBody`** (R13); `RollbackDelta` is a deprecated one-major-version alias the codec maps to a `Rollback` envelope. Fork F-1 below is **decided in favour of Variant B**.
+> - **Fork D (Rollback channel) = `Rollback` is a `MetaBody`** (R13). **Amended (O3, G0):** the `RollbackDelta` alias is **DELETED entirely** — removed from the StreamDelta taxonomy; `Rollback` MetaBody is the only rollback type (no codec alias mapping). Fork F-1 below is **decided in favour of Variant B**.
 > - **Fork F-2 (custom-event typing)** stays as written — Variant A (`Custom(name, data)`) primary, registered-bodies as opt-in.
 > - **Canonical homes (binding):** the meta union (`MetaEnvelope`/`MetaBody`/`AwaitInput`/`ProfileChanged`/`UsageReport`/`ErrorReport`/`Rollback`/`Custom` + `RunStarted`/`RunCompleted`/`FilesUpdated`/`FrontendCallView`) lives at **`agent_base/streaming/meta.py`** (R2, this subsystem owns it); `StreamDelta` + subclasses + `WIRE_PROTOCOL_VERSION` at `agent_base/streaming/types.py`; `WireCodec`/`SseCodec`/`StreamDecoder`/`DeltaSink`/`sse_response`/`WireToolResult` at `agent_base/streaming/{wire,decode,transport}.py`; `StreamItem` at `agent_base/streaming/__init__.py`.
 > - **`ErrorCode` is imported from `agent_base/core/errors.py`** — it is **not** redefined here (R8). The streaming-only spelling `PROVIDER_SERVER_ERROR` folds into the canonical `PROVIDER_STATUS`.
 > - **The loop stamps `parent_agent_uuid` + `seq` on every `StreamDelta`** (not only on `MetaEnvelope`), so content-delta sub-agent attribution needs no side `meta_init` map (R6).
 > - **`DeltaSink` ships here** with `emit(StreamDelta)` + `emit_meta(MetaBody)` — `Provider.generate_stream(sink=…)` depends on it (R30).
-> - **Three distinct version axes** (R12): `WIRE_PROTOCOL_VERSION` (this doc — the SSE byte contract) ≠ `core.serializable.CORE_SCHEMA_VERSION` (entity wire shape, the `_v` on `RunCompleted`/`meta_final` payloads) ≠ `storage.LIBRARY_SCHEMA_VERSION` (DDL). Do not conflate.
+> - **Version axes (one-line cross-ref, amended O15c):** only `WIRE_PROTOCOL_VERSION` is this doc's (the SSE byte contract). Core owns the single `CORE_SCHEMA_VERSION` (entity wire shape); storage owns `LIBRARY_SCHEMA_VERSION` (DDL). Three axes, versioned independently — see those docs; this doc does not re-expound them.
 > - **`TurnSettlement`** (the once-per-turn billing fact `UsageReport` mirrors) is owned at `agent_base/core/cost.py`; the runtime class consumers target is `AgentRuntime` at `agent_base/core/runtime.py` (Fork E, sequenced last); `SessionPrincipal` + identity/correlation field-name constants live at `agent_base/core/identity.py`.
 
 ---
@@ -50,12 +53,10 @@ Three layers, strictly separated per contract §1.4 ("Consumers read a typed asy
 ```python
 # agent_base/streaming/types.py   (additive)
 
-# RECONCILED (R12): WIRE_PROTOCOL_VERSION is the WIRE axis — the SSE byte contract
-# (field spellings + framing). It is DISTINCT from, and never conflated with:
-#   - core.serializable.CORE_SCHEMA_VERSION  (entity wire shape; the `_v` stamped on
-#     embedded RunCompleted/meta_final/UsageReport payloads), and
-#   - storage.LIBRARY_SCHEMA_VERSION         (DB DDL / migrations).
-# Three axes version three different things; bump them independently.
+# RECONCILED (R12) + amended (O15c): WIRE_PROTOCOL_VERSION is the WIRE axis — the SSE byte
+# contract (field spellings + framing), and the ONLY version axis this doc owns. The other two
+# axes (core.serializable.CORE_SCHEMA_VERSION = entity wire shape; storage.LIBRARY_SCHEMA_VERSION
+# = DDL) live in their own docs; bump all three independently. (See core/storage for those.)
 WIRE_PROTOCOL_VERSION = "1"     # bumped only on a breaking WIRE change
 
 @dataclass
@@ -78,8 +79,9 @@ class StreamDelta:
 
 # TextDelta / ThinkingDelta / ToolCallDelta / ToolResultDelta / CitationDelta
 # / ErrorDelta  — UNCHANGED field sets; each overrides to_wire().
-# RollbackDelta is RETAINED ONLY as a deprecated one-major-version alias (Fork D / R13);
-# Rollback is now a MetaBody on the control channel — see §2.2 and §4 Fork F-1.
+# RollbackDelta is DELETED entirely (amended O3/G0): it is NOT in the StreamDelta taxonomy.
+# Rollback is a MetaBody on the control channel ONLY — see §2.2 and §4 Fork F-1. There is no
+# RollbackDelta alias and no codec mapping for it; Nova migrates to the Rollback MetaBody.
 ```
 
 **`ErrorDelta` — typed taxonomy (resolves D3).** Today `ErrorDelta.error_payload` is a free dict. We give it a typed, closed `code`, a `retriable` flag, and a `terminal` flag so a consumer never sniffs `e.body`.
@@ -161,20 +163,29 @@ class MetaEnvelope:                      # EXACTLY the contract §3 header
 ```python
 @dataclass(frozen=True)
 class FrontendCallView:                  # one pending frontend tool, as the FE sees it
-    cid: str                             # == tool_use_id; the reply key (unifies C1 meta side)
+    tool_use_id: str                     # §B7: per-call id; the FE attributes its result by this
     tool_name: str
     input: dict[str, Any]                # the (optionally hook-enriched) call input
+    #  FE contract (§B7): reply with the ENVELOPE's correlation_id (the pause-level cid);
+    #  attribute per-call results by tool_use_id. cid (envelope) ≠ tool_use_id (per-call).
 
 @dataclass(frozen=True)
 class AwaitInput(MetaBody):              # expects_reply=True ; FE → submit(ToolReply(cid, results))
     kind = "await_input"
     tools: list[FrontendCallView]
+    #  Emitted with MetaEnvelope.correlation_id = cid (the pause-level reply key) and
+    #  expects_reply=True. The FE echoes that cid back in ToolReply(cid, results) and tags each
+    #  per-call result by its tool_use_id (§B7).
 
 @dataclass(frozen=True)
 class ProfileChanged(MetaBody):
     kind = "profile_changed"
     profile: str
-    ui_capabilities: dict[str, Any] = field(default_factory=dict)
+    # NOTE (2026-06-10 amendment): no ui_capabilities payload. The library announces only
+    # the FACT of the switch (incl. initial announce + auto-restore). Consumer-specific FE
+    # payloads (read-only flags, UI modes) are emitted by the consumer's on_profile_changed
+    # observer hook (hooks §2.3a) as Custom bodies — the library does not transport an
+    # opaque dict it never interprets.
 
 @dataclass(frozen=True)
 class UsageReport(MetaBody):             # auto-emitted per turn by the runtime
@@ -182,6 +193,11 @@ class UsageReport(MetaBody):             # auto-emitted per turn by the runtime
     usage: dict[str, Any]
     cost: dict[str, Any]
     cumulative: dict[str, Any]
+    # §B2 (cross-ref): the identity this body carries is the SCOPE KEY ONLY —
+    # tenant/subject from the principal, NEVER claims. (Mirrors TurnSettlement.to_dict(),
+    # which serializes only tenant/subject; the full principal stays in-process on cost.py.)
+    tenant: str | None = None
+    subject: str | None = None
 
 @dataclass(frozen=True)
 class ErrorReport(MetaBody):            # control-channel mirror of ErrorDelta taxonomy
@@ -194,10 +210,11 @@ class ErrorReport(MetaBody):            # control-channel mirror of ErrorDelta t
 @dataclass(frozen=True)
 class Rollback(MetaBody):               # UI-only; never alters context append (contract §3)
     kind = "rollback"                   # DECIDED (Fork D / R13): rollback rides the control
-    message: str                        #   channel as a MetaBody. The content-channel
-    collapse_previous_assistant: bool = True   # RollbackDelta is a deprecated one-major alias
-                                        #   (§2.1, §4 Fork F-1, §6 migration). ctx.emit(Rollback(...))
-                                        #   from on_turn_end / the abort path targets THIS body.
+    message: str                        #   channel as a MetaBody — the ONLY rollback type.
+    collapse_previous_assistant: bool = True   # Amended (O3/G0): the content-channel RollbackDelta
+                                        #   alias is DELETED (no §6 migration row, no codec mapping).
+                                        #   ctx.emit(Rollback(...)) from on_turn_end / the abort path
+                                        #   targets THIS body.
 
 @dataclass(frozen=True)
 class RunStarted(MetaBody):             # supersedes meta_init  (resolves C4 / D2)
@@ -231,21 +248,36 @@ META_BODY_REGISTRY: dict[str, type[MetaBody]] = {
     b.kind: b for b in (AwaitInput, ProfileChanged, UsageReport, ErrorReport,
                         Rollback, RunStarted, RunCompleted, FilesUpdated, Custom)
 }
+
+# §I11 (amended): register_meta_body specified concretely. A CONSUMER registers a frozen
+# dataclass whose `kind` is a ClassVar[str]; the decoder then yields a TYPED instance of that
+# class (not a Custom) whenever it sees that kind on the wire. This is the opt-in upgrade over
+# the open `Custom(name, data)` path (Fork F-2 Variant B) — same correlated channel, typed at
+# both ends. The consumer's body class must be importable by the consumer's decoder.
+def register_meta_body(cls: type[MetaBody]) -> type[MetaBody]:
+    """Register a consumer MetaBody subclass into the decode registry; returns cls (usable as a
+    decorator). Requires `kind: ClassVar[str]` (unique). The decoder dispatches on `kind` and
+    yields a typed `cls` instance via `cls.from_payload`. Library bodies are pre-registered above."""
+    assert isinstance(getattr(cls, "kind", None), str) and cls.kind not in META_BODY_REGISTRY
+    META_BODY_REGISTRY[cls.kind] = cls
+    return cls
 ```
 
 > **`RunStarted`/`RunCompleted`/`FilesUpdated`** replace the stringly-typed `meta_init`/`meta_final`/`meta_files` `MetaDelta`s. They are still `MetaEnvelope`s, so they ride the **one** correlated channel — no special "buffer until final then `json.loads`" path (D2), no substring matching (C4).
 
 ### 2.3 `ctx.emit` — the one emission seam (contract §1.2, §3; resolves B7/X5/C4)
 
-Every hook context and every tool `ctx` exposes `emit(MetaBody) -> None`, which **stamps the §3 header from the runtime** and pushes the envelope onto the active run's output. This is the *only* public way to emit a custom event — no importing `MetaDelta`, no calling a formatter (the B7 root cause).
+Every hook context and every tool `ctx` exposes `emit(body, *, correlation_id=None, expects_reply=False)` (§B8), which **stamps the §3 header from the runtime** and pushes the envelope onto the active run's output. This is the *only* public way to emit a custom event — no importing `MetaDelta`, no calling a formatter (the B7 root cause).
 
 ```python
 # Consumed shape (produced by the loop/tools subsystems; see §5 cross-deps):
 class _Emitter(Protocol):
-    def emit(self, body: MetaBody) -> None: ...
-    # runtime fills event_id, run_id, agent_id, parent_agent_id, seq, ts,
-    # and sets expects_reply / correlation_id from the body type
-    # (AwaitInput ⇒ expects_reply=True, correlation_id taken from the FE call cids).
+    # §B8: the canonical emit signature.
+    def emit(self, body: MetaBody, *, correlation_id: str | None = None,
+             expects_reply: bool = False) -> None: ...
+    # runtime fills event_id, run_id, agent_id, parent_agent_id, seq, ts.
+    # For most bodies the caller omits correlation_id/expects_reply; the relay path passes them
+    # explicitly (AwaitInput ⇒ expects_reply=True, correlation_id=cid — the pause-level reply key).
 
 # HookContext.emit and ToolContext.emit BOTH satisfy _Emitter.  Example use:
 async def after_tool(ctx: ToolResultContext) -> HookOutcome | None:
@@ -259,25 +291,32 @@ The runtime stamps the header so a sub-agent's `Custom` event arrives with `agen
 
 The agent exposes a structured iterator. `StreamItem` is the union a consumer reads; the wire is a *downstream* concern.
 
+**Read surface (amended I3 + O11c).** This subsystem defers the read-surface shape to
+**session-control** (which owns the runtime/`SessionManager`). Per **I3**: the single-subscriber
+`stream() -> AsyncIterator[StreamItem]` **SHIPS at Rung 1**; replay/fan-out is Rung 2 behind a
+`from_seq` cursor. `run_stream(msg, queue, formatter)` is **DELETED (G0)** — there is no caller-owned
+queue bridge. Per **O11c**: `event_stream()` is **DELETED** — `sse_response()` (§2.5) is the one
+Layer-C framing owner (it owns the terminal frame), so there is no per-agent byte-stream convenience
+method.
+
 ```python
 StreamItem = StreamDelta | MetaEnvelope
 
 class AgentStream(Protocol):
     """The library-owned output plane. One per resident session (CQRS read side)."""
     def __aiter__(self) -> AsyncIterator[StreamItem]: ...
-    # Optional resumable replay (Rung-2): start at a seq cursor.
+    # Rung-2 only: resumable replay/fan-out — start at a seq cursor.
     def replay_from(self, seq: int) -> AsyncIterator[StreamItem]: ...
 
-# On the agent (output plane; aligns with the §1.5 submit()/Ack input plane):
+# On the agent (output plane; aligns with the §1.5 submit()/Ack input plane). The read-surface
+# signature is session-control's (I3): a single-subscriber stream() at Rung 1.
 class Agent:
-    def stream(self) -> AgentStream: ...
-    # Convenience: typed objects already framed for SSE (Layer C applied):
-    def event_stream(self, *, codec: "WireCodec | None" = None) -> AsyncIterator[str]: ...
+    def stream(self) -> AsyncIterator[StreamItem]: ...   # I3: single-subscriber, ships Rung 1
+    # event_stream() is DELETED (O11c). To frame bytes for a browser, wrap stream() in
+    # sse_response() (§2.5) — the one Layer-C framing owner.
 ```
 
-A server-side consumer that wants structure iterates `agent.stream()` and gets `StreamDelta`/`MetaEnvelope` objects directly — **the 672-line reverse parser never runs server-side** (D1). A consumer that just proxies bytes to a browser iterates `agent.event_stream()` (Layer C).
-
-> **Back-compat:** the existing `run_stream(message, queue, ...)` / `format_delta(delta, queue)` queue-push path is retained as a thin adapter that feeds the same internal emission into a `WireCodec("sse")`. One-major-version deprecation (see §6).
+A server-side consumer that wants structure iterates `agent.stream()` and gets `StreamDelta`/`MetaEnvelope` objects directly — **the 672-line reverse parser never runs server-side** (D1). A consumer that proxies bytes to a browser wraps that same iterator with `sse_response(agent.stream())` (§2.5, §3.3).
 
 ### 2.4a `DeltaSink` — the producer-side seam (resolves R30; what providers emit into)
 
@@ -310,9 +349,9 @@ A `WireCodec` owns *both* directions of the boundary: encode (typed → frames) 
 class WireFrame:
     """One framed unit. For SSE: rendered as 'data: {json}\\n\\n'."""
     data: str                          # compact JSON of a StreamItem.to_wire()
-    event: str | None = None           # SSE event: line (optional)
+    # §O11d (amended): the `event:` line field is DELETED — v1 SSE carries only `data:` frames.
 
-TERMINAL = WireFrame(data="[DONE]")    # the ONE defined terminal frame (D4)
+TERMINAL = WireFrame(data="[DONE]")    # the ONE defined terminal frame (D4), owned by sse_response (O11c)
 
 class WireCodec(ABC):
     version: str = WIRE_PROTOCOL_VERSION
@@ -403,6 +442,12 @@ class DecodedRun:
     run_completed: RunCompleted | None
     pending_frontend_tools: list[FrontendCallView]   # from any AwaitInput
     errors: list[ErrorDelta]
+    # §I11 (amended): typed projections of the control channel, so a consumer reads typed bodies
+    # without re-walking `events`. usage_reports/profile_changes are library bodies; `custom` keys
+    # consumer-registered (register_meta_body) AND open Custom bodies by their `kind`/`name`.
+    usage_reports: list[UsageReport] = field(default_factory=list)
+    profile_changes: list[ProfileChanged] = field(default_factory=list)
+    custom: dict[str, list[MetaBody]] = field(default_factory=dict)
     def blocks_in_order(self) -> list[StreamDelta]: ...  # tool_result follows its tool_call
 ```
 
@@ -421,10 +466,13 @@ class ContentBlock:
 # agent_base/streaming/wire.py  (the canonical inbound reply schema)
 @dataclass(frozen=True)
 class WireToolResult:
-    cid: str                                  # == tool_use_id (the AwaitInput correlation_id)
+    cid: str                                  # §B7: the pause-level reply key == the AwaitInput
+                                              #   envelope's correlation_id (NOT a per-call tool_use_id)
     content: str = ""
     is_error: bool = False
     attachments: list[dict] = field(default_factory=list)   # {kind, media_type, source_type, data, filename}
+    # Per-call results are attributed by tool_use_id inside the result blocks (§B7); the FE
+    # groups them under the one envelope cid it echoes back.
 
     def to_tool_reply(self) -> "ToolReply":   # → the §1.5 reply primitive, correlated by cid
         blocks = [ContentBlock.from_api_dict(_attachment_to_api(a)) for a in self.attachments]
@@ -432,7 +480,7 @@ class WireToolResult:
         return ToolReply(cid=self.cid, results=blocks, is_error=self.is_error)
 ```
 
-`WireToolResult.to_tool_reply()` produces the contract §1.5 `ToolReply(cid, results)` — the **same** primitive used for relay (§3.2), so the inbound endpoint becomes `submit(wire_result.to_tool_reply())`. The throwaway-`relay_uuid` hack (C1) disappears because the reply is keyed by `cid` (== `tool_use_id`), not by a spoofed agent uuid.
+`WireToolResult.to_tool_reply()` produces the contract §1.5 `ToolReply(cid, results)` — the **same** primitive used for relay (§3.2), so the inbound endpoint becomes `submit(wire_result.to_tool_reply())`. The throwaway-`relay_uuid` hack (C1) disappears because the reply is keyed by the pause-level `cid` (the envelope correlation_id), not by a spoofed agent uuid; per-call results carry their own `tool_use_id` (§B7).
 
 ---
 
@@ -547,9 +595,10 @@ await self.stream_formatter.format_delta(delta, self._queue)
 ctx.emit(Custom(name="mode_change", data={"mode": "plan"}))
 # todo event (the SAME mechanism — kills B7's "two mechanisms for one event"):
 ctx.emit(Custom(name="todo", data={"items": items}))
-# awaiting an FE tool from a scripted/slash turn — modeled, not hand-emitted:
-reply = await ctx.await_external([FrontendCallView(cid=tool_use_id, tool_name="excel_write",
-                                                   input=args)])   # emits AwaitInput, parks
+# awaiting an FE tool from a scripted/slash turn — modeled, not hand-emitted (§I4: the public
+# tool-facing primitive is ctx.call_frontend_tool; the runtime mints the cid, emits AwaitInput,
+# parks, and returns the per-call results — relay-await §2.6):
+reply = await ctx.call_frontend_tool("excel_write", args)   # emits AwaitInput, parks, returns results
 ```
 `RunStarted` is auto-emitted by the runtime at stream start (no `_emit_meta_init` override, retiring **B10** too). The FE substring match on `'"type":"meta_init"'` (`recovery._is_meta_init_chunk`) is replaced by `isinstance(item.body, RunStarted)` after decode.
 
@@ -569,7 +618,7 @@ def _build_relay_result(r): blocks=_collect_tool_result_blocks(r); return ToolRe
 async def tool_results(req: list[WireToolResult], member = Depends(auth)):
     agent = await session_manager.get_or_create(req_agent_uuid, principal=member.principal)
     for wr in req:
-        agent.submit(wr.to_tool_reply())          # cid == tool_use_id; no relay_uuid spoof
+        agent.submit(wr.to_tool_reply())          # keyed by the pause-level cid (§B7); no relay_uuid spoof
     return sse_response(agent.stream())
 ```
 `WireToolResult.to_tool_reply()` (library) does the attachment→`ContentBlock` translation; `cid` correlation means root vs sub-agent routing is internal — the single endpoint serves both (the C1 wire half).
@@ -583,18 +632,18 @@ async def tool_results(req: list[WireToolResult], member = Depends(auth)):
 The contract lists `RollbackDelta` as a **content delta** (§1.4) *and* `Rollback` as a **MetaBody** (§3, "UI-only; never alters context append"). These cannot both be the canonical channel. Both variants are kept here for the record; **the maintainer fork is decided in favour of Variant B** (reconciled as Fork D / R13).
 
 - **Variant A — keep `RollbackDelta` on the content channel.** Minimal churn (the type exists today). But it conflates a UI-only signal with the LLM's own output stream, and a consumer filtering "model content" must special-case it. Contradicts §3's "UI-only … never alters context append," which reads like a control concern.
-- **Variant B (DECIDED) — `Rollback` is a `MetaBody`; deprecate `RollbackDelta`.** It rides the correlated control channel (gets `agent_id`/dedupe free), matches §3's intent, and keeps the content channel = "the LLM's own output" exactly. `RollbackDelta` becomes a one-major-version back-compat alias that the codec maps to a `Rollback` envelope on encode.
+- **Variant B (DECIDED) — `Rollback` is a `MetaBody`.** It rides the correlated control channel (gets `agent_id`/dedupe free), matches §3's intent, and keeps the content channel = "the LLM's own output" exactly. **Amended (O3/G0): `RollbackDelta` is DELETED entirely** — not retained as a back-compat alias and not mapped by the codec. `Rollback` MetaBody is the only rollback type; Nova migrates in the same cut.
 
 > Reconciled outcome (Fork D / R13): the abort/loop subsystem (which decides *when* rollback fires, contract §2 `on_turn_end` "optional `ctx.emit(Rollback(...))`") agrees on Variant B, so `ctx.emit(Rollback(...))` from both `on_turn_end` and the abort path targets the meta channel.
 
 ### Fork F-2 — *Custom-event payload typing*
 
 - **Variant A (recommended) — `Custom(name, data: dict)`** exactly as contract §3. Open by construction; zero library knowledge of consumer events; still fully correlated. Matches B7's need (Nova's `mode_change`/`todo`).
-- **Variant B — consumer-registered typed bodies:** `register_meta_body(MyModeChange)` so `MyModeChange` round-trips as a first-class `MetaBody` with its own `kind`. More type safety end-to-end, but requires the consumer's decoder to import the consumer's body classes (re-introduces a coupling X5 fights). Offer as an *opt-in* on top of A, not a replacement.
+- **Variant B — consumer-registered typed bodies:** `register_meta_body(MyModeChange)` so `MyModeChange` round-trips as a first-class `MetaBody` with its own `kind`. More type safety end-to-end, but requires the consumer's decoder to import the consumer's body classes (re-introduces a coupling X5 fights). Offered as an *opt-in* on top of A, not a replacement. **Amended (I11):** `register_meta_body(cls)` is now specified concretely (§2.2 — a frozen dataclass with `kind: ClassVar[str]` registers into the decode registry; the decoder yields typed instances), and the typed bodies surface on `DecodedRun.custom`.
 
 ### Fork F-3 — *Read surface granularity* — **DECIDED: Variant A** (reconciled Fork C)
 
-- **Variant A (DECIDED) — merged `AsyncIterator[StreamItem]`** (deltas + envelopes interleaved in `seq` order). One loop, correct ordering, matches how a UI renders. This is the reconciled Fork C choice; the caller-owned queue path is kept only as a one-major bridge (§2.4 back-compat), and `replay_from(seq)` resumable replay is gated at Rung 2.
+- **Variant A (DECIDED) — merged `AsyncIterator[StreamItem]`** (deltas + envelopes interleaved in `seq` order). One loop, correct ordering, matches how a UI renders. This is the reconciled Fork C choice. **Amended (I3/G0):** the single-subscriber `stream()` **ships at Rung 1**; the caller-owned queue path (`run_stream(msg, queue, formatter)`) is **DELETED**, not kept as a bridge. `replay_from(seq)`/fan-out resumable replay is gated at Rung 2 behind `from_seq`. (Read-surface shape is owned by session-control, which this doc defers to.)
 - **Variant B — two iterators** (`agent.content_stream()` + `agent.meta_stream()`). Cleaner types per stream but forces the consumer to re-merge by `seq` for correct render order — re-creating a coordination burden. Not chosen; exposed only as filtered views over A if asked.
 
 ---
@@ -604,10 +653,10 @@ The contract lists `RollbackDelta` as a **content delta** (§1.4) *and* `Rollbac
 **Shared contract types I CONSUME (defined elsewhere / in the contract):**
 - `MetaEnvelope`, `MetaBody` header shape — contract §3 header is authoritative for the *shape*; **I OWN the implementation home at `agent_base/streaming/meta.py`** (reconciled R2 — the meta union + registry + wire codec live here; tools/core/memory/relay/hooks all import from `streaming.meta`, not `core.meta`/`core.commands`). **I require the correlation header be stamped by the runtime** (loop subsystem), not the consumer.
 - `ErrorCode` — **imported from `agent_base/core/errors.py`** (reconciled R8). I do NOT define it; `ErrorDelta.code` and `ErrorReport.code` both reference the single core taxonomy. `classify_provider_error()` also lives in `core.errors` (re-exported here for ergonomics). The streaming-only `PROVIDER_SERVER_ERROR` spelling folds into `PROVIDER_STATUS`.
-- `ctx` / `HookContext.emit: Callable[[MetaBody], None]` (§1.2) — I define what `emit` puts on the wire; the **hooks/loop subsystem owns the `emit` implementation** that stamps the header.
+- `ctx` / `HookContext.emit` (§1.2; §B8 signature `emit(body, *, correlation_id=None, expects_reply=False)`) — I define what `emit` puts on the wire; the **hooks/loop subsystem owns the `emit` implementation** that stamps the header.
 - `ToolReply(cid, results)`, `Ack`, `AgentInput`, `Steer`, `Abort` (§1.5) — already shipped in `agent_base/core/commands.py` + `ack.py`. `WireToolResult.to_tool_reply()` produces `ToolReply`; the relay subsystem consumes it via `submit()`.
 - `ContentBlock`/`TextContent`/`ImageContent`/`DocumentContent`/`AttachmentContent` (`core/types.py`) — I add `ContentBlock.from_api_dict`.
-- `SessionPrincipal` (`agent_base/core/identity.py`, reconciled R1) — only indirectly: the `event_stream`/`sse_response` factory must not require it, but the **await/relay reply-auth** (tenancy subsystem) validates `ToolReply` against the parked `AwaitInput`'s principal. I surface `correlation_id` so that check is possible.
+- `SessionPrincipal` (`agent_base/core/identity.py`, reconciled R1) — only indirectly: the `sse_response` factory must not require it (`event_stream` is DELETED, O11c), but the **await/relay reply-auth** (tenancy subsystem) validates `ToolReply` against the parked `AwaitInput`'s principal. I surface `correlation_id` so that check is possible.
 - `TurnSettlement` (`agent_base/core/cost.py`, reconciled R11) — the once-per-turn billing fact whose projection the `UsageReport` body mirrors; pricing computes it, core owns the type + serialization.
 - `AgentResult` / `cost` / `usage` projections (§6 "canonical serialization") — `RunCompleted`/`UsageReport` bodies embed these dicts; I depend on the storage/result subsystem shipping a canonical `.to_dict()` (versioned by `core.serializable.CORE_SCHEMA_VERSION`, R12) so these payloads are stable (resolves D2's "re-parse `meta_final`" and X9's double-extraction).
 - `AgentRuntime` (`agent_base/core/runtime.py`, reconciled R29 / Fork E) — the provider-agnostic runtime that stamps the header, owns the `DeltaSink`, and exposes `stream()`. `AnthropicAgent` stays a back-compat factory; I write `Agent`/runtime references against `AgentRuntime`.
@@ -615,30 +664,33 @@ The contract lists `RollbackDelta` as a **content delta** (§1.4) *and* `Rollbac
 **Shared types I PRODUCE (other subsystems consume), all homed under `agent_base/streaming/`:**
 - `StreamItem = StreamDelta | MetaEnvelope` (`streaming/__init__.py`), `AgentStream` (the §1.4 read surface) — the loop/`AgentRuntime` subsystem's `stream()` returns this; SessionManager owns its lifetime. The loop stamps `parent_agent_uuid`+`seq` on every `StreamDelta` (R6).
 - The `MetaEnvelope`/`MetaBody` union (`streaming/meta.py`, R2) — `AwaitInput`, `RunStarted`, `RunCompleted`, `UsageReport`, `ErrorReport`, `Rollback`, `ProfileChanged`, `FilesUpdated`, `Custom` + `FrontendCallView` — consumed by relay (`AwaitInput`/`FrontendCallView`), profiles (`ProfileChanged`), cost/usage (`UsageReport`), abort (`Rollback`/`ErrorReport`). Producing subsystems supply the payload shape but register the body **here**.
-- `DeltaSink` (`streaming/wire.py`, reconciled R30) with `emit(StreamDelta)` + `emit_meta(MetaBody)` — consumed by the **providers** subsystem: `Provider.generate_stream(sink: DeltaSink)`. The legacy `(queue, stream_formatter)` pair is a one-major shim the runtime wraps into a `DeltaSink`.
+- `DeltaSink` (`streaming/wire.py`, reconciled R30) with `emit(StreamDelta)` + `emit_meta(MetaBody)` — consumed by the **providers** subsystem: `Provider.generate_stream(sink: DeltaSink)`. **Amended (G0):** the legacy `(queue, stream_formatter)` pair is **removed**, not kept as a shim; providers emit into a `DeltaSink` directly. Nova migrates in the same cut.
 - `WireCodec`/`SseCodec`/`StreamDecoder`/`DecodedRun`/`sse_response`/`WireToolResult` — the versioned wire (§5 principle "versioned wire … with a shipped reference decoder"), versioned by `WIRE_PROTOCOL_VERSION` (the wire axis, distinct from `CORE_SCHEMA_VERSION`/`LIBRARY_SCHEMA_VERSION`, R12).
 
 > **Not mine (consumed, see above):** `ErrorCode` + `classify_provider_error()` are owned by `core.errors` (R8), re-exported through `streaming` for ergonomics. `TurnSettlement` is owned by `core.cost` (R11).
 
 ---
 
-## 6. Migration note (today → new; back-compat one major version)
+## 6. Migration note (today → new; breaking allowed per G0)
 
-| Today | New | Back-compat (kept for one major version) |
+**Amended (G0):** breaking changes are allowed (preview/unreleased). Every "kept one major"
+back-compat shim is **removed**, not maintained — Nova migrates in the same cut.
+
+| Today | New | Migration |
 |---|---|---|
-| `MetaDelta(type="meta_init", payload={...})` | `MetaEnvelope(body=RunStarted(...))` | `MetaDelta` retained; codec maps known `type` strings (`meta_init`→`RunStarted`, `meta_final`→`RunCompleted`, `meta_files`→`FilesUpdated`, `awaiting_frontend_tools`→`AwaitInput`) on encode. A raw `MetaDelta` with an unknown `type` encodes as `Custom(name=type, data=payload)`. |
-| `ErrorDelta(error_payload={...})` | `ErrorDelta(code: ErrorCode, message, retriable, terminal, details)` where `ErrorCode` is **imported from `core.errors`** (R8) | `.error_payload` property preserved; `from_wire` accepts the old flat shape. The earlier `PROVIDER_SERVER_ERROR` value reads back as `PROVIDER_STATUS`. |
-| `RollbackDelta(...)` (content) | `Rollback` MetaBody (**Fork D / Variant B — decided**) | `RollbackDelta` aliased; codec emits a `Rollback` envelope; decoder still yields a `RollbackDelta` if a consumer pins the old type. |
-| `provider.generate_stream(queue, stream_formatter)` | `provider.generate_stream(sink: DeltaSink)` — `sink.emit(StreamDelta)` / `sink.emit_meta(MetaBody)` (R30) | the `(queue, stream_formatter)` pair is wrapped by the runtime into a `DeltaSink` adapter that routes through `SseCodec` onto the queue (today's exact bytes). |
-| `StreamFormatter.format_delta(delta, queue)` | `WireCodec.encode(item)` + `render()` | `JsonStreamFormatter` reimplemented as a shim over `SseCodec` writing to the queue; `get_formatter("json")` still works. |
-| `build_envelope(...)`, `chunk_and_emit(...)`, `emit_stream_delta(...)` | internal to `SseCodec.encode` | kept exported (they are already public in `streaming/__init__`); marked deprecated. |
-| `run_stream(message, queue, cancellation_event=...)` | `submit(UserMessage)` + `agent.stream()` / `event_stream()` | `run_stream` kept as an adapter pushing `SseCodec`-rendered strings to the queue (today's exact bytes). |
-| Wire field names (`agent`, `final`, `delta`, `id`, `name`, `tool_use_id`) | unchanged at `WIRE_PROTOCOL_VERSION="1"` | **No byte change at v1** — `SseCodec.render` emits the identical compact JSON Nova's existing FE/parser expect. The new typed layer is purely additive on top of the same bytes, so Nova can adopt the **decoder** before the FE changes, and the FE before the backend re-emits. |
-| `_emit_meta_init`/`_emit_meta_final`/`_emit_meta_files` (private) | runtime emits `RunStarted`/`RunCompleted`/`FilesUpdated` via `ctx.emit` | the private methods become thin wrappers calling `ctx.emit`; **`_emit_meta_init` override (B10) and `MetaDelta` import (B7) become unnecessary** — `on_run_start` + `ctx.emit(Custom(...))` replace them. |
+| `MetaDelta(type="meta_init", payload={...})` | `MetaEnvelope(body=RunStarted(...))` | **removed — breaking allowed (G0).** `MetaDelta` is deleted; the codec maps no legacy `type` strings. **Amended (B5):** the `awaiting_frontend_tools`→`AwaitInput` legacy await mapping is specifically deleted — `AwaitInput` is the only await frame (relay-await §6). Nova migrates in the same cut. |
+| `ErrorDelta(error_payload={...})` | `ErrorDelta(code: ErrorCode, message, retriable, terminal, details)` where `ErrorCode` is **imported from `core.errors`** (R8) | **removed — breaking allowed (G0).** The `.error_payload` property and old flat-shape `from_wire` acceptance are dropped; consumers read `.code`. Nova migrates in the same cut. |
+| `RollbackDelta(...)` (content) | `Rollback` MetaBody (**Fork D / Variant B — decided**) | **removed — breaking allowed (O3/G0).** `RollbackDelta` is DELETED entirely — no alias, no codec mapping, removed from the StreamDelta taxonomy. Nova migrates to the `Rollback` MetaBody in the same cut. |
+| `provider.generate_stream(queue, stream_formatter)` | `provider.generate_stream(sink: DeltaSink)` — `sink.emit(StreamDelta)` / `sink.emit_meta(MetaBody)` (R30) | **removed — breaking allowed (G0).** The `(queue, stream_formatter)` pair is deleted; providers emit into a `DeltaSink` directly. Nova migrates in the same cut. |
+| `StreamFormatter.format_delta(delta, queue)` | `WireCodec.encode(item)` + `render()` | **removed — breaking allowed (G0).** `JsonStreamFormatter`/`get_formatter("json")` is deleted; consumers use `WireCodec`. Nova migrates in the same cut. |
+| `build_envelope(...)`, `chunk_and_emit(...)`, `emit_stream_delta(...)` | internal to `SseCodec.encode` | **removed — breaking allowed (G0).** These are made internal to `SseCodec.encode` and dropped from the public surface. Nova migrates in the same cut. |
+| `run_stream(message, queue, cancellation_event=...)` | `submit(UserMessage)` + `agent.stream()` | **removed — breaking allowed (I3/G0).** `run_stream` is DELETED; consumers use `submit(UserMessage)` + `agent.stream()`. `event_stream()` is also DELETED (O11c) — wrap `stream()` in `sse_response()` for bytes. Nova migrates in the same cut. |
+| Wire field names (`agent`, `final`, `delta`, `id`, `name`, `tool_use_id`) | `WIRE_PROTOCOL_VERSION="1"` | Wire field spellings are unchanged at v1 (the typed layer is additive over the same bytes), so the decoder adoption is independent of any re-emit. Note this is a wire-shape continuity statement, not a deprecation shim. |
+| `_emit_meta_init`/`_emit_meta_final`/`_emit_meta_files` (private) | runtime emits `RunStarted`/`RunCompleted`/`FilesUpdated` via `ctx.emit` | **removed — breaking allowed (G0).** The private emit methods are deleted; the runtime auto-emits `RunStarted`/`RunCompleted`/`FilesUpdated` and consumers use `ctx.emit(Custom(...))`. Nova migrates in the same cut. |
 
-**Adoption order for a Nova-like consumer (each step independently shippable because v1 bytes are frozen):**
+**Adoption order for a Nova-like consumer (v1 wire field spellings are unchanged, so decoder adoption is independent of any re-emit):**
 1. Replace `stream_parser.py` with `decode_sse_lines` / `agent.stream()` (D1/D2).
 2. Replace `_classify_agent_stream_error` by reading `ErrorDelta.code` (D3).
 3. Replace `_yield_turn_chunks` + header copy with `sse_response()` (D4).
-4. Replace `emit_awaiting_chunk`/`emit_meta_init`/raw `MetaDelta` with `ctx.emit` + `ctx.await_external` (C4/B7/X5).
+4. Replace `emit_awaiting_chunk`/`emit_meta_init`/raw `MetaDelta` with `ctx.emit` + `ctx.call_frontend_tool` (C4/B7/X5/I4).
 5. Replace `_build_relay_result`/`_raw_block_to_content_block` with `WireToolResult.to_tool_reply()` + `ContentBlock.from_api_dict` (D5/C1-meta).

@@ -8,13 +8,15 @@
 
 > **Reconciled against `interface_plan/RECONCILIATION.md`** (binding outcomes for this subsystem):
 > - **R2 (import home):** `MetaEnvelope`/`MetaBody`/`UsageReport`/`ErrorReport`/`Rollback`/`Custom` are imported from **`agent_base/streaming/meta.py`**, *never* `core.meta`. Streaming owns the union + wire codec; core only *produces* `ErrorReport` (and consumes `UsageReport`) as projections.
-> - **R8 (error taxonomy):** `agent_base/core/errors.py::ErrorCode` is the **single** error vocabulary; streaming (`ErrorDelta.code`) and providers (`ProviderError`→map) import it. This doc adopts the reconciled **union member set** (adds `PROVIDER_TIMEOUT`, `PROVIDER_AUTH`, `PROVIDER_BAD_REQUEST`, `CREDITS_EXHAUSTED`; drops the old `PROVIDER_OVERLOADED`-only spelling overlaps). Providers' `ProviderErrorKind` stays provider-internal and maps 1:1.
-> - **R11 (settlement):** `Settlement` is renamed **`TurnSettlement`** at `agent_base/core/cost.py` and adopts the pricing-doc **superset** (`parent_agent_id`, `turn_usage`/`turn_cost`, `cumulative_usage`/`cumulative_cost`, `model`, `step_count`). **Core owns the type + serialization; pricing owns the computation (`_Settler`).** `EndTurnContext.settlement: TurnSettlement` and `AgentResult.settlement: TurnSettlement|None` carry it.
+> - **R8 (error taxonomy), as amended by O6:** `agent_base/core/errors.py::ErrorCode` is the **single** error vocabulary; streaming (`ErrorDelta.code`) and providers (`ProviderError`→map) import it. **O6 trims it to 8 members** (`PROVIDER_OVERLOADED, RATE_LIMITED, PROVIDER_TIMEOUT, PROVIDER_STATUS, CONTEXT_OVERFLOW, TOOL_FAILED, ABORTED, INTERNAL`); R8's `PROVIDER_AUTH`/`PROVIDER_BAD_REQUEST`/`AUTH`/`VALIDATION` collapse into `PROVIDER_STATUS` + `details`/`native_code`, and `CREDITS_EXHAUSTED` is removed (consumer-side). Providers map onto these 8.
+> - **R11 (settlement), as amended by B1 + B6 + O14(d):** `Settlement` is renamed **`TurnSettlement`** at `agent_base/core/cost.py`. **O14(d) slims it to turn-level fields** (`turn_usage`, `turn_cost` + identity fields); the `cumulative_*` fields are **removed** — cumulative totals are served by the `SettlementAggregator` and `AgentResult`. **Core owns the type + serialization; pricing owns the computation** — now the module function `settle_turn(ctx, steps) -> TurnSettlement` (O14(d)), not a `_Settler` class. **B1:** `EndTurnContext` does **NOT** carry `settlement`; billing subscribes via `agent.on_usage_report(cb)`. `AgentResult.settlement: TurnSettlement|None` is attached by the runtime (**B6:** `AgentResult.as_settlement()` is deleted — the runtime always attaches it).
 > - **R12 (version axis):** `CORE_SCHEMA_VERSION` (with `SCHEMA_VERSION_KEY="_v"`) is the **entity-wire** version; pricing's `SERIALIZATION_VERSION` collapses into it. Storage's `LIBRARY_SCHEMA_VERSION` (DDL) and `streaming.WIRE_PROTOCOL_VERSION` (SSE bytes) are *distinct* axes.
 > - **R22 / Fork S1:** entity `.to_dict()` for the **wire-crossing set** (`Conversation`, `AgentResult`, `CostBreakdown`, `Usage`, `TurnSettlement`); **`AgentConfig` stays storage-codec-owned**. The storage codec MAY call these child `.to_dict()`s.
 > - **R27 (schema ownership):** **core** owns the `conversation_log` entry schema + version (`conversation_log.py`, versioned via `CORE_SCHEMA_VERSION`); storage's `AnalyticsReader` only *tracks* it. The `stop_reason` taxonomy belongs to storage/analytics.
 > - **Fork L (compaction veto):** **V1** — `before_compact` `decision="block"` vetoes **auto** compaction only; manual is never vetoable.
 > - **Fork E (provider boundary):** the runtime class is **`AgentRuntime`** at `agent_base/core/runtime.py` (the loop lifted out of `AnthropicAgent`, sequenced last; `AnthropicAgent` stays a back-compat factory). Every "the runtime" reference below is provider-agnostic.
+
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
 
 ---
 
@@ -57,45 +59,43 @@ from agent_base.tools.context import ToolContext as ctx        # §1 (shipped, e
 
 ### 2.1 Canonical versioned serialization (resolves §6 + E10)
 
-A uniform contract every persisted/wire-crossing dataclass implements. One
-`SCHEMA_VERSION`, one `to_dict()` that always stamps it, one `from_dict()` that
-tolerates older versions. **No more mixed `asdict`/`to_dict`.**
+A uniform convention every persisted/wire-crossing dataclass follows. One
+**library-wide** `CORE_SCHEMA_VERSION`, one `to_dict()` that always stamps it via
+`_stamp()`, one `from_dict()` that tolerates older versions. **No more mixed
+`asdict`/`to_dict`.**
+
+> **O15(c):** `Serializable` is a **documented convention, not a `runtime_checkable`
+> Protocol** — nothing does `isinstance(x, Serializable)`, so the runtime-checkable
+> machinery is dropped. There are **no per-entity `SCHEMA_VERSION` ClassVars**; there is one
+> `CORE_SCHEMA_VERSION` and `_stamp()` writes it. Entities stop carrying their own version
+> integer.
 
 ```python
-# agent_base/core/serializable.py  (NEW — the canonical contract)
+# agent_base/core/serializable.py  (NEW — the canonical convention)
 
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import Any
 
-#: Bumped only on a BREAKING shape change to a core entity. Additive fields do
-#: not bump it (from_dict tolerates unknown keys; missing keys take defaults).
+#: The ONE entity-wire version. Bumped only on a BREAKING shape change to ANY core
+#: entity. Additive fields do not bump it (from_dict tolerates unknown keys; missing
+#: keys take defaults). There are NO per-entity version counters (O15(c)).
 CORE_SCHEMA_VERSION: int = 1
 
 #: Reserved key stamped into every canonical dict. Readers branch on it.
 SCHEMA_VERSION_KEY = "_v"
 
 
-@runtime_checkable
-class Serializable(Protocol):
-    """Every core entity that is persisted or crosses the wire implements this.
-
-    Invariants (the thing E10 was missing):
-      * `to_dict()` is total — it serializes EVERY field, recursively, via the
-        child's own `to_dict()` (never `dataclasses.asdict`).
-      * `to_dict()` output is JSON-safe (str/int/float/bool/None/list/dict).
-      * `to_dict()` stamps `{SCHEMA_VERSION_KEY: <int>}`.
-      * `from_dict(to_dict(x)) == x` for the current version (round-trip).
-      * `from_dict` tolerates older versions and unknown/missing keys.
-    """
-
-    SCHEMA_VERSION: ClassVar[int]
-
-    def to_dict(self) -> dict[str, Any]: ...
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Serializable": ...
+# Serializable is a CONVENTION (O15(c)) — documented, not a runtime_checkable Protocol.
+# Every core entity that is persisted or crosses the wire SHOULD provide:
+#   * to_dict()  — total: serializes EVERY field, recursively, via the child's own
+#                  to_dict() (never dataclasses.asdict); JSON-safe; stamps `_v` via _stamp().
+#   * from_dict(cls, data) — round-trips the current version; tolerates older versions
+#                  and unknown/missing keys.
+# It is a structural expectation enforced by review + tests, not an isinstance check.
 
 
-def _stamp(d: dict[str, Any], version: int) -> dict[str, Any]:
-    d[SCHEMA_VERSION_KEY] = version
+def _stamp(d: dict[str, Any]) -> dict[str, Any]:
+    """Stamp the single library-wide CORE_SCHEMA_VERSION (O15(c) — no per-entity arg)."""
+    d[SCHEMA_VERSION_KEY] = CORE_SCHEMA_VERSION
     return d
 
 
@@ -111,14 +111,14 @@ def schema_version_of(data: dict[str, Any]) -> int:
 
 @dataclass
 class CostBreakdown:
-    SCHEMA_VERSION: ClassVar[int] = 1
+    # (O15(c)) no per-entity SCHEMA_VERSION ClassVar — _stamp() writes CORE_SCHEMA_VERSION.
 
     total_cost: float = 0.0
     currency: str = "USD"                       # NEW: was implicit
     breakdown: dict[str, float] = field(default_factory=dict)
     # NEW: run_id promoted to a typed field. Today Nova reads
-    # cost_data["breakdown"]["run_id"] — a leaked convention. Keep mirroring it
-    # into breakdown for one major version so old readers still work.
+    # cost_data["breakdown"]["run_id"] — a leaked convention. (G0: no longer mirrored
+    # into breakdown — breaking allowed; run_id lives ONLY in the typed field.)
     run_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,33 +127,34 @@ class CostBreakdown:
             "currency": self.currency,
             "breakdown": dict(self.breakdown),
             "run_id": self.run_id,
-        }, self.SCHEMA_VERSION)
+        })
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CostBreakdown":
+        # (O15(d)) Work on a COPY so a v0 run_id does not survive inside breakdown
+        # (the latent bug). Two plain statements, no inline conditional:
         breakdown = dict(data.get("breakdown", {}))
-        # v0 back-compat: run_id used to live inside breakdown.
-        run_id = data.get("run_id") or breakdown.pop("run_id", None) \
-                 if isinstance(breakdown.get("run_id"), str) else data.get("run_id")
+        run_id = data.get("run_id")
+        if run_id is None:
+            run_id = breakdown.pop("run_id", None)   # v0: run_id used to live inside breakdown
         return cls(
             total_cost=data.get("total_cost", 0.0),
             currency=data.get("currency", "USD"),
-            breakdown=dict(data.get("breakdown", {})),
+            breakdown=breakdown,                     # the copy, with any v0 run_id popped out
             run_id=run_id,
         )
 ```
 
-`Usage` already satisfies `Serializable` (it has `to_dict`/`from_dict`); add the
-class var + stamp:
+`Usage` already follows the `Serializable` convention (it has `to_dict`/`from_dict`);
+just stamp it via `_stamp()` (no per-entity ClassVar — O15(c)):
 
 ```python
 @dataclass
 class Usage:
-    SCHEMA_VERSION: ClassVar[int] = 1
     # ...existing numeric fields unchanged...
 
     def to_dict(self) -> dict[str, Any]:
-        return _stamp({ ...existing dict... }, self.SCHEMA_VERSION)
+        return _stamp({ ...existing dict... })       # stamps CORE_SCHEMA_VERSION
     # from_dict: add  data.pop(SCHEMA_VERSION_KEY, None)  tolerance (no-op today)
 ```
 
@@ -169,7 +170,7 @@ helper becomes a thin shim that calls it (so adapters need not change).
 
 @dataclass
 class Conversation:
-    SCHEMA_VERSION: ClassVar[int] = 1
+    # (O15(c)) no per-entity SCHEMA_VERSION ClassVar.
     # ...all existing fields unchanged...
 
     def to_dict(self) -> dict[str, Any]:
@@ -194,7 +195,7 @@ class Conversation:
             "sequence_number": self.sequence_number,
             "created_at": self.created_at,
             "extras": dict(self.extras),
-        }, self.SCHEMA_VERSION)
+        })
 
     def to_clean_dict(self) -> dict[str, Any]:
         """UI form: user_message via Message.to_clean_dict (drops contributions)."""
@@ -235,10 +236,12 @@ of cost/usage. It currently has no serialization at all.
 
 @dataclass
 class AgentResult:
-    SCHEMA_VERSION: ClassVar[int] = 1
+    # (O15(c)) no per-entity SCHEMA_VERSION ClassVar.
     # ...all existing fields unchanged...
 
-    # R11: the awaited-caller copy of the once-per-turn billing fact (pricing computes it).
+    # The awaited-caller copy of the once-per-turn billing fact. The runtime ALWAYS
+    # attaches it (B6 — there is no builder fallback); cumulative totals live here /
+    # in the SettlementAggregator, not on TurnSettlement (O14(d)).
     settlement: "TurnSettlement | None" = None     # carried alongside the result
 
     def to_dict(self) -> dict[str, Any]:
@@ -258,37 +261,18 @@ class AgentResult:
             "settlement": self.settlement.to_dict() if self.settlement else None,
             "was_aborted": self.was_aborted,
             "abort_phase": self.abort_phase,
-        }, self.SCHEMA_VERSION)
+        })
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentResult": ...
 
-    # --- X9 convenience: build the typed settlement projection on demand (see §2.2) ---
-    # Pricing's _Settler is the authoritative producer (it owns turn vs cumulative math);
-    # this fallback constructs a minimally-populated TurnSettlement from what the result
-    # already carries, for callers that did not receive one from the runtime.
-    def as_settlement(self, *, agent_uuid: str, run_id: str | None = None,
-                      parent_agent_id: str | None = None,
-                      model: str | None = None, step_count: int | None = None,
-                      principal: "SessionPrincipal | None" = None) -> "TurnSettlement":
-        if self.settlement is not None:
-            return self.settlement
-        return TurnSettlement(
-            agent_uuid=agent_uuid,
-            run_id=run_id or (self.cost.run_id if self.cost else None),
-            parent_agent_id=parent_agent_id,
-            turn_cost=self.cost or CostBreakdown(),
-            turn_usage=self.usage,
-            cumulative_cost=self.cost or CostBreakdown(),
-            cumulative_usage=self.cumulative_usage,
-            model=model or self.model,
-            step_count=step_count if step_count is not None else self.total_steps,
-            principal=principal,
-        )
+    # (B6) `as_settlement()` is DELETED. The runtime always attaches `settlement`,
+    # so there is no on-demand builder fallback to maintain — read `result.settlement`.
 ```
 
-`LogEntry` gains the same `to_dict`/`from_dict` + `SCHEMA_VERSION` (it currently
-relies on `storage.serialization.serialize_log_entry`).
+`LogEntry` gains the same `to_dict`/`from_dict` convention (stamped via `_stamp()`;
+no per-entity ClassVar — O15(c)); it currently relies on
+`storage.serialization.serialize_log_entry`.
 
 #### 2.1.4 `conversation_log` entry schema is core-owned + version-stamped (R27)
 
@@ -315,99 +299,108 @@ layout**:
 
 @dataclass
 class ConversationLog:
-    SCHEMA_VERSION: ClassVar[int] = 1          # entity-wire; the _v on each persisted log
+    # (O15(c)) no per-entity SCHEMA_VERSION ClassVar — _stamp() writes CORE_SCHEMA_VERSION.
     entries: list[LogEntry] = field(default_factory=list)
     # ...existing fields unchanged...
 
     def to_dict(self) -> dict[str, Any]:
         # Canonical, versioned: every entry via LogEntry.to_dict() (no asdict).
-        return _stamp({"entries": [e.to_dict() for e in self.entries], ...}, self.SCHEMA_VERSION)
+        return _stamp({"entries": [e.to_dict() for e in self.entries], ...})
 ```
 
 ### 2.2 Per-turn cost/usage settlement — `TurnSettlement` (the typed half of X9)
 
 A single typed object delivered **once per turn**, identical whether the turn
-streamed or was awaited. The loop subsystem fires `on_turn_end` and the runtime
-auto-emits `UsageReport` (contract §6).
+streamed or was awaited. The runtime auto-emits `UsageReport` per turn (contract §6),
+which the `agent.on_usage_report` channel and `AgentResult.settlement` expose. (B1:
+it is NOT delivered via `on_turn_end` — that hook carries no settlement.)
 
-> **R11 (reconciled):** the type is named **`TurnSettlement`** (core's earlier
-> `Settlement` is renamed) and adopts the **pricing-doc superset** of fields —
-> `parent_agent_id`, distinct `turn_*` vs `cumulative_*` cost/usage, `model`,
-> `step_count` — all needed for sub-agent attribution + analytics. **Core owns
-> the type + its serialization; pricing owns the computation** (`_Settler.settle`
-> produces it). `EndTurnContext.settlement` and `AgentResult.settlement` carry it.
+> **R11 (reconciled), as amended by B1 + O14(d):** the type is named
+> **`TurnSettlement`** (core's earlier `Settlement` is renamed). **O14(d) slims it to
+> turn-level fields** — `parent_agent_id`, `turn_usage`/`turn_cost`, `model`,
+> `step_count` (the `cumulative_*` fields are **removed**; run-to-date totals come
+> from the `SettlementAggregator` / `AgentResult`). **Core owns the type + its
+> serialization; pricing owns the computation** — the module function
+> `settle_turn(ctx, steps)` (O14(d) — `_Settler` is gone) produces it. **B1:**
+> `EndTurnContext` does NOT carry it; `AgentResult.settlement` carries it and the
+> runtime auto-emits `UsageReport` (billing subscribes via `agent.on_usage_report`).
 
 ```python
-# agent_base/core/cost.py  (core owns the type + serialization; pricing's _Settler computes it)
+# agent_base/core/cost.py  (core owns the type + serialization; pricing's settle_turn() computes it)
 
 @dataclass(frozen=True)
 class TurnSettlement:
     """The once-per-turn billing fact (R11 — was `Settlement`). Carries run_id as
     a real field so consumers stop digging it out of cost.breakdown['run_id'],
-    plus parent_agent_id + cumulative + model + step_count for attribution/analytics.
+    plus parent_agent_id + model + step_count for attribution/analytics.
 
-    Produced by pricing's `_Settler.settle(...)`; serialized here. Delivered three
-    identical ways: EndTurnContext.settlement, AgentResult.settlement, and the
-    auto-emitted UsageReport MetaEnvelope."""
-    SCHEMA_VERSION: ClassVar[int] = 1          # entity-wire; defers to CORE_SCHEMA_VERSION (R12)
+    (O14(d)) TURN-LEVEL ONLY: the `cumulative_usage`/`cumulative_cost` fields are
+    REMOVED — run-to-date totals are served by the `SettlementAggregator` (which
+    subscribes to the UsageReport channel) and by `AgentResult.cumulative_usage`.
+    Per-turn settlements stay un-rolled.
+
+    Produced by pricing's module function `settle_turn(ctx, steps)` (O14(d) — the
+    `_Settler` class is gone); serialized here. Delivered identically via
+    AgentResult.settlement and the auto-emitted UsageReport MetaEnvelope. (B1:
+    NOT via EndTurnContext — on_turn_end carries no settlement; billing subscribes
+    via agent.on_usage_report.)"""
+    # (O15(c)) no per-entity SCHEMA_VERSION ClassVar — _stamp() writes CORE_SCHEMA_VERSION.
 
     agent_uuid: str                            # == agent_id; the billed run's agent
     run_id: str | None
     parent_agent_id: str | None = None         # sub-agent attribution (None at root)
     turn_usage: Usage = field(default_factory=Usage)        # this turn only
     turn_cost: CostBreakdown = field(default_factory=CostBreakdown)
-    cumulative_usage: Usage = field(default_factory=Usage)  # run-to-date
-    cumulative_cost: CostBreakdown = field(default_factory=CostBreakdown)
     model: str | None = None
     step_count: int | None = None
-    principal: SessionPrincipal | None = None  # §1.1 — who to bill (threaded by runtime)
+    principal: SessionPrincipal | None = None  # §1.1 — who to bill (threaded by runtime).
+                                               # Full principal in-process; serialization is scope-only (B2).
 
     def to_dict(self) -> dict[str, Any]:
+        # (B2) Serialize ONLY the scope key (tenant/subject) from the principal —
+        # NEVER claims. The in-process `principal` object keeps the full principal.
         return _stamp({
             "agent_uuid": self.agent_uuid,
             "run_id": self.run_id,
             "parent_agent_id": self.parent_agent_id,
             "turn_usage": self.turn_usage.to_dict(),
             "turn_cost": self.turn_cost.to_dict(),
-            "cumulative_usage": self.cumulative_usage.to_dict(),
-            "cumulative_cost": self.cumulative_cost.to_dict(),
             "model": self.model,
             "step_count": self.step_count,
-            "principal": self.principal.to_dict() if self.principal else None,
-        }, self.SCHEMA_VERSION)
+            "principal": {"tenant": self.principal.tenant, "subject": self.principal.subject}
+                         if self.principal else None,    # (B2) scope only; no claims
+        })
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TurnSettlement":
+        p = data.get("principal")
         return cls(
             agent_uuid=data["agent_uuid"],
             run_id=data.get("run_id"),
             parent_agent_id=data.get("parent_agent_id"),
             turn_usage=Usage.from_dict(data["turn_usage"]) if data.get("turn_usage") else Usage(),
             turn_cost=CostBreakdown.from_dict(data["turn_cost"]) if data.get("turn_cost") else CostBreakdown(),
-            cumulative_usage=Usage.from_dict(data["cumulative_usage"]) if data.get("cumulative_usage") else Usage(),
-            cumulative_cost=CostBreakdown.from_dict(data["cumulative_cost"]) if data.get("cumulative_cost") else CostBreakdown(),
             model=data.get("model"),
             step_count=data.get("step_count"),
-            principal=SessionPrincipal.from_dict(data["principal"]) if data.get("principal") else None,
+            # (B2) only tenant/subject were serialized; claims are not recoverable from the wire.
+            principal=SessionPrincipal(tenant=p.get("tenant"), subject=p.get("subject")) if p else None,
         )
 
     def as_usage_report(self) -> "UsageReport":
         """Adapt to the contract's MetaBody so the runtime can auto-emit it (§3).
-        UsageReport lives in streaming.meta (R2); pricing supplies its payload shape."""
-        return UsageReport(usage=self.turn_usage, cost=self.turn_cost,
-                           cumulative=self.cumulative_usage)
-
-
-# Back-compat: `Settlement` is a deprecated alias for one major version (R11 rename).
-Settlement = TurnSettlement
+        UsageReport lives in streaming.meta (R2); pricing supplies its payload shape.
+        Turn-level only (O14(d)); cumulative roll-up is the SettlementAggregator's job."""
+        return UsageReport(usage=self.turn_usage, cost=self.turn_cost)
 ```
 
-> **How X9 vanishes:** pricing's `_Settler.settle(...)` builds the
-> `TurnSettlement`; the runtime hands it to the `on_turn_end` hook context
-> (`ctx.settlement`), attaches it to `AgentResult.settlement`, and auto-emits
-> `UsageReport`. Billing reads `s.turn_cost.total_cost`, `s.run_id`,
-> `s.cumulative_usage` — typed, once, same for streamed and awaited. No `asdict`,
-> no `breakdown['run_id']`, no `meta_final` re-parse. (See §3.2.)
+> **How X9 vanishes:** pricing's `settle_turn(ctx, steps)` (O14(d)) builds the
+> `TurnSettlement`; the runtime attaches it to `AgentResult.settlement` and
+> auto-emits `UsageReport`. **B1:** billing does NOT read `ctx.settlement` on
+> `on_turn_end` (that field no longer exists) — it subscribes via
+> `agent.on_usage_report(cb)`. Billing reads `s.turn_cost.total_cost`, `s.run_id`
+> — typed, once, same for streamed and awaited; cumulative totals come from the
+> `SettlementAggregator` / `AgentResult` (O14(d)). No `asdict`, no
+> `breakdown['run_id']`, no `meta_final` re-parse. (See §3.2.)
 
 ### 2.3 Compaction interface + `before_compact` / `after_compact` (contract §2)
 
@@ -422,13 +415,13 @@ provider-agnostic `Compactor` protocol; (c) make compaction emit through
 # agent_base/core/compaction_types.py  (NEW — provider-agnostic core types)
 
 @dataclass
-class CompactionConfig:                         # unchanged shape; now Serializable
-    SCHEMA_VERSION: ClassVar[int] = 1
+class CompactionConfig:                         # unchanged shape; follows the Serializable convention
+    # (O15(c)) no per-entity SCHEMA_VERSION ClassVar — _stamp() writes CORE_SCHEMA_VERSION.
     threshold_tokens: int | None = 160_000
     preserve_recent_tokens: int = 40_000
     summary_prompt: str | None = None
     model: str | None = None
-    def to_dict(self) -> dict[str, Any]: ...
+    def to_dict(self) -> dict[str, Any]: ...     # _stamp({...})
     @classmethod
     def from_dict(cls, data) -> "CompactionConfig": ...
 
@@ -436,7 +429,7 @@ class CompactionConfig:                         # unchanged shape; now Serializa
 @dataclass(frozen=True)
 class CompactionStats:
     """Typed result of one compaction pass (replaces last_compaction_meta dict)."""
-    trigger: Literal["auto", "manual"]
+    trigger: Literal["auto", "manual", "overflow"]   # (I10) "overflow" added
     applied: bool
     messages_compacted: int
     messages_preserved: int
@@ -463,7 +456,7 @@ class Compactor(Protocol):
         *,
         model: str,
         ctx: CompactionContext,            # §1.2 subclass — carries emit + run identity
-        trigger: Literal["auto", "manual"] = "auto",
+        trigger: Literal["auto", "manual", "overflow"] = "auto",   # (I10) "overflow" added
     ) -> tuple[list[Message], CompactionStats]: ...
 ```
 
@@ -476,33 +469,46 @@ The two hooks per the LOCKED catalog (§2), capability-scoped over `HookContext`
 class CompactionContext(HookContext):
     """Capability-scoped context for before_compact / after_compact.
 
-    before_compact: trigger set, stats=None — may inject + emit + VETO auto.
+    before_compact: trigger set, stats=None — may inject + emit + VETO auto/overflow.
     after_compact:  stats set — observe + emit only.
     Inherits run_id/agent_id/principal/emit/once from HookContext (§1.2).
     """
-    trigger: Literal["auto", "manual"] = "auto"
+    trigger: Literal["auto", "manual", "overflow"] = "auto"   # (I10) "overflow" added
     estimated_tokens: int = 0
     stats: CompactionStats | None = None     # populated only for after_compact
 
 
 # Hook signatures (async, return HookOutcome|None; §1.3 composition rules apply)
 async def before_compact(ctx: CompactionContext) -> HookOutcome | None:
-    """decision='block' VETOES an AUTO compaction (manual is not vetoable);
-    additional_context is injected into the summarizer prompt; events emitted."""
+    """decision='block' VETOES an AUTO or OVERFLOW compaction (manual is not vetoable).
+    (I10) On trigger='overflow', block ⇒ the overflow compaction is skipped and the turn
+    FAILS UPWARD with a typed error (ErrorCode.CONTEXT_OVERFLOW). On trigger='auto', block
+    just skips this auto pass. additional_context is injected into the summarizer prompt;
+    events emitted."""
 
 async def after_compact(ctx: CompactionContext) -> HookOutcome | None:
     """Observe ctx.stats + emit. update/decision ignored (post-fact)."""
 ```
 
+> **(I10) Overflow routes through `before_compact(trigger="overflow")`.** When a turn
+> overflows the context window, the runtime runs `before_compact` with `trigger="overflow"`;
+> **proceed** ⇒ compact + retry as today, **block** ⇒ the overflow compaction is vetoed and
+> the turn fails upward with a typed `CONTEXT_OVERFLOW` error. `_Recompact` stays internal
+> mechanics; the `trigger` value is the public seam.
+
 Runtime wiring (loop subsystem calls this; shown for the contract seam):
 
 ```python
-# inside the agent loop, where compaction is triggered
-if compactor.should_compact(ctx_msgs, est):
-    cc = CompactionContext(trigger="auto", estimated_tokens=est, **base_hook_ctx)
+# inside the agent loop, where compaction is triggered (auto threshold OR overflow recovery)
+if compactor.should_compact(ctx_msgs, est) or overflow_detected:
+    trigger = "overflow" if overflow_detected else "auto"
+    cc = CompactionContext(trigger=trigger, estimated_tokens=est, **base_hook_ctx)
     outcome = await run_hooks("before_compact", cc)            # §1.3 most-restrictive-wins
-    if outcome and outcome.decision == "block" and cc.trigger == "auto":
-        log.info("compaction_vetoed", reason=outcome.reason)   # auto veto honored
+    if outcome and outcome.decision == "block":               # auto OR overflow vetoable
+        log.info("compaction_vetoed", reason=outcome.reason, trigger=cc.trigger)
+        if cc.trigger == "overflow":
+            raise ContextOverflow(outcome.reason or "compaction vetoed on overflow")  # (I10) fail upward
+        # trigger == "auto": just skip this pass
     else:
         ctx_msgs, stats = await compactor.compact(ctx_msgs, model=model, ctx=cc, trigger=cc.trigger)
         await run_hooks("after_compact", replace(cc, stats=stats))
@@ -525,32 +531,36 @@ classifies once (surfacing logic that already exists privately in
 # agent_base/core/errors.py  (NEW — the SINGLE error taxonomy; streaming + providers import it, R8)
 
 class ErrorCode(str, Enum):
-    # R8 reconciled union member set (union of core + streaming + providers, deduped).
-    # streaming's PROVIDER_SERVER_ERROR -> PROVIDER_STATUS; providers' FATAL -> INTERNAL;
-    # providers' TRANSIENT is conveyed by AgentError.retriable=True, NOT a code.
+    # (O6) TRIMMED TO 8 MEMBERS. streaming's PROVIDER_SERVER_ERROR -> PROVIDER_STATUS;
+    # providers' FATAL -> INTERNAL; providers' TRANSIENT is conveyed by retriable=True, NOT a code.
     PROVIDER_OVERLOADED  = "provider_overloaded"    # 503-ish, retriable
     RATE_LIMITED         = "rate_limited"           # 429, retriable
     PROVIDER_TIMEOUT     = "provider_timeout"       # provider call timed out (often retriable)
-    PROVIDER_AUTH        = "provider_auth"          # provider credential/key rejected
-    PROVIDER_BAD_REQUEST = "provider_bad_request"   # provider 400 (malformed request to provider)
-    PROVIDER_STATUS      = "provider_status"        # other 4xx/5xx from provider
+    PROVIDER_STATUS      = "provider_status"        # ANY other 4xx/5xx from provider — see below
     CONTEXT_OVERFLOW     = "context_overflow"       # prompt too large post-compaction
-    CREDITS_EXHAUSTED    = "credits_exhausted"      # consumer-side billing exhaustion
     TOOL_FAILED          = "tool_failed"            # unhandled tool exception
     ABORTED              = "aborted"                # cooperative abort surfaced as terminal
-    AUTH                 = "auth"                   # principal/reply-auth failure (library-side)
-    VALIDATION           = "validation"             # malformed input / chain invariant
     INTERNAL             = "internal"               # uncategorized
+    # (O6) DROPPED — collapsed into PROVIDER_STATUS + AgentError.details / .native_code:
+    #   PROVIDER_BAD_REQUEST (provider 400), PROVIDER_AUTH (provider key rejected),
+    #   AUTH (library-side reply-auth), VALIDATION (malformed input / chain invariant)
+    #   → all surface as PROVIDER_STATUS (or INTERNAL for library-side) with the precise
+    #     status/kind carried in `details`/`native_code`.
+    # (O6) REMOVED entirely — CREDITS_EXHAUSTED is consumer-side; consumers express it via
+    #   `details` or a registered Custom meta body, not a library ErrorCode.
 
 
 @dataclass
 class AgentError(Exception):
     """Base for every error the runtime raises/serializes. Carries the typed
-    code, a retriable flag, and provider-opaque details (NOT the raw exception).
+    code, a retriable flag, the provider's native status/code, and provider-opaque
+    details (NOT the raw exception).
     """
     code: ErrorCode = ErrorCode.INTERNAL
     message: str = ""
     retriable: bool = False
+    native_code: str | None = None             # (O6) provider's raw status/error type (e.g. "400",
+                                               # "invalid_request_error") — the collapsed-member detail
     details: dict[str, Any] = field(default_factory=dict)
 
     # --- the two projections that kill D3 ---
@@ -561,7 +571,7 @@ class AgentError(Exception):
     def to_error_delta(self, *, agent_uuid: str) -> "ErrorDelta":   # contract §1.4
         return ErrorDelta(agent_uuid=agent_uuid, is_final=True, error_payload={
             "code": self.code.value, "message": self.message,
-            "retriable": self.retriable, "details": self.details,
+            "retriable": self.retriable, "native_code": self.native_code, "details": self.details,
         })
 
 
@@ -574,9 +584,16 @@ class RateLimited(AgentError):
     def __init__(self, message="The AI provider is rate-limiting requests.", **kw):
         super().__init__(code=ErrorCode.RATE_LIMITED, message=message, retriable=True, **kw)
 
-class ContextOverflow(AgentError): ...
+class ContextOverflow(AgentError):              # ErrorCode.CONTEXT_OVERFLOW (also raised by I10 overflow veto)
+    def __init__(self, message="The context window overflowed.", **kw):
+        super().__init__(code=ErrorCode.CONTEXT_OVERFLOW, message=message, **kw)
+
 class ToolFailed(AgentError): ...
-class CreditsExhausted(AgentError): ...     # ErrorCode.CREDITS_EXHAUSTED (consumer billing edge)
+# (O6) ProviderStatus carries the collapsed PROVIDER_BAD_REQUEST/PROVIDER_AUTH/etc.
+class ProviderStatus(AgentError):
+    def __init__(self, message="The AI provider returned an error.", *, native_code=None, **kw):
+        super().__init__(code=ErrorCode.PROVIDER_STATUS, message=message, native_code=native_code, **kw)
+# (O6) CreditsExhausted class REMOVED — consumer-side concern, not a library taxonomy member.
 
 
 # The classifier the loop owns (surfaces retry.py's existing private logic).
@@ -612,7 +629,8 @@ runtime; §1.1 replaces `extras['owner']`).
 
 @dataclass(frozen=True)
 class CommandAuditRecord:
-    SCHEMA_VERSION: ClassVar[int] = 2          # bump: principal added
+    # (O15(c)) no per-entity SCHEMA_VERSION ClassVar — _stamp() writes the single
+    # CORE_SCHEMA_VERSION; the principal/ts additions are _v-tolerant additive fields.
     seq: int
     kind: str                                  # "UserMessage"|"ToolReply"|"Abort"|"Steer"
     command_id: str
@@ -629,9 +647,11 @@ class CommandAuditRecord:
             "seq": self.seq, "kind": self.kind, "command_id": self.command_id,
             "client_seq": self.client_seq, "disposition": self.disposition,
             "detail": self.detail,
-            "principal": self.principal.to_dict() if self.principal else None,
+            # scope-only principal (B2 spirit — no claims on the wire):
+            "principal": {"tenant": self.principal.tenant, "subject": self.principal.subject}
+                         if self.principal else None,
             "ts": self.ts,
-        }, self.SCHEMA_VERSION)
+        })
 
 
 class InMemoryCommandAuditLog:
@@ -701,23 +721,28 @@ async def _deduct_credits_from_result(result, agent_uuid, member):
             cost_data=cost_data, usage_data=usage_data)
 ```
 
-**After** (typed `TurnSettlement` from a hook; identical for streamed + awaited):
+**After** (B1 — subscribe to the `UsageReport` channel; identical for streamed + awaited):
 ```python
-# Registered once on the agent — fires on EVERY turn boundary (contract §2 on_turn_end).
-async def on_turn_end(self, ctx: EndTurnContext) -> EndTurnOutcome | None:
-    s: TurnSettlement = ctx.settlement              # typed, once-per-turn (§2.2, R11)
+# (B1) on_turn_end does NOT carry settlement — cost-aware turn-end decisions are out of
+# scope for it. Billing subscribes to the once-per-turn UsageReport channel instead.
+# Registered once on the agent; the runtime auto-emits a UsageReport on EVERY turn boundary,
+# carrying the turn-level TurnSettlement (O14(d)) for in-process subscribers.
+async def deduct_on_usage(s: TurnSettlement) -> None:     # the on_usage_report callback payload
     if s.turn_cost.total_cost > 0:
         await credit_manager.deduct_credits(
-            org_id=s.principal.tenant, member_id=s.principal.subject,
+            org_id=s.principal.tenant, member_id=s.principal.subject,   # scope key (B2)
             agent_uuid=s.agent_uuid, run_id=s.run_id,     # typed field, not breakdown[...]
-            cost_data=s.turn_cost.to_dict(), usage_data=s.cumulative_usage.to_dict())
-    return None
+            cost_data=s.turn_cost.to_dict(),              # turn-level; cumulative via SettlementAggregator
+            usage_data=s.turn_usage.to_dict())
+
+agent.on_usage_report(deduct_on_usage)                    # Fork G subscription (contract §2 observer hook)
 ```
 The streamed-vs-awaited fork (re-parsing `meta_final` for cost) disappears: the
-hook fires regardless of execution mode, and `run_id`/`principal` are typed. The
-awaited caller reads the **same object** off `result.settlement` (`TurnSettlement`),
-and the runtime auto-emits it as a `UsageReport` MetaEnvelope (§3, R2) — one datum,
-three identical deliveries.
+callback fires regardless of execution mode, and `run_id`/`principal` are typed. The
+awaited caller can also read the **same object** off `result.settlement`
+(`TurnSettlement`) — one datum, identical deliveries via the `UsageReport` channel and
+`AgentResult.settlement`. Run-to-date totals (formerly `cumulative_*` on the settlement)
+come from the `SettlementAggregator` (O14(d)).
 
 ### 3.3 D3 — provider error classification (router.py:362-396) → vanishes
 
@@ -834,16 +859,16 @@ storage codec internally (R22); this doc mandates entity methods only for the
 **Consumes (contract shared types — verbatim):**
 - `SessionPrincipal` (§1.1, home **`agent_base/core/identity.py`** — R1) — stamped onto `TurnSettlement` and `CommandAuditRecord`; threaded by the **session/actor** subsystem (we never construct it).
 - `HookContext` / `HookOutcome` (§1.2/§1.3) — base of `CompactionContext`; composition + most-restrictive-wins enforced by the **hooks/loop** subsystem.
-- `MetaEnvelope` / `MetaBody`, specifically `UsageReport` + `ErrorReport` (§3, home **`agent_base/streaming/meta.py`** — R2) — produced as projections (`TurnSettlement.as_usage_report`, `AgentError.to_error_report`); stamped/emitted by the runtime via `ctx.emit`.
+- `MetaEnvelope` / `MetaBody`, specifically `UsageReport` + `ErrorReport` (§3, home **`agent_base/streaming/meta.py`** — R2) — produced as projections (`TurnSettlement.as_usage_report`, turn-level only per O14(d); `AgentError.to_error_report`); stamped/emitted by the runtime via `ctx.emit`.
 - `StreamDelta` / `ErrorDelta` (§1.4) — `AgentError.to_error_delta` produces an `ErrorDelta`; the **streaming** subsystem owns the wire encoding.
 - `ctx` / `ToolContext` (§1, shipped; extended by **tools** with `sandbox`/`principal`/`emit`/`media`/`await_external` — R3) — referenced for the idempotency/once seam parity.
 - `AgentInput` / `ToolReply` / `Ack` / `Disposition` (§1.5, shipped) — documented, kept verbatim.
-- `Message` / `Usage` / `ConversationLog` / `MediaMetadata` — already `Serializable`; `Conversation`/`AgentResult` delegate to their `to_dict()`. (`Usage` and the `conversation_log` entry schema are core-owned + `_v`-stamped — R27.)
-- `_Settler` (computation) from **pricing-cost** — builds the `TurnSettlement` instances core defines + serializes (R11: pricing computes, core owns the type).
+- `Message` / `Usage` / `ConversationLog` / `MediaMetadata` — follow the `Serializable` convention (O15(c)); `Conversation`/`AgentResult` delegate to their `to_dict()`. (`Usage` and the `conversation_log` entry schema are core-owned + `_v`-stamped — R27.)
+- `settle_turn(ctx, steps)` (computation; module function — O14(d), `_Settler` class gone) from **pricing-cost** — builds the `TurnSettlement` instances core defines + serializes (R11: pricing computes, core owns the type).
 
 **Produces (this subsystem owns, others consume):**
-- `Serializable` protocol + `CORE_SCHEMA_VERSION` + `SCHEMA_VERSION_KEY` (home **`agent_base/core/serializable.py`**) — the **storage** subsystem reads these (its column codec wraps `entity.to_dict()`); **pricing** collapses its `SERIALIZATION_VERSION` into `CORE_SCHEMA_VERSION` (R12); the **streaming** subsystem stamps the same `_v` on entity payloads inside wire envelopes (but `streaming.WIRE_PROTOCOL_VERSION` and `storage.LIBRARY_SCHEMA_VERSION` are *distinct* axes — R12).
-- `CostBreakdown` (+ `run_id` field) and **`TurnSettlement`** (type + serialization; home **`agent_base/core/cost.py`** — R11) — consumed by **loop** (`on_turn_end` ctx → `ctx.settlement`), **pricing** (which computes it via `_Settler` + owns `CostBreakdown.__add__`), and any billing consumer.
+- `Serializable` **convention** (O15(c) — not a runtime_checkable Protocol) + `CORE_SCHEMA_VERSION` + `SCHEMA_VERSION_KEY` (home **`agent_base/core/serializable.py`**) — the **storage** subsystem reads these (its column codec wraps `entity.to_dict()`); **pricing** collapses its `SERIALIZATION_VERSION` into `CORE_SCHEMA_VERSION` (R12); the **streaming** subsystem stamps the same `_v` on entity payloads inside wire envelopes (but `streaming.WIRE_PROTOCOL_VERSION` and `storage.LIBRARY_SCHEMA_VERSION` are *distinct* axes — R12).
+- `CostBreakdown` (+ `run_id` field) and **`TurnSettlement`** (type + serialization; home **`agent_base/core/cost.py`** — R11; turn-level only, O14(d)) — consumed by **loop** (auto-emits `UsageReport`; B1: NOT via `on_turn_end` `ctx.settlement`), **pricing** (which computes it via `settle_turn` + owns `CostBreakdown.__add__`), the **`SettlementAggregator`** (cumulative roll-up), and any billing consumer (via `agent.on_usage_report` / `AgentResult.settlement`).
 - the `conversation_log` **entry schema + version** (R27) — consumed by **storage/analytics** (`AnalyticsReader` tracks `CORE_SCHEMA_VERSION`; owns only the `stop_reason` taxonomy) and **streaming** (`RunCompleted.stop_reason` carries, does not own).
 - `CompactionConfig`, `CompactionStats`, `Compactor` protocol, `CompactionContext`, `before_compact`/`after_compact` signatures (Fork L = V1 auto-only veto) — consumed by **loop** (fires them) and **provider/anthropic** (`AnthropicCompactionController` implements `Compactor`).
 - `ErrorCode`, `AgentError` (+ subclasses), `classify_provider_error` (home **`agent_base/core/errors.py`**; the single taxonomy — R8) — consumed by **loop** (raises/classifies), **streaming** (`ErrorDelta.code` imports `ErrorCode`, terminal frame), **providers** (`ProviderErrorKind` maps 1:1 onto it), **tools** (`on_tool_error` may wrap `ToolFailed`).
@@ -851,36 +876,41 @@ storage codec internally (R22); this doc mandates entity methods only for the
 
 ---
 
-## 6. Migration note (today → new; back-compat one major version)
+## 6. Migration note (today → new; **breaking changes allowed — G0**)
 
-| Today | New | Back-compat shim (kept 1 major version) |
+> **G0 (breaking allowed).** Preview/unreleased — every "kept for one major version"
+> shim/alias/overload below is **deleted, not maintained**. Nova migrates in the same cut.
+> The "Migration" column states the one-time mechanical change.
+
+| Today | New | Migration (breaking — G0; Nova migrates in the same cut) |
 |---|---|---|
-| `storage.serialization.serialize_conversation(conv)` | `conv.to_dict()` | `serialize_conversation = lambda c: c.to_dict()`; `deserialize_conversation = lambda d: Conversation.from_dict(d)`. Adapters keep calling the old names. |
-| `dataclasses.asdict(result.cost)` in consumers | `result.cost.to_dict()` / `result.settlement` (the carried `TurnSettlement`) / `result.as_settlement(...)` | `CostBreakdown` is a plain dataclass, so `asdict()` still works; `to_dict()` adds `_v`+`currency` and is preferred. |
-| `cost_data["breakdown"]["run_id"]` | `cost.run_id` (typed field) | `to_dict()` continues mirroring `run_id` into `breakdown` for one version; `from_dict` reads either location. |
-| `Conversation`/`AgentResult`/`CostBreakdown` have **no** `to_dict` | all implement `Serializable` (`_v`-stamped) | readers tolerate `_v` absent (treated as version 0 via `schema_version_of`). |
-| `Settlement` (core's earlier name + `{agent_uuid, run_id, cost, usage, principal}` shape) | **`TurnSettlement`** at `core/cost.py` with the pricing superset (`parent_agent_id`, `turn_*`/`cumulative_*`, `model`, `step_count`) — R11 | `Settlement = TurnSettlement` alias kept one major version; the old `cost`/`usage` fields map to `turn_cost`/`cumulative_usage`. Pricing's `_Settler` is the producer; core owns the type. |
-| `result.settlement(agent_uuid=, run_id=)` method | `result.settlement` **attribute** (`TurnSettlement\|None`, set by the runtime) + `result.as_settlement(...)` builder fallback | the method-name→attribute change is the only call-site edit; `as_settlement()` returns the carried value if present. |
-| pricing `SERIALIZATION_VERSION=1` (separate counter) | `core.serializable.CORE_SCHEMA_VERSION` (one entity-wire version) — R12 | pricing re-exports `SERIALIZATION_VERSION = CORE_SCHEMA_VERSION` for one version. Storage `LIBRARY_SCHEMA_VERSION` (DDL) + `streaming.WIRE_PROTOCOL_VERSION` (bytes) stay distinct axes. |
-| `import ... from agent_base.core.meta` (MetaEnvelope/MetaBody/UsageReport/ErrorReport) | `from agent_base.streaming.meta import ...` — R2 | `core.meta` was never shipped as the home; streaming owns the union. No runtime shim needed (this doc is the spec). |
+| `storage.serialization.serialize_conversation(conv)` | `conv.to_dict()` | removed — breaking allowed. The free-function names are deleted; adapters call `conv.to_dict()` / `Conversation.from_dict(d)` directly. |
+| `dataclasses.asdict(result.cost)` in consumers | `result.cost.to_dict()` / `result.settlement` (the carried `TurnSettlement`) | removed — breaking allowed; consumers use `to_dict()` (adds `_v`+`currency`). `asdict()` is not a supported path. |
+| `cost_data["breakdown"]["run_id"]` | `cost.run_id` (typed field) | **removed — breaking allowed.** `run_id` is no longer mirrored into `breakdown` (O15(d) fix); it lives ONLY in the typed field. `from_dict` migrates a v0 run_id out of `breakdown`. |
+| `Conversation`/`AgentResult`/`CostBreakdown` have **no** `to_dict` | all follow the `Serializable` **convention** (O15(c) — not a Protocol), `_v`-stamped | readers tolerate `_v` absent (treated as version 0 via `schema_version_of`). |
+| `Settlement` (core's earlier name) | **`TurnSettlement`** at `core/cost.py`, turn-level fields only (`parent_agent_id`, `turn_*`, `model`, `step_count`; cumulative removed — O14(d)) | **removed — breaking allowed.** No `Settlement = TurnSettlement` alias; the `cumulative_*` fields are gone (served by `SettlementAggregator`/`AgentResult`). Pricing's `settle_turn(ctx, steps)` is the producer (no `_Settler` class). |
+| `result.settlement(agent_uuid=, run_id=)` method / `as_settlement(...)` builder | `result.settlement` **attribute** (`TurnSettlement\|None`, always set by the runtime) | **removed — breaking allowed (B6).** `AgentResult.as_settlement()` is deleted; the runtime always attaches `settlement`, so there is no builder fallback. |
+| pricing `SERIALIZATION_VERSION=1` (separate counter) | `core.serializable.CORE_SCHEMA_VERSION` (the single entity-wire version) — R12, O15(c) | removed — breaking allowed; pricing imports `CORE_SCHEMA_VERSION` directly (no `SERIALIZATION_VERSION` re-export). Storage `LIBRARY_SCHEMA_VERSION` (DDL) + `streaming.WIRE_PROTOCOL_VERSION` (bytes) stay distinct axes. |
+| per-entity `SCHEMA_VERSION` ClassVars (`Usage`/`Conversation`/`CostBreakdown`/`TurnSettlement`/…) | one library-wide `CORE_SCHEMA_VERSION` stamped by `_stamp()` — O15(c) | removed — breaking allowed. Entities drop their own version integers; `_stamp(d)` writes the single version. |
+| `import ... from agent_base.core.meta` (MetaEnvelope/MetaBody/UsageReport/ErrorReport) | `from agent_base.streaming.meta import ...` — R2 | `core.meta` was never shipped as the home; streaming owns the union. |
 | `conversation_log` entry layout owned ambiguously | **core** owns the entry schema + `CORE_SCHEMA_VERSION`; storage/analytics owns only `stop_reason` taxonomy — R27 | additive entry fields are `_v`-tolerant; `AnalyticsReader` reads via the versioned shape. |
-| `CompactionConfig` in `providers/anthropic/compaction.py` | moved to `core/compaction_types.py` | re-export from the old path: `from agent_base.core.compaction_types import CompactionConfig`. Serialized shape unchanged → stored configs load as-is. |
-| `CompactionController.compact(context, model, agent_uuid, queue=, stream_formatter=, reason=)` | `compact(context, *, model, ctx, trigger=)` returning `(messages, CompactionStats)` | keep a deprecated overload accepting `queue`/`stream_formatter`/`reason`; it wraps them into a synthetic `CompactionContext` whose `emit` pushes the old `MetaDelta("compaction_start"/"end")` onto the queue, and maps `reason→trigger` (`"threshold"→"auto"`, else `"manual"`). `last_compaction_meta` still populated from `CompactionStats` for one version. |
-| `_classify_agent_stream_error` lives in the consumer | `classify_provider_error` in `core/errors.py` | new API; the consumer deletes its copy and matches `ErrorCode`. Old `{"type":"error",...}` wire shape preserved by `ErrorDelta.to_dict()` (adds `code`, keeps `message`). |
-| `CommandAuditRecord` (no principal/ts) | + `principal` + `ts` (both default `None`/now) | `SCHEMA_VERSION` 1→2; `from_dict` tolerates missing `principal`/`ts`. Existing in-memory ring buffer unaffected (process-local). |
+| `CompactionConfig` in `providers/anthropic/compaction.py` | moved to `core/compaction_types.py` | removed — breaking allowed; consumers import from `agent_base.core.compaction_types`. Serialized shape unchanged → stored configs load as-is. |
+| `CompactionController.compact(context, model, agent_uuid, queue=, stream_formatter=, reason=)` | `compact(context, *, model, ctx, trigger=)` returning `(messages, CompactionStats)`; `trigger ∈ {auto,manual,overflow}` (I10) | **removed — breaking allowed.** No deprecated `queue`/`stream_formatter`/`reason` overload; emission is via `ctx.emit`. `last_compaction_meta` is replaced by `CompactionStats`. |
+| `_classify_agent_stream_error` lives in the consumer | `classify_provider_error` in `core/errors.py` (returns a typed `AgentError`; `ErrorCode` trimmed to 8 — O6) | removed — breaking allowed; the consumer deletes its copy and matches `ErrorCode`. Dropped codes collapse into `PROVIDER_STATUS` + `details`/`native_code`; `CREDITS_EXHAUSTED` is consumer-side. |
+| `CommandAuditRecord` (no principal/ts) | + `principal` (scope-only on the wire) + `ts` | additive, `_v`-tolerant via the single `CORE_SCHEMA_VERSION` (O15(c) — no per-entity version bump). `from_dict` tolerates missing `principal`/`ts`. |
 | `commands.py` / `ack.py` | **unchanged** | n/a — already the contract §1.5 vocabulary; this doc only documents them. |
 | `config.py` docstring "do NOT have to_dict()" | updated to point at S1 entity methods (wire-crossing set only; `AgentConfig` stays codec-owned — R22) | docstring-only. |
 
-**Sequencing** (aligns with RECONCILIATION §5): ship `Serializable` +
+**Sequencing** (aligns with RECONCILIATION §5): ship the `Serializable` convention +
 `CORE_SCHEMA_VERSION` + the entity `to_dict`s (`Conversation`/`AgentResult`/
 `CostBreakdown`/`Usage`) + `CostBreakdown.run_id` + the `TurnSettlement` **type**
-first (pure additive — resolves E10 immediately, no caller changes required), and
+first (resolves E10 immediately), and
 `core/errors.py::ErrorCode`/`AgentError`/`classify_provider_error` (resolves the
-D3 taxonomy with no caller changes). `TurnSettlement` **computation** (`_Settler`)
-+ `on_turn_end` `ctx.settlement` wiring land with the **pricing** + **loop**
-subsystems (they need the hook context + per-step usage). `CompactionContext` +
-`before_compact`/`after_compact` (Fork L V1 veto) land with the **hooks**
-subsystem. The audit `principal` lands with `submit()` once `SessionPrincipal`
-exists. The loop itself is lifted into **`AgentRuntime`** (`core/runtime.py`,
-Fork E) **last** — everything above is written against "the runtime," so this is
-a relocation, not a rewrite; `AnthropicAgent` remains a back-compat factory.
+D3 taxonomy). `TurnSettlement` **computation** (`settle_turn`, O14(d))
++ the `UsageReport` auto-emit / `agent.on_usage_report` billing wiring (B1) land with
+the **pricing** + **loop** subsystems (they need the hook context + per-step usage).
+`CompactionContext` + `before_compact`/`after_compact` (Fork L V1 veto + I10 overflow
+trigger) land with the **hooks** subsystem. The audit `principal` lands with `submit()`
+once `SessionPrincipal` exists. The loop itself is lifted into **`AgentRuntime`**
+(`core/runtime.py`, Fork E) **last** — everything above is written against "the runtime,"
+so this is a relocation, not a rewrite; `AnthropicAgent` remains a back-compat factory.

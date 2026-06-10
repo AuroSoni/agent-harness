@@ -12,14 +12,17 @@
 > - **R34 (DECIDED — single vocabulary home):** the identity + correlation
 >   field-name constants (`run_id`, `agent_id`, `parent_agent_id`, `seq`,
 >   `event_id`, `tenant`, `subject`) AND `SessionPrincipal` live in **one** module,
->   `agent_base/core/identity.py`. `LogField` no longer redeclares string
->   literals — it **imports** them from `core.identity`; the storage analytics
->   read-model columns and the `MetaEnvelope` header import the **same** constants.
->   One spelling, three consumers — not three redeclarations.
+>   `agent_base/core/identity.py`. Per **O5** the `LogField` accessor class is
+>   **DELETED** — logging **re-exports the `core.identity` constants directly** (no
+>   wrapper surface); the storage analytics read-model columns and the
+>   `MetaEnvelope` header import the **same** constants. One spelling, three
+>   consumers — not three redeclarations, and no `LogField.*` indirection.
 > - **R19 (CONFIRMED — who opens the scope):** the loop/session actor opens
->   `correlation_scope(...)` at run/turn entry, and the hook dispatcher wraps each
->   hook body in `bind_from_hook_context(ctx)`. This doc ships the binder + field
->   contract; the runtime/loop owns calling them.
+>   `correlation_scope(...)` at run/turn entry, and the hook dispatcher opens a
+>   `correlation_scope(...)` straight from the hook ctx. Per **O15(d)** the public
+>   `bind_from_hook_context` helper is **inlined at its single call site**
+>   (`_dispatch_hook`) — it is no longer a shipped helper. This doc ships the
+>   binder (`correlation_scope`) + field contract; the runtime/loop owns calling it.
 > - **Fork K (DECIDED — variant A):** **never log `SessionPrincipal.claims`** in
 >   v1 (token/email/PII risk). `principal_fields()` flattens only `tenant`/
 >   `subject`. (No `LogConfig.claims_allowlist` ships in v1.)
@@ -31,6 +34,8 @@
 >   `MetaBody` → `agent_base/streaming/meta.py`; the runtime class → `AgentRuntime`
 >   in `agent_base/core/runtime.py` (`AnthropicAgent` stays a back-compat factory,
 >   §6 Fork E / R29).
+>
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
 
 ---
 
@@ -70,18 +75,22 @@ field-name contract.** No renderer/config/processor changes needed.
 
 **R34 (DECIDED):** the field-name spellings are NOT defined here — they live in the
 single identity+correlation vocabulary home, `agent_base/core/identity.py`, and
-are *imported* by all three consumers: logging's `LogField`, storage's analytics
-(X8) read-model columns, and the `MetaEnvelope` (§3) header. There is exactly one
-source of truth, so logs, rows, and control-channel events join on identical keys.
-`LogField` is now a thin alias surface over those constants (back-compat for
-`LogField.*` call-sites), **not** a third redeclaration.
+are *imported* by all three consumers: logging, storage's analytics (X8) read-model
+columns, and the `MetaEnvelope` (§3) header. There is exactly one source of truth,
+so logs, rows, and control-channel events join on identical keys.
+
+**O5 (DECIDED): the `LogField` accessor class is DELETED.** Logging does not wrap
+the constants behind a `LogField.*` surface — it **re-exports the `core.identity`
+constants directly** (`RUN_ID`, `AGENT_ID`, …). Library code imports and uses the
+bare constants. One spelling, zero indirection.
 
 ```python
 # agent_base/core/identity.py  (the ONE home — owned by the tenancy subsystem; R1/R34)
 #   SessionPrincipal lives here too (§1.1). These constants are the single source of
 #   truth for identity + correlation key spellings, imported (never re-spelled) by
-#   logging (LogField), storage (X8 read-model columns), and streaming (MetaEnvelope
-#   header). Shown here for reference; this doc does not own/define them.
+#   logging (re-exported directly — O5: no LogField wrapper), storage (X8 read-model
+#   columns), and streaming (MetaEnvelope header). Shown here for reference; this doc
+#   does not own/define them.
 RUN_ID          = "run_id"
 AGENT_ID        = "agent_id"
 PARENT_AGENT_ID = "parent_agent_id"
@@ -97,18 +106,10 @@ from agent_base.core.identity import (        # §1.1 / R34 — the single vocab
     SessionPrincipal,
     RUN_ID, AGENT_ID, PARENT_AGENT_ID, SEQ, EVENT_ID, TENANT, SUBJECT,
 )
-
-# LogField is a back-compat ACCESSOR over the core.identity constants — it does NOT
-# re-spell them. Library code may use either `LogField.RUN_ID` or the imported
-# `RUN_ID`; both resolve to the same string storage indexes and MetaEnvelope stamps.
-class LogField:
-    RUN_ID          = RUN_ID
-    AGENT_ID        = AGENT_ID
-    PARENT_AGENT_ID = PARENT_AGENT_ID
-    SEQ             = SEQ             # MetaEnvelope.seq, when logging an emit
-    EVENT_ID        = EVENT_ID       # MetaEnvelope.event_id, when correlating
-    TENANT          = TENANT         # SessionPrincipal.tenant   (e.g. org id)
-    SUBJECT         = SUBJECT        # SessionPrincipal.subject  (e.g. member id)
+# O5: the `LogField` accessor class is DELETED. Logging RE-EXPORTS the constants
+# directly (so `from agent_base.logging import RUN_ID, AGENT_ID, …` works) — there
+# is no LogField.* wrapper. Library code uses the bare constants, which are the same
+# strings storage indexes on and the MetaEnvelope header stamps.
 
 
 def principal_fields(p: SessionPrincipal | None) -> dict[str, str]:
@@ -120,9 +121,9 @@ def principal_fields(p: SessionPrincipal | None) -> dict[str, str]:
         return {}
     out: dict[str, str] = {}
     if p.tenant is not None:
-        out[LogField.TENANT] = p.tenant
+        out[TENANT] = p.tenant          # O5: bare constant, no LogField.* indirection
     if p.subject is not None:
-        out[LogField.SUBJECT] = p.subject
+        out[SUBJECT] = p.subject
     return out
 ```
 
@@ -155,9 +156,9 @@ def correlation_scope(
         # prior context restored — a parent run's fields survive a child scope
     """
     fields: dict[str, Any] = {}
-    if run_id is not None:          fields[LogField.RUN_ID] = run_id
-    if agent_id is not None:        fields[LogField.AGENT_ID] = agent_id
-    if parent_agent_id is not None: fields[LogField.PARENT_AGENT_ID] = parent_agent_id
+    if run_id is not None:          fields[RUN_ID] = run_id            # O5: bare constants
+    if agent_id is not None:        fields[AGENT_ID] = agent_id
+    if parent_agent_id is not None: fields[PARENT_AGENT_ID] = parent_agent_id
     fields.update(principal_fields(principal))
     fields.update(extra)
 
@@ -168,18 +169,13 @@ def correlation_scope(
         yield
     finally:
         _set_context_snapshot(snapshot, token)    # restore exactly (token-based reset)
-
-
-def bind_from_hook_context(ctx: "HookContext") -> "AbstractContextManager[None]":
-    """Convenience: open a correlation_scope straight from a HookContext (§1.2).
-    The runtime uses this so EVERY hook body logs pre-correlated with zero args."""
-    return correlation_scope(
-        run_id=ctx.run_id,
-        agent_id=ctx.agent_id,
-        parent_agent_id=ctx.parent_agent_id,
-        principal=ctx.principal,
-    )
 ```
+
+> **O15(d): no `bind_from_hook_context` helper.** The former public convenience that
+> opened a `correlation_scope` from a `HookContext` is **removed** — it had exactly
+> one call site (the hook dispatcher). That site now calls `correlation_scope(...)`
+> **directly** off the hook ctx (see §2.4). `correlation_scope` is the only binder
+> this subsystem ships.
 
 ### 2.3 `get_logger` contract (formalize what already works; no behaviour change)
 
@@ -192,23 +188,35 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
       - Every line auto-includes whatever correlation_scope()/bind_context() has
         bound on the current contextvar (via the inject_context processor).
       - Library code MUST call get_logger(__name__); it MUST NOT print, and MUST
-        NOT re-spell correlation keys (use LogField.*).
+        NOT re-spell correlation keys (use the re-exported core.identity constants
+        RUN_ID/AGENT_ID/… directly — O5: no LogField.* wrapper).
     """
 ```
 
 ### 2.4 Where the runtime opens the scope (the actual auto-binding)
 
 **R19 (CONFIRMED):** the **loop/session actor** opens `correlation_scope(...)` at
-run/turn entry, and the **hook dispatcher** wraps each hook body in
-`bind_from_hook_context(ctx)`. After the provider boundary lift (§6 Fork E / R29),
-this code lives on `AgentRuntime` (`agent_base/core/runtime.py`) — the one
-provider-agnostic agent class; `AnthropicAgent` remains a back-compat factory.
-This subsystem ships the binder + field contract only; the runtime owns calling it.
+run/turn entry, and the **hook dispatcher** opens a `correlation_scope(...)` straight
+from the hook ctx. After the provider boundary lift (§6 Fork E / R29), this code
+lives on `AgentRuntime` (`agent_base/core/runtime.py`) — the one provider-agnostic
+agent class; `AnthropicAgent` remains a back-compat factory. This subsystem ships the
+binder (`correlation_scope`) + field contract only; the runtime owns calling it.
+
+**Task-isolation invariant (review item, O15d):** snapshot/restore alone does NOT
+guarantee concurrency safety — a `ContextVar` is inherited by tasks spawned *within*
+a scope, so two overlapping runs sharing one task would still see each other's
+fields. The runtime therefore **spawns each run/turn as its own `asyncio.Task`**, so
+the correlation `ContextVar` is **task-isolated**: each run/turn gets an independent
+contextvar lineage, and `correlation_scope`'s token-based restore operates within
+that isolated task. The scope's snapshot/restore handles *nesting* (a child scope
+inside a parent on the same task); per-task spawning handles *concurrency* (sibling
+runs). Both are required.
 
 ```python
 # Illustrative — lives in the loop/session subsystems (AgentRuntime), shown here
 # for the contract. At run/turn entry, wrap the body in one correlation_scope.
-async def _run_turn(self, ...):              # AgentRuntime._run_turn
+# Each run/turn already runs as its OWN asyncio.Task (task-isolated ContextVar).
+async def _run_turn(self, ...):              # AgentRuntime._run_turn (its own asyncio.Task)
     with correlation_scope(
         run_id=self.run_id,
         agent_id=self.agent_id,
@@ -217,9 +225,13 @@ async def _run_turn(self, ...):              # AgentRuntime._run_turn
     ):
         ...                                  # all loop + hook + tool logs stamped
 
-# Hook dispatch wraps each hook body so handler logs are correlated for free:
+# Hook dispatch opens the scope DIRECTLY off the hook ctx (O15d: no
+# bind_from_hook_context helper — it had this single call site, now inlined):
 async def _dispatch_hook(self, fn, ctx: HookContext):
-    with bind_from_hook_context(ctx):
+    with correlation_scope(
+        run_id=ctx.run_id, agent_id=ctx.agent_id,
+        parent_agent_id=ctx.parent_agent_id, principal=ctx.principal,
+    ):
         return await fn(ctx)
 ```
 
@@ -257,9 +269,10 @@ with correlation_scope(http_request_id=req_id):
 ```
 
 **X8 join (after):** because library logs emit `run_id`/`agent_id`/`tenant`/
-`subject` under `LogField.*` — the same names storage indexes — the dashboard
-can correlate a run's logs to its `agent_runs`/`cost` rows without the consumer
-re-deriving id spellings from source.
+`subject` under the **`core.identity` constants** (O5: re-exported directly, no
+`LogField`) — the same names storage indexes — the dashboard can correlate a run's
+logs to its `agent_runs`/`cost` rows without the consumer re-deriving id spellings
+from source.
 
 ---
 
@@ -283,22 +296,25 @@ is now **DECIDED (Fork K, variant A)**: never log `claims` in v1.
 - `SessionPrincipal` + the identity/correlation field-name constants — both from
   **`agent_base/core/identity.py`** (R1/R34). `SessionPrincipal` is flattened to
   `tenant`/`subject` log fields (the logging end of X1's "…and audit"
-  propagation); the field constants back `LogField` (no redeclaration).
+  propagation); logging **re-exports** the field constants directly (O5: no
+  `LogField` wrapper, no redeclaration).
 - `HookContext` (§1.2) — `run_id`, `agent_id`, `parent_agent_id`, `principal`
-  read by `bind_from_hook_context()`; the loop/hook dispatcher wraps every hook
-  body in a scope (R19).
+  read by the hook dispatcher, which opens a `correlation_scope(...)` directly off
+  the ctx (O15d: the `bind_from_hook_context` helper is inlined/removed) (R19).
 - `MetaEnvelope` (§3, **`agent_base/streaming/meta.py`**) — when the runtime logs
-  an `emit`, it may stamp `event_id`/`seq` via `LogField.EVENT_ID`/`SEQ` so a log
-  line ties to the exact control-channel event the frontend saw (optional — see
+  an `emit`, it may stamp `event_id`/`seq` via the `EVENT_ID`/`SEQ` constants so a
+  log line ties to the exact control-channel event the frontend saw (optional — see
   the `emit` logging note in §7.4).
 
 **Produces:**
-- `LogField` (accessor) + `correlation_scope()` + `bind_from_hook_context()` —
-  consumed by the **loop/session** subsystems (`AgentRuntime`, which opens the
-  scope at run/turn entry) and aligned-with by **storage** (X8 read-model uses the
-  same field names). No *new* vocabulary is exported: the field spellings
-  themselves originate in `core.identity`, so logging produces only the binder
-  helpers, not a competing source of truth.
+- The re-exported `core.identity` constants + `correlation_scope()` — consumed by
+  the **loop/session** subsystems (`AgentRuntime`, which opens the scope at run/turn
+  entry, and the hook dispatcher, which opens it per hook) and aligned-with by
+  **storage** (X8 read-model uses the same field names). No *new* vocabulary is
+  exported: the field spellings themselves originate in `core.identity`, so logging
+  produces only the binder helper + the principal flattener, not a competing source
+  of truth and **not** a `LogField` accessor (O5) or a `bind_from_hook_context`
+  helper (O15d).
 
 **Hard alignment requirement (RESOLVED by R34):** the field-name set MUST equal
 the column/key names the storage analytics read-model (X8) and `MetaEnvelope`
@@ -308,25 +324,29 @@ and rows can never drift out of join.
 
 ---
 
-## 6. Migration note
+## 6. Migration note (**breaking allowed per G0** — no "one major" shims)
 
-Today → new interface; back-compat kept for **one major version**.
+> **G0:** the library is preview/unreleased, so any "kept for one major version"
+> shim below is **removed**; Nova migrates in the same cut. (`bind_context` &
+> friends are a *retained existing* ad-hoc API, not a migration shim — kept by
+> design, not by compat.)
 
-| Today | New | Back-compat |
+| Today | New | Mechanism |
 |---|---|---|
-| `bind_context(**kw)` / `unbind_context` / `clear_context` | unchanged; still exported | **kept indefinitely** for ad-hoc keys |
+| `bind_context(**kw)` / `unbind_context` / `clear_context` | unchanged; still exported | **kept** (existing ad-hoc-key API, not a compat shim) |
 | (manual) consumer binds `run_id`/`org`/`member` per request | runtime opens `correlation_scope(...)` from `SessionPrincipal` + run ids; consumer binds nothing | old manual `bind_context` calls keep working (merge semantics unchanged) |
 | `clear_context()` in a `finally` (leaky) | `correlation_scope()` restores prior context on exit (token-based) | `clear_context` retained but **soft-deprecated** in docs in favor of the scope |
 | `get_logger(name)` | identical signature; contract documented | none needed |
-| ad-hoc key spellings (`organization_id`, `user_id`, …) | `LogField.TENANT`/`SUBJECT` etc. as the library canon | old keys still log; library code migrates to `LogField.*` |
-| `LogField` re-spelling string literals | `LogField` **imports** the constants from `core.identity` (R34); same `LogField.*` accessor surface | call-sites unchanged; the literals just stop being redeclared here |
+| ad-hoc key spellings (`organization_id`, `user_id`, …) | the re-exported `TENANT`/`SUBJECT` constants as the library canon | library code migrates to the bare constants (O5: no `LogField.*`) |
+| `LogField` accessor class (proposed) | **DELETED (O5)** — logging re-exports the `core.identity` constants directly | call-sites use `RUN_ID`/`AGENT_ID`/… directly; the wrapper is removed in the same cut (G0). |
+| `bind_from_hook_context(ctx)` helper (proposed) | **DELETED (O15d)** — inlined at its single call site (`_dispatch_hook` calls `correlation_scope(...)` directly) | the dispatcher opens the scope inline; no public helper ships. |
 
 Implementation deltas required in `agent_base/logging/`:
-1. **New** `correlation.py` (`LogField`, `principal_fields`, `correlation_scope`,
-   `bind_from_hook_context`). `LogField` and the helpers **import** the field-name
-   constants (`RUN_ID`, `AGENT_ID`, …) from `agent_base/core/identity.py` (R34) —
-   they are NOT redeclared here. Re-export `LogField`/`correlation_scope`/
-   `bind_from_hook_context` from `__init__`.
+1. **New** `correlation.py` (`principal_fields`, `correlation_scope`). It **re-exports**
+   the field-name constants (`RUN_ID`, `AGENT_ID`, …) from `agent_base/core/identity.py`
+   (R34/O5) — they are NOT redeclared here and there is **no `LogField` wrapper class**
+   (O5) and **no `bind_from_hook_context` helper** (O15d). Re-export the constants +
+   `correlation_scope` from `__init__`.
 2. **`context.py`**: add a tiny `_set_context_snapshot(d, token=None) -> Token`
    helper (wraps `ContextVar.set` / `.reset`) so the scope can restore exactly
    instead of `clear()`. Existing `bind_context`/`get_context` untouched.
@@ -360,20 +380,26 @@ is preserved with the binding outcome appended to each.
    read-model column names and `MetaEnvelope`'s header. Proposal: storage and
    logging both import these spellings from one place (e.g. `core.identity`),
    rather than each redeclaring. Needs the reconciler to pick the home module.
-   - **RESOLVED (R34):** the home is **`agent_base/core/identity.py`** (the
-     identity + correlation vocabulary module — `SessionPrincipal` lives there
-     too, R1). `LogField`, storage's X8 read-model columns, and the `MetaEnvelope`
-     header all **import** these constants; none redeclares them.
+   - **RESOLVED (R34; refined by O5):** the home is **`agent_base/core/identity.py`**
+     (the identity + correlation vocabulary module — `SessionPrincipal` lives there
+     too, R1). Logging (now **without** a `LogField` wrapper — O5 deletes it; the
+     constants are re-exported directly), storage's X8 read-model columns, and the
+     `MetaEnvelope` header all **import** these constants; none redeclares them.
 3. **Who opens the run-level scope.** I assume the loop/session actor wraps each
    run/turn in `correlation_scope(...)` and the hook dispatcher wraps each hook
    in `bind_from_hook_context(ctx)`. If hook dispatch lives elsewhere, that owner
    must call the binder — otherwise hook-body logs are uncorrelated.
-   - **RESOLVED (R19):** confirmed — the loop/session actor (`AgentRuntime`) opens
-     `correlation_scope(...)` at run/turn entry and the hook dispatcher wraps each
-     hook in `bind_from_hook_context(ctx)`. This doc ships the binder; the runtime
-     owns calling it.
+   - **RESOLVED (R19; refined by O15d):** confirmed — the loop/session actor
+     (`AgentRuntime`) opens `correlation_scope(...)` at run/turn entry and the hook
+     dispatcher opens a `correlation_scope(...)` **directly** off the hook ctx (O15d
+     inlines the former `bind_from_hook_context` helper at this single call site and
+     removes the public helper). Additionally, the runtime spawns each run/turn as
+     its **own `asyncio.Task`** so the correlation `ContextVar` is task-isolated —
+     snapshot/restore alone does not guarantee concurrency safety (O15d review item).
+     This doc ships the binder (`correlation_scope`); the runtime owns calling it.
 4. **`emit` logging.** Auto-stamping `event_id`/`seq` when `ctx.emit()` fires is a
    nice-to-have that couples logging to the MetaEnvelope subsystem's emit path;
    left optional so the supporting scope stays small.
    - **RESOLVED:** kept **optional** for v1 (not required). If added later it
-     stamps `LogField.EVENT_ID`/`SEQ` from the `MetaEnvelope` (`streaming.meta`).
+     stamps the `EVENT_ID`/`SEQ` constants (O5: re-exported from `core.identity`,
+     no `LogField`) from the `MetaEnvelope` (`streaming.meta`).

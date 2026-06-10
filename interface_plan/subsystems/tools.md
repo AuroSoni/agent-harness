@@ -7,11 +7,13 @@
 
 > **Reconciled against `interface_plan/RECONCILIATION.md`** (§7.7). Fork outcomes binding on this subsystem:
 > - **R2** — `MetaEnvelope`/`MetaBody` import from **`agent_base/streaming/meta.py`**, not `core.meta`.
-> - **R3** — this doc **owns** adding `sandbox`, `principal`, `emit`, `media`, and `await_external` to `ToolContext`; the loop populates them at call-time.
-> - **R10 / Fork J (DECIDED → A primary)** — ship `ToolResultEnvelope.from_blocks` (primary) + `from_text`/`from_image` builders **and** the stable mutation surface `with_text`/`append_text`/`with_blocks`. Variant B (`StructuredEnvelope`) stays a thin alias.
-> - **R16** — `image_block`/`ImageContent.from_bytes_capped` are **thin wrappers over media-backend's `fit_image_to_budget`** (no re-implemented Pillow); `emit_capped_bytes` delegates to `MediaBackend`/`BlobStore` when configured (Fork H = ship `BlobStore` at `agent_base/blob_store/`), else falls back to the sandbox.
-> - **R17** — `OutputBudget.max_chars` is **char-based** and a **different layer/unit** from the sub-agent `max_tool_result_tokens` (tokens) and the executor `max_output_chars` (print buffer); **no auto-derive** across layers.
+> - **R3** — this doc **owns** adding `sandbox`, `principal`, `emit`, and `media` to `ToolContext`; the loop populates them at call-time. **(Amended — I4):** the public relay primitive is `async def call_frontend_tool(self, name, input) -> list[ContentBlock]`; the old public `await_external(cid)` is dropped (runtime-internal only — runtime mints the cid).
+> - **R10 / Fork J (DECIDED → A primary)** — ship `ToolResultEnvelope.from_blocks` (primary) + `from_text` builder **and** the stable mutation surface `with_text`/`append_text`. **(Amended — O11(b)):** `with_blocks` / `from_image` are **deferred** (removed from the v1 surface); the v1 mutation surface is `with_text`/`append_text` + builders `from_blocks`/`from_text` + readers, all with **concrete default implementations on the ABC** (delegate through `for_context_window()` → rebuild) so custom subclasses inherit working mutation. **(Amended — O3):** the public `StructuredEnvelope` alias is **deleted** — `_StructuredEnvelope` is private only.
+> - **R16** — `image_block`/`ImageContent.from_bytes_capped` are **thin wrappers over media-backend's `fit_image_to_budget`** (no re-implemented Pillow); `emit_capped_bytes` delegates to `MediaBackend`/`BlobStore` when configured (Fork H = ship `BlobStore` at `agent_base/blob_store/`), else falls back to the sandbox. **(Amended — I5/O11(a)):** budgeting moves to `ctx` — `await ctx.emit_capped(text, *, max_chars=25_000)` / `ctx.emit_capped_bytes(...)`; `ConfigurableToolBase.emit_capped*` is deleted; the `OutputBudget` dataclass is deleted (plain kwargs over a library default constant).
+> - **R17 (Amended — O11(a), shrunk to one line):** three distinct char/token layers compose with **no auto-derive**: `ctx.emit_capped`'s `max_chars` (chars, this subsystem) ≠ the sub-agent `max_tool_result_tokens` (tokens) ≠ the executor `max_output_chars` (print buffer, chars).
 > - Canonical homes consumed: `SessionPrincipal` + identity/correlation field-name constants → `agent_base/core/identity.py`; meta union → `agent_base/streaming/meta.py`; `ErrorCode` → `agent_base/core/errors.py`; `TurnSettlement` → `agent_base/core/cost.py`; the runtime class → `agent_base/core/runtime.py` (`AgentRuntime`, the provider-agnostic loop that populates `ctx`; `AnthropicAgent` stays a back-compat factory — Fork E = P-A, sequenced last).
+
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
 
 ---
 
@@ -53,6 +55,8 @@ from agent_base.core.types import (                              # shipped
 
 The ABC stays for genuinely custom tools. The 90% case gets a **concrete, parameterized** envelope so no subclass is needed. `details`/`summary`/`context_blocks` cover the dual projection declaratively.
 
+> **Amended (O11(b)):** the v1 mutation surface is `with_text` / `append_text` (mutators) + `from_blocks` / `from_text` (builders) + readers, **all with concrete default implementations on the ABC** (they delegate through `for_context_window()` → rebuild, so a genuinely-custom subclass inherits working mutation without overriding anything). `with_blocks` and `from_image` are **deferred** — removed from the v1 surface (re-addable later, non-breaking). **(O3):** there is no public `StructuredEnvelope`; the concrete envelope is the private `_StructuredEnvelope`.
+
 ```python
 @dataclass
 class ToolResultEnvelope(ABC):
@@ -87,12 +91,12 @@ class ToolResultEnvelope(ABC):
         is_error: bool = False,
     ) -> "ToolResultEnvelope":
         """Build a fully-projected result from data — no subclass required.
-        PRIMARY builder (R10, Fork J DECIDED → A): from_text/from_image delegate here;
-        the with_*/append_* mutation surface (below) wraps the same _StructuredEnvelope.
+        PRIMARY builder (R10, Fork J DECIDED → A): from_text delegates here;
+        the with_text/append_text mutation surface (below) rebuilds via the same path.
 
-        Convenience builders:
+        Convenience builder:
           .from_text(summary, *, details=...)            # context_blocks=[TextContent(summary)]
-          .from_image(image_block, *, summary, details)  # uses image_block() from §2.5
+        (O11(b): from_image is deferred — removed from the v1 surface.)
         """
         return _StructuredEnvelope(
             tool_name=tool_name, tool_id=tool_id, is_error=is_error,
@@ -109,33 +113,40 @@ class ToolResultEnvelope(ABC):
                                log_summary=summary[:200], details=details,
                                tool_name=tool_name, tool_id=tool_id)
 
-    @classmethod
-    def from_image(cls, image_block: ImageContent, *, summary: str,
-                   details: dict | None = None, tool_name: str = "",
-                   tool_id: str = "") -> "ToolResultEnvelope":
-        """Single-image result. `image_block` is produced by §2.5 image_block()/
-        ImageContent.from_bytes_capped (size-capped via media's pipeline — R16)."""
-        return cls.from_blocks(context_blocks=[image_block], log_summary=summary,
-                               details=details, tool_name=tool_name, tool_id=tool_id)
-
-    # ─── Stable mutation surface (R10) — the `after_tool`/`on_tool_error` update= path ───
-    # These return a NEW envelope (or a mutated _StructuredEnvelope) so a hook can
-    # transform a result pre-splice without reaching into private fields. The override
-    # examples in hooks §3 and relay §3.3 depend on these existing on the public type.
+    # ─── Stable mutation surface (R10, O11(b)) — the `after_tool`/`on_tool_error` update= path ───
+    # CONCRETE default implementations on the ABC: each returns a NEW _StructuredEnvelope
+    # rebuilt from this envelope's own projections (via for_context_window() /
+    # for_conversation_log()). A genuinely-custom subclass inherits working mutation for
+    # free — no override needed. The hooks §3 / relay §3.3 override examples depend on
+    # these existing (and working) on the public type.
     def with_text(self, text: str) -> "ToolResultEnvelope":
-        """Replace the context-window projection with a single TextContent(text)."""
-        ...
+        """Replace the context-window projection with a single TextContent(text).
+        Default impl rebuilds from this envelope's log projection so subclasses inherit it."""
+        log = self.for_conversation_log()
+        return _StructuredEnvelope(
+            tool_name=self.tool_name, tool_id=self.tool_id, is_error=self.is_error,
+            duration_ms=self.duration_ms,
+            _context_blocks=[TextContent(text=text)],
+            _log_summary=log.summary, _log_blocks=log.content_blocks, _details=log.details,
+        )
+
     def append_text(self, text: str) -> "ToolResultEnvelope":
-        """Append a TextContent(text) to the context-window projection."""
-        ...
-    def with_blocks(self, blocks: list[ContentBlock]) -> "ToolResultEnvelope":
-        """Replace the context-window projection with `blocks`."""
-        ...
+        """Append a TextContent(text) to the context-window projection.
+        Default impl rebuilds by reading for_context_window() and appending."""
+        log = self.for_conversation_log()
+        return _StructuredEnvelope(
+            tool_name=self.tool_name, tool_id=self.tool_id, is_error=self.is_error,
+            duration_ms=self.duration_ms,
+            _context_blocks=[*self.for_context_window(), TextContent(text=text)],
+            _log_summary=log.summary, _log_blocks=log.content_blocks, _details=log.details,
+        )
+    # (O11(b): with_blocks deferred — removed from the v1 surface; re-addable later.)
 
 
 @dataclass
 class _StructuredEnvelope(ToolResultEnvelope):
-    """Concrete envelope produced by from_blocks/from_text/from_image."""
+    """Concrete envelope produced by from_blocks/from_text and the with_text/append_text
+    mutators. PRIVATE only (O3: no public StructuredEnvelope alias)."""
     _context_blocks: list[ContentBlock] = field(default_factory=list)
     _log_summary: str = ""
     _log_blocks: list[ContentBlock] | None = None
@@ -244,12 +255,43 @@ class ToolContext:
     sandbox: "Sandbox | None" = None                       # R3 — overflow persistence seam (emit_capped*)
     principal: "SessionPrincipal | None" = None            # R3 — tenant of the sandbox namespace writes land in
     media: "MediaBackend | None" = None                    # R3 — emit_capped_bytes delegates here when configured (R16)
-    emit: "Callable[[MetaBody], None]" = lambda _b: None    # R3 — sync, lossy-by-policy (loop owns the queue)
-    async def await_external(self, cid: str) -> "list[ContentBlock]":  # R3 — relay suspend/resume (relay-await owns the table)
+
+    # ─── emit (B8): explicit signature + LOUD unwired default ───
+    def emit(self, body: "MetaBody", *, correlation_id: str | None = None,
+             expects_reply: bool = False) -> None:
+        # B8: the unwired default RAISES (replaces the silent `lambda _b: None`).
+        # The runtime swaps in a wired emit at call-time; a full queue at runtime is
+        # governed by R21's lossy-queue policy, NOT by this unwired-context guard.
+        raise RuntimeError("ctx.emit not available in this execution context")
+
+    # ─── budgeting on ctx (I5/O11(a)) — replaces ConfigurableToolBase.emit_capped* ───
+    async def emit_capped(self, text: str, *, max_chars: int = 25_000) -> str:
+        """Persist FULL text via ctx.sandbox, return a possibly-truncated string with a
+        reference appended when truncated. Idempotent via ctx.once. The one canonical
+        replacement for Nova's save_tool_result + truncation_reference fork (F6).
+        `max_chars` is a plain kwarg over the library default constant — there is no
+        OutputBudget dataclass (O11(a))."""
+        ...
+
+    async def emit_capped_bytes(self, data: bytes, *, ext: str,
+                                max_bytes: int = DEFAULT_EMIT_MAX_BYTES) -> str:
+        """Bytes variant. When ctx.media/BlobStore is configured, persistence DELEGATES
+        to the content-addressed blob store (R16/Fork H); otherwise falls back to
+        ctx.sandbox. Returns a reference (BlobStore key or sandbox path)."""
+        ...
+
+    # ─── relay primitive (I4) — call a frontend tool and AWAIT its reply ───
+    async def call_frontend_tool(self, name: str, input: dict) -> "list[ContentBlock]":
+        """Invoke a frontend/relay tool and return its reply blocks to the tool body.
+
+        I4: the runtime MINTS the cid, emits AwaitInput with the right header, parks the
+        await, and returns the reply blocks here — it NEVER splices them. Abort cancels
+        this like any other parked await. The old public `await_external(cid)` is gone
+        (runtime-internal only); a tool body never sees or mints a cid."""
         ...
 ```
 
-These mirror the `HookContext` capabilities (contract §1.2) so a tool body and a hook see the same identity/sandbox/media/emit surface. `await_external` is the relay primitive (relay-await owns the `AwaitTable`; the runtime wires `ctx.await_external` to it). python-executors keeps `ctx` **optional** — it reads identity/idempotency only and never emits (R3).
+These mirror the `HookContext` capabilities (contract §1.2) so a tool body and a hook see the same identity/sandbox/media/emit surface. `call_frontend_tool` is the public relay primitive (I4): relay-await owns the `AwaitTable`; the runtime mints the cid, wires the parked await, and hands the reply back to the tool body — it never splices. python-executors keeps `ctx` **optional** — it reads identity/idempotency only and never emits (R3).
 
 ---
 
@@ -299,82 +341,42 @@ def _coerce_to_callables(item: "Toolish") -> list[Callable]:
 
 ---
 
-### 2.4 Library-default output budgeting + `after_tool` override (kills F6; contract §6)
+### 2.4 Library-default output budgeting via `ctx` + `after_tool` override (kills F6; contract §6)
 
-Budgeting is **on by default** on the tool-result path. A tool opts into the canonical helper instead of forking storage; the policy is overridable per-tool and globally via the `after_tool` hook.
+> **Amended (I5 / O11(a)):** budgeting lives on **`ctx`**, not on `ConfigurableToolBase`. The
+> `OutputBudget` dataclass is **deleted** — the cap is a plain `max_chars` kwarg over a library
+> default constant. `ConfigurableToolBase.emit_capped` / `emit_capped_bytes` are **deleted**; both
+> authoring styles (`@tool` functions and `ConfigurableToolBase` subclasses) call the identical
+> `ctx.emit_capped*` (defined in §2.2). The decorator/closure spelling no longer needs its own copy.
+
+Budgeting is **on by default** on the tool-result path. A tool opts into the canonical `ctx.emit_capped`
+helper (§2.2) instead of forking storage; the cap is overridable per-call (the `max_chars` kwarg) and
+globally via the `after_tool` hook.
+
+**R17 (one line — O11(a)):** three distinct char/token layers compose with **no auto-derive** —
+`ctx.emit_capped`'s `max_chars` (chars, this subsystem) ≠ the sub-agent `max_tool_result_tokens`
+(tokens) ≠ the executor `max_output_chars` (print buffer, chars; default 50_000).
 
 ```python
-@dataclass
-class OutputBudget:
-    """Library default for tool-output truncation-to-sandbox (contract §6).
+# Budgeting is reached through ctx — see §2.2 for ctx.emit_capped / ctx.emit_capped_bytes.
+# Library default constants (no OutputBudget dataclass — O11(a)):
+DEFAULT_EMIT_MAX_CHARS = 25_000      # chars (the ctx.emit_capped default kwarg)
+DEFAULT_EMIT_MAX_BYTES = 1_200_000   # bytes (the ctx.emit_capped_bytes default kwarg)
+TOOL_RESULTS_DIR = ".tool_results"   # sandbox zone for overflow persistence
 
-    R17 (DECIDED): `max_chars` is CHAR-BASED — it is a sandbox-offload reference cap,
-    NOT a token cap. It is a DIFFERENT LAYER AND UNIT from:
-      • the sub-agent `SubAgentSpec.max_tool_result_tokens` (a TOKEN budget, a
-        different subsystem/layer), and
-      • the executor's `max_output_chars` (the python-executor PRINT BUFFER, default
-        50_000, an upstream layer).
-    The three layers COMPOSE; `OutputBudget.max_chars` does NOT auto-derive from the
-    sub-agent token value (different units) — set them independently so consumers stop
-    double-truncating (the F6 root cause). Default 25_000 *chars* deliberately collides
-    numerically with the 25_000-*token* sub-agent default but means a different thing.
-    """
-    max_chars: int = 25_000                      # CHARS (not tokens; no auto-derive — R17)
-    results_dir: str = ".tool_results"
-    enabled: bool = True
-
-    def reference_line(self, path: str) -> str:
-        return f"\n[Truncated. Full result: {path} — use read_file to inspect]"
-
-
-class ConfigurableToolBase(ABC):
-    # default budget; a tool sets `budget = OutputBudget(max_chars=...)` or disables it.
-    budget: OutputBudget = OutputBudget()
-
-    async def emit_capped(self, text: str, *, ctx: ToolContext | None = None) -> str:
-        """Persist the FULL text to the sandbox, return a possibly-truncated string
-        with a reference appended when truncated. The one canonical replacement for
-        Nova's save_tool_result + truncation_reference fork (F6).
-
-        Idempotent via ctx.once when ctx is provided (re-runs reuse the same file).
-        """
-        if not self.budget.enabled or len(text) <= self.budget.max_chars:
-            return text
-        path = await self._persist_overflow(text, ext=".txt", ctx=ctx)
-        return text[: self.budget.max_chars] + self.budget.reference_line(path)
-
-    async def emit_capped_bytes(self, data: bytes, *, ext: str,
-                                ctx: ToolContext | None = None) -> str:
-        """Bytes variant (Nova's save_tool_result_bytes had no library equal — F6).
-        Returns a reference (BlobStore key or sandbox path); the tool decides how to
-        reference it.
-
-        R16 (DECIDED): when a MediaBackend/BlobStore is configured (reached via
-        ctx.media — added in §2.2), persistence DELEGATES to the content-addressed
-        blob store (Fork H = BlobStore at agent_base/blob_store/) so binary artifacts
-        are deduped + tenant-scoped; otherwise it FALLS BACK to the sandbox. The tool
-        never picks the backend — it just calls emit_capped_bytes.
-        """
-        media = getattr(ctx, "media", None) if ctx else None
-        if media is not None and getattr(media, "blob_store", None) is not None:
-            return await media.blob_store.put_bytes(data, ext=ext)   # content-addressed (R16/Fork H)
-        return await self._persist_overflow_bytes(data, ext=ext, ctx=ctx)  # sandbox fallback
-
-    async def _persist_overflow(self, text, *, ext, ctx) -> str:
-        name = self._name or type(self).__name__
-        async def _write() -> str:
-            uid = uuid.uuid4().hex[:12]
-            path = f"{self.budget.results_dir}/{name}/{uid}{ext}"
-            await self._sandbox.write_file(path, text)
-            return path
-        return await ctx.once(f"overflow:{name}", _write) if ctx else await _write()
+# Sketch of ctx.emit_capped's body (lives on ToolContext — §2.2):
+#   if len(text) <= max_chars: return text
+#   path = await ctx.once("overflow:<tool>", lambda: ctx.sandbox.write_file(...))
+#   return text[:max_chars] + f"\n[Truncated. Full result: {path} — use read_file to inspect]"
+# ctx.emit_capped_bytes delegates to ctx.media.blob_store.put_bytes(...) when configured (R16/Fork H),
+# else falls back to ctx.sandbox.
 ```
 
 **Runtime default + override seam** (contract §6 "after_tool overrides"). The agent loop already auto-wraps results into a `ToolResultEnvelope`; the library now also applies a default budget *before splice*, and a consumer overrides by registering an `after_tool` hook that returns `HookOutcome(update=<new ToolResultEnvelope>)`:
 
 ```python
 # Library default (pseudocode, in the tool-result path):
-envelope = registry.execute(...)                         # author may already have called emit_capped
+envelope = registry.execute(...)                         # author may already have called ctx.emit_capped
 envelope = default_budget_policy(envelope, sandbox)      # truncate-large-blocks-to-sandbox if author didn't
 outcome  = await run_hooks("after_tool", ToolResultContext(result=envelope, executor=..., ...))
 envelope = outcome.update or envelope                    # consumer override wins
@@ -398,7 +400,7 @@ def image_block(
     *,
     media_type: str | None = None,        # inferred from bytes if None
     filename: str | None = None,
-    budget: ImageBudget | None = None,    # media's type; defaults to media's provider budget (R16)
+    budget: ImageBudget | None = None,    # media's type; defaults to ImageBudget() = Anthropic defaults (R16; O15(b))
     crop_bbox: list[int] | None = None,
 ) -> tuple[ImageContent, str]:
     """bytes → size-capped ImageContent + a human metadata string.
@@ -501,17 +503,16 @@ Net: ~115 LOC of envelope subclass + the `get_tool()` ritual collapse to `run()`
 
 ```python
 class CodeExecutionTool(ConfigurableToolBase):
-    budget = OutputBudget(max_chars=20_000)        # was: instance.max_output_chars + manual truncate
-
     async def run(self, summary: str, code: str,
                   pypi_packages: list[str] | None = None,
                   ctx: ToolContext | None = None) -> str:
         full = self._execute(code, pypi_packages)
-        # one call replaces save_tool_result + _truncate_tail + truncation_reference + hint
-        return await self.emit_capped(full, ctx=ctx)
+        # one call replaces save_tool_result + _truncate_tail + truncation_reference + hint.
+        # Budgeting is on ctx now (I5/O11(a)); the per-call cap is a plain kwarg — no OutputBudget.
+        return await ctx.emit_capped(full, max_chars=20_000)
 ```
 
-`backend_tools/utils/tool_result_storage.py` (the fork) is **deleted**; `save_tool_result_bytes` → `self.emit_capped_bytes(...)`.
+`backend_tools/utils/tool_result_storage.py` (the fork) is **deleted**; `save_tool_result_bytes` → `ctx.emit_capped_bytes(...)`.
 
 ### After F5 — sub-agent tool set (compare to `subagents/researcher.py:31-69`, `explore_excel.py:18-40`)
 
@@ -531,10 +532,10 @@ research_spec = SubAgentSpec(
 
 ```python
 # Before: a whole ImageResultEnvelope subclass.
-# After:
+# After (O11(b): from_image is deferred → use from_blocks for the single-image shape):
 block = ImageContent.from_bytes_capped(png_bytes, media_type="image/png", filename="chart.png")
-return ToolResultEnvelope.from_image(block, summary="Rendered chart",
-                                     details={"kind": "chart"})
+return ToolResultEnvelope.from_blocks(context_blocks=[block], log_summary="Rendered chart",
+                                      details={"kind": "chart"})
 ```
 
 ### After (frontend tool + payload enrichment) — `present_plan` (compare B5/C2 `_persist_state` override)
@@ -554,19 +555,23 @@ async def enrich_present_plan(ctx: ToolCallContext) -> HookOutcome:
     return HookOutcome(update=ToolCall(name=ctx.tool_name, input=new_input))  # update=ToolCall (§2 table)
 ```
 
-The FE replies with `submit(ToolReply(cid, results))`; binary results are persisted + reference-rewritten by an `after_tool` hook using `emit_capped_bytes` / `image_block` (replaces `_persist_screenshot_relay_results`, B6/C3) — coordinated with media-backend for the canonical attachment codec.
+The FE replies with `submit(ToolReply(cid, results))`; binary results are persisted + reference-rewritten by an `after_tool` hook using `ctx.emit_capped_bytes` / `image_block` (replaces `_persist_screenshot_relay_results`, B6/C3) — coordinated with media-backend for the canonical attachment codec.
 
 ---
 
-## 4. BOTH variants — parameterized envelope spelling (LOCAL FORK → **DECIDED: A primary**)
+## 4. BOTH variants — parameterized envelope spelling (LOCAL FORK → **DECIDED: A only**)
 
-The contract (§7) flags this fork; F1's proposed fix names both. Same capability, two ergonomics. **DECIDED (Fork J, reconciler-recommended): ship Variant A (`from_blocks`) as the PRIMARY public builder, expose Variant B (`StructuredEnvelope`) as a thin alias** — A keeps one class and avoids a second public type; B reads better at call sites that build incrementally. Both variants are kept below for the consumer-ergonomics record; the chosen primary is A and is non-optional. If B is ever promoted, `from_blocks` returns a `StructuredEnvelope` and the `_StructuredEnvelope` mechanics are unchanged.
+> **Amended (O3):** the public `StructuredEnvelope` alias is **deleted**. Variant A is the only shipped
+> spelling; the concrete mechanics are the **private** `_StructuredEnvelope`. Variant B below is retained
+> purely as the rejected design record — it is **not** a public type.
+
+The contract (§7) flags this fork; F1's proposed fix names both. Same capability, two ergonomics. **DECIDED (Fork J, reconciler-recommended, then O3): ship Variant A (`from_blocks`) as the ONLY public builder; the concrete envelope is the private `_StructuredEnvelope`** — A keeps one public class and avoids a second public type. Variant B is kept below for the design record only; it is not exported. If B were ever promoted, `from_blocks` would return it and the `_StructuredEnvelope` mechanics would be unchanged.
 
 **Variant A — classmethod builder `ToolResultEnvelope.from_blocks(...)` [PRIMARY — DECIDED]** (shown in §2.1)
-- Pros: no new public class; discoverable on the type authors already import; `from_text`/`from_image` overloads cover the common shapes.
+- Pros: no new public class; discoverable on the type authors already import; `from_text` covers the common shape.
 - Cons: long kwarg list; "builder on the ABC" is slightly unusual.
 
-**Variant B — standalone `StructuredEnvelope` dataclass**
+**Variant B — standalone `StructuredEnvelope` dataclass [NOT shipped — O3; rejected, kept for the record]**
 
 ```python
 @dataclass
@@ -590,44 +595,50 @@ return StructuredEnvelope(context_blocks=[TextContent(text=body)], summary="Read
                           details={"file_path": p})
 ```
 - Pros: plain dataclass, mutable/incremental, obvious fields.
-- Cons: a second public type to teach; `from_blocks` would just construct it anyway.
+- Cons: a second public type to teach; `from_blocks` would just construct it anyway. **(O3: this is why it is not shipped.)**
 
-(Both back the same `_StructuredEnvelope` mechanics; `from_blocks` returns a `StructuredEnvelope` instance under the hood if Variant B is adopted.)
+(Both back the same `_StructuredEnvelope` mechanics; under O3 only the private `_StructuredEnvelope` exists — there is no public `StructuredEnvelope`.)
 
 ---
 
 ## 5. Cross-subsystem dependencies
 
 **Consumes (contract shared types):**
-- `ToolContext` (`ctx`) — injected into `run()`; drives `emit_capped` idempotency via `ctx.once`. **This subsystem owns the field additions (`sandbox`/`principal`/`media`/`emit`/`await_external`, R3); the runtime (`agent_base/core/runtime.py::AgentRuntime`) populates them at call-time.** Home: `agent_base/tools/context.py` (shipped, extended). (§1.5/§2.2/§8.2)
-- `ToolCallContext` / `ToolResultContext` / `ToolErrorContext` + `HookOutcome` — the `before_tool`/`after_tool`/`on_tool_error` seams that override budgeting (F6), enrich FE payloads (C2/B5), and transform/offload results (C3/B6). `ctx.executor` (this subsystem's `executor_for`) is read inside those contexts. The `after_tool`/`on_tool_error` `update=` payload is `ToolResultEnvelope` (R10), mutated via `with_text`/`append_text`/`with_blocks`. (§2/§2.1)
+- `ToolContext` (`ctx`) — injected into `run()`; drives `ctx.emit_capped` idempotency via `ctx.once`. **This subsystem owns the field additions (`sandbox`/`principal`/`media`/`emit` + the `emit_capped*`/`call_frontend_tool` methods, R3 + I4/I5/B8); the runtime (`agent_base/core/runtime.py::AgentRuntime`) populates them at call-time.** The old public `await_external` is dropped (I4: runtime-internal only). Home: `agent_base/tools/context.py` (shipped, extended). (§1.5/§2.2/§8.2)
+- `ToolCallContext` / `ToolResultContext` / `ToolErrorContext` + `HookOutcome` — the `before_tool`/`after_tool`/`on_tool_error` seams that override budgeting (F6), enrich FE payloads (C2/B5), and transform/offload results (C3/B6). `ctx.executor` (this subsystem's `executor_for`) is read inside those contexts. The `after_tool`/`on_tool_error` `update=` payload is `ToolResultEnvelope` (R10), mutated via `with_text`/`append_text` (O11(b): `with_blocks` deferred). (§2/§2.1)
 - `ToolReply` — the FE-reply primitive a frontend tool's lifecycle resumes on. (§1.5/§2.1)
-- `SessionPrincipal` (home `agent_base/core/identity.py`, R1) — reaches `ctx.principal` (R3) and the sandbox **namespace** the tool's `self._sandbox`/`ctx.sandbox` writes into (so `emit_capped` lands in the tenant's space). Threaded by the runtime, not hand-passed. (§1.1, §4)
+- `SessionPrincipal` (home `agent_base/core/identity.py`, R1) — reaches `ctx.principal` (R3) and the sandbox **namespace** the tool's `self._sandbox`/`ctx.sandbox` writes into (so `ctx.emit_capped` lands in the tenant's space). Threaded by the runtime, not hand-passed. (§1.1, §4)
 - `MetaEnvelope`/`MetaBody` (home `agent_base/streaming/meta.py`, R2) — `ctx.emit(MetaBody)` stamps a `MetaEnvelope`. The `image_block` budget type `ImageBudget` and the canonical pipeline are media-backend's (R16).
 - `ContentBlock`/`ImageContent`/`TextContent`/`ToolLogProjection` — produced by every envelope projection. (shipped core types)
 
 **Produces / owns:**
-- `ToolResultEnvelope` (+ `from_blocks`/`from_text`/`from_image` builders [Fork J A primary, R10] + the `with_text`/`append_text`/`with_blocks` mutation surface [R10], `_StructuredEnvelope`/`StructuredEnvelope`), `ConfigurableToolBase` (template `run()` + `as_tool()` + `emit_capped*` + `budget`), `ToolRegistry` (instance/bundle registration, `executor_for`), `ToolBundle` + `file_ops_bundle`/`code_exec_bundle`, `OutputBudget` (char-based, R17), the `ToolContext` field additions (R3), the thin `image_block`/`ImageContent.from_bytes_capped` wrappers (R16).
+- `ToolResultEnvelope` (+ `from_blocks`/`from_text` builders [Fork J A primary, R10] + the `with_text`/`append_text` mutation surface with concrete ABC defaults [R10/O11(b); `with_blocks`/`from_image` deferred], private `_StructuredEnvelope` only [O3 — no public `StructuredEnvelope`]), `ConfigurableToolBase` (template `run()` + `as_tool()`; `emit_capped*`/`budget` removed → moved to `ctx`, I5/O11(a)), `ToolRegistry` (instance/bundle registration, `executor_for`), `ToolBundle` + `file_ops_bundle`/`code_exec_bundle`, the `ToolContext` field/method additions (`sandbox`/`principal`/`media`/`emit` + `emit_capped*` + `call_frontend_tool`, R3/I4/I5/B8; `OutputBudget` dataclass deleted, O11(a)), the thin `image_block`/`ImageContent.from_bytes_capped` wrappers (R16).
 
 **Hard coordination points (RESOLVED in reconciliation):**
-- **media-backend (R16, DECIDED):** media owns the canonical image pipeline (`fit_image_to_budget`/`image_content_from_bytes`/`content_block_from_bytes` in `media_backend/projection.py`) + the content-addressed `BlobStore` (Fork H, at `agent_base/blob_store/`) + the wire-attachment↔`ContentBlock` codec. Our `image_block`/`ImageContent.from_bytes_capped` are **thin wrappers** over media's pipeline (no re-implemented Pillow); `emit_capped_bytes` **delegates to `MediaBackend`/`BlobStore` via `ctx.media` when configured**, else falls back to the sandbox. `ImageBudget` is media's type; tools imports it.
-- **hooks/loop:** must apply the default `OutputBudget` on the tool-result path *before* `after_tool` and let `HookOutcome.update` (a `ToolResultEnvelope`, R10) win (contract §6). This subsystem defines the budget; the loop subsystem invokes it at the documented chokepoint. The loop also populates the `ToolContext` additions (R3).
+- **media-backend (R16, DECIDED):** media owns the canonical image pipeline (`fit_image_to_budget`/`image_content_from_bytes`/`content_block_from_bytes` in `media_backend/projection.py`) + the content-addressed `BlobStore` (Fork H, at `agent_base/blob_store/`) + the wire-attachment↔`ContentBlock` codec. Our `image_block`/`ImageContent.from_bytes_capped` are **thin wrappers** over media's pipeline (no re-implemented Pillow); `ctx.emit_capped_bytes` **delegates to `MediaBackend`/`BlobStore` via `ctx.media` when configured**, else falls back to the sandbox. `ImageBudget` is media's type; tools imports it.
+- **hooks/loop:** must apply the default char budget on the tool-result path *before* `after_tool` and let `HookOutcome.update` (a `ToolResultEnvelope`, R10) win (contract §6). The cap is the library default constant behind `ctx.emit_capped` (I5/O11(a) — no `OutputBudget` dataclass); the loop subsystem invokes it at the documented chokepoint. The loop also populates the `ToolContext` additions (R3).
 - **sandbox:** `self._sandbox.resolve_agent_path/check_allowed/read_text/read_bytes/write_file` are the seams the examples assume (F7); same names exposed on `ctx.sandbox` (R3). Names match the sandbox subsystem doc.
-- **subagents:** `SubAgentSpec.tools` accepting the `Toolish` union (instances/bundles) is the F5 fix; the subagents doc coerces via the registry. The sub-agent `max_tool_result_tokens` is a **token** budget at a different layer from this subsystem's char-based `OutputBudget` (R17) — no auto-derive between them.
-- **python-executors:** the executor's `max_output_chars` print buffer is a **third, upstream** char layer distinct from `OutputBudget.max_chars` (R17); `ctx` is optional for executors (R3).
+- **subagents:** `SubAgentSpec.tools` accepting the `Toolish` union (instances/bundles) is the F5 fix; the subagents doc coerces via the registry. The sub-agent `max_tool_result_tokens` is a **token** budget at a different layer from this subsystem's char-based `ctx.emit_capped` cap (R17/O11(a)) — no auto-derive between them.
+- **python-executors:** the executor's `max_output_chars` print buffer is a **third, upstream** char layer distinct from the `ctx.emit_capped` `max_chars` (R17/O11(a)); `ctx` is optional for executors (R3).
 
 ---
 
-## 6. Migration note (back-compat, one major version)
+## 6. Migration note (G0 — breaking changes allowed; Nova migrates in the same cut)
 
-| Today | New | Back-compat |
+> **Amended (G0):** the library is preview/unreleased, so every "kept one major" shim below is
+> **removed**, not maintained. Rows describe the breaking cut; Nova migrates in the same cut. Rows that
+> merely describe still-true behavior (e.g. the `@tool(executor=...)` decorator path) are retained.
+
+| Today | New | Migration (breaking allowed) |
 |---|---|---|
-| Subclass `ToolResultEnvelope`, write `for_*` | `from_blocks`/`from_text`/`from_image` or `StructuredEnvelope` | ABC + existing subclasses untouched; both projections still abstract. |
-| `get_tool()` with `instance=self` closure + `_apply_schema` + `func.__tool_instance__=instance` | override `run()`; call `as_tool()` (or let the registry call it) | `get_tool()` kept as a shim that returns `as_tool()`. Subclasses that **still override `get_tool()`** keep working unchanged — `as_tool()` only fires when not overridden. `_apply_schema` retained (deprecated) and now also sets `__tool_instance__` so even hand-written `get_tool()`s stop silently breaking sandbox injection (the F2 root cause). |
-| `registry.register_tools([tool.get_tool() for tool in tools])` | `registry.register_tools([tool_instance, bundle, fn])` | `register_tools` accepts the old list of callables too (it's part of `Toolish`); mixed lists allowed during migration. |
-| Fork `tool_result_storage.save_tool_result` + `truncation_reference`; per-tool truncate | `self.emit_capped(text, ctx=ctx)` / `emit_capped_bytes` (delegates to `BlobStore` via `ctx.media` when configured — R16) | `agent_base.common_tools.utils.tool_result_storage` stays exported (deprecated) and re-implemented on top of `emit_capped`; consumer fork can delete. `save_tool_result_bytes` → `emit_capped_bytes`. |
-| ~140 LOC Pillow per tool (Nova + library `common_tools/read_file.py`) | `image_block(...)` / `ImageContent.from_bytes_capped(...)` — **thin wrappers over media's `fit_image_to_budget` (R16)** | New API; library's own `read_file.py` migrates to it (removes its duplicate, F4 verifier note). The Pillow pipeline lives once in `media_backend/projection.py`; tools imports `ImageBudget` from media. No break. |
-| Re-paste 6-tool stanza per sub-agent; `.get_tool()` on each | `file_ops_bundle(allowed_dirs=...)` + `SubAgentSpec.tools=[...instances/bundles...]` | `SubAgentSpec.tools` still accepts plain callables; bundles/instances are additive. The Nova `backend_tools/sub_agent_tool.py` re-export shim becomes a no-op import (already Nova-side). |
-| `@tool(executor="frontend")` on a closure | `executor = "frontend"` class attr on `ConfigurableToolBase` | `@tool` decorator + `__tool_executor__` reading unchanged; class attr is just a higher-level spelling that `as_tool()` writes onto the callable. |
+| Subclass `ToolResultEnvelope`, write `for_*` | `from_blocks`/`from_text` (O11(b): `from_image` deferred); concrete `with_text`/`append_text` inherited from the ABC | removed — breaking allowed; Nova migrates in the same cut. No public `StructuredEnvelope` (O3); custom subclasses still implement the two `for_*` projections and inherit the mutators for free. |
+| `get_tool()` with `instance=self` closure + `_apply_schema` + `func.__tool_instance__=instance` | override `run()`; call `as_tool()` (or let the registry call it) | removed — breaking allowed; Nova migrates in the same cut. `get_tool()` shim and the deprecated `_apply_schema` are deleted (G0); `as_tool()` auto-attaches `__tool_instance__` (the F2 fix). |
+| `registry.register_tools([tool.get_tool() for tool in tools])` | `registry.register_tools([tool_instance, bundle, fn])` | `register_tools` accepts the `Toolish` union (callable / instance / bundle); the old `.get_tool()`-per-item spelling is gone (G0). |
+| Fork `tool_result_storage.save_tool_result` + `truncation_reference`; per-tool truncate | `ctx.emit_capped(text, max_chars=...)` / `ctx.emit_capped_bytes(...)` (delegates to `BlobStore` via `ctx.media` when configured — R16) | removed — breaking allowed; Nova migrates in the same cut. `agent_base.common_tools.utils.tool_result_storage` is deleted (G0); budgeting is on `ctx` (I5/O11(a)), not `ConfigurableToolBase`. `save_tool_result_bytes` → `ctx.emit_capped_bytes`. |
+| `OutputBudget` dataclass + `ConfigurableToolBase.emit_capped*`/`budget` | `ctx.emit_capped(text, *, max_chars=25_000)` / `ctx.emit_capped_bytes(..., *, max_bytes=...)` over library default constants | removed — breaking allowed (I5/O11(a)); the dataclass and the base-class methods are deleted, the cap is a plain kwarg. Nova migrates in the same cut. |
+| `ctx.await_external(cid)` (public) | `ctx.call_frontend_tool(name, input) -> list[ContentBlock]` (I4) | removed — breaking allowed; `await_external` is runtime-internal only (the runtime mints the cid, parks the await, returns the reply; never splices). Nova migrates in the same cut. |
+| ~140 LOC Pillow per tool (Nova + library `common_tools/read_file.py`) | `image_block(...)` / `ImageContent.from_bytes_capped(...)` — **thin wrappers over media's `fit_image_to_budget` (R16)** | removed — breaking allowed; the library's own `read_file.py` duplicate is deleted (F4). The Pillow pipeline lives once in `media_backend/projection.py`; tools imports `ImageBudget` from media (`ImageBudget()` = Anthropic defaults, O15(b)). |
+| Re-paste 6-tool stanza per sub-agent; `.get_tool()` on each | `file_ops_bundle(allowed_dirs=...)` + `SubAgentSpec.tools=[...instances/bundles...]` | `SubAgentSpec.tools` accepts the `Toolish` union; the Nova `backend_tools/sub_agent_tool.py` re-export shim is deleted (G0). |
+| `@tool(executor="frontend")` on a closure | `executor = "frontend"` class attr on `ConfigurableToolBase` | still-true behavior: the `@tool` decorator + `__tool_executor__` reading are unchanged; the class attr is just a higher-level spelling `as_tool()` writes onto the callable. |
 
-**Deprecation window:** `get_tool()` override path, `_apply_schema`, and `tool_result_storage` helpers carry a `DeprecationWarning` and are removed no earlier than the next major. The `executor`/`needs_user_confirmation` class attrs and `as_tool()`/`from_blocks`/`from_text`/`from_image`/`with_text`/`append_text`/`with_blocks` (R10)/`emit_capped`/bundles ship in the same minor as the new `HookContext` family so tool hooks and tool authoring land together. The `ToolContext` field additions (`sandbox`/`principal`/`media`/`emit`/`await_external`, R3) land with the runtime (`AgentRuntime`) populating them; until P-A (Fork E) lands, the interim `AnthropicAgent`/`LiteLLMAgent` mixin populates the same fields, so tool code is identical either way.
+**Cut note (G0):** the `executor`/`needs_user_confirmation` class attrs and `as_tool()`/`from_blocks`/`from_text`/`with_text`/`append_text` (R10/O11(b))/bundles ship in the same minor as the new `HookContext` family so tool hooks and tool authoring land together. The `ToolContext` additions (`sandbox`/`principal`/`media`/`emit` + `emit_capped*` + `call_frontend_tool`, R3/I4/I5/B8 — `await_external` runtime-internal only) land with the runtime (`AgentRuntime`) populating them; until P-A (Fork E) lands, the interim `AnthropicAgent`/`LiteLLMAgent` mixin populates the same fields, so tool code is identical either way.

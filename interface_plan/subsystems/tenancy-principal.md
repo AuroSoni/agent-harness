@@ -7,18 +7,20 @@
 > - **R7 — relay reply-auth seam.** `AwaitTable.resolve_authorized` is **merged into** `AwaitTable.resolve(cid, results, *, principal=…)` — one method, not two. The auth check lives in the table; `ToolReply` stays **principal-free** (shipped shape kept); the claimant identity rides `SessionManager.submit(sid, ToolReply, principal=…)`.
 > - **R9 — principal-mismatch disposition (two layers).** A *session*-addressing mismatch at `SessionManager.submit` → **`NOT_FOUND`** (no existence leak). A *cid*-record mismatch at `AwaitTable.resolve` → **`REJECTED`** (valid reply target, refused for auth). Both legal, different granularity; the cid mismatch is **never** downgraded to `IGNORED_STALE`.
 > - **R34 — field-name constants.** The identity + correlation field-name constants (`tenant`, `subject`, `run_id`, `agent_id`, `parent_agent_id`, `seq`, `event_id`) also live in `core.identity`; logging (`LogField`), storage read-model columns, and the `MetaEnvelope` header import these spellings rather than redeclaring them.
-> - **Fork A (DECIDED) — A+B composition.** Both variants below are kept in full; the maintainer chose the reconciler-recommended **A+B composition**: ship **A** as the runtime identity surface (the `principal` input, relay-auth record, sandbox-namespace policy, audit stamp) **and** **B** as the storage projection (typed `owner_tenant`/`owner_subject` columns the library Postgres adapter reflects). §4 frames this composition as decided, not open.
+> - **Fork A (DECIDED, AMENDED O2) — both behaviors, ONE public seam.** Both behaviors ship, but there is exactly **one consumer-facing binding API: `adapter.for_principal(principal)`**. The runtime threads the ambient principal as runtime-threaded state that **binds** adapters via `for_principal`; the typed `owner_tenant`/`owner_subject` columns are what the **bound library adapter does internally** (its storage projection), not a second public mechanism. Per O2 the second wrapping mechanism is **DELETED**: `Scope`, `Scope.of()`, `StorageAdapter.set_scope()`, and `ScopedConfigAdapter.wrap` are removed from the public surface. Bound adapters read `principal.tenant`/`.subject` **by convention** and **ignore claims by not reading them**. §4 frames this as decided; Variant-A sections below are reworked to present the ambient principal as runtime-threaded state that binds via `for_principal`, not a wrapping decorator.
 >
 > Canonical homes this doc enforces wherever it references them: `SessionPrincipal` + identity/correlation field-name constants → `agent_base/core/identity.py`; `MetaEnvelope`/`MetaBody`/`AwaitInput`/`Rollback`/`UsageReport`/`ErrorReport` → `agent_base/streaming/meta.py`; `ErrorCode` → `agent_base/core/errors.py`; `TurnSettlement` → `agent_base/core/cost.py`; the runtime class → `agent_base/core/runtime.py` (`AgentRuntime`, the provider-agnostic loop; `AnthropicAgent` stays a back-compat factory per §6 Fork E).
 
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
+
 This subsystem owns **one question**: *who owns this session, and how does that identity reach the four places that need it — storage (scope), sandbox (namespace), relay/await (reply-auth), and audit — without the consumer hand-passing a `(tenant, subject)` tuple into every subsystem and re-stamping `extras["owner"]`?*
 
-Per contract §4 this is a **BOTH-VARIANTS fork**. Both are presented in full:
+Per contract §4 this is a **BOTH-VARIANTS fork**. Both behaviors are presented in full — but per **O2** they meet behind **ONE public seam**:
 
-- **Variant A — Runtime `SessionPrincipal`**: ambient identity set once at session construction, threaded by the runtime.
-- **Variant B — Typed owner fields on entities**: typed owner columns on `AgentConfig`/`Conversation` that adapters auto-filter.
+- **Variant A — Runtime `SessionPrincipal`**: ambient identity set once at session construction, threaded by the runtime as state that **binds** adapters via `adapter.for_principal(principal)`.
+- **Variant B — Typed owner fields on entities**: typed owner columns on `AgentConfig`/`Conversation` that the **bound** adapter auto-filters **internally** (not a separate public API).
 
-They are **not** mutually exclusive in implementation (B is a natural persistence projection of A). The contract asked for both as standalone designs so the maintainer could pick the primary seam; **that fork is now DECIDED** (RECONCILIATION §6 Fork A): the chosen outcome is the **A+B composition** — ship A as the runtime identity surface **and** B as the storage projection. Both variants are kept below as the two ends of one system; §4 states the (now decided) composition, not an open choice.
+They are **not** mutually exclusive in implementation (B is a natural persistence projection of A). The contract asked for both as standalone designs so the maintainer could pick the primary seam; **that fork is now DECIDED** (RECONCILIATION §6 Fork A, amended O2): the chosen outcome is **both behaviors with ONE public binding seam — `adapter.for_principal(principal)`**. The ambient principal is the *runtime-threaded state*; the owner columns are the *bound adapter's internal projection*. The earlier "second wrapping mechanism" (`Scope`/`set_scope`/`Scoped*Adapter.wrap`) is **deleted** (O2). Both behaviors are kept below as the two ends of one system; §4 states the (now decided) composition, not an open choice.
 
 ---
 
@@ -70,13 +72,16 @@ class SessionPrincipal:
     def is_anonymous(self) -> bool:
         return self.tenant is None and self.subject is None
 
-    def authorizes(self, other: "SessionPrincipal") -> bool:
-        """Default reply-auth predicate: a reply principal must match the
-        owning principal's (tenant, subject). Override via PrincipalPolicy
-        for role-based / delegated auth (Nova's policy is Nova's — §rejected #1)."""
-        return self.tenant == other.tenant and self.subject == other.subject
+    # NOTE (I1): `SessionPrincipal.authorizes()` is DELETED. Reply-auth is no longer a method
+    # on the principal — it lives in the injectable `PrincipalPolicy` protocol
+    # (`authorizes(owner, claimant) -> bool`) with `StrictScopePolicy` as the default (§2.2).
+    # The principal keeps ONLY the pure-data ergonomics: `scope_key` / `is_anonymous` / `to_dict`.
 
     def to_dict(self) -> dict[str, Any]:
+        # In-process / full-fidelity serialization keeps claims. NOTE (B2): for BILLING/USAGE
+        # serialization, claims NEVER cross the wire — only tenant/subject (the scope key) are
+        # emitted by `TurnSettlement.to_dict()` / the `UsageReport` body (consistent with Fork K).
+        # The in-process object (e.g. `TurnSettlement.principal`) retains the full principal.
         return {"tenant": self.tenant, "subject": self.subject, "claims": dict(self.claims)}
 
     @classmethod
@@ -88,35 +93,40 @@ class SessionPrincipal:
 
 > **Naming bridge.** The contract chose `tenant`/`subject` as the *generic* names. Nova's `organization_id`→`tenant`, `member_id`→`subject`. The library never hard-codes "organization"/"member"; consumers map at the edge (one place, see §3).
 
-### 2.1 Identity scope — `Scope` (what adapters actually filter on)
+#### `PrincipalPolicy` + `StrictScopePolicy` (the reply-auth SEAM — I1, homed here)
 
-The principal is the *identity*; the **filter** the adapters apply is a narrower, serializable `Scope`. Separating them means an adapter never depends on `claims` (which may be large / non-indexable) — it filters only on the two indexable columns.
+Per **I1**, reply-auth is a `Protocol` injected once, **not** a method on `SessionPrincipal`. Both live in this same identity module (`agent_base/core/identity.py`) because this doc owns identity. The policy is **ctor-injected on `SessionManager`** and **consulted by BOTH session-attach (`SessionManager.get_or_create`) AND `AwaitTable.resolve`** (those subsystems own the call sites; this doc owns the type + default).
 
 ```python
-# agent_base/storage/scope.py  (NEW)
-from dataclasses import dataclass
+# agent_base/core/identity.py  (continues) — the auth policy seam (I1).
+from typing import Protocol
 
-@dataclass(frozen=True)
-class Scope:
-    """The storage-isolation key derived from a SessionPrincipal.
+class PrincipalPolicy(Protocol):
+    """The reply/attach auth predicate. `StrictScopePolicy` is the default; consumers
+    inject role/delegation policies at SessionManager construction. The *mechanism*
+    (where the check is consulted) is the library's; the *policy* is consumer territory
+    (§rejected #1). Signature is keyword-or-positional `(owner, claimant)`."""
+    def authorizes(self, owner: "SessionPrincipal | None",
+                   claimant: "SessionPrincipal | None") -> bool: ...
 
-    None on a field means 'unscoped' (single-tenant / library default).
-    Adapters that receive a non-None scope MUST apply it to every read/write.
-    """
-    tenant: str | None = None
-    subject: str | None = None
-
-    @classmethod
-    def of(cls, principal: "SessionPrincipal | None") -> "Scope":
-        if principal is None:
-            return cls()
-        return cls(tenant=principal.tenant, subject=principal.subject)
-
-    def is_unscoped(self) -> bool:
-        return self.tenant is None and self.subject is None
+class StrictScopePolicy:
+    """Default policy (replaces the old `SessionPrincipal.authorizes` + `DefaultPrincipalPolicy`).
+    An unscoped/anonymous owner has no auth to enforce; otherwise the claimant must match the
+    owner's (tenant, subject) exactly."""
+    def authorizes(self, owner: "SessionPrincipal | None",
+                   claimant: "SessionPrincipal | None") -> bool:
+        if owner is None or owner.is_anonymous():
+            return True                      # unscoped session: nothing to enforce
+        if claimant is None:
+            return False
+        return owner.tenant == claimant.tenant and owner.subject == claimant.subject
 ```
 
----
+> **Wiring (I1).** `SessionManager.__init__` gains `principal_policy: PrincipalPolicy = StrictScopePolicy()`. The **session subsystem** owns that ctor and the `get_or_create` attach check; the **relay/await subsystem** owns `AwaitTable.resolve`. BOTH consult the **one injected policy** — there is exactly one auth predicate in the system, consulted at two call sites (§A.1 attach, §A.4 resolve). This doc only defines `PrincipalPolicy` + `StrictScopePolicy` and notes the two consumers.
+
+### 2.1 Storage isolation key — no separate `Scope` type (O2)
+
+> **`Scope` is DELETED (O2).** Earlier this section introduced a separate serializable `Scope` (`Scope.of(principal)`) as the "filter the adapters apply." That is gone: there is exactly **one public binding seam, `adapter.for_principal(principal)`**, and the adapter reads `principal.tenant`/`.subject` **by convention** to build its WHERE — it simply does not read `claims` (which may be large / non-indexable), so no narrowing wrapper type is needed. The isolation key *is* the principal's `(tenant, subject)` (`SessionPrincipal.scope_key`); the bound adapter projects it onto the owner columns internally. No `Scope`, no `Scope.of()`, no `set_scope()`, no `Scoped*Adapter.wrap`.
 
 ## VARIANT A — Runtime `SessionPrincipal` (ambient identity, threaded by the runtime)
 
@@ -141,12 +151,12 @@ class AnthropicAgent:   # ≡ AgentRuntime construction surface (Fork E, P-A)
     ):
         ...
         self._principal = principal or SessionPrincipal()   # never None internally
-        # Wrap adapters so EVERY call is auto-scoped (see A.2). Idempotent: a
-        # ScopedAdapter is not double-wrapped.
-        scope = Scope.of(self._principal)
-        self.config_adapter       = ScopedConfigAdapter.wrap(config_adapter or MemoryAgentConfigAdapter(), scope)
-        self.conversation_adapter = ScopedConversationAdapter.wrap(conversation_adapter or MemoryConversationAdapter(), scope)
-        self.run_adapter          = ScopedRunAdapter.wrap(run_adapter or MemoryAgentRunAdapter(), scope)
+        # BIND each adapter to the principal via the ONE public seam (O2): for_principal.
+        # No Scope object, no Scoped*Adapter wrapper — the bound adapter reads
+        # principal.tenant/.subject by convention and folds them into every WHERE itself.
+        self.config_adapter       = (config_adapter or MemoryAgentConfigAdapter()).for_principal(self._principal)
+        self.conversation_adapter = (conversation_adapter or MemoryConversationAdapter()).for_principal(self._principal)
+        self.run_adapter          = (run_adapter or MemoryAgentRunAdapter()).for_principal(self._principal)
         ...
 
     @property
@@ -170,7 +180,11 @@ class SessionManager:
             # NOT_FOUND, not an explicit "owned by another principal" error — no existence
             # leak about whether the session exists. (The cid-record auth check lives in the
             # await-table and returns REJECTED — §A.4 — a deliberately different disposition.)
-            if principal is not None and not entry.agent.principal.authorizes(principal):
+            # I1: consult the ONE ctor-injected policy (SessionPrincipal.authorizes is DELETED);
+            # the SAME self._principal_policy is also passed to AwaitTable.resolve (§A.4).
+            if principal is not None and not self._principal_policy.authorizes(
+                owner=entry.agent.principal, claimant=principal
+            ):
                 raise SessionNotFound(root_session_id)   # mapped to Disposition.NOT_FOUND / 404
             entry.last_active = self._now()
             return entry.agent
@@ -189,92 +203,45 @@ class SessionManager:
         return await agent.submit(command, principal=principal)
 ```
 
-### A.2 Storage scope — adapters auto-filter, consumer writes zero SQL
+### A.2 Storage isolation — `for_principal` binds the adapter, consumer writes zero SQL
 
-The runtime wraps each adapter in a `Scoped*Adapter` decorator. The decorator delegates to the inner adapter but tells it *which scope to enforce* via a small, public protocol the base adapters already understand. No consumer subclass, no copied SQL.
+> **ONE public seam (O2).** There is no `Scoped*Adapter` decorator and no `set_scope()`. The runtime **binds** each adapter to the ambient principal via the single public API `adapter.for_principal(principal)` (defined by the storage subsystem on the adapter ABC). The bound adapter reads `principal.tenant`/`.subject` **by convention** and folds them into every read/write itself — the same column-registry machinery the storage subsystem composes (the owner columns are reserved, indexed, `scope="filter"` columns). No consumer subclass, no copied SQL, no second wrapping mechanism.
 
 ```python
-# agent_base/storage/base.py  — ABCs gain a scope-aware contract (default no-op)
+# agent_base/storage/base.py  — the ONE binding seam (O2). NO set_scope / Scope type.
 class StorageAdapter(ABC, Generic[T]):
-    # NEW: the runtime calls this once after wrapping; default ignores it so
-    # single-tenant adapters and back-compat custom adapters keep working.
-    def set_scope(self, scope: "Scope") -> None:
-        self._scope = scope
-    @property
-    def scope(self) -> "Scope":
-        return getattr(self, "_scope", Scope())
-
-# The Postgres adapters implement scope by composing predicates centrally.
-# This is the SAME machinery the storage-extensibility subsystem proposes
-# (ColumnSpec / annotated model) — tenancy is just a reserved, indexed,
-# scope-flagged pair of columns. See §5 cross-deps (storage subsystem).
+    def for_principal(self, principal: "SessionPrincipal") -> "StorageAdapter[T]":
+        """Return a view of this adapter whose reads/writes are filtered to — and whose
+        writes stamp — `principal`'s (tenant, subject). Library impl returns a thin bound
+        wrapper (cheap); the bound adapter reads principal.tenant/.subject by convention and
+        IGNORES claims by not reading them. This is the SOLE consumer-facing binding API:
+        `Scope`, `Scope.of()`, `set_scope()`, and `Scoped*Adapter.wrap` are DELETED (O2)."""
+        ...
 ```
 
+The **library Postgres adapter** (not a consumer subclass) folds the bound principal into every statement once, centrally — fixing the inconsistency class (E2). This is exactly the storage subsystem's `_scoped_where` over the registry's `scope="filter"` columns (the owner columns); tenancy reuses it rather than defining a parallel `_where_scope`:
+
 ```python
-# agent_base/storage/scoped.py  (NEW) — runtime-side decorators
-class ScopedConfigAdapter(AgentConfigAdapter):
-    """Auto-applies a Scope to every read/write of an inner AgentConfigAdapter.
-
-    For the library Postgres adapter the inner adapter supports scope natively
-    (it composes WHERE/INSERT from a column registry). For an arbitrary custom
-    adapter that does NOT support scope, wrap() simply forwards set_scope() and
-    trusts the adapter — but the library default IS scope-capable so consumers
-    inherit isolation for free.
-    """
-    def __init__(self, inner: AgentConfigAdapter, scope: Scope):
-        self._inner = inner
-        self._scope = scope
-        inner.set_scope(scope)
-
-    @classmethod
-    def wrap(cls, inner: AgentConfigAdapter, scope: Scope) -> AgentConfigAdapter:
-        if isinstance(inner, ScopedConfigAdapter):       # idempotent
-            inner._scope = scope; inner._inner.set_scope(scope); return inner
-        if scope.is_unscoped():                          # nothing to enforce
-            return inner
-        return cls(inner, scope)
-
-    async def save(self, config: AgentConfig) -> None:
-        # The inner library adapter reads self.scope and folds it into INSERT
-        # values + the ON CONFLICT WHERE. The consumer never sees SQL.
-        return await self._inner.save(config)
-    async def load(self, agent_uuid: str) -> AgentConfig | None:
-        return await self._inner.load(agent_uuid)        # inner adds WHERE scope
-    async def delete(self, agent_uuid: str) -> bool:
-        return await self._inner.delete(agent_uuid)
-    async def update_title(self, agent_uuid: str, title: str) -> bool:
-        return await self._inner.update_title(agent_uuid, title)
-    async def list_sessions(self, limit=50, offset=0) -> tuple[list[dict], int]:
-        return await self._inner.list_sessions(limit, offset)
-    # NEW public affordance (kills E5/E8's hand-rolled ownership query):
-    async def is_owned(self, agent_uuid: str) -> bool:
-        return (await self._inner.load(agent_uuid)) is not None
-
-# ScopedConversationAdapter / ScopedRunAdapter: identical pattern.
+# agent_base/storage/pg/base_adapter.py — illustrative; the real impl is the storage
+# subsystem's ColumnRegistry + _scoped_where (§5 cross-dep). The owner columns are
+# declared in A1 via principal_columns(); tenant/subject are reserved, indexed, scope="filter".
+class PgConfigAdapterBase(AgentConfigAdapter):
+    def for_principal(self, principal: SessionPrincipal) -> "PgConfigAdapterBase":
+        bound = self._clone(); bound._principal = principal; return bound
+    # _scoped_where({...}) folds in every scope="filter" column (tenant/subject) from
+    # self._principal — load()/delete()/update_title()/list_sessions()/load_by_run_id()/save()
+    # ALL go through it. ONE chokepoint, so no predicate is ever forgotten (E2 leak class gone).
+    # is_owned() is the shared-base SELECT-1 ownership probe (O16(a)) — see §A.2.1 below.
 ```
 
-The **library Postgres adapter** (not a consumer subclass) gains scope support once, centrally — fixing the inconsistency class (E2):
+#### A.2.1 Ownership probe — `is_owned` is ONE shared-base SELECT-1 (O16(a))
+
+> **The `ScopedConfigAdapter.is_owned` duplicate is DELETED and MERGED into the shared base (O16(a)).** Previously this doc carried its own `is_owned` on the (now-deleted) `Scoped*Adapter`. Per O16(a) `is_owned(id, principal)` is **ONE concrete SELECT-1 probe on the shared adapter base**, inherited by config/conversation/run adapters (the storage subsystem §2.4 owns the concrete implementation). With `Scope`/`Scoped*Adapter` deleted, present it as **the bound-adapter ownership probe** — it runs against the adapter already bound via `for_principal`:
 
 ```python
-# agent_base/storage/adapters/postgres.py — illustrative; the real impl reuses
-# the column-registry from the storage-extensibility subsystem (§5).
-SCOPE_COLUMNS = [
-    ScopeColumn("tenant",  sql_type="text", get=lambda s: s.tenant),
-    ScopeColumn("subject", sql_type="text", get=lambda s: s.subject),
-]
-class PostgresAgentConfigAdapter(AgentConfigAdapter):
-    def _where_scope(self, start_index: int) -> tuple[str, list]:
-        if self.scope.is_unscoped():
-            return "", []
-        preds, args = [], []
-        for i, col in enumerate(SCOPE_COLUMNS):
-            val = col.get(self.scope)
-            if val is not None:                          # subject-less tenants OK
-                args.append(val); preds.append(f"{col.name} = ${start_index + len(args)}")
-        return (" AND " + " AND ".join(preds)) if preds else "", args
-    # save(): append SCOPE_COLUMNS to the INSERT column list + values.
-    # load()/delete()/update_title()/list_sessions()/load_by_run_id()/… ALL append
-    # _where_scope() — ONE chokepoint, so no predicate is ever forgotten.
+# Inherited from the shared Pg base (storage §2.4 owns the impl). Bound-adapter probe:
+owned = await config_adapter.is_owned(agent_uuid)   # principal already bound via for_principal
+# SELECT 1 ... WHERE {scoped_where(id)}  — no entity load, no duplicate per-adapter copy.
 ```
 
 ### A.3 Sandbox namespace — principal becomes the path/namespace policy
@@ -370,7 +337,7 @@ class AwaitTable:
             record = self._records.get(cid)
             if record is None:
                 return Disposition.IGNORED_STALE     # no live target → stale, not an auth failure
-            pol = policy or DefaultPrincipalPolicy()
+            pol = policy or StrictScopePolicy()      # I1: the ONE injected policy (default StrictScopePolicy)
             if not pol.authorizes(owner=record.principal, claimant=principal):
                 return Disposition.REJECTED          # cross-tenant / wrong subject (R9: cid layer)
             # ... existing generation check / dedupe / future-set proceed here, unchanged ...
@@ -400,22 +367,7 @@ async def await_external(self, cid, tool_use_ids, classification, queue, fmt,
     ...   # rest unchanged
 ```
 
-```python
-# agent_base/core/principal_policy.py  (NEW) — the auth SEAM (default = identity match).
-# This is the `policy=` AwaitTable.resolve() consults (RECONCILIATION R7): the *mechanism*
-# (the check lives in resolve) is the library's; the *policy* is injectable consumer territory.
-class PrincipalPolicy(Protocol):
-    def authorizes(self, *, owner: SessionPrincipal | None,
-                   claimant: SessionPrincipal | None) -> bool: ...
-class DefaultPrincipalPolicy:
-    def authorizes(self, *, owner, claimant) -> bool:
-        if owner is None or owner.is_anonymous():
-            return True                      # unscoped session: no auth to enforce
-        return claimant is not None and owner.authorizes(claimant)
-# Consumers inject their own policy (role/delegation) at SessionManager construction; the
-# SessionManager threads it into the runtime so resolve(cid, results, principal=…, policy=…)
-# uses it. The *policy* is consumer territory (§rejected #1), the *mechanism* is the library's.
-```
+> **The policy seam is `PrincipalPolicy` + `StrictScopePolicy`, homed at `agent_base/core/identity.py` (I1) — defined once in §2.0.** It is **not** a separate `agent_base/core/principal_policy.py` module, and the old `DefaultPrincipalPolicy` name is **gone** (renamed `StrictScopePolicy`; `SessionPrincipal.authorizes` is deleted so the default no longer delegates to it). The policy is **ctor-injected on `SessionManager`** (`principal_policy: PrincipalPolicy = StrictScopePolicy()`) and consulted by **BOTH** call sites with the same instance: the §A.1 session-attach check and the §A.4 `AwaitTable.resolve` above. The `policy=` kwarg on `resolve` is how the session subsystem threads that one injected instance into the table; the *mechanism* (the check lives in `resolve`) is the library's, the *policy* is injectable consumer territory (§rejected #1).
 
 ### A.5 Sub-agent inheritance — children inherit the parent's principal automatically
 
@@ -424,7 +376,7 @@ class DefaultPrincipalPolicy:
 # and the spawned child copies it (so a deep tree shares ONE identity).
 set_parent_context(SubAgentParentContext(
     parent_agent_uuid=self.agent_uuid,
-    config_adapter=self.config_adapter,          # already scoped
+    config_adapter=self.config_adapter,          # already bound to principal (for_principal)
     conversation_adapter=self.conversation_adapter,
     run_adapter=self.run_adapter,
     media_backend=self.media_backend,
@@ -557,12 +509,29 @@ class AnthropicAgent:
 
     async def initialize(self):
         ...
+        # I12(d): back-fill B→A on cold-load. If the persisted row already carries owner
+        # columns but NO ambient principal was supplied, ADOPT the row's principal (so a
+        # direct cold-load resume can never silently run unscoped). RAISE on conflict.
+        persisted = self.agent_config.principal      # SessionPrincipal(owner_tenant, owner_subject)
+        if self._principal.is_anonymous() and not persisted.is_anonymous():
+            self._principal = persisted              # adopt — cold-load never silently unscopes
+            self._rebind_adapters(self._principal)   # re-bind adapters to the adopted principal
+        elif (not self._principal.is_anonymous() and not persisted.is_anonymous()
+              and self._principal.scope_key != persisted.scope_key):
+            raise PrincipalConflict(                  # supplied principal ≠ persisted owner
+                f"supplied principal {self._principal.scope_key} conflicts with persisted "
+                f"owner {persisted.scope_key}"
+            )
+        # Forward (A→B): stamp the (possibly adopted) principal onto the owner columns so a
+        # freshly-created row persists ownership.
         self.agent_config.owner_tenant  = self._principal.tenant
         self.agent_config.owner_subject = self._principal.subject
         ...
 ```
 
-> **Net:** Variant A and Variant B share the *input* (`SessionPrincipal`), the *sandbox policy*, the *relay-auth record*, and the *audit stamp*. They differ only in **how storage isolation is expressed** — A wraps adapters with an ambient `Scope`; B reflects typed owner columns the adapter filters on. See §4 for the recommended composition.
+> **I12(d) — cold-load can never silently unscope.** `initialize()` is bidirectional: it stamps the ambient principal onto the owner columns (A→B, for fresh rows) **and** back-fills the ambient principal from the persisted owner columns when none was supplied (B→A, for direct cold-load resume). A supplied-vs-persisted **mismatch raises** `PrincipalConflict` — the load never adopts a different tenant's row and never proceeds unscoped against an owned row.
+
+> **Net:** Variant A and Variant B share the *input* (`SessionPrincipal`), the *sandbox policy*, the *relay-auth record*, and the *audit stamp*, **and the one public binding seam `for_principal` (O2)**. They differ only in **where storage isolation is sourced** — the ambient principal bound via `for_principal` (A behavior) vs the typed owner columns the bound adapter projects/filters (B behavior). Both are internals of the one bound adapter. See §4 for the decided composition.
 
 ---
 
@@ -586,7 +555,7 @@ await config_adapter.save(agent.agent_config)                 # extra save just 
 return agent
 ```
 
-**After — Variant A** (principal set once; adapters auto-scope; SessionManager owns lifecycle, no per-request rebuild — X7):
+**After — Variant A** (principal set once; the runtime binds each adapter via `for_principal`; SessionManager owns lifecycle, no per-request rebuild — X7):
 
 ```python
 # Edge mapping: the ONLY place "organization"/"member" → SessionPrincipal.
@@ -647,12 +616,12 @@ class NovaAgentConfigAdapter(AgentConfigAdapter):
     # ...load_by_run_id (org-only!), list_sessions, delete, update_title — all copied
 ```
 
-**After — Variant A** (no Nova adapter at all; the library Postgres adapter is scoped by the runtime):
+**After — Variant A** (no Nova adapter at all; the runtime binds the library Postgres adapter via `for_principal`):
 
 ```python
 # storage/adapters.py — DELETED in its entirety. The whole file is gone.
-# Wiring is just: PostgresAgentConfigAdapter(pool=db.pool); the runtime wraps it
-# with the session's Scope, which the adapter folds into every statement.
+# Wiring is just: PostgresAgentConfigAdapter(pool=db.pool); the runtime binds it via
+# for_principal(principal), and the bound adapter folds tenant/subject into every statement.
 ```
 
 **After — Variant B** (no Nova adapter; the library adapter reflects the typed owner columns):
@@ -715,27 +684,27 @@ if ack.disposition is Disposition.REJECTED:
 
 ---
 
-## 4. BOTH variants — the decided composition (A+B)
+## 4. Both behaviors — ONE public seam (decided composition, amended O2)
 
-> **DECIDED (RECONCILIATION §6 Fork A).** The maintainer fork landed on the reconciler-recommended **A+B composition**. Both variants remain documented in full above because the chosen design *is* both of them, wired as the two ends of one system — A is the behavioral identity surface, B is its storage projection. This section is no longer an open "which seam?" choice; it records the decided composition and keeps the comparison table as the rationale.
+> **DECIDED (RECONCILIATION §6 Fork A, AMENDED O2).** The chosen design is **both behaviors behind ONE public binding seam: `adapter.for_principal(principal)`**. The ambient principal is **runtime-threaded state that binds adapters via `for_principal`**; the typed `owner_*` columns are what the **bound library adapter does internally** (its storage projection). There is no second wrapping mechanism — `Scope`/`Scope.of()`/`set_scope()`/`Scoped*Adapter.wrap` are **deleted** (O2). The table below keeps the two *behaviors* as the rationale, not two public APIs.
 
-| Axis | Variant A (ambient `SessionPrincipal`) | Variant B (typed owner columns) |
+| Axis | Ambient-principal behavior (A) | Owner-column behavior (B) |
 |---|---|---|
-| Storage isolation | runtime wraps adapters with a `Scope`; adapter folds it into every statement | typed `owner_*` columns the adapter reflects + filters |
-| Cold-load resume | principal is **instance state** — must be re-supplied by caller on resume (it is, via `SessionManager.get_or_create(id, principal)`) | ownership is **on the row** — restored for free; load can't return another tenant's row even if the caller forgot the principal |
-| Defense-in-depth | one chokepoint (the scope decorator) | two chokepoints (row data *and* query filter) — a save can't lose its owner |
-| Surface added | `principal` param + `Scope` + `Scoped*Adapter` + policy | `principal` param + `owner_*` fields + `for_principal()` + DDL columns |
+| Storage isolation | runtime **binds** adapter via `for_principal(principal)`; bound adapter folds tenant/subject into every statement | typed `owner_*` columns the **bound** adapter projects + filters internally |
+| Cold-load resume | principal is **instance state** — re-supplied on resume via `SessionManager.get_or_create(id, principal)`, **and** back-filled from the row by `initialize()` (I12(d)) so a cold-load can never silently unscope | ownership is **on the row** — restored for free; load can't return another tenant's row even if the caller forgot the principal |
+| Defense-in-depth | one chokepoint (the bound adapter's `_scoped_where`) | two chokepoints (row data *and* query filter) — a save can't lose its owner |
+| Public surface added | `principal` param + `for_principal` (ONE seam) + injected `PrincipalPolicy` (I1) | `principal` param + `owner_*` fields + DDL columns — all behind the same `for_principal` |
 | `extras["owner"]` removed | yes | yes |
-| Migration weight | adapters unchanged for single-tenant; wrap is transparent | requires a DDL migration to add `owner_*` columns (ensure_schema) |
+| Migration weight | bound adapter transparent for single-tenant | requires a DDL migration to add `owner_*` columns (`ensure_schema`) |
 
-**The decided composition:** ship **A as the runtime identity surface** (the `principal` input, the relay-auth record, the sandbox-namespace policy, the audit stamp — these are *behavioral* and belong to the runtime) **and B as the storage projection** (typed `owner_tenant`/`owner_subject` columns the library Postgres adapter reflects, so isolation survives cold-load and is defense-in-depth). Concretely: `AnthropicAgent(principal=…)` is the one input; on `initialize()` it stamps `agent_config.owner_tenant/owner_subject` (B); the adapter filters on those columns (B); the relay/sandbox/audit planes read the ambient `self._principal` (A). This makes the two variants *the same system viewed from two ends*, and is the lowest-surprise outcome for a SaaS consumer like Nova. (RECONCILIATION records the single-seam fallback for the record: had the maintainer wanted ONE seam only, **A** would have been chosen — smaller migration, with `SessionManager` enforcing that the caller always supplies the principal. That fallback was **not** taken; the composition is the decision.)
+**The decided composition (one seam):** `AnthropicAgent(principal=…)` is the one input; the runtime **binds** each adapter via `for_principal(self._principal)` (the SOLE public binding API). On `initialize()` it stamps `agent_config.owner_tenant/owner_subject` (forward A→B) **and** back-fills the ambient principal from persisted owner columns when none was supplied, raising on conflict (B→A, I12(d)). The bound adapter filters on those columns internally; the relay/sandbox/audit planes read the ambient `self._principal`. The ambient/persisted split is *implementation detail of the one bound adapter*, not two consumer-facing mechanisms — this is the lowest-surprise outcome for a SaaS consumer like Nova.
 
 ---
 
 ## 5. Cross-subsystem dependencies
 
 **Shared contract types consumed:**
-- `SessionPrincipal` (§1.1) — the canonical identity; this subsystem defines its home (`agent_base/core/identity.py` — RECONCILIATION R1) and the `scope_key`/`authorizes`/`to_dict` ergonomics, but the *shape* is the contract's. `core.identity` is also the home of the shared identity + correlation field-name constants (R34).
+- `SessionPrincipal` (§1.1) — the canonical identity; this subsystem defines its home (`agent_base/core/identity.py` — RECONCILIATION R1) and the `scope_key`/`is_anonymous`/`to_dict` ergonomics (`authorizes` is DELETED, I1 — auth moved to `PrincipalPolicy`), but the *shape* is the contract's. `core.identity` is also the home of the shared identity + correlation field-name constants (R34) **and** of `PrincipalPolicy`/`StrictScopePolicy` (I1).
 - `HookContext.principal` (§1.2) — produced into every hook context by the runtime; this subsystem guarantees it is populated from `self._principal`.
 - `MetaEnvelope` / `AwaitInput` (§3) — the relay-auth path authorizes a `ToolReply` whose `correlation_id == cid` against the `AwaitRecord.principal`; the envelope itself is the relay subsystem's.
 - `ToolReply` (§1.5) — the reply primitive; it stays **principal-free** (RECONCILIATION R7). The claimant identity rides `submit(…, principal=)` and is checked inside `AwaitTable.resolve(cid, results, *, principal=)`.
@@ -743,39 +712,32 @@ if ack.disposition is Disposition.REJECTED:
 - `ctx` (`ToolContext`, §1.2/tools) — unchanged here, but a tool may read identity; see conflicts §7 (should `ctx` carry `principal`?).
 
 **Types produced / extended by this subsystem (for reconciliation):**
-- `Scope` + `Scoped*Adapter` + `StorageAdapter.set_scope` / `.scope` — consumed by the **storage-extensibility subsystem** (its `ColumnSpec`/annotated-model registry must reserve `tenant`/`subject` as indexed, scope-flagged columns; this subsystem assumes that registry exists — see §A.2).
+- `StorageAdapter.for_principal(principal)` — the **ONE public binding seam** (O2; `Scope`/`Scoped*Adapter`/`set_scope`/`.scope` are **deleted**). Consumed by the **storage-extensibility subsystem** (its `ColumnSpec` registry reserves `tenant`/`subject` as indexed, `scope="filter"` columns via `principal_columns()`; the bound adapter folds them into `_scoped_where` — see §A.2).
 - `AgentConfig.owner_tenant` / `owner_subject` (+ `.principal` property), `Conversation.owner_*` — consumed by **storage** (schema/DDL) and **serialization** (canonical `to_dict`, contract §6 "canonical serialization").
-- `AwaitRecord.principal` + the `principal=`/`policy=` parameters merged into `AwaitTable.resolve` (RECONCILIATION R7 — **not** a separate `resolve_authorized`) — consumed by the **relay/await subsystem** (it owns `await_external`/`AwaitTable`; this subsystem only adds the principal field + the in-`resolve` auth check).
-- `PrincipalPolicy` / `DefaultPrincipalPolicy` — injected at **SessionManager** construction (control/session subsystem).
+- `is_owned(id, principal)` — **ONE shared-base SELECT-1 probe (O16(a))**, inherited by config/conversation/run adapters; this doc's old `ScopedConfigAdapter.is_owned` duplicate is **merged into** the storage shared base (§A.2.1). The bound-adapter ownership probe.
+- `AwaitRecord.principal` + the `principal=`/`policy=` parameters merged into `AwaitTable.resolve` (RECONCILIATION R7 — **not** a separate `resolve_authorized`) — consumed by the **relay/await subsystem** (it owns `await_external`/`AwaitTable`; this subsystem only adds the principal field + the in-`resolve` auth check, which consults the one injected `PrincipalPolicy`, I1).
+- `PrincipalPolicy` / `StrictScopePolicy` (homed `agent_base/core/identity.py`, I1) — **ctor-injected at `SessionManager`** construction (`principal_policy: PrincipalPolicy = StrictScopePolicy()`) and consulted by BOTH session-attach (`get_or_create`) and `AwaitTable.resolve` (control/session + relay subsystems own those call sites).
 - `SandboxNamespacePolicy` / `DefaultNamespacePolicy` — consumed by the **sandbox/tools subsystem** (it owns `Sandbox`/`LocalSandbox`; this subsystem defines the policy seam + id-safety validation that subsumes Nova's `tenant_layout`).
 - `CommandAuditRecord.tenant`/`subject` — consumed by **audit/commands** (this subsystem adds the two fields; `submit()` in the control subsystem stamps them).
 - `SessionManager.get_or_create(id, principal)` / `submit(..., principal=)` + `AgentFactory = (str, SessionPrincipal) -> Agent` — a **signature change owned jointly with the control/session subsystem** (see conflicts §7).
 
 ---
 
-## 6. Migration note (today → new; back-compat one major version)
+## 6. Migration note (breaking allowed — G0)
 
-**The mapping.**
+> **G0 (breaking changes allowed).** The library is preview/unreleased: there are **no "kept for one major version" shims**. Every old surface is **removed**, not aliased; **Nova migrates in the same cut**. The mapping below makes the breaking removal explicit (`Scope`/`set_scope`/`Scoped*Adapter`/the `extras["owner"]` read-through/legacy 1-arg factory are all gone, not deprecated).
 
-| Today | New (Variant A) | New (Variant B) |
+| Today (removed) | New (one seam: `for_principal`) | Cut-over (Nova, same release) |
 |---|---|---|
-| `extras["owner"] = {organization_id, member_id, root_agent_uuid}` | `principal=SessionPrincipal(tenant=org, subject=member)`; root derived | `agent_config.owner_tenant/owner_subject`; root derived |
-| `_root_session_id()` reads `extras["owner"]["root_agent_uuid"]` | reads `self._root_session_id_value` (stamped at spawn) | reads `parent_agent_uuid` root / own uuid |
-| `_await_inline_relay` raises on missing `extras["owner"]` | reads `self._principal`; never raises for identity | reads `agent_config.principal` |
-| `NovaAgent*Adapter(pool, org, member)` (562 lines) | `PostgresAdapter(pool=…)` wrapped by runtime `Scope` | `PostgresAdapter(pool=…)` reflecting `owner_*` columns |
-| `tenant_layout.tenant_sandbox_base_dir(org, member)` | `DefaultNamespacePolicy.namespace_for(principal)` | same |
-| `InlineRelayRegistry` org/member fields + `owner_of()` | `AwaitRecord.principal` + `AwaitTable.resolve(cid, results, principal=…)` (auth merged into `resolve`, R7) | same |
+| `extras["owner"] = {organization_id, member_id, root_agent_uuid}` | `principal=SessionPrincipal(tenant=org, subject=member)`; owner persisted via `owner_tenant/owner_subject`; root derived | **Removed — breaking allowed.** No `extras["owner"]` read-through shim; Nova passes `principal=` and backfills owner columns in the same cut. |
+| `_root_session_id()` reads `extras["owner"]["root_agent_uuid"]` | reads `self._root_session_id_value` (stamped at spawn) / `parent_agent_uuid` root / own uuid | **Removed — breaking allowed.** No `extras["owner"]["root_agent_uuid"]` fallback. |
+| `_await_inline_relay` raises on missing `extras["owner"]` | reads `self._principal` (back-filled from row by `initialize()`, I12(d)); never raises for identity | **Removed — breaking allowed.** |
+| `NovaAgent*Adapter(pool, org, member)` (562 lines) | `PostgresAdapter(pool=…).for_principal(principal)`; owner columns via `principal_columns()` | **Removed — breaking allowed.** No `Scope`/`Scoped*Adapter`/`set_scope`; the ONE binding seam is `for_principal` (O2). |
+| `tenant_layout.tenant_sandbox_base_dir(org, member)` | `DefaultNamespacePolicy.namespace_for(principal)` | **Removed — breaking allowed.** Nova's id-validation folds into `DefaultNamespacePolicy.validate_segment`. |
+| `InlineRelayRegistry` org/member fields + `owner_of()` | `AwaitRecord.principal` + `AwaitTable.resolve(cid, results, principal=…)` (auth merged into `resolve`, R7; consults the one injected `PrincipalPolicy`, I1) | **Removed — breaking allowed.** |
+| `SessionPrincipal.authorizes()` / `DefaultPrincipalPolicy` | `PrincipalPolicy` Protocol + `StrictScopePolicy` (identity.py, I1), ctor-injected on `SessionManager` | **Removed — breaking allowed.** Nova injects its own policy at `SessionManager` construction if it needs role/delegation. |
+| legacy 1-arg `build_agent(root_id)` factory | `build_agent(root_id, principal)` (`AgentFactory = (str, SessionPrincipal) -> Agent`) | **Removed — breaking allowed.** No arity-inspection compat; the factory always takes a principal. |
 
-**Back-compat wrappers (keep for exactly one major version, then remove):**
+**`owner_*` columns DDL (the one structural migration that still runs).** New columns are `NULL`-able; `ensure_schema()` (storage subsystem) issues `ALTER TABLE … ADD COLUMN IF NOT EXISTS owner_tenant text` etc. and creates the `(owner_tenant, owner_subject)` index. Existing single-tenant rows have `NULL` owners and remain readable when the bound principal is also unscoped. A one-shot backfill (`UPDATE … SET owner_tenant=…` from the old `extras->>'organization_id'`) is the consumer's data task in the same cut, documented but not run by the library.
 
-1. **`extras["owner"]` shim — read-through, deprecated.** If `principal is None` *and* `extras["owner"]` is a dict, the agent constructs `SessionPrincipal(tenant=owner["organization_id"], subject=owner["member_id"])` and logs a `DeprecationWarning("extras['owner'] is deprecated; pass principal=SessionPrincipal(...)")`. `_root_session_id()` keeps the `extras["owner"]["root_agent_uuid"]` fallback **only** when `_root_session_id_value` is unset. This lets Nova run unchanged on day one.
-
-2. **`set_scope` default no-op (Variant A).** `StorageAdapter.set_scope` defaults to setting `self._scope`; a pre-existing custom adapter that overrides nothing still works (it simply ignores the scope — same behavior as today, no isolation regression because today there *is* none in the library). The library Postgres adapter opts in.
-
-3. **`owner_*` columns nullable + `ensure_schema()` additive migration (Variant B).** New columns are `NULL`-able; `ensure_schema()` (storage subsystem) issues `ALTER TABLE … ADD COLUMN IF NOT EXISTS owner_tenant text` etc. and creates the `(owner_tenant, owner_subject)` index. Existing single-tenant rows have `NULL` owners and remain readable when the query principal is also unscoped. A one-shot backfill (`UPDATE … SET owner_tenant=…`) is the consumer's data task, documented but not run by the library.
-
-4. **Adapter constructor compat.** `PostgresAdapter(connection_string=…)` (DSN-owned pool) stays valid alongside the new `PostgresAdapter(pool=…)` (injectable, E4). Both accept `set_scope`/`for_principal`. The DSN form is deprecated in the same window as E4's fix.
-
-5. **Factory signature compat.** `SessionManager` accepts both `build_agent(root_id)` (legacy 1-arg) and `build_agent(root_id, principal)` (new) via arity inspection; `get_or_create(id)` without a principal yields an unscoped (anonymous) session, exactly as today.
-
-**Removal trigger.** When Nova (the only known consumer of `extras["owner"]`) has migrated to `principal=`, drop shims 1–5's deprecated halves in the next major.
+**Net:** flag day, not a window — old types/methods/factories are removed, so Nova migrates `extras["owner"]`, the 562-line adapter fork, `tenant_layout`, and the inline-relay registry all in the same release (G0). `SessionPrincipal.authorizes` and `DefaultPrincipalPolicy` are gone; `Scope`/`set_scope`/`Scoped*Adapter` never ship.

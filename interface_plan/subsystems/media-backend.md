@@ -7,9 +7,11 @@
 > - **Fork H = ship `BlobStore` now (Variant A) — DECIDED** (R14). `BlobStore` lives in `agent_base/blob_store/` and is the **single** content-addressed object store for the whole library: one S3 client, one `safe_blob_key`, one `S3Settings.from_env`. media owns it; storage/snapshots/skills *reuse* it (storage proposes no parallel store). §4 keeps both variants for the record but Variant A is the chosen path.
 > - **R15:** the default `MediaFlushRegistry` is **media-local** (sidecar/sentinel record) and **consumer-injectable** — it is **not** one of the three library tables and not storage-owned by default.
 > - **R16:** media owns the **canonical image pipeline** (`projection.py`: `fit_image_to_budget`/`image_content_from_bytes`/`content_block_from_bytes`); **tools** wraps it (its `image_block`/`from_bytes_capped` are thin wrappers, never a second Pillow path).
-> - **R28:** `flush_exports` returning the **delta** is the intended B2 fix, **guarded by `FullReuploadFlush`** for opt-out; the **runtime finalize calls `flush_exports_result()`** (provider-agnostic — never a per-provider `_finalize_run` flush).
+> - **R28 (Amended — O3):** `flush_exports` returning the **delta** is the intended B2 fix; the **runtime finalize calls `flush_exports_result()`** (provider-agnostic — never a per-provider `_finalize_run` flush). `FullReuploadFlush` is **deleted** — `IncrementalBlake3Flush` is the only shipped strategy; the `MediaFlushStrategy` ABC stays as the custom-registry seam, so a consumer who truly wants full re-upload writes their own strategy.
 > - **R31:** media **stores** provider-hosted artifacts; the **provider** fetches them via `Provider.collect_api_files(runtime)` (Anthropic Files API; `[]` default). Provider fetches, media stores — no overlap.
 > - **Canonical homes enforced below:** `SessionPrincipal` + identity/correlation field-name constants → `agent_base/core/identity.py`; `MetaEnvelope`/`MetaBody` (incl. `FilesUpdated`/`UsageReport`/`Custom`) → `agent_base/streaming/meta.py`; `ErrorCode` → `agent_base/core/errors.py`; `TurnSettlement` → `agent_base/core/cost.py`; the runtime class → `agent_base/core/runtime.py` (`AgentRuntime`).
+
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
 
 ---
 
@@ -48,6 +50,8 @@ class MediaScope:
 
 > Reconciled (R1): `SessionPrincipal` is imported from `agent_base/core/identity.py` (the identity + correlation-vocabulary module), never redefined here. Existing public signatures take `agent_uuid: str`. We keep those (back-compat) and add `*, scope: MediaScope | None = None` overloads on the *blob-store* additions only, so the media-by-session API is untouched while the shared blob store can be principal-scoped (the §1 RECONCILIATION Fork-A composition: ambient principal threaded by the runtime).
 
+> **Amended (I13(a)):** when a `MediaScope`/principal **is** present, the blob `namespace` is **DERIVED from it** (tenant/subject), not the bare `agent_uuid` — so two sessions of different tenants never collide in one namespace. Consequently `exists` / `find_by_content_hash` are **default scope-filtered**: a lookup only sees blobs inside the caller's derived namespace, closing the cross-tenant existence-probe leak (you can no longer learn another tenant stored a given hash). When `principal is None` the behavior is exactly today's single-tenant `agent_uuid` namespace.
+
 ---
 
 ### 2.1 Content-block projection — `to_content_block` + the size-capped `ImageContent` factory  *(resolves F4, X14)*
@@ -59,14 +63,16 @@ The library already owns the canonical image budget in `common_tools/read_file.p
 
 @dataclass(frozen=True)
 class ImageBudget:
-    """Provider-aware image constraints. Defaults match Anthropic's vision limits."""
+    """Image constraints. Plain `ImageBudget()` = Anthropic vision defaults.
+
+    Amended (O15(b)): `for_provider()` is DELETED. There is no provider lookup table —
+    `ImageBudget()` is the Anthropic default; other providers pass explicit kwargs
+    (e.g. `ImageBudget(max_dimension=2048, max_bytes=...)`).
+    """
     max_dimension: int = 1568          # largest side, px
     max_bytes: int = 1_200_000         # 1.2 MB after re-encode
     prefer_format: str | None = None   # None ⇒ keep source format (JPEG/PNG/WEBP/GIF)
     jpeg_quality_floor: int = 20
-
-    @classmethod
-    def for_provider(cls, provider: str) -> "ImageBudget": ...   # "anthropic" | "openai" | ...
 
 
 @dataclass(frozen=True)
@@ -139,33 +145,61 @@ class MediaBackend(ABC):
 
         Default impl uses retrieve()+get_metadata(); backends MAY override
         (e.g. S3 server-side thumbnailing). Mirrors to_base64/to_url/to_reference.
+
+        I13(b) — caps-WHILE-reading for projectable types. For image/* (and other
+        projectable types) the default streams `retrieve()` through `fit_image_to_budget`
+        and stops once the budget is met, rather than materializing the whole object and
+        capping after. MEMORY BEHAVIOR (documented): a projectable type holds at most one
+        budget-bounded buffer in memory; a NON-projectable type (the AttachmentContent
+        branch) does NOT read the bytes at all — it returns a reference to
+        url/storage_location, so a huge non-image never lands in memory here.
         """
         meta = await self.get_metadata(media_id, agent_uuid)
         if meta is None:
             raise FileNotFoundError(...)
-        raw = b"".join([c async for c in self.retrieve(media_id, agent_uuid)])
-        return content_block_from_bytes(
-            raw, meta.media_mime_type, filename=meta.media_filename, budget=budget,
-            crop_bbox=crop_bbox,
+        # I13(b): for non-projectable types, return a reference WITHOUT reading the bytes.
+        if not _is_projectable(meta.media_mime_type):
+            return AttachmentContent(url=meta.url, storage_location=meta.storage_location,
+                                     media_type=meta.media_mime_type, filename=meta.media_filename)
+        # projectable: cap WHILE reading (stream into fit_image_to_budget, stop at budget).
+        return await self._project_capped_while_reading(
+            self.retrieve(media_id, agent_uuid), meta.media_mime_type,
+            filename=meta.media_filename, budget=budget, crop_bbox=crop_bbox,
         )
 
     @staticmethod
     def content_block_from_bytes(
         raw: bytes, mime_type: str, *, filename: str | None = None,
         budget: ImageBudget = ImageBudget(), crop_bbox: list[int] | None = None,
+        inline_threshold: int = INLINE_BASE64_THRESHOLD,
     ) -> ContentBlock:
         """Pure bytes+mime → ContentBlock. No I/O. The X14 codec — usable by
-        tool authors and the relay-result path WITHOUT a stored media_id."""
+        tool authors and the relay-result path WITHOUT a stored media_id.
+
+        I13(c) — contract pinned: this returns an INLINE base64 block only when the
+        (budget-fitted) payload is UNDER `inline_threshold`. Above the threshold the
+        bytes are NOT inlined here — the caller must instead use `to_content_block`
+        (which has the stored location and can return a reference), because an
+        in-memory pure function has no place to persist large bytes. For image/* the
+        fit_image_to_budget cap usually brings the payload under the threshold; if it
+        cannot (e.g. a large PDF), this raises a typed error directing the caller to the
+        store-then-`to_content_block` path.
+        """
         ...
 ```
 
-This single static method is what the relay/streaming subsystem calls to turn a frontend-POSTed base64 attachment into a canonical block (the produce-side half of **F3/X14**), and what a backend tool calls to return an image it generated in memory (the consume-side half, **F4**).
+This single static method is what the relay/streaming subsystem calls to turn a frontend-POSTed base64 attachment into a canonical block (the produce-side half of **F3/X14**), and what a backend tool calls to return an image it generated in memory (the consume-side half, **F4**). I13(c) pins the split: `content_block_from_bytes` is for **inline-under-threshold** payloads; anything larger goes through `to_content_block`, which has the stored location.
 
 ---
 
 ### 2.2 Incremental flush — `MediaFlushStrategy`  *(resolves B2)*
 
 A first-class **strategy object** the backend owns; default = persisted-blake3 incremental returning the delta. Provider-agnostic — lives on `MediaBackend`, not in any `_finalize_run`.
+
+> **Amended (O3):** `IncrementalBlake3Flush` is the **only shipped** `MediaFlushStrategy`;
+> `FullReuploadFlush` is **deleted**. The `MediaFlushStrategy` ABC **stays** as the custom-registry seam,
+> so a consumer who genuinely wants full re-upload (or any other policy) implements their own strategy and
+> assigns it to `backend.flush_strategy`.
 
 ```python
 # agent_base/media_backend/flush.py  (NEW)
@@ -252,10 +286,9 @@ class IncrementalBlake3Flush(MediaFlushStrategy):
         return FlushResult(delta=delta, unchanged=unchanged, deleted_media_ids=deleted)
 
 
-class FullReuploadFlush(MediaFlushStrategy):
-    """Legacy behaviour: re-upload everything every turn. Kept for back-compat
-    so today's callers can opt out of incremental if they truly want it."""
-    async def flush(self, backend, sandbox, agent_uuid, *, max_concurrent=4) -> FlushResult: ...
+# O3: FullReuploadFlush is DELETED — IncrementalBlake3Flush is the only shipped strategy.
+# A consumer wanting full re-upload (or any other policy) writes their own MediaFlushStrategy
+# (the ABC stays as the custom-registry seam) and assigns it to backend.flush_strategy.
 ```
 
 `MediaBackend` gains a strategy slot and `flush_exports` delegates to it:
@@ -330,11 +363,15 @@ class MediaMetadata:
 ```python
 class MediaBackend(ABC):
     async def find_by_content_hash(
-        self, content_hash: str, agent_uuid: str,
+        self, content_hash: str, agent_uuid: str, *, scope: MediaScope | None = None,
     ) -> MediaMetadata | None:
         """Locate already-stored media by blake3 hash within the namespace.
         Default impl is backend-specific (S3: tag/index; local: registry scan).
-        Returns None if absent. Enables store-if-absent dedupe."""
+        Returns None if absent. Enables store-if-absent dedupe.
+
+        I13(a): DEFAULT scope-filtered — when a `scope`/principal is present the lookup
+        only sees blobs inside the derived tenant/subject namespace (no cross-tenant
+        existence probe). `scope=None` ⇒ today's single-tenant `agent_uuid` namespace."""
         ...
 ```
 
@@ -381,14 +418,23 @@ class BlobStore(ABC):
     ) -> BlobRef:
         """Stream bytes in; compute blake3 while streaming; if a blob with the
         same hash already exists in the namespace, SKIP the write and return the
-        existing ref (the snapshot 'dedupe_hits' behaviour, for free)."""
+        existing ref (the snapshot 'dedupe_hits' behaviour, for free).
+
+        I13(a): when `scope`/principal is present, the effective namespace is DERIVED
+        from it (tenant/subject) rather than the bare `namespace`, so the dedupe-skip
+        only matches within the caller's own tenant (no cross-tenant dedupe leak)."""
         ...
 
     @abstractmethod
     async def get(self, ref: BlobRef | str, namespace: str) -> AsyncIterator[bytes]: ...
 
     @abstractmethod
-    async def exists(self, content_hash: str, namespace: str) -> BlobRef | None: ...
+    async def exists(self, content_hash: str, namespace: str,
+                     *, scope: MediaScope | None = None) -> BlobRef | None:
+        """I13(a): DEFAULT scope-filtered. When a scope/principal is present the namespace
+        is derived from it and the probe never crosses into another tenant's blobs (no
+        cross-tenant existence leak). scope=None ⇒ the bare `namespace` as given."""
+        ...
 
     @abstractmethod
     async def delete(self, content_hash: str, namespace: str) -> bool: ...
@@ -571,17 +617,23 @@ The contract (§5) scopes consumer product tables out, **except** as a *reusable
 
 ---
 
-## 6. Migration note (today → new; back-compat one major version)
+## 6. Migration note (G0 — breaking changes allowed; Nova migrates in the same cut)
 
-| Today | New | Back-compat (kept 1 major) |
+> **Amended (G0):** the library is preview/unreleased, so every "kept 1 major" shim is **removed**, not
+> maintained. Each row below is a breaking cut; Nova migrates in the same cut. Rows that merely describe
+> still-true behavior (e.g. `flush_exports` keeping its signature with delta semantics, `to_content_block`
+> being purely additive) are retained.
+
+| Today | New | Migration (breaking allowed) |
 |---|---|---|
-| `MediaBackend.flush_exports(agent_uuid, max_concurrent)` re-uploads all, returns full list. | Same signature, now delegates to `flush_strategy` (default `IncrementalBlake3Flush`), returns **delta**. New `flush_exports_result()` returns `FlushResult`. | Signature unchanged. Behaviour change (delta not full) is the *intended* fix (B2); a `FullReuploadFlush` strategy restores old behaviour for anyone who depended on it: `backend.flush_strategy = FullReuploadFlush()`. |
-| Nova `NovaAgent._finalize_run` + `_incremental_flush_exports` monkeypatch. | Deleted. Default is incremental. | The monkeypatch still *works* (it sets `flush_exports`), so Nova can delete it lazily; no hard break. |
-| `extras['export_hash_registry']` hand-managed in `agent_config.extras`. | Library-owned `MediaFlushRegistry` (default sidecar/sentinel; consumer can inject a table). | A one-time shim reads the old `extras` key into the registry on first flush, then stops writing it. |
-| `MediaMetadata` only `media_id`/`media_filename`; consumers reconcile `file_id`/`filename`. | Canonical `media_id` + `content_hash`; `from_dict` tolerates legacy spellings. | `from_dict` is the shim — old rows decode unchanged; Nova's ~50-line normalizer is deleted. |
-| Image budget re-implemented in nova `read_file._process_image` **and** library `common_tools/read_file.py`. | One `fit_image_to_budget` / `image_content_from_bytes`. | Both old impls become thin wrappers calling the new helper for one major version, then removed. |
-| Frontend binary results marshalled by hand at both ends (`router._build_attachment_block`, `nova._persist_screenshot_relay_results`). | `MediaBackend.content_block_from_bytes` (produce) + `BlobStore.put` (persist). | Old marshalling functions delegate to the codec; relay subsystem migrates its wire→block path to it. |
-| Three S3 clients + three key-safety routines + region/endpoint resolvers (media, snapshot, skill). | One `S3BlobStore` + `safe_blob_key` + `S3Settings.from_env` (Variant A) or shared helpers (Variant B). | `S3SkillBundleStore`/snapshot S3 helpers become thin adapters over `S3BlobStore` for one major; `SkillBundleStore` Protocol kept as a typing alias of `BlobStore`. |
-| `MediaBackend.to_base64/to_url/to_reference` (existing projections). | Unchanged. `to_content_block` is added alongside, same call pattern (`media_id, agent_uuid`). | Purely additive — no break. |
+| `MediaBackend.flush_exports(agent_uuid, max_concurrent)` re-uploads all, returns full list. | Same signature, now delegates to `flush_strategy` (the only shipped one is `IncrementalBlake3Flush`), returns **delta**. New `flush_exports_result()` returns `FlushResult`. | still-true signature; the behaviour change (delta not full) is the *intended* B2 fix. **(O3):** `FullReuploadFlush` is **deleted** — a consumer who truly wants full re-upload writes their own `MediaFlushStrategy` (the ABC stays as the seam) and assigns `backend.flush_strategy = …`. |
+| Nova `NovaAgent._finalize_run` + `_incremental_flush_exports` monkeypatch. | Deleted. Default is incremental. | removed — breaking allowed; Nova deletes the monkeypatch in the same cut. |
+| `extras['export_hash_registry']` hand-managed in `agent_config.extras`. | Library-owned `MediaFlushRegistry` (default sidecar/sentinel; consumer can inject a table). | removed — breaking allowed; no `extras`-key shim. Nova migrates the registry in the same cut. |
+| `MediaMetadata` only `media_id`/`media_filename`; consumers reconcile `file_id`/`filename`. | Canonical `media_id` + `content_hash`; `from_dict` tolerates legacy spellings. | removed — breaking allowed; `from_dict` still tolerantly decodes old rows (still-true), but Nova's ~50-line normalizer is deleted in the same cut. |
+| Image budget re-implemented in nova `read_file._process_image` **and** library `common_tools/read_file.py`. | One `fit_image_to_budget` / `image_content_from_bytes` (`ImageBudget()` = Anthropic defaults; O15(b) — no `for_provider()`). | removed — breaking allowed; both old impls are deleted (not wrapped). The library's own duplicate is removed in the same cut. |
+| Frontend binary results marshalled by hand at both ends (`router._build_attachment_block`, `nova._persist_screenshot_relay_results`). | `MediaBackend.content_block_from_bytes` (produce; inline-under-threshold per I13(c)) + `BlobStore.put` (persist). | removed — breaking allowed; the hand-marshalling is deleted; the relay subsystem uses the codec directly. |
+| Three S3 clients + three key-safety routines + region/endpoint resolvers (media, snapshot, skill). | One `S3BlobStore` + `safe_blob_key` + `S3Settings.from_env` (Variant A, DECIDED). | removed — breaking allowed; the duplicate S3 clients/key routines are deleted. `SkillBundleStore` becomes a typing alias of `BlobStore` (still-true) and snapshot/skill stores sit on `S3BlobStore`. |
+| `MediaBackend.to_base64/to_url/to_reference` (existing projections). | Unchanged. `to_content_block` is added alongside (caps-while-reading, I13(b)), same call pattern (`media_id, agent_uuid`). | still-true — purely additive. |
+| `MediaScope`/principal absent → `agent_uuid` namespace. | When a `MediaScope`/principal is present, the blob `namespace` is **derived** from it (I13(a)); `exists`/`find_by_content_hash` are default scope-filtered. | additive when `scope=None` (today's behavior); scope-filtered when present. No cross-tenant existence probe. |
 
-**Deprecation policy:** every replaced symbol (`flush_exports` full-reupload semantics, `MediaMetadata` legacy keys, the two image pipelines, `S3SkillBundleStore`) ships a `DeprecationWarning`-emitting wrapper that forwards to the new path and is removed in the next major. New code paths are opt-out, never silently behavior-changing beyond the B2 delta fix (which is the whole point and guarded by `FullReuploadFlush`).
+**Deprecation policy (G0):** replaced symbols are **deleted**, not wrapped — there is no `DeprecationWarning` window (preview/unreleased). The single intended behavior change is the B2 delta fix (`flush_exports` returns the delta); a consumer who wants the old full-reupload behavior supplies their own `MediaFlushStrategy` (O3 deleted `FullReuploadFlush`). Nova migrates everything in the same cut.

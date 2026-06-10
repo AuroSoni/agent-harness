@@ -5,13 +5,15 @@
 
 > **Reconciled against `RECONCILIATION.md`** (§6 forks, §7.2 per-doc edits, §8 invariants). Fork outcomes binding on this subsystem:
 > - **Fork A — Tenancy A+B composition (DECIDED):** ship ambient `SessionPrincipal` (the runtime threads it for behavioral scoping) **AND** typed `owner_*` columns as the storage projection. Both `_scoped_where` wirings below (get-from-principal vs get-from-entity) stay; the composition is the chosen design, not an open question.
-> - **Fork B — Column registry A1 engine + A2 sugar (DECIDED, R25):** A1 (`ColumnSpec` list) is the single execution primitive; A2 (annotated model) is sugar whose `reflect_columns()` emits A1 `ColumnSpec`s. One code path. Both ergonomics are kept below; the *engine* choice is settled.
+> - **Fork B — Column registry, v1 = A1 engine + `principal_columns()` ONLY (AMENDED O1, supersedes R25):** v1 ships the A1 (`ColumnSpec` list) engine and the `principal_columns()` one-liner and nothing else. The A2 annotated-model layer (`column()`, `source=` DSL, `reflect_columns()`, `AnnotatedPgConfigAdapter`, the `NovaAgentConfig` subclass) is **deferred — not in v1** and moved to the "Future sugar" appendix (§7). It compiles to A1 `ColumnSpec`s, so adding it later is non-breaking. R25's "ship both ergonomics now" is superseded: v1 ships A1 only.
 > - **Fork H — `BlobStore` ships in `agent_base/blob_store/` (DECIDED, R14):** owned by the **media** subsystem; storage consumes nothing of it for its 3 tables and only exposes `is_owned()` so consumer snapshot/skill stores authorize against the library tables.
-> - **Version axes (R12):** `LIBRARY_SCHEMA_VERSION` (DDL/migrations, storage-owned) is a **distinct axis** from `core.serializable.CORE_SCHEMA_VERSION` (entity wire) and `streaming.WIRE_PROTOCOL_VERSION` (SSE bytes). Entity-dict versioning defers to `CORE_SCHEMA_VERSION`.
-> - **Adapter widening (R26):** `get_media_metadata`/`find_generated_file`/`is_owned` ship as **concrete default mixins**, not bare `@abstractmethod`, so existing memory/filesystem adapters don't break.
+> - **Version axes (R12, refined by O15(c)):** `LIBRARY_SCHEMA_VERSION` (DDL/migrations, storage-owned) **remains** storage's own, **distinct axis** from `core.serializable.CORE_SCHEMA_VERSION` (entity wire) and `streaming.WIRE_PROTOCOL_VERSION` (SSE bytes). Per **O15(c)** there is now a **single** `CORE_SCHEMA_VERSION` — core's per-entity `SCHEMA_VERSION` ClassVars are **gone** — so storage tracks that one core version for entity-dict shape. Entity-dict versioning defers to `CORE_SCHEMA_VERSION`.
+> - **Adapter widening (R26, refined by O16(a)):** `get_media_metadata`/`find_generated_file` ship as **concrete default mixins**, not bare `@abstractmethod`, so existing memory/filesystem adapters don't break. `is_owned(id, principal)` is now **ONE concrete SELECT-1 probe on the shared adapter base (O16(a))**, inherited by config/conversation/run adapters (no per-ABC duplicate; the tenancy doc's `ScopedConfigAdapter.is_owned` merges into it) — see §2.4.
 > - **Ownership of shapes (R22/R27):** `AgentConfig` stays **storage-codec-owned**; `Conversation`/`AgentResult`/`CostBreakdown` use entity `.to_dict()` (core S1). The `conversation_log` *entry schema* is **core-owned** (storage tracks `CORE_SCHEMA_VERSION`); storage owns only the `stop_reason` taxonomy.
 > - **Relay cold-resume (R23):** `PendingToolRelay.cid` round-trips through `AgentConfig.pending_relay` serialization (additive, nullable).
 > - Canonical homes: `SessionPrincipal` + identity/correlation field-name constants → `agent_base/core/identity.py`; `MetaEnvelope`/`MetaBody`/`Rollback`/`UsageReport`/`ErrorReport`/`AwaitInput`/`ProfileChanged`/`Custom` → `agent_base/streaming/meta.py`; `ErrorCode` → `agent_base/core/errors.py`; `TurnSettlement` → `agent_base/core/cost.py`; the runtime class → `agent_base/core/runtime.py` (`AgentRuntime`). `StorageHandles` is storage-owned at `agent_base/storage/handles.py`.
+
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
 
 ---
 
@@ -21,7 +23,7 @@ Resolves the **entire Theme E** (zero refactor coverage) plus the cross-cutting 
 
 | ID | One-line | Fix in this doc |
 |---|---|---|
-| **E1** `adapter-abc-forces-total-crud-reimplementation` | Adding 2 columns forces re-typing every INSERT/UPSERT/SELECT for 28/16/11 columns. | §2.2 column registry (A1/A2) + base composes all SQL. |
+| **E1** `adapter-abc-forces-total-crud-reimplementation` | Adding 2 columns forces re-typing every INSERT/UPSERT/SELECT for 28/16/11 columns. | §2.2 column registry (A1 engine + `principal_columns()`; A2 sugar deferred to §7) + base composes all SQL. |
 | **E2** `no-multitenancy-row-scoping-hook` | `AND organization_id=$N AND member_id=$M` hand-appended to every query, **inconsistently** (a missed predicate = cross-tenant leak). | §2.4 principal-scoped reads (runtime-threaded `SessionPrincipal`) — base auto-applies the WHERE. |
 | **E3** `must-import-private-postgres-helpers` | Consumer imports 7 `_underscore` helpers (`_to_jsonb`, `_row_to_config`, …). | §2.1 public `row_mappers` + coercers module. |
 | **E4** `postgres-adapter-owns-pool-not-injectable` | Adapter only takes a DSN and creates/owns its own pool; a shared FastAPI pool can't be injected. | §2.3 injectable `PgPool` / `from_pool()`; `connect()/close()` no-op when borrowed. |
@@ -57,7 +59,7 @@ class StorageHandles:                          # agent_base/storage/handles.py
     analytics: AnalyticsReader | None = None   # §2.7; None when backend can't query cross-agent
 ```
 
-> **Identity model (Fork A = A+B composition, DECIDED).** `SessionPrincipal` is imported from its canonical home `agent_base/core/identity.py` (R1). This doc threads **ambient `SessionPrincipal`** as the behavioral scoping surface (the contract §1.1 says it "threads it into storage (scope)") **and** persists **typed `owner_*` columns** as the storage projection — the reconciled A+B composition (§6 Fork A). A-alone loses isolation on a direct cold-load resume; B-alone re-introduces per-entity reads; the composition makes them "one system from two ends." The *storage extensibility* fork (§5) is **A1 vs A2**, presented fully in §2.2 and **decided** as A1-engine + A2-sugar (R25). The two forks are orthogonal: A1/A2 is *how you declare extra columns*; the tenancy A+B composition is *how identity arrives and persists*. §2.4 shows both `_scoped_where` wirings (get-from-principal for the ambient half, get-from-entity for the column half) because the composition uses both.
+> **Identity model (Fork A = A+B composition, DECIDED; binding seam per O2).** `SessionPrincipal` is imported from its canonical home `agent_base/core/identity.py` (R1). This doc threads **ambient `SessionPrincipal`** as the behavioral scoping surface and persists **typed `owner_*` columns** as the storage projection — but per **tenancy O2** there is exactly **ONE public binding seam: `adapter.for_principal(principal)`**. The owner columns are what the bound library adapter does *internally*; `Scope`, `set_scope()`, and `Scoped*Adapter.wrap` are **deleted** from the public surface (see tenancy-principal §A.2). The bound adapter reads `principal.tenant`/`.subject` by convention and ignores claims by not reading them. A-alone loses isolation on a direct cold-load resume; B-alone re-introduces per-entity reads; the composition makes them "one system from two ends" behind the single `for_principal` seam. The *storage extensibility* surface (§2.2) is the **A1 `ColumnSpec` engine + `principal_columns()` ONLY** in v1 (O1); A2 annotated-model sugar is deferred to §7. §2.4 shows how the bound adapter's `_scoped_where` folds in the principal filter columns (get-from-principal for the ambient half, get-from-entity for the persisted column half) — both are the *internals* of the one bound adapter.
 
 ---
 
@@ -113,17 +115,17 @@ def log_entry_to_row(agent_uuid: str, run_id: str, e: LogEntry) -> dict[str, Any
 def row_to_log_entry(row: Mapping[str, Any]) -> LogEntry: ...
 ```
 
-> **Why `dict[str, Any]` (column→value) instead of a positional `tuple`.** A tuple breaks the instant you add a column (E1's core pain — placeholder renumbering). A name→value mapping lets the base adapter *compose* placeholders and merge extra columns deterministically. Old `_config_to_row_values(config) -> tuple` survives as a back-compat shim (§6).
+> **Why `dict[str, Any]` (column→value) instead of a positional `tuple`.** A tuple breaks the instant you add a column (E1's core pain — placeholder renumbering). A name→value mapping lets the base adapter *compose* placeholders and merge extra columns deterministically. The old positional `_config_to_row_values(config) -> tuple` is **removed — breaking allowed (G0)**; Nova migrates to `config_to_row()` in the same cut.
 
 > **`PendingToolRelay.cid` round-trip (R23, relay cold-resume dep).** `serialize_config`/`deserialize_config` round-trip an additive `cid: str` field on `AgentConfig.pending_relay` (the serialized `PendingToolRelay`). This is the only storage change the relay cold-path needs: on a cold-load resume, `SessionManager` reads `AgentConfig.pending_relay.cid` to re-arm the parked await (`table.open(cid)` + re-emit `AwaitInput`). The field is **additive and nullable** — old rows without `cid` deserialize cleanly (legacy `pending_relay` payloads simply have no `cid`). storage owns the serialization round-trip; **relay-await** owns the meaning of `cid`.
 
 ---
 
-### 2.2 Column registry — **BOTH ERGONOMICS, ONE ENGINE** (contract §5; Fork B DECIDED, R25)
+### 2.2 Column registry — **A1 ENGINE + `principal_columns()` (v1)** (contract §5; Fork B AMENDED, O1)
 
-The base Postgres adapter is rewritten as a **template**: it composes INSERT / UPSERT-set / SELECT-list / WHERE from a *declared column set* = library base columns ⊕ consumer `extra_columns`. The two variants differ only in **how the consumer declares the extra columns**.
+The base Postgres adapter is rewritten as a **template**: it composes INSERT / UPSERT-set / SELECT-list / WHERE from a *declared column set* = library base columns ⊕ consumer `extra_columns`. v1 ships exactly one way to declare those extras.
 
-> **Fork B is decided (R25):** **A1 (`ColumnSpec` list) is the single execution engine; A2 (annotated model) is sugar** whose `reflect_columns()` emits A1 `ColumnSpec`s. There is exactly one code path — A2 is *not* a co-equal parallel registry. Both variants are presented in full below because both are supported *ergonomics*; only the underlying *engine* question is settled. `principal_columns()` makes A1 a one-liner for the dominant (owner-column) case, so A2 is genuinely optional sugar rather than a second engine to maintain.
+> **Fork B amended (O1, supersedes R25):** **v1 ships the A1 (`ColumnSpec` list) engine + the `principal_columns()` helper ONLY.** That is the entire extensibility surface in v1. The A2 annotated-model layer (`column()`, `source=` DSL, `reflect_columns()`, `AnnotatedPgConfigAdapter`, `NovaAgentConfig`) is **deferred — not in v1** and lives in the "Future sugar" appendix (§7); it compiles down to A1 `ColumnSpec`s, so adding it later is **non-breaking**. `principal_columns()` makes A1 a one-liner for the dominant (owner-column) case, which is why A2 sugar can wait.
 
 #### Shared scaffolding (variant-independent)
 
@@ -173,10 +175,19 @@ class PgConfigAdapterBase(AgentConfigAdapter):
         self._principal = principal               # §2.4
         self._registry = self._build_registry()   # base ⊕ extra_columns()
 
-    # ----- the TWO seams a subclass overrides (variant-specific, see below) -----
-    def extra_columns(self) -> list[ColumnSpec]:          # A1
+    # ----- the ONE public binding seam (O2; Scope/set_scope/Scoped*Adapter are deleted) -----
+    def for_principal(self, principal: SessionPrincipal) -> "PgConfigAdapterBase":
+        """Bind this adapter to `principal`; reads/writes filter on, and writes stamp,
+        its tenant/subject (claims ignored by not being read). Returns a cheap bound view;
+        this is the sole consumer-facing binding API. The runtime calls it at session
+        construction so there is NO per-request adapter rebuild."""
+        bound = copy.copy(self); bound._principal = principal; return bound
+
+    # ----- the seam a subclass overrides (A1, the v1 surface) -----
+    def extra_columns(self) -> list[ColumnSpec]:          # A1 — declare extra columns here
         return []
-    # (A2 overrides _build_registry() to reflect from annotations instead.)
+    # (Future sugar §7: A2 would override _build_registry() to reflect annotations into
+    #  the SAME ColumnSpecs. Not in v1 — A1 + principal_columns() is the whole surface.)
 
     def _build_registry(self) -> ColumnRegistry:
         return ColumnRegistry(base=_AGENT_CONFIG_BASE_COLUMNS, extra=self.extra_columns())
@@ -214,9 +225,9 @@ class PgConfigAdapterBase(AgentConfigAdapter):
 
 ---
 
-#### Variant **A1 — `ColumnSpec` list**  (imperative, explicit)
+#### **A1 — `ColumnSpec` list**  (the v1 extensibility surface)
 
-Consumer declares extra columns as a list. Maximum control over `get`/`set`/`scope`/index.
+Consumer declares extra columns as a list. Maximum control over `get`/`set`/`scope`/index. This is the **only** declaration mechanism in v1.
 
 ```python
 # consumer side — adds organization_id + member_id, both tenant filters.
@@ -250,51 +261,7 @@ class NovaAgentConfigAdapter(PgConfigAdapterBase):
 > ```
 > `principal_columns()` returns two `scope="filter"`, `indexed=True`, `immutable_on_conflict=True` specs whose `get` reads `self._principal`. This is the recommended default path and collapses E1+E2+E7 to one line.
 
----
-
-#### Variant **A2 — Annotated ownership model**  (declarative, reflected)
-
-Consumer declares a typed dataclass; schema/DDL/mapping reflect from field annotations via a `column()` metadata marker. No lambdas, fields are first-class on the entity subclass.
-
-```python
-# agent_base/storage/pg/annotated.py
-
-def column(
-    *, sql_type: str, scope: ColumnScope = "row", indexed: bool = False,
-    upsert: bool = True, immutable_on_conflict: bool = False,
-    source: Literal["field", "principal.tenant", "principal.subject"] = "field",
-) -> Any:
-    """Field metadata marker; collected by reflect_columns()."""
-    return field(default=None, metadata={"column": {...}})
-
-def reflect_columns(model: type) -> list[ColumnSpec]:
-    """Turn annotated dataclass fields into ColumnSpec list (get/set auto-derived)."""
-
-class AnnotatedPgConfigAdapter(PgConfigAdapterBase):
-    model: type[AgentConfig]                # the annotated subclass
-    def _build_registry(self) -> ColumnRegistry:
-        return ColumnRegistry(base=_AGENT_CONFIG_BASE_COLUMNS, extra=reflect_columns(self.model))
-```
-
-```python
-# consumer side — ownership is data, not lambdas.
-@dataclass
-class NovaAgentConfig(AgentConfig):
-    organization_id: str | None = column(
-        sql_type="TEXT NOT NULL", scope="filter", indexed=True,
-        immutable_on_conflict=True, source="principal.tenant",
-    )
-    member_id: str | None = column(
-        sql_type="TEXT NOT NULL", scope="filter", indexed=True,
-        immutable_on_conflict=True, source="principal.subject",
-    )
-
-class NovaAgentConfigAdapter(AnnotatedPgConfigAdapter):
-    model = NovaAgentConfig
-    # nothing else — get/set/DDL/WHERE all reflected.
-```
-
-> **Trade-off (decided, R25).** A1 is lower-magic and lets `get`/`set` do arbitrary work (e.g. derive a column from `usage`); it's the better fit for *computed* columns. A2 is cleaner for *plain owner fields* and makes the column part of the entity's type (helps app code), but needs an entity subclass and reflection. They share `ColumnRegistry` + `ensure_schema()` + `_scoped_where`, so the base adapter is **identical**; only the registry source differs. **Decision (Fork B, R25): A1 is the supported primitive engine and A2 is sugar layered on top — A2's `reflect_columns()` emits A1 `ColumnSpec`s.** There is exactly one code path, and `principal_columns()` covers the 90% case in A1 directly. This is no longer an open question; it is the ratified engineering stance.
+> **A2 annotated-model sugar is deferred — not in v1 (O1).** The declarative `column()`/`source=`/`reflect_columns()`/`AnnotatedPgConfigAdapter` ergonomics live in the **Future sugar appendix (§7)**. They compile to A1 `ColumnSpec`s over the same `ColumnRegistry`, so shipping them later is non-breaking. For v1, A1 + `principal_columns()` is the entire surface.
 
 ---
 
@@ -361,22 +328,31 @@ class PgConfigAdapterBase(AgentConfigAdapter):
             clauses.append(f"{spec.name} = ${len(args)}")
         return " AND ".join(clauses) or "TRUE", args
 
-    async def is_owned(self, agent_uuid: str, principal: SessionPrincipal | None = None) -> bool:
-        """Closes E8: snapshot store stops re-querying agent_config by hand.
-        Postgres override: single scoped EXISTS query."""
-        where, args = self._scoped_where({"agent_uuid": agent_uuid})
-        async with self._pool.acquire() as conn:
-            return await conn.fetchval(f"SELECT 1 FROM {self.table} WHERE {where}") is not None
 ```
 
-> **`is_owned` is a concrete default too (R26).** On the `AgentConfigAdapter` ABC, `is_owned` ships as a **concrete default mixin** (load the config under the principal scope and test for a non-`None` result), NOT a bare `@abstractmethod` — so memory/filesystem/custom adapters keep working. The Pg form above is the optimized override (a scoped `EXISTS` that never materializes the config).
+> **`is_owned` is ONE concrete SELECT-1 probe on the shared base (O16(a), supersedes the per-ABC R26 note + the tenancy doc's `ScopedConfigAdapter.is_owned` duplicate).** Rather than a per-ABC mixin and a separate scoped-decorator copy, `is_owned(id, principal)` is a **single concrete method on the shared Pg adapter base** (`_PgAdapterBase` below), **inherited unchanged** by `PgConfigAdapterBase` / `PgConversationAdapterBase` / `PgRunAdapterBase`. It is the **bound-adapter ownership probe**: a single scoped `SELECT 1 ... WHERE {scoped_where}` that never materializes the entity. Because `Scope`/`Scoped*Adapter` are deleted (tenancy O2), the only ownership API is this one probe on the adapter already bound via `for_principal` / threaded principal.
+>
+> ```python
+> # agent_base/storage/pg/base_adapter.py — the SHARED base all three Pg adapters inherit.
+> class _PgAdapterBase:
+>     table: str
+>     id_column: str = "agent_uuid"            # conversation/run override as needed
+>     async def is_owned(self, id: str, principal: SessionPrincipal | None = None) -> bool:
+>         """ONE concrete SELECT-1 ownership probe (O16(a)). Closes E8: snapshot/skill
+>         stores stop re-querying by hand. Inherited by config/conversation/run adapters;
+>         folds the bound principal in via _scoped_where (no entity load)."""
+>         where, args = self._scoped_where({self.id_column: id})
+>         async with self._pool.acquire() as conn:
+>             return await conn.fetchval(f"SELECT 1 FROM {self.table} WHERE {where}", *args) is not None
+> ```
+> For non-Pg backends (memory/filesystem) the same method is a concrete default that loads under the bound principal scope and tests for a non-`None` result — never a bare `@abstractmethod`, so custom adapters keep working.
 
-Two wirings — and per **Fork A = A+B composition (DECIDED, §6 / contract §4)** the library uses **both together**, not one *or* the other. They are the two ends of one system: the ambient half supplies identity at runtime, the column half persists it so a cold-load resume restores ownership from the row. Both are shown below because the composition exercises both; the tenancy subsystem owns the `SessionPrincipal` type and the composition policy.
+Two **internal** halves behind ONE public seam — per **tenancy O2** the only consumer-facing binding API is **`adapter.for_principal(principal)`**; `Scope`, `Scope.of()`, `set_scope()`, and `Scoped*Adapter.wrap` are **deleted**. The bound adapter holds the principal and reads `principal.tenant`/`.subject` *by convention* (claims are ignored by not being read). Both halves below are the *internals* of that one bound adapter — the runtime/`for_principal` supplies identity; the owner columns persist it so a cold-load resume restores ownership from the row.
 
-- **Ambient half — Tenancy A (`SessionPrincipal`)** — runtime sets `adapter._principal` once at session construction. `filter_columns()` `get`s read it. **No per-request adapter rebuild** (kills Nova's "create adapters per request"). This is the path §2.2 examples use for the *behavioral* scope.
-- **Persisted half — Tenancy B (owner columns on entity)** — the `owner_tenant`/`owner_subject` columns (Nova's `organization_id`/`member_id`) live on `AgentConfig`/`Conversation` (A2's annotated model is literally this); they are the storage *projection* of the principal so a direct cold-load resume re-derives ownership from the row even if a constructor forgot the principal. `_scoped_where` filters on them and writes pull from the entity. Works with either A1 (`get=lambda c: c.organization_id`) or A2 (reflected).
+- **Ambient half — bound principal (Tenancy A behavior, internal)** — `for_principal(principal)` (or the runtime threading it) sets `adapter._principal` once. `filter_columns()` `get`s read it. **No per-request adapter rebuild** (kills Nova's "create adapters per request"). This is the *behavioral* scope §2.2's examples bind via `for_principal`/`create_adapters_from_pool(principal=...)`.
+- **Persisted half — owner columns (Tenancy B behavior, internal)** — the `owner_tenant`/`owner_subject` columns (Nova's `organization_id`/`member_id`) live on the row as the storage *projection* of the principal, so a direct cold-load resume re-derives ownership from the row even if a constructor forgot the principal. `_scoped_where` filters on them and writes pull from the bound principal/entity. Declared in v1 via A1 `principal_columns()` (`get=lambda c: c.organization_id`).
 
-Either way, **the WHERE is composed once in the base** — E2's inconsistency class (org-only filters at `:346/:369/:393`, missing member) cannot recur. (If the maintainer ever wants ONE seam only, §6 Fork A records **A** as the fallback — smaller migration, `SessionManager` enforces the principal is always supplied — but the ratified design is the A+B composition.)
+Either way, **the WHERE is composed once in the base behind `for_principal`** — E2's inconsistency class (org-only filters at `:346/:369/:393`, missing member) cannot recur. There is no second wrapping mechanism: the ambient/persisted split is implementation detail of the one bound adapter, not two public APIs.
 
 ---
 
@@ -479,7 +455,7 @@ class PgConfigAdapterBase(AgentConfigAdapter):
 async def ensure_all_schemas(pool: PgPool, *adapters: StorageAdapter) -> None: ...
 ```
 
-> **Scope guard (verifier note on E6).** This creates only `agent_config`, `conversation_history`, `agent_runs` and their indexes. Consumer product tables (`workbook_snapshot_*`, `skill_*`) are **not** library DDL — those belong to the media-subsystem blob-store proposal + consumer migrations. `organization_id/member_id` reach the library DDL *only* via the consumer's `extra_columns`/annotated model (they appear in `ddl_columns()` because the registry knows them).
+> **Scope guard (verifier note on E6).** This creates only `agent_config`, `conversation_history`, `agent_runs` and their indexes. Consumer product tables (`workbook_snapshot_*`, `skill_*`) are **not** library DDL — those belong to the media-subsystem blob-store proposal + consumer migrations. `organization_id/member_id` reach the library DDL *only* via the consumer's `extra_columns` / `principal_columns()` (A2 annotated model deferred, §7) — they appear in `ddl_columns()` because the registry knows them.
 
 ---
 
@@ -530,8 +506,12 @@ class RunSummary:                # typed row — no JSONB digging in the consume
     @property
     def latency_s(self) -> float | None: ...
 
+# Renamed from UsageTotals (O5 cross-ref): the shadow `UsageTotals` type is DELETED
+# library-wide (core `Usage` gained `__add__` + `totals_dict()` instead). This analytics
+# aggregate is a distinct domain shape (run/agent/error COUNTS, not just token sums), so it
+# survives under a non-colliding name.
 @dataclass(frozen=True)
-class UsageTotals:
+class AnalyticsTotals:
     runs: int; agents: int; error_runs: int
     total_cost: float; input_tokens: int; output_tokens: int
     cache_read_tokens: int; thinking_tokens: int
@@ -554,7 +534,7 @@ class AnalyticsReader(ABC):
     @abstractmethod
     async def list_runs(self, f: RunFilter) -> tuple[list[RunSummary], int]: ...
     @abstractmethod
-    async def usage_totals(self, f: RunFilter) -> UsageTotals: ...
+    async def usage_totals(self, f: RunFilter) -> AnalyticsTotals: ...
     @abstractmethod
     async def volume_timeseries(self, f: RunFilter, *, bucket: Literal["hour","day"]="hour") -> list[TimeBucket]: ...
     @abstractmethod
@@ -565,9 +545,27 @@ class AnalyticsReader(ABC):
     async def subagent_fanout(self, f: RunFilter, *, limit: int = 20) -> list[dict[str, Any]]: ...
     @abstractmethod
     async def distinct_principals(self) -> list[SessionPrincipal]: ...   # was distinct_orgs/members
+    # ONE escape hatch (I2) for unanticipated dashboard cuts — streams typed RunSummary
+    # rows, so the consumer NEVER hand-casts JSONB even for a slice we didn't anticipate.
+    @abstractmethod
+    def runs_matching(self, f: RunFilter) -> AsyncIterator[RunSummary]: ...
 
 class PgAnalyticsReader(AnalyticsReader):
-    def __init__(self, pool: PgPool): ...     # read-only; pool injected like everything else
+    def __init__(self, pool: PgPool, *, filter_columns: Sequence[ColumnSpec] = ()):
+        """Read-only; pool injected like everything else. `filter_columns` are the SAME
+        registry scope="filter" specs the write adapters use (I2): the reader composes
+        them into EVERY WHERE, so analytics is tenant-scoped by the identical machinery
+        — no separate org/member plumbing, no chance of an unscoped dashboard query.
+        Pass `principal_columns(...)`-derived specs (or read them off a bound adapter's
+        registry) so the reader filters exactly like the config/conversation/run adapters."""
+        ...
+
+    def runs_matching(self, f: RunFilter) -> AsyncIterator[RunSummary]:
+        """The ONE documented escape hatch (I2). Streams typed RunSummary rows matching
+        `f` (the same RunFilter + composed filter_columns WHERE), for unanticipated cuts
+        the typed accessors above don't cover. Yields RunSummary — raw JSONB casting is
+        never needed in the consumer, even here."""
+        ...
 ```
 
 > The Pg implementation owns exactly the SQL Nova hand-wrote in `scripts/dashboard/queries.py` (the `cost->>'total_cost'` casts, the `conversation_log->'entries'` `jsonb_array_elements` walk, the `stop_reason NOT IN (...)` filter). Because the JSONB layout is a **library-owned schema** — the `cost`/`usage` keys are frozen by `CostBreakdown.to_dict()`/`Usage` (the cost/usage contract), and the `conversation_log` entry schema is **core-owned** and versioned by `CORE_SCHEMA_VERSION` (R27) — the library is the right owner of these queries. When the entry layout changes (core bumps `CORE_SCHEMA_VERSION`), the reader is updated once instead of every consumer dashboard breaking. storage's own contribution to the layout coupling is just the `stop_reason` taxonomy (`is_error_stop`).
@@ -612,7 +610,7 @@ def create_nova_adapters(pool, organization_id, member_id):
 - **E4** gone: `create_adapters_from_pool(pool=...)` injects the shared pool; `connect()/close()` no-op.
 - **E7** gone: `organization_id`/`member_id` are typed, indexed, NOT NULL columns — not an opaque `extras` bag.
 
-> If they prefer **A2**, the same result with annotated fields (no `principal_columns` call) — see §2.2 A2.
+> A2 annotated-fields ergonomics are **deferred — not in v1** (O1); when shipped they reach the same result with no `principal_columns` call. See the Future sugar appendix (§7).
 
 ### Before → After: media lookup (E5)
 
@@ -646,7 +644,7 @@ async def is_conversation_owned(self, conversation_uuid):
                               "AND organization_id=$2 AND member_id=$3", ...)
     return row is not None
 # AFTER:
-owned = await config_adapter.is_owned(str(conversation_uuid))   # principal already on the adapter
+owned = await config_adapter.is_owned(str(conversation_uuid))   # adapter already bound via for_principal
 ```
 
 ### Before → After: the dashboard (X8)
@@ -658,7 +656,9 @@ total = await conn.fetchval(_AGENT_LIST_COUNT_SQL, *count_args)
 # + _OVERVIEW_TOTALS_SQL, _LATENCY_PCTL_SQL, _TOOL_USAGE_SQL (jsonb_array_elements walk), ...
 
 # AFTER:
-reader = PgAnalyticsReader(pool)
+# Compose the SAME registry filter specs the write adapters use (I2) so analytics is
+# tenant-scoped by identical machinery — no separate org/member plumbing.
+reader = PgAnalyticsReader(pool, filter_columns=principal_columns("organization_id", "member_id"))
 f = RunFilter(
     started_after=after, started_before=before,
     principal=SessionPrincipal(tenant=org, subject=member),
@@ -666,35 +666,40 @@ f = RunFilter(
     limit=page_size, offset=(page-1)*page_size,
 )
 runs, total   = await reader.list_runs(f)         # list[RunSummary] — typed, .is_error, .latency_s
-totals        = await reader.usage_totals(f)      # UsageTotals
+totals        = await reader.usage_totals(f)      # AnalyticsTotals
 latency        = await reader.latency(f)           # LatencyStats (p50/p95/p99)
 tools          = await reader.tool_usage(f)        # list[ToolUsageStat] — no JSONB walk in consumer
+
+# Unanticipated cut the typed accessors don't cover? ONE escape hatch (I2), still typed:
+async for run in reader.runs_matching(RunFilter(stop_reasons=frozenset({"max_tokens"}))):
+    ...                                            # RunSummary rows — never hand-cast JSONB
 ```
 
 The dashboard stops importing `asyncpg`, stops casting `cost->>'total_cost'`, and stops hard-coding `('end_turn','stop_sequence')` — that taxonomy now lives in `analytics.is_error_stop`.
 
 ---
 
-## 4. BOTH variants summary (contract §5)
+## 4. Extensibility surface summary (contract §5; Fork B amended, O1)
 
-| | **A1 — `ColumnSpec` list** | **A2 — Annotated ownership model** |
+v1 ships **one** declaration mechanism — A1 — with `principal_columns()` covering the dominant owner-column case in a single line. A2 is deferred (§7).
+
+| | **A1 — `ColumnSpec` list (v1)** | **A2 — Annotated model (§7, deferred — not in v1)** |
 |---|---|---|
+| Status | **shipped in v1** | **future sugar** — compiles to A1 `ColumnSpec`s; non-breaking to add later |
 | Declaration | `extra_columns() -> [ColumnSpec(...)]` (imperative) | `@dataclass` subclass with `column()` fields (declarative) |
 | `get`/`set` | explicit callables (supports computed columns) | auto-derived from field; `source="principal.*"` for owner cols |
 | DDL/WHERE/mapping | from `ColumnRegistry` | from `reflect_columns()` → same `ColumnRegistry` |
-| Entity type | base `AgentConfig` (extras hydrate) | typed `NovaAgentConfig` (fields are first-class) |
-| Owner-column ergonomics | `principal_columns(...)` one-liner | zero-arg adapter (`model = NovaAgentConfig`) |
-| Best for | computed/derived columns, no entity subclass | plain typed owner fields, app wants the type |
-| Base adapter | **identical** | **identical** |
+| Owner-column ergonomics | `principal_columns(...)` one-liner | (would be) zero-arg adapter (`model = NovaAgentConfig`) |
+| Base adapter | **the v1 engine** | same engine, reflected source |
 
-**Decision (Fork B, R25 — ratified, no longer open):** ship **A1 as the primitive engine**; implement **A2 as sugar** whose `reflect_columns()` emits A1 `ColumnSpec`s. One execution path, both ergonomics. `principal_columns()` makes A1 a one-liner for the dominant (owner-column) case, so A2 is genuinely optional sugar rather than a parallel engine.
+**Decision (Fork B, amended O1 — supersedes R25):** v1 ships **A1 as the primitive engine + `principal_columns()`** and nothing else. A2 annotated-model sugar is **deferred to §7**; because `reflect_columns()` would emit the same A1 `ColumnSpec`s over the same `ColumnRegistry`, adding it later is non-breaking. `principal_columns()` makes A1 a one-liner for the dominant (owner-column) case, which is why A2 can wait.
 
 ---
 
 ## 5. Cross-subsystem dependencies
 
 **Consumes (shared contract types):**
-- `SessionPrincipal` (contract §1.1) — primary identity for `_scoped_where`, `RunFilter.principal`, `is_owned`, `principal_columns`, `distinct_principals`. **Tenancy subsystem** owns its definition + the A/B fork; storage assumes it is threaded onto the adapter by the runtime at session construction (contract §0.6).
+- `SessionPrincipal` (contract §1.1) — primary identity for `_scoped_where`, `RunFilter.principal`, `is_owned`, `principal_columns`, `distinct_principals`. **Tenancy subsystem** owns its definition; per **O2** the one public binding seam is `adapter.for_principal(principal)` (the deleted `Scope`/`set_scope`/`Scoped*Adapter` are gone), and storage assumes the principal is bound onto the adapter via `for_principal`/the runtime at session construction (contract §0.6).
 - `MediaMetadata` (media subsystem) — return type of `get_media_metadata`/`find_generated_file`; relies on its `from_dict()` legacy-key normalizer to give E5 a single canonical id.
 - `AgentConfig` / `Conversation` / `AgentRunLog` / `LogEntry` / `CostBreakdown` / `Usage` (core) — entities. Per **R22**: `Conversation`/`AgentResult`/`CostBreakdown`/`Usage` get canonical entity `.to_dict()/from_dict()` (core Variant S1 — these cross the FE wire); **`AgentConfig` stays storage-codec-owned** (`serialize_config`/`deserialize_config`) and never grows a wire `.to_dict()` (it is heavy and never crosses the wire as a unit). The storage codec MAY internally call the child entity `.to_dict()`s. Entity-dict versioning uses `core.serializable.CORE_SCHEMA_VERSION` (R12), not a storage-local counter.
 - `CORE_SCHEMA_VERSION` (core `serializable`) — the entity-wire version `serialization.py` and `AnalyticsReader` both import (R12/R27); storage does not mint its own entity-wire counter.
@@ -710,19 +715,68 @@ The dashboard stops importing `asyncpg`, stops casting `cost->>'total_cost'`, an
 
 ---
 
-## 6. Migration note (back-compat, one major version)
+## 6. Migration note (breaking allowed — G0)
 
-Today's surface keeps working for one major version via thin shims; new surface is additive.
+> **G0 (breaking changes allowed).** The library is preview/unreleased: there are **no "kept for one major version" shims**. Every old surface is **removed**, not aliased; **Nova migrates in the same cut**. The table below maps today → new with the breaking removal made explicit.
 
-| Today | New | Shim / mapping |
+| Today (removed) | New | Cut-over (Nova, same release) |
 |---|---|---|
-| `PostgresAgentConfigAdapter(connection_string=...)` | `PgConfigAdapterBase.from_dsn(dsn=...)` | Keep `PostgresAgentConfigAdapter` as a subclass of `PgConfigAdapterBase` whose `__init__(connection_string, pool_size, timezone)` calls `from_dsn`. Owns its pool (unchanged). **Deprecation warning** pointing to pool injection. |
-| `create_adapters("postgres", connection_string=...)` | `create_adapters_from_pool(pool, ...)` | Registry keeps the DSN path; adds the pool path. No breakage. |
-| `from ...adapters.postgres import _to_jsonb, _row_to_config, ...` | `from agent_base.storage.pg.row_mappers import to_jsonb, row_to_config, ...` | Old underscore names re-exported from `adapters/postgres.py` as **aliases** to the public names (`_to_jsonb = to_jsonb`, `_config_to_row_values = lambda c: list(config_to_row(c).values())`) with a `DeprecationWarning`. Nova's current imports keep working untouched. |
-| Hard-coded column SQL in adapters | `ColumnRegistry` + base composition | Base columns are defined once as `_AGENT_CONFIG_BASE_COLUMNS` reproducing today's 28/15/9 columns *in the same order*; the composed INSERT/SELECT are byte-equivalent for the zero-extra-column case, so existing rows/queries are unaffected. |
-| `extras` for ownership | `extra_columns()` / annotated model | Existing `extras['owner']` rows still load (extras round-trips). Consumers migrate to typed columns at their pace; a backfill migration can copy `extras->>'organization_id'` into the new column. |
-| Tables created by hand (schemas.md) | `ensure_schema()` | `ensure_schema()` is idempotent and uses `CREATE TABLE IF NOT EXISTS` + `ADD COLUMN IF NOT EXISTS`; running it against a hand-created Nova DB is a no-op that simply records `schema_version`. `schemas.md` retained as reference, marked "generated by ColumnRegistry.ddl_*()". |
-| `dataclasses.asdict(cost)` / hand JSON in `get_conversations` | `Conversation.to_dict()` / `CostBreakdown.to_dict()` | New methods added; `asdict` still works on the dataclasses. Versioned `_v` lets `from_dict()` read both old and new payloads. |
-| Dashboard hand-SQL (`scripts/dashboard/queries.py`) | `PgAnalyticsReader` | Pure addition — no library change forces the dashboard to migrate; it adopts `AnalyticsReader` when convenient. The current SQL keeps working against the unchanged schema. |
+| `PostgresAgentConfigAdapter(connection_string=...)` | `PgConfigAdapterBase.from_dsn(dsn=...)` or `PgConfigAdapterBase(pool=...)` | **Removed — breaking allowed.** No subclass alias kept; Nova switches construction to `from_dsn`/pool injection. |
+| `create_adapters("postgres", connection_string=...)` | `create_adapters_from_pool(pool, ...)` | **Removed — breaking allowed.** DSN registry path dropped; Nova passes a pool. |
+| `from ...adapters.postgres import _to_jsonb, _row_to_config, ...` | `from agent_base.storage.pg.row_mappers import to_jsonb, row_to_config, ...` | **Removed — breaking allowed.** No underscore re-export aliases; Nova updates imports to the public names. `_config_to_row_values(config) -> tuple` is gone (use `config_to_row()`). |
+| Hard-coded column SQL in adapters | `ColumnRegistry` + base composition | Base columns are `_AGENT_CONFIG_BASE_COLUMNS` reproducing today's 28/15/9 columns *in the same order*; composed INSERT/SELECT are byte-equivalent for the zero-extra-column case, so existing **rows** are unaffected even though the adapter classes change. |
+| `extras['owner']` for ownership | `extra_columns()` / `principal_columns(...)` typed columns | **Removed — breaking allowed.** No `extras['owner']` read-through; Nova backfills `extras->>'organization_id'` into the typed `organization_id`/`member_id` columns in the same cut. |
+| Tables created by hand (schemas.md) | `ensure_schema()` | `ensure_schema()` is idempotent (`CREATE TABLE IF NOT EXISTS` + `ADD COLUMN IF NOT EXISTS`); running it against a hand-created Nova DB is a no-op that records `LIBRARY_SCHEMA_VERSION`. `schemas.md` retained as reference, marked "generated by `ColumnRegistry.ddl_*()`". |
+| `dataclasses.asdict(cost)` / hand JSON in `get_conversations` | `Conversation.to_dict()` / `CostBreakdown.to_dict()` | Canonical methods are the only supported path; Nova stops hand-stitching JSON. Versioned `_v` (= `CORE_SCHEMA_VERSION`) lets `from_dict()` read older persisted payloads. |
+| Dashboard hand-SQL (`scripts/dashboard/queries.py`) | `PgAnalyticsReader` (+ `filter_columns`, `runs_matching`) | Nova adopts `AnalyticsReader` in the same cut; the typed accessors + the `runs_matching` escape hatch replace the hand SQL. |
 
-**Net effect for Nova:** `storage/adapters.py` drops from 562 lines to ~20; `snapshot_adapter.is_conversation_owned` and the media normalizer disappear; `scripts/dashboard/queries.py` (~445 lines) collapses to `RunFilter` calls — with no flag day (old imports/classes/DSN constructors all still resolve for one major version).
+**Net effect for Nova:** `storage/adapters.py` drops from 562 lines to ~20; `snapshot_adapter.is_conversation_owned` and the media normalizer disappear; `scripts/dashboard/queries.py` (~445 lines) collapses to `RunFilter` calls. **Flag day, not a window:** old imports/classes/DSN constructors are removed, so Nova migrates everything in the same release (G0).
+
+---
+
+## 7. Future sugar (deferred — not in v1): A2 annotated ownership model
+
+> **Status: deferred — NOT in v1 (O1).** v1 ships the A1 `ColumnSpec` engine + `principal_columns()` only (§2.2). The A2 annotated-model layer below is documented here as a **non-breaking future add**: `reflect_columns()` emits the same A1 `ColumnSpec`s over the same `ColumnRegistry`, so the base adapter, `ensure_schema()`, and `_scoped_where` are unchanged when it lands — only the *registry source* differs. Nothing in v1 depends on it; nothing in it changes v1's surface.
+
+A2 lets a consumer declare a typed dataclass and reflect schema/DDL/mapping from field annotations via a `column()` metadata marker — no lambdas, owner fields first-class on the entity subclass.
+
+```python
+# agent_base/storage/pg/annotated.py  — FUTURE (deferred, not in v1)
+
+def column(
+    *, sql_type: str, scope: ColumnScope = "row", indexed: bool = False,
+    upsert: bool = True, immutable_on_conflict: bool = False,
+    source: Literal["field", "principal.tenant", "principal.subject"] = "field",
+) -> Any:
+    """Field metadata marker; collected by reflect_columns()."""
+    return field(default=None, metadata={"column": {...}})
+
+def reflect_columns(model: type) -> list[ColumnSpec]:
+    """Turn annotated dataclass fields into A1 ColumnSpec list (get/set auto-derived).
+    This is the whole compatibility story: A2 *compiles to* A1 ColumnSpecs."""
+
+class AnnotatedPgConfigAdapter(PgConfigAdapterBase):
+    model: type[AgentConfig]                # the annotated subclass
+    def _build_registry(self) -> ColumnRegistry:
+        return ColumnRegistry(base=_AGENT_CONFIG_BASE_COLUMNS, extra=reflect_columns(self.model))
+```
+
+```python
+# consumer side (FUTURE) — ownership is data, not lambdas.
+@dataclass
+class NovaAgentConfig(AgentConfig):
+    organization_id: str | None = column(
+        sql_type="TEXT NOT NULL", scope="filter", indexed=True,
+        immutable_on_conflict=True, source="principal.tenant",
+    )
+    member_id: str | None = column(
+        sql_type="TEXT NOT NULL", scope="filter", indexed=True,
+        immutable_on_conflict=True, source="principal.subject",
+    )
+
+class NovaAgentConfigAdapter(AnnotatedPgConfigAdapter):
+    model = NovaAgentConfig
+    # nothing else — get/set/DDL/WHERE all reflected, into the SAME A1 ColumnSpecs.
+```
+
+> **Why deferred (O1).** `principal_columns()` already collapses the dominant owner-column case to one line in A1, so A2 is genuinely optional sugar rather than a parallel engine. Shipping it later is non-breaking precisely because it emits A1 `ColumnSpec`s over the existing `ColumnRegistry` — there is never a second execution path to maintain.

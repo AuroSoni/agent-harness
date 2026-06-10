@@ -13,18 +13,29 @@
 > **Reconciled against `RECONCILIATION.md`.** This doc has been aligned to the binding
 > reconciliation; the open questions in §"Conflicts" below are now *resolved* (kept for
 > provenance, each annotated **RESOLVED**). Outcomes that touch this subsystem:
+>
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
+>
 > - **R9** — principal-mismatch is a **two-layer** split: `SessionManager.submit` addressing a
 >   session owned by another principal → **`NOT_FOUND`** (no existence leak); a `ToolReply` whose
->   *cid-record* principal mismatches → **`REJECTED`** at the await-table (a different layer). The
->   library performs the equality check at `submit` (mechanism); the *policy* is injectable.
+>   *cid-record* principal mismatches → **`REJECTED`** at the await-table (a different layer).
+>   **Amended (I1):** the *policy* is a concrete injected `PrincipalPolicy` (`core.identity`;
+>   `SessionManager.__init__(..., principal_policy: PrincipalPolicy = StrictScopePolicy())`). The
+>   `get_or_create` attach-check AND `AwaitTable.resolve` route through the SAME policy — there is no
+>   hard `principal.authorizes()` call (that `SessionPrincipal` method is DELETED). The library
+>   performs the check at both seams (mechanism); only the policy object is injectable.
 > - **R19** — `on_session_start` fires **once, in `get_or_create` pre-publish** (NOT in
 >   `AnthropicAgent.initialize()`), via `agent._run_hook("on_session_start", ctx)`; `block` ⇒ discard.
 > - **R7** — `submit(sid, ToolReply, principal=)` carries the claimant; **`ToolReply` gains no auth
 >   field** (shipped shape kept). The auth check lives in `AwaitTable.resolve(cid, …, principal=)`.
-> - **Fork F** — **reserve `Disposition.MISDIRECTED` (→ 421) now** (cross-worker `submit` at Rung 2);
->   Rung-1 behavior is single-process, so the value is reserved but unused.
+> - **Fork F** — keep the `Disposition.MISDIRECTED` enum member (cross-worker `submit` at Rung 2);
+>   Rung-1 behavior is single-process, so the value is reserved but unused. **Amended (O4):** the
+>   `MISDIRECTED → 421` row is **REMOVED from `DISPOSITION_HTTP_STATUS`** until Rung 2 — the enum
+>   member stays (with a `# Rung 2` comment) but it has no HTTP mapping yet.
 > - **Q4 (`new_session_id`)** — the **consumer mints `root_session_id`**; the manager does **not**
->   own id allocation. `new_session_id()` ships only as an **optional convenience helper**.
+>   own id allocation. **Amended (O15a):** `SessionManager.new_session_id()` is **DELETED** — not even
+>   shipped as a convenience helper. A consumer mints the id with `uuid4()` (or any scheme) and passes
+>   it to `get_or_create`.
 > - **R29 / Fork E = P-A** — the factory builds an **`AgentRuntime`** (`agent_base/core/runtime.py`,
 >   the one provider-agnostic agent class); `AnthropicAgent(...)` remains a back-compat factory for one
 >   major version. Sequenced LAST (§5 of the reconciliation), so this is a relocation, not a rewrite.
@@ -76,6 +87,19 @@ class SessionPrincipal:
     tenant: str | None = None       # organization_id
     subject: str | None = None      # member_id
     claims: Mapping[str, Any] = field(default_factory=dict)
+    # §I1: NO authorizes() method — authorization moved to PrincipalPolicy (below).
+    #      SessionPrincipal keeps scope_key / is_anonymous / to_dict only.
+
+# from agent_base.core.identity         (§I1 — the injected authorization policy)
+class PrincipalPolicy(Protocol):
+    """The ONE authorization seam. `authorizes(owner, claimant)` decides whether `claimant`
+    may attach to / reply into a session owned by `owner`. Injected once at SessionManager
+    construction and consulted by BOTH get_or_create's attach-check AND AwaitTable.resolve/cancel."""
+    def authorizes(self, owner: "SessionPrincipal | None",
+                   claimant: "SessionPrincipal | None") -> bool: ...
+
+class StrictScopePolicy:            # default: equal (tenant, subject) scope keys authorize
+    def authorizes(self, owner, claimant) -> bool: ...
 
 # from agent_base.hooks.context         (lifecycle-hooks subsystem — §1.2 / §2)
 @dataclass
@@ -84,7 +108,9 @@ class HookContext:                  # base; see contract §1.2 for full field li
     principal: SessionPrincipal | None
     sandbox: "Sandbox | None"; storage: "StorageHandles"
     media: "MediaBackend | None"; memory: "MemoryStore | None"
-    emit: Callable[["MetaBody"], None]              # stamps + emits a MetaEnvelope (§3)
+    emit: "Callable[..., None]"                     # §B8: emit(body, *, correlation_id=None,
+                                                    #   expects_reply=False) — stamps + emits a
+                                                    #   MetaEnvelope (§3); owned by streaming/hooks
     once: Callable[[str, Callable], Awaitable]      # idempotency
 
 @dataclass
@@ -132,11 +158,13 @@ class Disposition(str, Enum):
     # --- NEW (this doc): removes the residual REJECTED→HTTP shim (A10 caveat) ---
     NOT_RUNNING   = "not_running"     # nothing in flight to abort/steer (see §2.4 peek)
     NOT_FOUND     = "not_found"       # principal/auth: caller may not address this session
-    # --- RESERVED (Fork F): cross-worker submit at Rung 2; value reserved now, unused at Rung 1 ---
-    MISDIRECTED   = "misdirected"     # session leased on another worker (Rung-2 routing; see §4 B2)
+    # --- Rung 2 (Fork F): cross-worker submit; member kept, unused at Rung 1 ---
+    MISDIRECTED   = "misdirected"     # Rung 2 — session leased on another worker (see §4 B2)
 
 # Single source of truth for the consumer's HTTP layer. Ships in
 # agent_base.session.http so every consumer maps identically (kills A10's bespoke map).
+# Amended (O4): the MISDIRECTED → 421 row is REMOVED until Rung 2. The enum member above stays
+# (so adding the row later is not a public-enum break), but it has no HTTP mapping at Rung 1.
 DISPOSITION_HTTP_STATUS: dict[Disposition, int] = {
     Disposition.ACCEPTED:      202,   # Accepted (async; output on stream())
     Disposition.RESOLVED:      200,
@@ -146,7 +174,7 @@ DISPOSITION_HTTP_STATUS: dict[Disposition, int] = {
     Disposition.IGNORED_DUP:   200,   # idempotent retry
     Disposition.NOT_RUNNING:   409,   # Conflict — nothing to control (was Nova's 409)
     Disposition.NOT_FOUND:     404,   # was Nova's AgentControlNotFoundError→404
-    Disposition.MISDIRECTED:   421,   # RESERVED (Fork F): session leased elsewhere (Rung-2)
+    # MISDIRECTED → 421 is intentionally NOT mapped at Rung 1 (O4); added when Fork B2 lands.
     Disposition.REJECTED:      422,   # validation / backpressure (mailbox_full → detail)
 }
 
@@ -163,12 +191,15 @@ def ack_to_http(ack: Ack) -> tuple[int, dict]:
 > control command against a session with no in-flight turn now returns a *typed*
 > `NOT_RUNNING` instead of being indistinguishable from a real reject (see §2.4).
 >
-> **`MISDIRECTED` (→ 421) is reserved now (Fork F), not used at Rung 1.** Rung 1 is
-> single-process (in-process dict + LRU + idle-TTL), so every session a worker can address is
-> local — `submit` never returns `MISDIRECTED`. The value is added to the public enum + HTTP map
-> up front because adding it later (when Rung-2 Redis-lease routing can land a `submit` for a
-> session leased on another worker — §4 Fork B2) would be a breaking change to a public enum.
-> Reserving it is free; the cross-worker forward-vs-reject policy itself stays deferred.
+> **`MISDIRECTED` is a reserved enum member (Fork F), not used at Rung 1; the 421 HTTP row is
+> NOT added yet (amended O4).** Rung 1 is single-process (in-process dict + LRU + idle-TTL), so
+> every session a worker can address is local — `submit` never returns `MISDIRECTED`. The enum
+> *value* is added to the public `Disposition` up front because adding it later (when Rung-2
+> Redis-lease routing can land a `submit` for a session leased on another worker — §4 Fork B2)
+> would be a breaking change to a public enum. The **`DISPOSITION_HTTP_STATUS` row is deliberately
+> omitted until Rung 2** (O4) — there is no behavior to map at Rung 1, so a stray lookup would fall
+> through to the default 500, which correctly signals "not a Rung-1 outcome." Reserving the enum
+> member is free; the cross-worker forward-vs-reject policy itself stays deferred.
 
 ---
 
@@ -194,13 +225,28 @@ class SessionEntry:
     last_active: float
 
 @dataclass(frozen=True)
+class OpenAwait:
+    """§I8: one parked await, surfaced on a non-materializing status peek."""
+    cid: str
+    tool_use_ids: tuple[str, ...]
+    tool_names: tuple[str, ...]
+    reason: str                             # an AWAIT_REASON_* string constant (relay-await §O9)
+    opened_at: float
+
+@dataclass(frozen=True)
 class SessionStatus:
     """Non-materializing snapshot (peek). Never builds or hydrates an agent."""
     resident: bool
     phase: "AgentPhase"                     # IDLE if not resident
     has_open_await: bool
-    in_flight: bool                         # actor_running or phase != IDLE
+    open_awaits: tuple[OpenAwait, ...]      # §I8: the parked awaits (empty when none)
+    actor_running: bool                     # raw signal feeding the derived in_flight
     principal: "SessionPrincipal | None"
+
+    @property
+    def in_flight(self) -> bool:            # §O15d: DERIVED, not a stored field
+        """A turn is in flight when the actor is running OR the phase is non-IDLE."""
+        return self.actor_running or self.phase is not AgentPhase.IDLE
 
 class SessionManager:
     """Resident, id-keyed agent sessions. ONE front door to a live tree.
@@ -216,7 +262,12 @@ class SessionManager:
         *,
         max_resident: int = 128,
         idle_ttl_s: float = 900.0,
-    ) -> None: ...
+        principal_policy: "PrincipalPolicy" = StrictScopePolicy(),   # §I1 (from core.identity)
+    ) -> None:
+        """``principal_policy`` (§I1) is the ONE authorization policy, shared by BOTH the
+        ``get_or_create`` session-attach check AND ``AwaitTable.resolve``/``cancel``. Default
+        ``StrictScopePolicy()``. There is no ``SessionPrincipal.authorizes()`` — authorization
+        is always ``policy.authorizes(owner, claimant)``."""
 
     # ── Residency (atomic get-or-create) ───────────────────────────────────
     async def get_or_create(
@@ -227,6 +278,11 @@ class SessionManager:
         """Return the resident agent (RAM hit) or build+initialize it under lock.
 
         ATOMIC: concurrent callers for the same id share one build (no double-create).
+        On a RESIDENT hit, the attach-check routes through ``self.principal_policy`` (§I1):
+        ``principal_policy.authorizes(entry.principal, principal)`` — if it rejects, the caller
+        is treated as not authorized for this session (NOT_FOUND, no existence leak). This is the
+        SAME policy object ``AwaitTable.resolve`` consults; there is no hard ``principal.authorizes()``
+        call anywhere (that method is DELETED).
         On a fresh build the runtime threads ``principal`` into the agent (storage
         scope, sandbox namespace, await/reply auth, audit) and fires the
         ``on_session_start`` hook with ``SessionContext(source=…, is_cold_load=…)``
@@ -246,8 +302,9 @@ class SessionManager:
     ) -> "Ack":
         """Resolve the resident session and route ``command`` to ``agent.submit``.
 
-        ``principal`` (when given) is checked against the resident session's
-        principal; mismatch → ``Ack(disposition=NOT_FOUND)`` (no information leak).
+        ``principal`` (when given) is checked against the resident session's principal via
+        ``self.principal_policy.authorizes(entry.principal, principal)`` (§I1 — the SAME policy
+        the await-table uses); rejection → ``Ack(disposition=NOT_FOUND)`` (no information leak).
         This is the abort-by-id seam that resolves A9.
         """
 
@@ -271,15 +328,10 @@ class SessionManager:
     def resident_count(self) -> int: ...
     def is_resident(self, root_session_id: str) -> bool: ...
 
-    # ── Id allocation (OPTIONAL convenience — the consumer owns id minting) ───
-    @staticmethod
-    def new_session_id() -> str:
-        """Convenience helper only (Q4 RESOLVED). The CONSUMER mints the
-        ``root_session_id`` for a brand-new conversation; the manager does NOT own id
-        allocation (``root_session_id == root agent_uuid``, ratified). This is sugar over
-        ``uuid4()`` so a caller need not import uuid — it is NOT the required path, and a
-        consumer may mint the id any way it likes and pass it straight to ``get_or_create``."""
-        return str(uuid.uuid4())
+    # ── Id allocation: NONE. §O15a (amended): SessionManager.new_session_id() is DELETED. ──
+    #   The CONSUMER mints the root_session_id for a brand-new conversation (root_session_id ==
+    #   root agent_uuid, ratified); the manager does NOT own id allocation and ships no helper.
+    #   A consumer uses `str(uuid.uuid4())` (or any scheme) and passes it to get_or_create.
 
     # ── Internal invariants (private; shown for reconciliation only) ─────────
     def _is_evictable(self, agent) -> bool:
@@ -289,9 +341,10 @@ class SessionManager:
 
 > **Shipped today, kept verbatim:** `evict` (abort→checkpoint→unregister), `evict_idle`,
 > `shutdown`, `_is_evictable`, `_enforce_capacity` (LRU), `resident_count`, `is_resident`.
-> **New/changed (all additive):** `principal` param on `get_or_create`/`submit`,
-> `SessionEntry.principal`, `status()`/`SessionStatus`, `detach()`, and the `on_session_start`
-> firing inside `get_or_create`.
+> **New/changed:** `principal` param on `get_or_create`/`submit`, `SessionEntry.principal`,
+> `principal_policy` ctor arg (§I1), `status()`/`SessionStatus` (with `open_awaits` per §I8 and a
+> derived `in_flight` property per §O15d), `OpenAwait`, `detach()`, and the `on_session_start`
+> firing inside `get_or_create`. **Removed:** `new_session_id()` (§O15a — consumer mints the id).
 
 ---
 
@@ -390,6 +443,11 @@ async def get_or_create(self, root_session_id, principal=None) -> "AgentRuntime"
     async with self._build_lock(root_session_id):            # atomic; no double-build
         entry = self._sessions.get(root_session_id)
         if entry is not None:
+            # §I1: attach-check routes through the ONE injected policy (same object the
+            #      await-table uses) — NOT a hard principal.authorizes(). Rejection is a
+            #      no-existence-leak failure the caller surfaces as NOT_FOUND.
+            if not self.principal_policy.authorizes(entry.principal, principal):
+                raise SessionNotFound(root_session_id)         # consumer → NOT_FOUND
             entry.last_active = self._now()
             return entry.agent
 
@@ -549,9 +607,9 @@ agent = await create_excel_agent_for_member(member=member, agent_uuid=agent_uuid
 async def run_agent(user_prompt: str = Form(...), agent_uuid: str | None = Form(None),
                     member: AuthenticatedMember = Depends(verify_credits)):
     principal = SessionPrincipal(tenant=member.organization_id, subject=member.member_id)
-    # Q4: the CONSUMER mints the id (root_session_id == root agent_uuid). new_session_id() is an
-    # optional helper over uuid4(); `str(uuid.uuid4())` here would be equally correct.
-    sid = agent_uuid or SessionManager.new_session_id()
+    # Q4 + §O15a: the CONSUMER mints the id (root_session_id == root agent_uuid). There is no
+    # SessionManager.new_session_id() helper — mint it directly with uuid4().
+    sid = agent_uuid or str(uuid.uuid4())
     agent = await session_manager.get_or_create(sid, principal=principal)   # resident; no rebuild
     ack = await agent.submit(UserMessage(message=Message.user(user_prompt)))
     # output flows on stream(); see disconnect example below
@@ -596,33 +654,33 @@ async def sse(stream, sid):
 
 ## 4. Both variants (flagged forks)
 
-### Fork A — output plane: `stream()` iterator **vs** caller-owned queue (A3, A8)
+### Fork A — output plane (RESOLVED, amended I3): single-subscriber `stream()` ships at Rung 1
 
-The input/control plane (`submit`) is settled. The **output** plane is the open design
-choice (contract §1.4 says consumers read a typed async iterator; the architecture gates
-the resumable version at Rung 2). Both presented; maintainer picks.
+**Amended (I3/G0): the fork is resolved.** The single-subscriber
+`stream() -> AsyncIterator[StreamItem]` (`StreamItem = StreamDelta | MetaEnvelope`) **SHIPS at
+Rung 1**; replay/fan-out is **Rung 2 behind `from_seq`**. The caller-owned queue path
+(`run_stream(msg, queue, formatter)`) is **DELETED (G0)** — not retained as a one-major bridge.
+The §3 examples (which already read `agent.stream()` + `detach()`) stand as-is.
 
-- **A1 — runtime-owned `stream()` (recommended).** The session owns one output channel;
-  the consumer reads `agent.stream() -> AsyncIterator[StreamDelta | MetaEnvelope]`. Disconnect
-  = stop iterating + `detach()`; the turn keeps producing into a buffer. This is what kills
-  A3/A8 cleanly and what the disconnect example above assumes.
+- **A1 (SHIPPED) — runtime-owned `stream()`.** The session owns one output channel; the consumer
+  reads `agent.stream() -> AsyncIterator[StreamDelta | MetaEnvelope]`. Disconnect = stop iterating
+  + `detach()`; the turn keeps producing into a buffer. This is what kills A3/A8 cleanly and what
+  the disconnect example above assumes.
   ```python
-  def stream(self, *, from_seq: int | None = None) -> AsyncIterator["StreamDelta | MetaEnvelope"]: ...
+  def stream(self) -> AsyncIterator["StreamDelta | MetaEnvelope"]: ...   # Rung 1: single-subscriber
+  # Rung 2 adds resumable replay/fan-out behind a cursor:
+  # def stream(self, *, from_seq: int | None = None) -> AsyncIterator["StreamDelta | MetaEnvelope"]: ...
   ```
-  *Cost:* the runtime owns a per-session output buffer + fan-out; `from_seq` replay is the
-  Rung-2 part (resumable reconnect). Rung 1 can ship a single-subscriber `stream()` without
-  replay and still delete Nova's queue plumbing.
+  *Cost:* the runtime owns a per-session output buffer; `from_seq` replay/fan-out is the Rung-2
+  part (resumable reconnect, multiple subscribers).
 
-- **A2 — caller passes the queue (status quo, back-compat).** `run_stream(msg, queue,
-  stream_formatter)` keeps working; the actor loop already drives it
-  (`_actor_loop(queue, stream_formatter)`). The consumer still owns the `asyncio.Queue` but
-  **not** the cancellation Event or the task (those moved into `submit`/`_do_abort`). This is
-  a strictly smaller workaround than today (A3 → partial) and is the one-major-version
-  bridge while A1 lands.
+- **A2 — DELETED (I3/G0).** Was the caller-owned-queue status quo (`run_stream(msg, queue,
+  stream_formatter)`). It is removed entirely — there is no one-major queue bridge; Nova migrates
+  to `submit(UserMessage)` + `agent.stream()` in the same cut.
 
-> **Recommendation:** ship A2 now (already shipped), commit to A1 as the public read path,
-> and gate `from_seq` replay at Rung 2. The streaming-wire subsystem owns the `StreamDelta`/
-> `MetaEnvelope` taxonomy; this doc only pins that `SessionManager`/`submit` feed it.
+> The streaming-wire subsystem owns the `StreamDelta`/`MetaEnvelope` taxonomy; this doc owns the
+> read-surface signature (`stream()` single-subscriber at Rung 1) and pins that `SessionManager`/
+> `submit` feed it. (The streaming doc defers its read-surface section to this one — I3.)
 
 ### Fork B — residency backend: single-process dict **vs** Redis lease (A7)
 
@@ -670,11 +728,13 @@ Rung-2 timing.
   `HookContext`/principal threading; not directly constructed here).
 
 **Produces (this subsystem owns; other subsystems/consumers depend on):**
-- `SessionManager`, `SessionEntry`, `SessionStatus`, `AgentFactory` (residency + lifecycle).
-  `SessionManager.new_session_id()` is an optional id-minting convenience (Q4; consumer owns minting).
-- `Ack`, `Disposition` (the additive extension: new `NOT_RUNNING`/`NOT_FOUND` + reserved
-  `MISDIRECTED` per Fork F), `DISPOSITION_HTTP_STATUS`, `ack_to_http` (the control-result
-  vocabulary + HTTP map). `REJECTED` is consumed by the relay and tenancy subsystems (R9).
+- `SessionManager`, `SessionEntry`, `SessionStatus` (with `open_awaits` per §I8 + the derived
+  `in_flight` property per §O15d), `OpenAwait` (§I8), `AgentFactory` (residency + lifecycle).
+  No `new_session_id()` — the consumer mints the id (§O15a).
+- `Ack`, `Disposition` (the additive extension: new `NOT_RUNNING`/`NOT_FOUND` + the
+  `MISDIRECTED` enum member per Fork F — **the 421 HTTP row omitted until Rung 2 per §O4**),
+  `DISPOSITION_HTTP_STATUS`, `ack_to_http` (the control-result vocabulary + HTTP map). `REJECTED`
+  is consumed by the relay and tenancy subsystems (R9).
 - `submit(AgentInput) -> Ack` as the ratified public control surface; `say()`/`reply()`
   friendly wrappers; `detach()`/`evict()`/`status()`.
 - The **firing points**: where `on_session_start`/`on_session_end` run, and where the
@@ -682,27 +742,31 @@ Rung-2 timing.
 
 ---
 
-## 6. Migration note (today → new interface; back-compat one major version)
+## 6. Migration note (today → new interface; breaking allowed per G0)
 
-| Today (Nova / shipped) | New interface | Bridge (kept ≥1 major version) |
+**Amended (G0):** breaking changes are allowed (preview/unreleased). Every "kept one major"
+back-compat shim is **removed**, not maintained — Nova migrates in the same cut.
+
+| Today (Nova / shipped) | New interface | Migration |
 |---|---|---|
 | `AgentControlService` + `AgentControlRegistry` (A1/A2) | `SessionManager` | Nova deletes `control/`; no shim needed (manager is a superset). |
-| `create_session/finish_session/start_turn/complete_turn` | `get_or_create` / actor loop / `evict`/`detach` | Thin adapter `LegacyControlService(manager)` mapping old method names → manager calls, `@deprecated`. |
-| `request_abort/request_steer` (A4) | `submit(sid, Abort()/Steer())` | `request_abort = lambda sid, m: manager.submit(sid, Abort(), principal=P(m))`. |
-| `_acquire_session_with_retry` (A6) | `get_or_create` (RAM hit; awaited abort) | Delete; retries are dead code once abort is awaited. Keep as a 1-call passthrough that just calls `get_or_create` if external code imports it. |
-| `extras["owner"]` dict for auth/root (B9, X1) | `SessionPrincipal` + `set_principal()` | `_root_session_id()` reads `principal.claims["root_agent_uuid"]` first, falls back to `extras["owner"]` for one major version (existing rows). `submit(ToolReply)` auth checks principal, falls back to `extras["owner"]`. |
-| `AgentControlError/NotFound/Conflict` + `_raise_control_http_error` (A10) | `Disposition` + `ack_to_http` | Ship `legacy_errors.py` re-exporting the 3 exceptions, raised by the `LegacyControlService` adapter only. |
-| `single-arg` agent factory `Callable[[str], AgentRuntime]` | `Callable[[str, SessionPrincipal|None], AgentRuntime]` | `SessionManager` detects arity (`inspect.signature`) and calls the 1-arg factory with just the id — both shipped demo and Nova factories keep working. Factory returns an `AgentRuntime` (R29); a factory that hands back an `AnthropicAgent` keeps working since `AnthropicAgent` is a back-compat factory for the runtime. |
-| concrete `AnthropicAgent`/`LiteLLMAgent` classes (loop lives in `AnthropicAgent`) | `AgentRuntime` (`agent_base/core/runtime.py`) — one provider-agnostic class (R29 / Fork E = P-A) | Consumers target `AgentRuntime`; `AnthropicAgent(...)` stays a back-compat factory one major version. The loop lift (`submit`/`_actor_loop`/`_do_abort`/`await_external` relocate) is sequenced LAST so this is a relocation, not a rewrite of the seams. |
-| caller-owned `asyncio.Queue` + `cancellation_event` per turn (A3/A8) | `submit` + `stream()` (Fork A) | `run_stream(msg, queue, stream_formatter)` retained (A2 fork) for one major version; `cancellation_event` arg accepted-and-ignored (abort goes through `submit`). |
+| `create_session/finish_session/start_turn/complete_turn` | `get_or_create` / actor loop / `evict`/`detach` | **removed — breaking allowed (G0).** No `LegacyControlService` adapter; callers move to the manager methods directly. Nova migrates in the same cut. |
+| `request_abort/request_steer` (A4) | `submit(sid, Abort()/Steer())` | **removed — breaking allowed (G0).** Callers move to `submit(...)`; no lambda shim retained. Nova migrates in the same cut. |
+| `_acquire_session_with_retry` (A6) | `get_or_create` (RAM hit; awaited abort) | **removed — breaking allowed (G0).** Deleted outright; retries are dead code once abort is awaited. No passthrough kept. |
+| `extras["owner"]` dict for auth/root (B9, X1) | `SessionPrincipal` + `set_principal()` | **removed — breaking allowed (G0).** `_root_session_id()` reads `principal` only; no `extras["owner"]` fallback. `submit(ToolReply)` auth is the `PrincipalPolicy` (§I1) over `principal`. Nova migrates in the same cut. |
+| `AgentControlError/NotFound/Conflict` + `_raise_control_http_error` (A10) | `Disposition` + `ack_to_http` | **removed — breaking allowed (G0).** No `legacy_errors.py` re-export; consumers use `Disposition`/`ack_to_http`. Nova migrates in the same cut. |
+| `single-arg` agent factory `Callable[[str], AgentRuntime]` | `Callable[[str, SessionPrincipal\|None], AgentRuntime]` | `SessionManager` detects arity (`inspect.signature`) and calls a 1-arg factory with just the id — this is an ergonomic convenience, not a deprecation shim. Factory returns an `AgentRuntime` (R29). |
+| concrete `AnthropicAgent`/`LiteLLMAgent` classes (loop lives in `AnthropicAgent`) | `AgentRuntime` (`agent_base/core/runtime.py`) — one provider-agnostic class (R29 / Fork E = P-A) | Consumers target `AgentRuntime`; `AnthropicAgent(...)` stays a **factory** for the runtime (R29; not a back-compat shim — it is the provider-specific constructor). The loop lift relocates `submit`/`_actor_loop`/`_do_abort`/`await_external`, sequenced LAST — a relocation, not a rewrite of the seams. |
+| caller-owned `asyncio.Queue` + `cancellation_event` per turn (A3/A8) | `submit` + `stream()` (Fork A) | **removed — breaking allowed (I3/G0).** `run_stream(msg, queue, stream_formatter)` is DELETED; consumers use `submit(UserMessage)` + `agent.stream()` (single-subscriber, ships Rung 1). Nova migrates in the same cut. |
 | `assert_single_worker_configuration()` (A7) | `SessionManager(single_process=True)` warn | Library logs the multi-worker warning; Nova deletes its boot guard. Hard guard removed when Fork B2 (Redis lease) ships. |
+| `SessionManager.new_session_id()` | (none) | **removed — breaking allowed (O15a/G0).** Deleted; the consumer mints the id with `uuid4()`. Nova migrates in the same cut. |
 
-**Sequencing.** (1) Promote `SessionManager`/`submit`/`Ack` to public + add `principal`
-params, `status()`, `detach()`, `NOT_RUNNING`/`NOT_FOUND` (all additive — no break). (2) Wire
-`on_session_start`/`on_session_end` once the hooks subsystem lands `SessionContext`/`HookOutcome`.
-(3) Ship `LegacyControlService` adapter so Nova flips imports in one commit. (4) Land Fork A1
-(`stream()`) and deprecate the queue path. (5) At the next major, drop the `extras["owner"]`
-fallback and the legacy adapter.
+**Sequencing.** (1) Promote `SessionManager`/`submit`/`Ack` to public + add `principal` params,
+`principal_policy` ctor arg (§I1), `status()`/`open_awaits` (§I8), `detach()`,
+`NOT_RUNNING`/`NOT_FOUND`. (2) Wire `on_session_start`/`on_session_end` once the hooks subsystem
+lands `SessionContext`/`HookOutcome`. (3) Flip Nova's imports to the manager in one commit (no
+legacy adapter — breaking allowed). (4) Ship Fork A1 (`stream()`) as the read path; `run_stream` is
+deleted in the same cut. (5) Drop `extras["owner"]` entirely (no fallback) in the same cut.
 
 ---
 
@@ -746,25 +810,32 @@ fallback and the legacy adapter.
      **`REJECTED`** at the await/relay layer (the cid was a valid reply target; the reply is refused
      for auth — the relay subsystem must **not** downgrade this to `IGNORED_STALE`, which would hide
      an auth failure). They fire at different granularities (session-addressing vs cid-record). The
-     **library performs the equality check** at `submit` (the *mechanism*); the *policy* is injectable
+     **library performs the check** at `submit` (the *mechanism*); the *policy* is injectable
      via a `PrincipalPolicy` supplied at `SessionManager` construction.
+   - **Amended (I1):** the check is **not** a hard `principal.authorizes()` (that `SessionPrincipal`
+     method is DELETED) and **not** a raw equality — both the `get_or_create` attach-check AND
+     `AwaitTable.resolve`/`cancel` route through the ONE injected `PrincipalPolicy`
+     (`StrictScopePolicy()` by default; `SessionManager.__init__(..., principal_policy=...)`).
 4. **`new_session_id()` ownership.** Ratified decision: `root_session_id == root agent_uuid`.
    For a brand-new conversation the consumer needs an id *before* `get_or_create`. Either the
    manager exposes `new_session_id()` (uuid) or the agent factory mints it and the manager
    re-keys. I assumed the consumer mints it; flag if the manager should own id allocation.
    - **RESOLVED (Q4): the consumer mints the id; the manager does NOT own id allocation.** This
-     doc's assumption stands. `SessionManager.new_session_id()` is shipped only as an **optional
-     convenience helper** over `uuid4()` (see §2.2) — not the required path; a consumer may mint the
-     id any way it likes and pass it straight to `get_or_create`.
+     doc's assumption stands. A consumer may mint the id any way it likes (e.g. `str(uuid.uuid4())`)
+     and pass it straight to `get_or_create`.
+   - **Amended (O15a):** `SessionManager.new_session_id()` is **DELETED** — not even shipped as an
+     optional convenience helper. There is no library id-minting surface at all.
 5. **Fork B2 cross-worker `submit`.** When a session is leased on another worker, should
    `submit` *forward* (RPC/pub-sub) or return `NOT_FOUND`/`MISDIRECTED`? Affects whether a new
    `Disposition.MISDIRECTED` (→ 421) is needed. Out of Rung-1 scope but the enum is public, so
    reserving the value now avoids a later break.
-   - **RESOLVED (Fork F): reserve `Disposition.MISDIRECTED` (→ 421) now.** The value is added to the
-     public enum + `DISPOSITION_HTTP_STATUS` up front (§2.1) so the later Rung-2 break is avoided;
-     it is **unused at Rung 1** (single-process: every addressable session is local). The
-     forward-vs-reject *policy* for a session leased on another worker stays deferred to when B2
-     (Redis lease) lands — only the enum value is reserved here.
+   - **RESOLVED (Fork F): reserve `Disposition.MISDIRECTED` now.** The enum value is added to the
+     public `Disposition` up front (§2.1) so the later Rung-2 break is avoided; it is **unused at
+     Rung 1** (single-process: every addressable session is local). The forward-vs-reject *policy*
+     for a session leased on another worker stays deferred to when B2 (Redis lease) lands.
+   - **Amended (O4):** the `MISDIRECTED → 421` row is **NOT added to `DISPOSITION_HTTP_STATUS`**
+     until Rung 2 — only the enum member (with a `# Rung 2` comment) is reserved now; the HTTP
+     mapping lands with B2.
 6. **`ToolReply` has no `target`/principal field today** (`commands.py`), yet relay auth
    needs to know the caller. Either `SessionManager.submit(sid, ToolReply, principal=...)`
    carries it (my assumption) or `ToolReply` grows an auth field. The await/relay subsystem

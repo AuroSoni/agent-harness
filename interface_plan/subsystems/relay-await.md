@@ -17,11 +17,17 @@ integrity guarantee). Companion subsystems: **lifecycle-hooks** (owns `before_to
 **session-actor** (owns `submit`/`Ack`/the actor loop/`SessionManager`).
 
 > **Reconciled against RECONCILIATION.md** (binding outcomes relevant to this subsystem):
+>
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
+>
 > - **R1** — `SessionPrincipal` is imported from **`agent_base/core/identity.py`** (not `core.tenancy`); the
 >   tenancy doc still owns the type + ergonomics, it just lives in `core.identity` (the identity+correlation
 >   vocabulary module, R34).
-> - **R6** — `FrontendCallView` field names are **`cid`/`tool_name`** (canonical, streaming-owned), where
->   `cid == tool_use_id`. The old `tool_use_id`/`name` spellings are renamed throughout this doc.
+> - **R6** — `FrontendCallView` field names are **`tool_use_id`/`tool_name`** (canonical, streaming-owned).
+>   **Amended (B7):** the field is `tool_use_id`, not `cid` — this reverts R6's `cid` rename. `cid` now
+>   means exactly one thing: the pause-level reply key (`ToolReply.cid` == `MetaEnvelope.correlation_id`),
+>   distinct from the per-call `tool_use_id`. FE contract: "reply with the envelope's correlation_id;
+>   attribute per-call results by tool_use_id." The old `name` spelling stays renamed to `tool_name`.
 > - **R7** — Reply-auth is a **single** method: `AwaitTable.resolve(cid, results, *, principal=)` may return
 >   `REJECTED`. There is **no** separate `resolve_authorized`. `ToolReply` stays principal-free; the claimant
 >   identity rides `SessionManager.submit(sid, ToolReply, principal=)`.
@@ -39,7 +45,8 @@ integrity guarantee). Companion subsystems: **lifecycle-hooks** (owns `before_to
 >   `TurnSettlement` → `agent_base/core/cost.py`; the runtime class → `agent_base/core/runtime.py`
 >   (`AgentRuntime`; §6 Fork E = P-A, sequenced last, `AnthropicAgent` stays a back-compat factory).
 > - **Local fork (cid allocation)** is **decided**: ship **Variant A** (runtime-minted opaque cid) as the
->   contract-true design; **Variant B** (`cid == agent_uuid`) is the one-major back-compat bridge only. The cid
+>   contract-true design. **Amended (O3, G0):** Variant B (`cid == agent_uuid`) is **deleted**, not
+>   retained as a bridge — breaking changes are allowed, so there is no one-major back-compat shim. The cid
 >   is decided jointly with **streaming**, which owns `correlation_id` on the wire (§4).
 
 ---
@@ -122,14 +129,21 @@ class AwaitRecord:
     await_generation: int               # retired by an interrupt (the race fix)
     principal: SessionPrincipal | None = None   # §1.1 — replaces (org_id, member_id) for reply-auth
     child_agent_id: str | None = None
-    reason: AwaitReason = AwaitReason.FRONTEND_TOOL
+    reason: str = AWAIT_REASON_FRONTEND_TOOL    # §O9: open string vocabulary, not an enum
     state: AwaitState = AwaitState.OPEN
 
-class AwaitReason(str, Enum):
-    FRONTEND_TOOL = "frontend_tool"     # executor="frontend"
-    CONFIRMATION  = "confirmation"      # needs_confirmation=True
-    SUBAGENT      = "subagent"          # a parked descendant (was the InlineRelayRegistry case)
-    SCRIPTED      = "scripted"          # a non-LLM/slash turn calling a frontend tool (X6)
+# §O9 (amended): AwaitReason is NOT an enum. `reason` is a plain `str` defaulting to
+# "frontend_tool"; the four current values ship as documented string constants (open
+# vocabulary — a consumer/feature may park with a new reason without a library change).
+AWAIT_REASON_FRONTEND_TOOL = "frontend_tool"    # executor="frontend"
+AWAIT_REASON_CONFIRMATION  = "confirmation"     # needs_confirmation=True
+AWAIT_REASON_SUBAGENT      = "subagent"         # a parked descendant (was the InlineRelayRegistry case)
+AWAIT_REASON_SCRIPTED      = "scripted"         # a non-LLM/slash turn calling a frontend tool (X6)
+# Two behavioral reads off `reason`:
+#   1. cold re-arm  — "frontend_tool" is re-armable on a cold resume; "scripted" is NOT
+#      (a scripted/slash caller is gone once evicted — see §2.4).
+#   2. eviction/observability — surfaced on SessionStatus.open_awaits (session-control §I8)
+#      and consulted by the eviction guard.
 
 @dataclass
 class Join:
@@ -153,19 +167,28 @@ class AwaitTable(Protocol):
     # open / resolve  (resolve returns a *Disposition* so submit() maps it straight to an Ack)
     async def open(self, *, cid: str, root_session_id: str, owner_agent_id: str,
                    tool_use_ids: Sequence[str], principal: SessionPrincipal | None = None,
-                   child_agent_id: str | None = None, reason: AwaitReason = AwaitReason.FRONTEND_TOOL,
+                   child_agent_id: str | None = None, reason: str = AWAIT_REASON_FRONTEND_TOOL,
                    await_generation: int | None = None) -> Join: ...
     async def resolve(self, cid: str, results: "list[ContentBlock]", *,
                       principal: SessionPrincipal | None = None) -> Disposition: ...
     #   THE single auth+resolve method (§3-R7) — no separate resolve_authorized. The principal
     #   check lives HERE so it is enforced regardless of caller; the record's owner principal was
-    #   stamped at open(). Dispositions:
-    #   RESOLVED      — open, current generation, principal authorized → future set
+    #   stamped at open(). §I1: resolve() consults the injected PrincipalPolicy (from
+    #   core.identity) to decide owner↔claimant authorization — it does NOT call a
+    #   SessionPrincipal.authorizes() method (that method is DELETED). The policy is the one
+    #   SessionManager.principal_policy (default StrictScopePolicy()), shared with the
+    #   session-attach check in get_or_create. Dispositions:
+    #   RESOLVED      — open, current generation, policy.authorizes(owner, claimant) → future set
     #   IGNORED_DUP   — already resolved/closed (double delivery / late retry)
     #   IGNORED_STALE — unknown cid OR generation retired by an interrupt
-    #   REJECTED      — principal mismatch (cross-tenant reply attempt)  ← was Nova's manual 403.
+    #   REJECTED      — policy rejects owner↔claimant (cross-tenant reply attempt)  ← was Nova's manual 403.
     #                   §3-R9: a cid-record principal mismatch is ALWAYS REJECTED, never downgraded
     #                   to IGNORED_STALE (downgrading would hide an auth failure as mere staleness).
+
+    # cancel one parked await (§I6) — close that record, cancel its future as an abort, and
+    # trigger the owner's _repair_self_chain for JUST that pause. Returns a Disposition mapping
+    # to an Ack like resolve(). (Distinct from interrupt(), which retires the WHOLE root.)
+    async def cancel(self, cid: str, *, principal: SessionPrincipal | None = None) -> Disposition: ...
 
     # interrupt / cleanup
     async def interrupt(self, root_session_id: str) -> list[str]: ...  # bump gen + close every OPEN
@@ -186,14 +209,34 @@ is folded into `resolve`); per **§3-R9** a cid-record principal mismatch return
 `IGNORED_STALE`). This is the **table-level** (cid-auth) check; the sibling **session-addressing**
 check — `SessionManager.submit` targeting a session owned by a different principal → `NOT_FOUND`
 (no existence leak) — fires at a different granularity in the session-actor doc. The two are
-complementary, not alternatives. The *policy* (how strictly `principal.authorizes(owner)` is read)
-is injectable at `SessionManager` construction; the *mechanism* is the library's.
+complementary, not alternatives. The *policy* is the injected `PrincipalPolicy` (§I1): a single
+`PrincipalPolicy` instance is supplied at `SessionManager` construction (`principal_policy:
+PrincipalPolicy = StrictScopePolicy()`, homed at `core.identity`) and consulted by BOTH
+`AwaitTable.resolve` here AND the session-attach check in `get_or_create`. There is no
+`SessionPrincipal.authorizes()` method — it has been deleted; authorization is `policy.authorizes(
+owner, claimant)`. The *mechanism* (where the check fires) is the library's; only the *policy* is
+injectable.
 
 ### 2.2 `await_external` — the one suspend primitive (delete the `_relay_mode` fork)
 
 `await_external` already exists and is correct in shape. The redesign **removes the
 `_relay_mode`/`_await_inline_relay` second branch entirely** — every pause goes through
 `await_external`, differing only in the **`cid` allocation policy** and `reason`, not the code path.
+
+**`ResumeOutcome` is a dataclass (§B3), not an enum.** It carries both the terminal status and the
+results, so `await_external` returns one value the caller can both branch on and read:
+
+```python
+# Canonical home: agent_base/await_table/types.py
+@dataclass(frozen=True)
+class ResumeOutcome:
+    status: Literal["resumed", "aborted"]
+    results: list[ContentBlock]            # spliced results on "resumed"; [] on "aborted"
+```
+
+`await_external` is **runtime-internal** (§I4): the public tool-facing primitive is
+`ctx.call_frontend_tool(name, input)` (ctx wiring lives in the tools subsystem). The runtime method
+`AgentRuntime.call_frontend_tool` (§2.6) stays and is what `ctx.call_frontend_tool` dispatches to.
 
 ```python
 class AgentRuntime:   # the one provider-agnostic loop class @ agent_base/core/runtime.py
@@ -205,15 +248,16 @@ class AgentRuntime:   # the one provider-agnostic loop class @ agent_base/core/r
         cid: str,
         tool_use_ids: list[str],
         outbound: list[FrontendCallView],     # the enriched calls to surface (post before_tool)
-        reason: AwaitReason,
+        reason: str,
         ctx,                                  # for ctx.emit (stamps the MetaEnvelope header)
         child_agent_id: str | None = None,
     ) -> ResumeOutcome:
-        """Suspend on ``cid`` until a ToolReply arrives. The ONE relay primitive.
+        """Suspend on ``cid`` until a ToolReply arrives. The ONE relay primitive (runtime-internal).
 
-        Returns ``ResumeOutcome.RESUMED`` (results spliced; caller continues the loop)
-        or ``ResumeOutcome.ABORTED`` (cancelled while waiting; caller returns upward).
-        Never raises CancelledError past the ``finally`` — disconnect/abort are normal exits.
+        Returns ``ResumeOutcome(status="resumed", results=<spliced blocks>)`` (caller continues the
+        loop) or ``ResumeOutcome(status="aborted", results=[])`` (cancelled while waiting; caller
+        returns upward). Never raises CancelledError past the ``finally`` — disconnect/abort are
+        normal exits.
         """
         table = get_await_table()
         join = await table.open(
@@ -228,7 +272,8 @@ class AgentRuntime:   # the one provider-agnostic loop class @ agent_base/core/r
 
         # ── Emit the ONE control envelope. expects_reply=True; FE replies via ToolReply(cid). ──
         ctx.emit(AwaitInput(tools=outbound), correlation_id=cid, expects_reply=True)
-        #        └─ §3: ctx.emit stamps event_id/run_id/agent_id/parent_agent_id/seq/ts and
+        #        └─ §B8: emit signature is emit(body, *, correlation_id=None, expects_reply=False).
+        #           §3: ctx.emit stamps event_id/run_id/agent_id/parent_agent_id/seq/ts and
         #           routes onto the stream as a MetaEnvelope. No hand-built envelope, no key-name
         #           bikeshedding (kills C4 / relay_helpers.emit_awaiting_chunk).
 
@@ -236,7 +281,7 @@ class AgentRuntime:   # the one provider-agnostic loop class @ agent_base/core/r
             results = await self._race_join_against_cancel(join)   # shared wait helper (below)
         except _AwaitCancelled:
             await self._repair_self_chain()        # §6: synthesize results for my orphaned tool_use
-            return ResumeOutcome.ABORTED
+            return ResumeOutcome(status="aborted", results=[])
         finally:
             table.pop(cid)
 
@@ -245,7 +290,7 @@ class AgentRuntime:   # the one provider-agnostic loop class @ agent_base/core/r
 
         await self._splice_relay_results(cid, results, ctx)   # fires after_tool per result (§2.1)
         await self.checkpoint()                               # persist at the suspend/resume boundary
-        return ResumeOutcome.RESUMED
+        return ResumeOutcome(status="resumed", results=results)
 
     async def _race_join_against_cancel(self, join: Join) -> list[ContentBlock]:
         """Single, shared wait: future vs cancellation_event. Replaces the two copy-pasted
@@ -291,7 +336,7 @@ class AgentRuntime:
         # (possibly rewritten / enriched) inputs. This is where C2/B5 enrichment lands — via the
         # ToolCallContext.update returned by before_tool, NOT a bespoke _persist_state override.
         outbound: list[FrontendCallView] = [
-            FrontendCallView(cid=c.tool_id, tool_name=c.name, input=c.input)   # §3-R6: cid == tool_use_id
+            FrontendCallView(tool_use_id=c.tool_id, tool_name=c.name, input=c.input)   # §B7
             for c in (*classification.frontend_calls, *classification.confirmation_calls)
         ]
 
@@ -305,8 +350,8 @@ class AgentRuntime:
             completed_results=self._wrap(backend_results),
             run_id=self._run_id,
         )
-        reason = (AwaitReason.CONFIRMATION if classification.confirmation_calls
-                  else AwaitReason.FRONTEND_TOOL)
+        reason = (AWAIT_REASON_CONFIRMATION if classification.confirmation_calls
+                  else AWAIT_REASON_FRONTEND_TOOL)
         return await self.await_external(
             cid=cid, tool_use_ids=[c.tool_id for c in (*classification.frontend_calls,
                                                        *classification.confirmation_calls)],
@@ -336,13 +381,32 @@ class SessionManager:                                  # owned by session-actor 
                 # Cold path: bring the session back; its loop re-opens the SAME cid and re-parks,
                 # then the redelivered reply resolves it. One contract, hot or cold.
                 agent = await self.get_or_create(root_session_id)   # rehydrate from pending_relay
-                await agent._rearm_pending_await()                  # re-open cid on the table + re-emit AwaitInput
+                await agent._rearm_pending_await(reply=command)     # §B4: reply in hand → re-open WITHOUT re-emit
         return await (await self.get_or_create(root_session_id)).submit(command)
 ```
 
-`_rearm_pending_await()` reads `agent_config.pending_relay.cid`, calls `table.open(...)`, and
-re-enters the loop parked — so the redelivered `ToolReply(cid)` resolves it exactly as the hot path
-would. The consumer makes **one** call (`submit(ToolReply(cid))`); hot vs cold is invisible.
+**`_rearm_pending_await(reply=None)` is split (§B4).** It *always* re-opens the cid record and
+re-enters the parked state; it emits `AwaitInput` **only when no inbound reply is in hand**:
+
+```python
+class AgentRuntime:
+    async def _rearm_pending_await(self, *, reply: ToolReply | None = None) -> None:
+        """Re-open the persisted pause on a cold resume. (§B4: conditional re-emit.)
+
+        ALWAYS: read agent_config.pending_relay.cid, call table.open(...), re-enter the loop parked.
+        ONLY when reply is None (an unprompted rehydrate — e.g. a status peek brought the session
+        back, no ToolReply waiting): emit AwaitInput so the FE is re-prompted for the open pause.
+        When reply IS in hand (the reply-triggered cold path above), the redelivered ToolReply(cid)
+        resolves the just-re-opened record with ZERO re-emit — re-prompting would double the FE call.
+        """
+        relay = self.agent_config.pending_relay
+        await get_await_table().open(cid=relay.cid, ...)            # ALWAYS re-open + re-park
+        if reply is None:                                          # cold re-arm with no reply waiting
+            ctx.emit(AwaitInput(tools=relay.outbound_view()), correlation_id=relay.cid, expects_reply=True)
+```
+
+The consumer makes **one** call (`submit(ToolReply(cid))`); hot vs cold is invisible, and the
+reply-triggered cold path never re-emits the await frame.
 
 ### 2.5 Library-owned chain integrity at the resume boundary (B1 / C5 / X13)
 
@@ -401,7 +465,11 @@ which both hot and cold re-enter), there is exactly one chokepoint. The consumer
 ### 2.6 Frontend / scripted convenience seam (kills `call_frontend_tool` + `relay_helpers`)
 
 A non-LLM caller (slash command, recording agent) that needs a frontend tool no longer mints a
-`relay_uuid` and hand-rolls a registry future. It uses the same primitive via a thin helper:
+`relay_uuid` and hand-rolls a registry future. It uses the same primitive via a thin helper.
+
+`AgentRuntime.call_frontend_tool` is the **runtime** entry; the **public tool-facing primitive**
+is `ctx.call_frontend_tool(name, input)` (§I4 — the ctx wiring lives in the tools subsystem and
+dispatches here). `await_external` itself is runtime-internal, never called by tool authors.
 
 ```python
 class AgentRuntime:
@@ -416,10 +484,11 @@ class AgentRuntime:
         tool_use_id = f"toolu_{uuid4().hex}"
         prepared = await self._run_before_tool(name, tool_input, executor="frontend", ctx=ctx)
         outcome = await self.await_external(
-            cid=cid, tool_use_ids=[tool_use_id], reason=AwaitReason.SCRIPTED, ctx=ctx,
-            outbound=[FrontendCallView(cid=tool_use_id, tool_name=name, input=prepared)],  # §3-R6
+            cid=cid, tool_use_ids=[tool_use_id], reason=AWAIT_REASON_SCRIPTED, ctx=ctx,
+            outbound=[FrontendCallView(tool_use_id=tool_use_id, tool_name=name, input=prepared)],  # §B7
         )
-        return [] if outcome is ResumeOutcome.ABORTED else self._last_relay_results
+        return outcome.results        # §B3: ResumeOutcome is a dataclass; [] on "aborted",
+                                      #       the spliced blocks on "resumed". No _last_relay_results.
 ```
 
 ### 2.7 `AwaitInput` / `FrontendCallView` (from streaming/contract §3 — referenced, not redefined)
@@ -428,9 +497,11 @@ class AgentRuntime:
 # Canonical home: agent_base/streaming/meta.py (streaming owns the type; shown here for composition).
 @dataclass(frozen=True)
 class FrontendCallView:           # the per-call view the FE renders & replies to
-    cid: str                      # §3-R6: the reply key — equals the tool_use_id of this call
-    tool_name: str                # §3-R6: was `name`
+    tool_use_id: str              # §B7: per-call id — the FE attributes its result by this
+    tool_name: str                # §B7: was `name`
     input: dict[str, Any]
+    #  FE contract (§B7): reply with the ENVELOPE's correlation_id (the pause-level cid);
+    #  attribute per-call results by tool_use_id. cid ≠ tool_use_id.
 
 @dataclass(frozen=True)
 class AwaitInput(MetaBody):        # MetaBody subtype; carried in MetaEnvelope.body
@@ -558,32 +629,28 @@ library's `get_await_table()` / `set_await_table()` DI seam (Rung-2 Redis swaps 
 
 ---
 
-## 4. Both variants (local fork — DECIDED)
+## 4. cid allocation (local fork — DECIDED; Variant B deleted per O3/G0)
 
 The contract does not flag §4/§5 for this subsystem, but I surfaced one genuine local fork: **how
 `cid` is allocated and surfaced.** **Reconciled outcome (§7.5): DECIDED = Variant A** (runtime-minted
-opaque cid) as the contract-true design, with **Variant B** retained purely as the one-major
-back-compat bridge. Both variants are kept below for the migration story; the choice is jointly owned
-with **streaming** (which owns `correlation_id` on the wire).
+opaque cid) as the contract-true design. **Amended (O3, G0):** Variant B (`cid == agent_uuid`) is
+**deleted outright** — breaking changes are allowed, so there is no back-compat bridge to keep. The
+`InlineRelayRegistry` compat bridge, the `cid == agent_uuid` derivation, and the `_relay_mode` no-op
+retention are all removed (see §6). The choice is jointly owned with **streaming** (which owns
+`correlation_id` on the wire); both ratify **A**.
 
-- **Variant A — runtime-minted opaque cid (recommended).** `cid = f"relay_{run_id}_{step}"`,
+- **Variant A (SHIPPED) — runtime-minted opaque cid.** `cid = f"relay_{run_id}_{step}"`,
   surfaced only inside `AwaitInput.correlation_id` and `MetaEnvelope.correlation_id`. The FE treats
   it as an echo token (reply with the cid you received). **Pros:** kills uuid-spoofing/
   `classifyRelayTarget` outright (C1); the FE never *classifies* a pause as root-vs-sub-agent — it
   just echoes the cid; collision-free; aligns with §3 ("FE dedupe/ordering come free" off the
-  correlation header). **Cons:** the FE must migrate from "POST to a URL chosen by uuid shape" to
-  "POST `{cid, results}` to one endpoint."
+  correlation header).
 
-- **Variant B — cid defaults to the parking agent's `agent_uuid`.** Back-compat bridge: for a
-  sub-agent, `cid == child agent_uuid` (exactly today's `InlineRelayRegistry` key, and what
-  `await_external` does *today* at `anthropic_agent.py:1151`); for a root, `cid == root agent_uuid`.
-  **Pros:** zero FE change in the first release — a client still POSTing to `/{uuid}/tool_results`
-  can have the wrapper derive `cid=uuid`. **Cons:** perpetuates "the reply id is an agent identity,"
-  which is exactly the coupling C1 calls out; two ids can collide if a uuid is reused across turns.
-
-**Decision (reconciled):** ship **A** as the contract-true design and provide **B** purely as the
-one-major-version back-compat wrapper (§6) so the FE can migrate. The streaming doc owns
-`correlation_id` on the wire, so A/B was decided jointly with it — both ratify **A**.
+- **Variant B — DELETED (O3/G0).** Was the back-compat bridge deriving `cid` from the parking
+  agent's `agent_uuid` (sub-agent `cid == child agent_uuid`, root `cid == root agent_uuid`). It
+  perpetuated "the reply id is an agent identity," exactly the C1 coupling, and two ids could collide
+  on a reused uuid. Since breaking changes are allowed, it is removed rather than maintained; Nova
+  migrates the FE to Variant A in the same cut.
 
 ---
 
@@ -605,8 +672,11 @@ one-major-version back-compat wrapper (§6) so the FE can migrate. The streaming
 - `ContentBlock` / `ToolResultContent` / `ToolResultBase` (core types) — reply payload + repair.
 
 **Produces / owns:**
-- `AwaitTable` Protocol + `AwaitRecord` + `AwaitState` + `AwaitReason` + `Join` + `get/set_await_table`.
-- `await_external(cid, ...)` and `call_frontend_tool(...)` as the public suspend primitives.
+- `AwaitTable` Protocol (incl. `cancel(cid, *, principal=)` per §I6) + `AwaitRecord` + `AwaitState`
+  + the `AWAIT_REASON_*` string constants (§O9 — `reason` is an open `str`, not an enum) + `Join` +
+  `get/set_await_table`. `ResumeOutcome` dataclass (§B3, homed `agent_base/await_table/types.py`).
+- `await_external(...)` (runtime-internal) and `AgentRuntime.call_frontend_tool(...)` (the runtime
+  entry behind the public `ctx.call_frontend_tool` primitive, §I4).
 - `_reconcile_relay_reply` (the §6 resume-boundary chain-integrity guarantee) and `_repair_self_chain`
   (nested-repair on subtree cancel) — invariants the loop and the interrupt critical section call.
 - The `cid` allocation contract and the `PendingToolRelay.cid` persistence field (for cold resume,
@@ -624,18 +694,21 @@ one-major-version back-compat wrapper (§6) so the FE can migrate. The streaming
 
 ---
 
-## 6. Migration note (today → new; one-major back-compat)
+## 6. Migration note (today → new; breaking allowed per G0)
 
-| Today (library) | New interface | Back-compat (one major) |
+**Amended (G0):** breaking changes are allowed (preview/unreleased). Every "kept one major"
+back-compat shim is **removed**, not maintained — Nova migrates in the same cut.
+
+| Today (library) | New interface | Migration |
 |---|---|---|
-| `_relay_mode ∈ {persist_return, inline_await}` selects the path (`anthropic_agent.py:243-249, 1142`) | Removed. Every pause → `await_external`; cid policy + `reason` differ, not the path. | `_relay_mode` retained as a no-op attribute; setting `inline_await` logs a deprecation and behaves identically (a resident sub-agent parks in RAM either way). |
-| `InlineRelayRegistry` (child-uuid → Future), `agent_base/relay/registry.py` | Superseded by `AwaitTable` (cid → record/future + generations). `await_external` already replaces `_await_inline_relay`; **delete `_await_inline_relay`**. | Keep `agent_base.relay` module exporting `InlineRelayRegistry` + `get_inline_relay_registry` as a shim whose `register/deliver/owner_of` delegate to `AwaitTable` with `cid == child_agent_uuid` (Variant B). Emits deprecation warnings. |
-| `AwaitRecord.organization_id` / `member_id` (today's fields) | `AwaitRecord.principal: SessionPrincipal`. | `open(...)` still accepts `organization_id=`/`member_id=` kwargs and packs them into a `SessionPrincipal`; `owner_of` exposes `.principal` plus legacy `(org, member, root)` tuple property. |
-| Resume = `resume_with_relay_results(relay_results, queue, formatter, cancel_event)` re-opening a turn (root) | Resume = `submit(ToolReply(cid, results))` on a resident session; cold path rehydrates + re-arms the same cid. | `resume_with_relay_results(...)` retained: it derives `cid` from `pending_relay.cid` (or `agent_uuid` under Variant B), calls `_rearm_pending_await()`, then `submit(ToolReply(cid, relay_results))`. Existing callers keep working. |
-| `on_relay_result(...)` fires **after** context combination (`anthropic_agent.py:716`); `_get_relay_tool_name/_input` private | `after_tool(ToolResultContext)` fires **pre-splice** on the relay path (§2.1), with `tool_name`/`tool_input`/`executor` on the ctx. | `on_relay_result(...)` kept as a thin adapter the runtime calls from the `after_tool` site (deprecated); `_get_relay_tool_name/_input` promoted to read off the `AwaitRecord.tool_use_ids` + `pending_relay`. |
-| Resume-boundary chain repair is the consumer's job (Nova override) | `_reconcile_relay_reply` inside `await_external` — library guarantee (§6) for hot AND cold resume. | No wrapper needed; this is purely additive correctness. A `reconcile=False` escape hatch on `await_external` is provided for one major for any consumer that already double-repairs. |
-| Two endpoints: `POST /tool_results` (SSE) + `POST /{uuid}/tool_results/inline` (JSON ack) | One endpoint mapping a wire model → `submit(ToolReply(cid))`, returning the `Ack` disposition. | Demo + docs ship the single-endpoint shape; a compat router exposes `/{uuid}/tool_results/inline` that derives `cid=uuid` and calls the same `submit`, returning the old `{status, agent_uuid}` JSON. Delete next major. |
-| `awaiting_frontend_tools` MetaDelta hand-emitted in 3 places (`anthropic_agent.py:811, 906, 1175`) | `ctx.emit(AwaitInput(tools=...), correlation_id=cid, expects_reply=True)` — one emit site in `await_external`. | The runtime continues to *also* emit the legacy `awaiting_frontend_tools` MetaDelta (same payload, now carrying `cid`) for one major so existing FE parsers keep working; new FEs read `AwaitInput`. |
+| `_relay_mode ∈ {persist_return, inline_await}` selects the path (`anthropic_agent.py:243-249, 1142`) | Removed. Every pause → `await_external`; cid policy + `reason` differ, not the path. | **removed — breaking allowed (O3/G0).** `_relay_mode` is deleted, not retained as a no-op attribute. Nova migrates in the same cut. |
+| `InlineRelayRegistry` (child-uuid → Future), `agent_base/relay/registry.py` | Superseded by `AwaitTable` (cid → record/future + generations). `await_external` already replaces `_await_inline_relay`; **delete `_await_inline_relay`**. | **removed — breaking allowed (O3/G0).** The `agent_base.relay` shim (`InlineRelayRegistry` + `get_inline_relay_registry` + the `cid == child_agent_uuid` Variant-B derivation) is deleted, not kept. Nova migrates in the same cut. |
+| `AwaitRecord.organization_id` / `member_id` (today's fields) | `AwaitRecord.principal: SessionPrincipal`. | **removed — breaking allowed (G0).** `open(...)` no longer accepts `organization_id=`/`member_id=`; callers pass `principal=`. No legacy tuple property. Nova migrates in the same cut. |
+| Resume = `resume_with_relay_results(relay_results, queue, formatter, cancel_event)` re-opening a turn (root) | Resume = `submit(ToolReply(cid, results))` on a resident session; cold path rehydrates + re-arms the same cid. | **removed — breaking allowed (G0).** `resume_with_relay_results(...)` is deleted; callers move to `submit(ToolReply(cid))`. Nova migrates in the same cut. |
+| `on_relay_result(...)` fires **after** context combination (`anthropic_agent.py:716`); `_get_relay_tool_name/_input` private | `after_tool(ToolResultContext)` fires **pre-splice** on the relay path (§2.1), with `tool_name`/`tool_input`/`executor` on the ctx. | **removed — breaking allowed (G0).** `on_relay_result(...)` is deleted; consumers move to `after_tool`. Nova migrates in the same cut. |
+| Resume-boundary chain repair is the consumer's job (Nova override) | `_reconcile_relay_reply` inside `await_external` — library guarantee (§6) for hot AND cold resume. | Purely additive correctness; no wrapper needed. **The `reconcile=False` escape hatch is DELETED (I6) — not provided at all** (no consumer should double-repair). |
+| Two endpoints: `POST /tool_results` (SSE) + `POST /{uuid}/tool_results/inline` (JSON ack) | One endpoint mapping a wire model → `submit(ToolReply(cid))`, returning the `Ack` disposition. | **removed — breaking allowed (G0).** The second `/{uuid}/tool_results/inline` route (and the `cid=uuid` compat router) is deleted; one endpoint serves every relay reason. Nova migrates in the same cut. |
+| `awaiting_frontend_tools` MetaDelta hand-emitted in 3 places (`anthropic_agent.py:811, 906, 1175`) | `ctx.emit(AwaitInput(tools=...), correlation_id=cid, expects_reply=True)` — one emit site in `await_external`. | **removed — breaking allowed (B5/G0).** The legacy `awaiting_frontend_tools` MetaDelta emission is **deleted** (and the codec's legacy await mapping with it — streaming §6). `AwaitInput` is the only await frame; the runtime does NOT also emit the legacy delta. Nova migrates in the same cut. |
 
 **Net deletion in Nova:** `control/relay.py` (shim), `slash_commands/relay_helpers.py` (mirror),
 `NovaAgent.resume_with_relay_results` + `_repair_orphaned_tool_results` + `_persist_screenshot_relay_results`

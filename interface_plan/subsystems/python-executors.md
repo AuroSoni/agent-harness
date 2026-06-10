@@ -11,20 +11,24 @@
 >   `ctx.emit`, does not return an `Ack`, and the executor stays usable standalone with `ctx=None`.
 >   The `ctx` type is the shipped `ToolContext` at its canonical home `agent_base/tools/context.py`.
 > - **R17 — three composing truncation layers.** The executor's `ExecutorPolicy.max_output_chars`
->   (print buffer, **50_000**, this subsystem, upstream) is **distinct** from the tool-result
->   `OutputBudget.max_chars` (**25_000 chars**, tools subsystem) and from the sub-agent
->   `max_tool_result_tokens` (**25_000 *tokens*** — a *different unit*, sub-agent subsystem). The three
->   compose top-to-bottom; documented as distinct so consumers stop double-truncating (the F6 root cause).
+>   (print buffer, **50_000**, this subsystem, upstream) is **distinct** from the tool-result char cap
+>   (`ctx.emit_capped`'s `max_chars`, **25_000 chars**, tools subsystem — O11(a): the `OutputBudget`
+>   dataclass is deleted, the cap is a plain kwarg) and from the sub-agent `max_tool_result_tokens`
+>   (**25_000 *tokens*** — a *different unit*, sub-agent subsystem). The three compose top-to-bottom;
+>   documented as distinct so consumers stop double-truncating (the F6 root cause).
 > - **R36 — sync core + `arun()` is correct** for the single-writer actor loop. **DECIDED**, not open
 >   (see §4); the actor awaits the tool coroutine, so `arun()`'s `to_thread` hop never stalls other planes.
 > - **No executor registry** (supporting subsystem) — confirmed (§2.5).
 >
 > Canonical homes referenced by this doc (binding per §1 glossary): `ToolContext` →
 > `agent_base/tools/context.py`; `Sandbox` → `agent_base/sandbox/sandbox_types.py`; the tool-result
-> `OutputBudget` → tools (`agent_base/tools/`); `SessionPrincipal` → `agent_base/core/identity.py`;
+> char cap (`ctx.emit_capped`'s `max_chars`, O11(a) — the `OutputBudget` dataclass is deleted) → tools
+> (`agent_base/tools/`); `SessionPrincipal` → `agent_base/core/identity.py`;
 > `MetaEnvelope`/`MetaBody` → `agent_base/streaming/meta.py` (this subsystem touches **none** of the
 > last two — see §5). This subsystem owns no shared type; `ExecutorResult`/`ExecutorPolicy` are local
 > value types.
+
+> **Amended (2026-06-10):** updated per AMENDMENTS.md (round-2 review resolutions). Where an older fork decision or R-number conflicts, AMENDMENTS.md wins.
 
 **Verdict up front.** This subsystem is *mostly adequate* and is **not** a headline driver — the smell catalog files **no dedicated executor smell ID**, and the one consumer that wraps it (`CodeExecutionTool`) is ~80% legitimate product logic (pip-install mode, docstring templating, sandboxed `open`). The redesign here is **small and surgical**: turn the empty `PythonExecutor` marker class into a real **`Protocol`**, fold the four scattered knobs (imports, builtins allow-list, output cap, operation/loop limits) into one `ExecutorPolicy` dataclass, give the executor a **one-call lifecycle** plus a **builtins/imports extension seam**, and let it (optionally) read identity from the shared `ctx`. No back-compat breakage required; the existing free function and class stay as thin wrappers.
 
@@ -59,20 +63,22 @@ class ExecutorPolicy:
     `additional_authorized_imports` arg, (b) a generic `additional_functions`
     bag, (c) a `max_print_output_length` arg, and (d) module-level
     MAX_OPERATIONS / MAX_WHILE_ITERATIONS constants read inside the evaluator.
-    Frozen + `.evolve()` so a base policy can be specialized without mutation.
+
+    Amended (O14(a)): EXACTLY 6 fields. `base_imports`, `unblock_functions`,
+    `block_extra_functions`, and `block_extra_modules` are DROPPED — they were
+    knobs nothing varied (the base module set is a library constant the policy
+    layers ON TOP of; dangerous-fn unblocking / extra blocking had no live
+    consumer). `evolve()` is also DROPPED (O14(b)) — callers construct a new
+    ExecutorPolicy or use the `file_io_policy()` preset.
     """
     # --- imports allow-list -------------------------------------------------
-    authorized_imports: tuple[str, ...] = ()      # ADDED on top of base modules
-    base_imports: tuple[str, ...] = BASE_BUILTIN_MODULES   # override only to shrink
+    authorized_imports: tuple[str, ...] = ()      # ADDED on top of the library base modules
     allow_all_imports: bool = False               # == today's ["*"]; use with care
 
-    # --- builtins / dangerous allow-list ergonomics -------------------------
+    # --- builtins ergonomics ------------------------------------------------
     extra_builtins: Mapping[str, Callable] = field(default_factory=dict)
     #   name -> callable, merged OVER BASE_PYTHON_TOOLS (this is where `open` goes,
     #   instead of the untyped `additional_functions` bag).
-    unblock_functions: frozenset[str] = frozenset()   # e.g. {"builtins.compile"}
-    block_extra_functions: frozenset[str] = frozenset()  # tighten beyond defaults
-    block_extra_modules: frozenset[str] = frozenset()
 
     # --- output budget (single source of truth; kills the F6 re-truncate) ---
     max_output_chars: int = DEFAULT_MAX_LEN_OUTPUT     # 50_000
@@ -81,18 +87,16 @@ class ExecutorPolicy:
     max_operations: int = MAX_OPERATIONS               # 10_000_000
     max_while_iterations: int = MAX_WHILE_ITERATIONS   # 1_000_000
 
-    def evolve(self, **changes: Any) -> "ExecutorPolicy":
-        """Return a copy with overrides (thin wrapper over dataclasses.replace)."""
-        return replace(self, **changes)
-
     @property
     def effective_imports(self) -> tuple[str, ...]:
         if self.allow_all_imports:
             return ("*",)
-        return tuple(dict.fromkeys((*self.base_imports, *self.authorized_imports)))
+        # base module set is the library constant; the policy layers authorized_imports on top.
+        return tuple(dict.fromkeys((*BASE_BUILTIN_MODULES, *self.authorized_imports)))
 
     def build_builtins(self) -> dict[str, Callable]:
-        """BASE_PYTHON_TOOLS, with dangerous-fn unblocks and extra builtins applied."""
+        """BASE_PYTHON_TOOLS with `extra_builtins` merged over it.
+        (O14(a): no unblock/block knobs — extension is additive via extra_builtins.)"""
         ...   # library composes; consumer never reimplements the merge
 ```
 
@@ -104,7 +108,9 @@ STDLIB_FILE_IO: tuple[str, ...] = (        # was Nova's DEFAULT_STANDARD_LIBRARY
     "base64", "csv", "fnmatch", "glob", "hashlib", "io", "json", "mimetypes",
     "pathlib", "shutil", "struct", "tarfile", "tempfile", "wave", "zipfile",
 )
-DATA_SCIENCE: tuple[str, ...] = ("numpy", "pandas", "scipy")   # if installed
+# Amended (O14(b)): the DATA_SCIENCE preset is DROPPED — it was a thin tuple a consumer
+# can spell inline via `authorized_imports=("numpy", "pandas", "scipy")`. STDLIB_FILE_IO
+# stays (it maps to a real Nova fork) along with file_io_policy().
 
 def file_io_policy(extra: Sequence[str] = (), **kw: Any) -> ExecutorPolicy:
     return ExecutorPolicy(authorized_imports=(*STDLIB_FILE_IO, *extra), **kw)
@@ -130,9 +136,13 @@ class PythonExecutor(Protocol):
     """
     policy: ExecutorPolicy
 
-    def bind_tools(self, tools: Mapping[str, Callable]) -> None:
+    def bind_tools(self, tools: Mapping[str, Callable], *, replace: bool = False) -> None:
         """Make agent tools callable from executed code. Replaces send_tools();
-        builtins/extra_builtins are folded in by the executor, not the caller."""
+        builtins/extra_builtins are folded in by the executor, not the caller.
+
+        O14(c): COMPOSES by default — a second `bind_tools` call adds to the already-bound
+        tools rather than clobbering them. Pass `replace=True` to drop the prior set first
+        (the old send_tools always replaced)."""
 
     def bind_variables(self, variables: Mapping[str, Any]) -> None: ...
 
@@ -142,11 +152,17 @@ class PythonExecutor(Protocol):
         consumes only identity/idempotency off it (`ctx.principal`,
         `ctx.idempotency_key`) for scoped namespacing. It NEVER calls `ctx.emit`,
         never returns an Ack, and works with `ctx=None` (R3). `ctx` is the shipped
-        ToolContext at `agent_base/tools/context.py` (frozen contract type, §5)."""
+        ToolContext at `agent_base/tools/context.py` (frozen contract type, §5).
+
+        O14: NO-RAISE structured-error contract — `run()` returns an ExecutorResult
+        with `error` set on an InterpreterError instead of raising. `arun()` shares the
+        SAME contract (it just awaits `run` off-thread). The legacy `__call__` re-raise
+        shim is DELETED under G0, so there is no spelling of this call that raises."""
 
     async def arun(self, code: str, *, ctx: "ToolContext | None" = None) -> ExecutorResult:
         """Default mixin: `await asyncio.to_thread(self.run, code, ctx=ctx)`.
-        Removes the thread-trampoline consumers hand-roll for async embedding."""
+        Removes the thread-trampoline consumers hand-roll for async embedding.
+        Shares run()'s no-raise structured-error contract (O14)."""
 
     def reset(self) -> None:
         """Clear per-session state (variables, print buffer, op counters)."""
@@ -161,23 +177,25 @@ class LocalPythonExecutor(PythonExecutor):
         policy: ExecutorPolicy | None = None,
         *,
         tools: Mapping[str, Callable] | None = None,   # bind at construction (1 call)
-        # --- back-compat shim params (deprecated, see §6) ---
-        additional_authorized_imports: Sequence[str] | None = None,
-        max_print_output_length: int | None = None,
-        additional_functions: Mapping[str, Callable] | None = None,
+        # G0: the legacy shim params (additional_authorized_imports / max_print_output_length /
+        # additional_functions) and _coalesce_policy are DELETED — callers pass an ExecutorPolicy.
     ):
-        self.policy = _coalesce_policy(policy, additional_authorized_imports,
-                                       max_print_output_length, additional_functions)
+        self.policy = policy or ExecutorPolicy()
         self._check_authorized_imports_installed(self.policy.effective_imports)
         self._builtins = self.policy.build_builtins()     # merge happens HERE, once
         self.state: dict[str, Any] = {"__name__": "__main__"}
+        self._bound_tools: dict[str, Callable] = {}
         self.static_tools: dict[str, Callable] = dict(self._builtins)
         if tools:
             self.bind_tools(tools)
 
-    def bind_tools(self, tools):
-        # builtins + extra_builtins already in static_tools; just layer agent tools
-        self.static_tools = {**tools, **self._builtins}
+    def bind_tools(self, tools, *, replace=False):
+        # O14(c): COMPOSE by default; replace=True drops the prior set first.
+        if replace:
+            self._bound_tools = {}
+        self._bound_tools = {**self._bound_tools, **tools}
+        # builtins + extra_builtins are in self._builtins; layer the (composed) agent tools.
+        self.static_tools = {**self._bound_tools, **self._builtins}
 
     def run(self, code, *, ctx=None) -> ExecutorResult:
         try:
@@ -197,8 +215,8 @@ class LocalPythonExecutor(PythonExecutor):
         except InterpreterError as e:
             return ExecutorResult(None, str(self.state.get("_print_outputs", "")),
                                   False, error=e)   # structured, not raise-only
-
-    __call__ = run   # back-compat: existing `executor(code)` keeps working
+    # O14/G0: the `__call__ = run` re-raise shim is DELETED. run()/arun() share the SAME
+    # no-raise structured-error contract — there is no callable spelling that re-raises.
 ```
 
 > `evaluate_python_code(..., limits=...)` threads the two limits into
@@ -305,7 +323,7 @@ Before: impossible to do cleanly — `class PythonExecutor: pass` gave nothing t
 The contract flags BOTH-variants only for **§4 tenancy** and **§5 storage**, neither of which this subsystem owns. **No local both-variants fork is required here.** The one design choice this doc surfaced to the reconciler — whether `run()` stays **sync with an `arun()` mixin** versus making `run()` natively `async` — has been **DECIDED (R36): sync core + `arun()` async wrapper.** It is no longer open. The decided rationale (ratified by the reconciliation):
 
 - The AST evaluator is **CPU-bound and blocking**; a native-async signature would force every future backend (Docker/E2B/remote) to be async even when it is a blocking in-process interpreter.
-- It is **non-breaking** for the existing `executor(code)` / `__call__` call sites.
+- The sync/async split is a clean call-site story (G0: the `__call__` re-raise shim is deleted, so the only spellings are `run()` and `arun()` — both sharing the no-raise structured-error contract; callers move to `run`/`arun` in the same cut).
 - It composes with the **single-writer actor loop**: backend tool bodies are already awaited by the loop, and `arun()`'s single `await asyncio.to_thread(self.run, code, ctx=ctx)` hop does not stall the actor's other planes (mailbox / joins / control) because the actor awaits the tool coroutine. The executor remains usable standalone with a bare `ctx=None`.
 
 ---
@@ -324,25 +342,32 @@ The contract flags BOTH-variants only for **§4 tenancy** and **§5 storage**, n
 | # | Layer | Knob (default) | Unit | Owner subsystem | What it caps |
 |---|---|---|---|---|---|
 | 1 (upstream) | **Executor print buffer** | `ExecutorPolicy.max_output_chars` (**50_000**) | **chars** | python-executors (this doc) | the captured `print()` / stdout buffer *inside* one `run()`, before any tool sees it |
-| 2 (middle) | **Tool-result budget** | `OutputBudget.max_chars` (**25_000**) | **chars** | tools (`agent_base/tools/`) | the **final tool result**; a sandbox-offload reference, *not* a token cap — overridable in `after_tool` |
+| 2 (middle) | **Tool-result budget** | `ctx.emit_capped(..., max_chars=25_000)` (O11(a): no `OutputBudget` dataclass) | **chars** | tools (`agent_base/tools/`) | the **final tool result**; a sandbox-offload reference, *not* a token cap — overridable in `after_tool` |
 | 3 (outer) | **Sub-agent token budget** | `max_tool_result_tokens` (**25_000**) | ***tokens*** | sub-agent subsystem | the sub-agent's tool-result allowance — a **different unit** at a different layer |
 
 They compose top-to-bottom: the executor caps the print buffer (1) → the tool-result path caps the final result (2), which `after_tool` (contract §6) may override → the sub-agent token budget (3) bounds the result the parent ingests. **No layer auto-derives from another** — the `25_000` of layer 2 (chars) and layer 3 (tokens) collide numerically but are different units, and layer 1's `50_000` is upstream of both. The executor is responsible **only for layer 1**; it never reaches into layers 2 or 3.
 
 ---
 
-## 6. Migration note (today → new; back-compat for one major version)
+## 6. Migration note (G0 — breaking changes allowed; Nova migrates in the same cut)
 
-All changes are **additive**; the existing public surface (`evaluate_python_code`, `LocalPythonExecutor`, `BASE_BUILTIN_MODULES`, `PythonExecutor`) keeps working.
+> **Amended (G0):** the library is preview/unreleased, so every "kept one major" shim is **removed**, not
+> maintained. Each row is a breaking cut; Nova migrates in the same cut. Rows that merely describe
+> still-true behavior (e.g. the module globals remaining the policy-field defaults) are retained.
 
-| Today | New | Back-compat |
+| Today | New | Migration (breaking allowed) |
 |---|---|---|
-| `class PythonExecutor: pass` | `PythonExecutor(Protocol)` | A `pass`-body marker class is structurally compatible — existing `isinstance(x, PythonExecutor)` checks against the runtime-checkable Protocol still pass for `LocalPythonExecutor`. `class Foo(PythonExecutor)` subclasses that did nothing keep importing. |
-| `CodeOutput` | `ExecutorResult` | `CodeOutput = ExecutorResult` alias exported for one major version; new fields (`truncated`, `error`) default so old construction still works. |
-| `LocalPythonExecutor(additional_authorized_imports, max_print_output_length, additional_functions)` | `LocalPythonExecutor(policy=..., tools=...)` | All three legacy kwargs retained and coalesced into an `ExecutorPolicy` by `_coalesce_policy()` (with a `DeprecationWarning`). The required-positional `additional_authorized_imports` becomes optional (defaults to `()`), which is strictly looser — no caller breaks. |
-| `executor.send_tools(tools)` / `send_variables(v)` | `bind_tools` / `bind_variables` (or `tools=` at construction) | Keep `send_tools`/`send_variables` as deprecated aliases that call the new methods. |
-| `executor(code) -> CodeOutput` | `executor.run(code) -> ExecutorResult` | `__call__ = run` preserves the call syntax. Note: `run()` now returns a structured `error` instead of *only* raising `InterpreterError`; for back-compat, `__call__` (legacy path) **re-raises** `result.error` when set, so existing try/except around `executor(code)` is unchanged. New `.run()` callers opt into the no-raise contract. |
-| `MAX_OPERATIONS` / `MAX_WHILE_ITERATIONS` module globals | `ExecutorPolicy.max_operations` / `max_while_iterations` | Globals stay as the **defaults** for the policy fields, so unconfigured behavior is identical; `evaluate_python_code(..., limits=None)` falls back to the globals when no policy threads them. |
-| `BASE_PYTHON_TOOLS` / `DANGEROUS_*` globals consulted directly | `ExecutorPolicy.build_builtins()` / `unblock_functions` / `block_extra_*` | Globals remain the seed; the policy layers on top. No monkeypatching required to extend the allow-list. |
+| `class PythonExecutor: pass` | `PythonExecutor(Protocol)` | still-true: a `pass`-body marker is structurally compatible — `isinstance(x, PythonExecutor)` against the runtime-checkable Protocol still passes for `LocalPythonExecutor`; trivial `class Foo(PythonExecutor)` subclasses keep importing. |
+| `CodeOutput` | `ExecutorResult` | removed — breaking allowed; the `CodeOutput = ExecutorResult` alias is deleted (G0). New fields (`truncated`, `error`) default so construction is unchanged. Nova migrates the name in the same cut. |
+| `LocalPythonExecutor(additional_authorized_imports, max_print_output_length, additional_functions)` | `LocalPythonExecutor(policy=ExecutorPolicy(...), tools=...)` | removed — breaking allowed; the three legacy kwargs and `_coalesce_policy()` are **deleted** (G0). Callers pass an `ExecutorPolicy` (or the `file_io_policy()` preset). Nova migrates in the same cut. |
+| `ExecutorPolicy` with `base_imports`/`unblock_functions`/`block_extra_functions`/`block_extra_modules`/`evolve()`; `DATA_SCIENCE` preset | 6-field `ExecutorPolicy` (`authorized_imports`, `allow_all_imports`, `extra_builtins`, `max_output_chars`, `max_operations`, `max_while_iterations`); `STDLIB_FILE_IO` + `file_io_policy()` | removed — breaking allowed (O14(a)/(b)); the dropped fields, `evolve()`, and `DATA_SCIENCE` are deleted. Construct a new policy instead of `evolve()`; spell data-science imports inline via `authorized_imports`. |
+| `executor.send_tools(tools)` / `send_variables(v)` | `bind_tools(tools, *, replace=False)` / `bind_variables` (or `tools=` at construction) | removed — breaking allowed; `send_tools`/`send_variables` aliases are deleted (G0). `bind_tools` now **composes** by default (O14(c)); pass `replace=True` for the old clobber semantics. |
+| `executor(code) -> CodeOutput` | `executor.run(code) -> ExecutorResult` / `await executor.arun(code)` | removed — breaking allowed; the `__call__ = run` re-raise shim is **deleted** (O14/G0). `run()` and `arun()` share the **no-raise** structured-error contract (`ExecutorResult.error` set on failure) — there is no callable spelling that re-raises. Nova moves its `executor(code)` call sites + try/except to the `result.error` check in the same cut. |
+| `MAX_OPERATIONS` / `MAX_WHILE_ITERATIONS` module globals | `ExecutorPolicy.max_operations` / `max_while_iterations` | still-true: globals remain the **defaults** for the policy fields, so unconfigured behavior is identical; `evaluate_python_code(..., limits=None)` falls back to the globals when no policy threads them. |
+| `BASE_PYTHON_TOOLS` / `DANGEROUS_*` globals consulted directly | `ExecutorPolicy.build_builtins()` + `extra_builtins` | still-true seed: globals remain the base; the policy layers `extra_builtins` on top (O14(a): no `unblock`/`block` knobs). No monkeypatching required to extend the allow-list (additive only). |
 
-**Deprecation horizon:** legacy kwargs, `send_tools`/`send_variables`, and the `CodeOutput` alias ship for **one major version** with `DeprecationWarning`, then drop. The Protocol, `ExecutorResult` fields, and `ExecutorPolicy` are stable from introduction.
+**Cut note (G0):** there is no `DeprecationWarning` window (preview/unreleased) — the legacy kwargs,
+`send_tools`/`send_variables`, the `CodeOutput` alias, the `__call__` re-raise shim, the dropped
+`ExecutorPolicy` fields, `evolve()`, and the `DATA_SCIENCE` preset are all **deleted** and Nova migrates in
+the same cut. The Protocol, `ExecutorResult` fields, and the 6-field `ExecutorPolicy` are stable from
+introduction.
