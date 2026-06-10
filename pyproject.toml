@@ -35,10 +35,9 @@ packages = ["agent_base"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# Only collect the live suite under tests/. The legacy ``old_tests/`` tree is
-# superseded by tests/ and imports symbols that no longer exist; restricting
-# testpaths keeps a bare ``pytest`` run from aborting on its collection errors.
-testpaths = ["tests"]
+# tests/interface is the TDD red suite for the interface_plan redesign; it is
+# collected only when targeted explicitly (see tests/interface/README.md).
+testpaths = ["tests/unit", "tests/integration"]
 addopts = "-m 'not integration'"
 markers = [
     "integration: marks tests as integration tests (deselected by default)",
