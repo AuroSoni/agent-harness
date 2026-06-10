@@ -4,11 +4,17 @@ Covers interface_plan/subsystems/relay-await.md:
   - §2.1 / R7 — ``resolve(cid, results, *, principal=None)`` is THE single
     auth+resolve method; there is no separate ``resolve_authorized``.
   - §2.1 / R9 — a cid-record principal mismatch is ALWAYS ``REJECTED``,
-    never downgraded to ``IGNORED_STALE``.
-  - §2.1 / AMENDMENTS §I1 — resolve consults the injected ``PrincipalPolicy``
-    (``StrictScopePolicy`` default, homed at ``agent_base/core/identity.py``);
-    authorization is ``policy.authorizes(owner, claimant)``, never a method on
-    ``SessionPrincipal``.
+    never downgraded to ``IGNORED_STALE``; per tenancy §A.4 the auth check
+    runs after record lookup and BEFORE the generation/dedupe/stale checks.
+  - §2.1 / AMENDMENTS §I1 — resolve consults the ONE injected
+    ``PrincipalPolicy`` (``StrictScopePolicy`` default, homed at
+    ``agent_base/core/identity.py``); authorization is
+    ``policy.authorizes(owner, claimant)``, never a method on
+    ``SessionPrincipal``. The instance is injected at
+    ``SessionManager.__init__(principal_policy=...)`` (session_control's
+    ctor) and forwarded per call as ``resolve(..., policy=...)`` — tenancy
+    §A.4: ``pol = policy or StrictScopePolicy()``. The table itself grows no
+    constructor knob for it.
   - §3.1 — an auth failure is a REJECTED ack, not a side-channel abort: the
     await stays parked and a later authorized reply still resolves it.
 
@@ -94,6 +100,36 @@ async def test_principal_mismatch_is_never_downgraded_to_stale():
     assert disposition is not Disposition.IGNORED_STALE
 
 
+async def test_auth_check_precedes_staleness_for_retired_generations():
+    # R9's actual legislation: the one scenario where REJECTED could be
+    # downgraded to IGNORED_STALE is a record whose generation was retired
+    # AND whose claimant mismatches. Tenancy §A.4 orders the checks
+    # lookup → auth → generation, so the mismatch still surfaces as REJECTED.
+    table = AwaitTable()
+    join = await _open(table)
+    table.bump_generation("root_1")
+
+    disposition = await table.resolve("relay_run_1_0", [_tr()], principal=OTHER_TENANT)
+
+    assert disposition is Disposition.REJECTED
+    assert disposition is not Disposition.IGNORED_STALE
+    assert not join.future.done()
+
+
+async def test_matching_claimant_on_retired_generation_is_stale():
+    # The complement: once auth passes, the retired generation surfaces as
+    # IGNORED_STALE — proving the precedence test above fails on auth, not
+    # on staleness ordering.
+    table = AwaitTable()
+    join = await _open(table)
+    table.bump_generation("root_1")
+
+    disposition = await table.resolve("relay_run_1_0", [_tr()], principal=OWNER)
+
+    assert disposition is Disposition.IGNORED_STALE
+    assert not join.future.done()
+
+
 async def test_rejected_reply_leaves_the_await_parked():
     # §3.1: "an auth failure is a REJECTED Ack, not a side-channel abort" —
     # the record stays OPEN, the future stays pending, and the rightful
@@ -148,19 +184,33 @@ async def test_resolve_principal_is_keyword_only():
 
 
 # ── injected PrincipalPolicy (I1) ─────────────────────────────────────────
+# The policy rides the resolve CALL (tenancy §A.4: ``resolve(..., policy=)``
+# with ``pol = policy or StrictScopePolicy()``); SessionManager forwards its
+# one ctor-injected instance. The table has no policy constructor knob — the
+# docs home the injection at SessionManager.__init__ only.
 
 
-async def test_injected_deny_policy_rejects_even_a_matching_scope():
-    table = AwaitTable(principal_policy=_DenyAllPolicy())
+async def test_resolve_policy_is_keyword_only_with_none_default():
+    table = AwaitTable()
     await _open(table)
-    disposition = await table.resolve("relay_run_1_0", [_tr()], principal=SAME_SCOPE)
+    with pytest.raises(TypeError):
+        await table.resolve(
+            "relay_run_1_0", [_tr()], OTHER_TENANT, _DenyAllPolicy())
+
+
+async def test_forwarded_deny_policy_rejects_even_a_matching_scope():
+    table = AwaitTable()
+    await _open(table)
+    disposition = await table.resolve(
+        "relay_run_1_0", [_tr()], principal=SAME_SCOPE, policy=_DenyAllPolicy())
     assert disposition is Disposition.REJECTED
 
 
-async def test_injected_allow_policy_admits_a_cross_tenant_claimant():
-    table = AwaitTable(principal_policy=_AllowAllPolicy())
+async def test_forwarded_allow_policy_admits_a_cross_tenant_claimant():
+    table = AwaitTable()
     join = await _open(table)
-    disposition = await table.resolve("relay_run_1_0", [_tr()], principal=OTHER_TENANT)
+    disposition = await table.resolve(
+        "relay_run_1_0", [_tr()], principal=OTHER_TENANT, policy=_AllowAllPolicy())
     assert disposition is Disposition.RESOLVED
     assert join.future.done()
 
@@ -169,10 +219,11 @@ async def test_policy_is_consulted_with_owner_and_claimant():
     # I1: authorization is policy.authorizes(owner, claimant) — owner is the
     # principal stamped at open(), claimant rides the resolve call.
     policy = _RecordingPolicy()
-    table = AwaitTable(principal_policy=policy)
+    table = AwaitTable()
     await _open(table)
 
-    await table.resolve("relay_run_1_0", [_tr()], principal=OTHER_TENANT)
+    await table.resolve(
+        "relay_run_1_0", [_tr()], principal=OTHER_TENANT, policy=policy)
 
     assert policy.calls
     owner, claimant = policy.calls[-1]
@@ -181,9 +232,11 @@ async def test_policy_is_consulted_with_owner_and_claimant():
 
 
 async def test_explicit_strict_scope_policy_matches_the_default():
-    # The default table behaves exactly like one constructed with the
-    # documented default policy: StrictScopePolicy().
-    table = AwaitTable(principal_policy=StrictScopePolicy())
+    # ``policy=None`` (the default) behaves exactly like passing the
+    # documented default policy: ``pol = policy or StrictScopePolicy()``.
+    table = AwaitTable()
     await _open(table)
-    assert await table.resolve("relay_run_1_0", [_tr()], principal=OTHER_TENANT) \
+    assert await table.resolve(
+        "relay_run_1_0", [_tr()],
+        principal=OTHER_TENANT, policy=StrictScopePolicy()) \
         is Disposition.REJECTED

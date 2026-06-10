@@ -22,6 +22,10 @@ The AgentRuntime constructor is deliberately unspecified by the docs, so the
 algorithmic specs below drive the documented methods through plain ``self``
 state stubs (the only collaborator surface the doc's pseudocode reads);
 full-loop behaviour is exercised at the table level in the sibling files.
+The same stub-self technique drives ``await_external`` end-to-end against a
+REAL ``AwaitTable`` (via the ``set_await_table`` DI seam): the §2.2 emit
+shape, open-record stamping, reconcile→splice→checkpoint resumed path,
+abort mapping, and the ``finally`` pop are all behavioral specs below.
 """
 from __future__ import annotations
 
@@ -31,9 +35,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_base.await_table.types import Join, ResumeOutcome
+from agent_base.await_table.table import AwaitTable, set_await_table
+from agent_base.await_table.types import (
+    AWAIT_REASON_FRONTEND_TOOL,
+    Join,
+    ResumeOutcome,
+)
+from agent_base.core.identity import SessionPrincipal
 from agent_base.core.runtime import AgentRuntime, _AwaitCancelled
 from agent_base.core.types import TextContent, ToolResultContent
+from agent_base.streaming.meta import AwaitInput, FrontendCallView
 
 
 def _tr(tool_id: str, text: str = "ok") -> ToolResultContent:
@@ -319,3 +330,198 @@ def test_await_external_is_annotated_to_return_resume_outcome():
     # value) — callers branch on .status and read .results.
     hints = inspect.signature(AgentRuntime.await_external).return_annotation
     assert hints in (ResumeOutcome, "ResumeOutcome")
+
+
+# ── await_external behavior (§2.2 — driven through a stub self) ───────────
+# ctx is a PARAMETER of await_external, so a recording fake is a collaborator
+# stand-in, not a mock of the type under test. The table is a REAL AwaitTable
+# installed through the documented set_await_table DI seam; the shared
+# helpers (_race_join_against_cancel / _reconcile_relay_reply) are the real
+# implementations bound through the stub; only the pseudocode's named
+# side-effect collaborators (_splice_relay_results, checkpoint,
+# _repair_self_chain) are recorded.
+
+
+class _RecordingCtx:
+    """Collaborator fake for the §B8 emit handle."""
+
+    def __init__(self) -> None:
+        self.emits: list[tuple] = []
+
+    def emit(self, body, *, correlation_id=None, expects_reply=False):
+        self.emits.append((body, correlation_id, expects_reply))
+
+
+class _AwaitSelf:
+    """Stands in for the runtime state §2.2's pseudocode reads on ``self``."""
+
+    agent_id = "agent_uuid_99"
+
+    def __init__(self, principal=None, cancel_event=None, existing=()):
+        self.principal = principal
+        self._cancellation_event = cancel_event
+        self._existing = set(existing)
+        self.calls: list[str] = []
+        self.spliced: list[tuple] = []
+
+    def _root_session_id(self) -> str:
+        return "root_1"
+
+    def _existing_tool_result_ids(self) -> set[str]:
+        return set(self._existing)
+
+    async def _race_join_against_cancel(self, join):
+        return await AgentRuntime._race_join_against_cancel(self, join)
+
+    async def _reconcile_relay_reply(self, cid, expected, results):
+        self.calls.append("reconcile")
+        return await AgentRuntime._reconcile_relay_reply(
+            self, cid, expected, results)
+
+    async def _splice_relay_results(self, cid, results, ctx):
+        self.calls.append("splice")
+        self.spliced.append((cid, list(results), ctx))
+
+    async def checkpoint(self):
+        self.calls.append("checkpoint")
+
+    async def _repair_self_chain(self):
+        self.calls.append("repair")
+
+
+def _fcv(tool_use_id: str = "toolu_a") -> FrontendCallView:
+    return FrontendCallView(
+        tool_use_id=tool_use_id, tool_name="fe_tool", input={"q": 1})
+
+
+async def _until(predicate) -> None:
+    for _ in range(100):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("the await never parked / condition never held")
+
+
+def _start(stub: _AwaitSelf, ctx: _RecordingCtx, **overrides) -> "asyncio.Task":
+    kwargs = dict(
+        cid="relay_run_42_7",
+        tool_use_ids=["toolu_a"],
+        outbound=[_fcv()],
+        reason=AWAIT_REASON_FRONTEND_TOOL,
+        ctx=ctx,
+    )
+    kwargs.update(overrides)
+    return asyncio.create_task(AgentRuntime.await_external(stub, **kwargs))
+
+
+async def test_await_external_emits_one_await_input_envelope():
+    # §2.2/B5/B8: the ONE control envelope — ctx.emit(AwaitInput(tools=
+    # outbound), correlation_id=cid, expects_reply=True). No second frame,
+    # no hand-built envelope.
+    table = AwaitTable()
+    set_await_table(table)
+    try:
+        ctx = _RecordingCtx()
+        stub = _AwaitSelf()
+        outbound = [_fcv()]
+        task = _start(stub, ctx, outbound=outbound)
+        await _until(lambda: ctx.emits)
+
+        assert len(ctx.emits) == 1
+        body, correlation_id, expects_reply = ctx.emits[0]
+        assert isinstance(body, AwaitInput)
+        assert list(body.tools) == outbound
+        assert correlation_id == "relay_run_42_7"
+        assert expects_reply is True
+
+        await table.resolve("relay_run_42_7", [_tr("toolu_a")])
+        await task
+    finally:
+        set_await_table(AwaitTable())
+
+
+async def test_await_external_stamps_identity_on_the_open_record():
+    # §2.2/§1.1: open() carries the ambient self.principal — NOT
+    # extras['owner'] — plus reason, child_agent_id, the root session id and
+    # the owning agent id.
+    table = AwaitTable()
+    set_await_table(table)
+    try:
+        principal = SessionPrincipal(tenant="org_1", subject="member_1")
+        ctx = _RecordingCtx()
+        stub = _AwaitSelf(principal=principal)
+        task = _start(stub, ctx, child_agent_id="child_agent_7")
+        await _until(lambda: table.owner_of("relay_run_42_7") is not None)
+
+        record = table.owner_of("relay_run_42_7")
+        assert record.principal == principal
+        assert record.reason == AWAIT_REASON_FRONTEND_TOOL
+        assert record.child_agent_id == "child_agent_7"
+        assert record.root_session_id == "root_1"
+        assert record.owner_agent_id == stub.agent_id
+
+        await table.resolve(
+            "relay_run_42_7", [_tr("toolu_a")], principal=principal)
+        await task
+    finally:
+        set_await_table(AwaitTable())
+
+
+async def test_await_external_resumed_path_reconciles_splices_checkpoints():
+    # §2.2 resumed path, in order: the REAL _reconcile_relay_reply cleans the
+    # raw reply (stale id dropped), _splice_relay_results receives the
+    # reconciled blocks + ctx, checkpoint() persists at the resume boundary,
+    # and the record is popped in the finally.
+    table = AwaitTable()
+    set_await_table(table)
+    try:
+        ctx = _RecordingCtx()
+        stub = _AwaitSelf()
+        task = _start(stub, ctx)
+        await _until(lambda: ctx.emits)
+
+        await table.resolve(
+            "relay_run_42_7", [_tr("toolu_a"), _tr("toolu_stale")])
+        outcome = await task
+
+        assert isinstance(outcome, ResumeOutcome)
+        assert outcome.status == "resumed"
+        ids = [getattr(b, "tool_id", None) for b in outcome.results]
+        assert "toolu_a" in ids
+        assert "toolu_stale" not in ids          # reconciled, not raw
+
+        assert stub.calls == ["reconcile", "splice", "checkpoint"]
+        spliced_cid, spliced_results, spliced_ctx = stub.spliced[0]
+        assert spliced_cid == "relay_run_42_7"
+        assert spliced_results == outcome.results
+        assert spliced_ctx is ctx
+
+        assert table.owner_of("relay_run_42_7") is None   # finally: pop
+    finally:
+        set_await_table(AwaitTable())
+
+
+async def test_await_external_abort_maps_to_aborted_outcome():
+    # §2.2 abort path: cancellation while parked → _repair_self_chain (the §6
+    # orphan-repair), ResumeOutcome(status="aborted", results=[]), record
+    # popped — and never a CancelledError past the finally.
+    table = AwaitTable()
+    set_await_table(table)
+    try:
+        event = asyncio.Event()
+        ctx = _RecordingCtx()
+        stub = _AwaitSelf(cancel_event=event)
+        task = _start(stub, ctx)
+        await _until(lambda: ctx.emits)
+
+        event.set()
+        outcome = await task                      # must not raise
+
+        assert outcome.status == "aborted"
+        assert outcome.results == []
+        assert "repair" in stub.calls
+        assert "splice" not in stub.calls
+        assert "checkpoint" not in stub.calls
+        assert table.owner_of("relay_run_42_7") is None   # finally: pop
+    finally:
+        set_await_table(AwaitTable())

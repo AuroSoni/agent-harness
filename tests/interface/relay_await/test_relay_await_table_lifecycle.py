@@ -56,6 +56,23 @@ async def test_open_returns_join_with_pending_future():
     assert not join.future.done()
 
 
+async def test_open_rejects_the_legacy_owner_tuple_kwargs():
+    # §6 migration row (G0): ``open(...)`` no longer accepts
+    # ``organization_id=``/``member_id=`` — callers pass ``principal=``.
+    # The signature break itself is pinned: an implementation swallowing the
+    # legacy kwargs (e.g. via **kwargs) must not pass.
+    table = AwaitTable()
+    with pytest.raises(TypeError):
+        await table.open(
+            cid="relay_run_1_0",
+            root_session_id="root_1",
+            owner_agent_id="agent_1",
+            tool_use_ids=["toolu_a"],
+            organization_id="org_1",
+            member_id="member_1",
+        )
+
+
 async def test_open_is_keyword_only():
     # §2.1 Protocol: ``open(self, *, cid, root_session_id, ...)``.
     table = AwaitTable()

@@ -7,7 +7,11 @@ Covers interface_plan/subsystems/relay-await.md §2.1 + AMENDMENTS §I6:
     open and the root generation is NOT bumped;
   - dispositions map to an Ack like ``resolve()``: unknown cid →
     ``IGNORED_STALE``; already resolved/closed → ``IGNORED_DUP``; principal
-    mismatch → ``REJECTED`` (same injected-policy auth as resolve).
+    mismatch → ``REJECTED`` (same policy predicate as resolve — the doc pins
+    ``cancel(cid, *, principal=)`` with no per-call policy parameter, so the
+    seam is exercised through the default ``StrictScopePolicy`` semantics:
+    its anonymous-owner and anonymous-claimant rules discriminate the policy
+    predicate from any hard-coded scope comparison).
 """
 from __future__ import annotations
 
@@ -145,3 +149,37 @@ async def test_cancel_principal_is_keyword_only():
     await _open(table)
     with pytest.raises(TypeError):
         table.cancel("relay_run_1_0", OTHER_TENANT)
+
+
+async def test_anonymous_owner_pause_is_cancellable_by_any_principal():
+    # The cancel auth is the POLICY's predicate, not a hard-coded scope
+    # comparison: StrictScopePolicy (tenancy §2.2) authorizes ANY claimant
+    # when the owner is unscoped ("an unscoped session: nothing to
+    # enforce"). A hand-rolled ``owner.tenant == claimant.tenant`` check
+    # inside cancel would wrongly REJECT this cross-tenant claimant.
+    table = AwaitTable()
+    join = await _open(table)  # principal omitted → anonymous owner
+
+    disposition = await table.cancel("relay_run_1_0", principal=OTHER_TENANT)
+
+    assert disposition not in (
+        Disposition.IGNORED_STALE,
+        Disposition.IGNORED_DUP,
+        Disposition.REJECTED,
+    )
+    assert join.future.cancelled()
+    assert table.owner_of("relay_run_1_0").state is AwaitState.CLOSED
+
+
+async def test_principal_free_cancel_of_an_owned_pause_is_rejected():
+    # The other policy-vs-hardcoding discriminator: StrictScopePolicy
+    # (tenancy §2.2) returns False for a named owner and a None claimant —
+    # an anonymous caller cannot kill a scoped pause. The await stays parked.
+    table = AwaitTable()
+    join = await _open(table, principal=OWNER)
+
+    disposition = await table.cancel("relay_run_1_0")
+
+    assert disposition is Disposition.REJECTED
+    assert table.owner_of("relay_run_1_0").state is AwaitState.OPEN
+    assert not join.future.done()
