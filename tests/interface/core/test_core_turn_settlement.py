@@ -1,14 +1,22 @@
 """Red-suite spec: ``TurnSettlement`` — the once-per-turn billing fact.
 
-Covers interface_plan/subsystems/core.md:
-  - §2.2 / R11 — type + serialization homed at ``agent_base/core/cost.py``
-    (core owns the type; pricing's ``settle_turn`` computes instances — the
-    computation is the pricing_cost suite's concern, not tested here).
+Covers the CANONICAL shape from pricing-cost.md §2.2 (the owning doc — the
+README ownership table assigns ``TurnSettlement`` deep-testing to the
+pricing_cost suite; this file exercises core's carrier-side view of the same
+contract and must agree with it):
+  - R11 — type + serialization homed at ``agent_base/core/cost.py``.
+  - §2.2 — all fields REQUIRED (``agent_id``, not ``agent_uuid``; the runtime
+    constructs settlements fully populated via ``settle_turn``).
   - O14(d) — TURN-LEVEL ONLY: no ``cumulative_*`` fields on the type.
-  - B2 — claims never serialize: ``to_dict`` writes only the tenant/subject
-    scope key; the in-process ``principal`` object keeps the full principal.
-  - ``as_usage_report()`` — projection onto the streaming ``UsageReport``
-    MetaBody (R2: imported from ``agent_base.streaming.meta``, a collaborator).
+  - B2 — claims never serialize: ``to_dict`` writes the FLAT ``tenant``/
+    ``subject`` scope key; the in-process ``principal`` keeps the full object.
+  - R2 — the streaming projection is ``UsageReport.of(settlement)`` with
+    dict payloads (``usage`` = ``totals_dict()``, ``cost`` = ``to_dict()``).
+
+NOTE: this file originally pinned a stale core.md sketch (``agent_uuid``,
+all-optional fields, nested ``principal`` dict, ``as_usage_report()`` with
+object payloads). Re-pinned by the orchestrator to pricing-cost.md §2.2 per
+the suite ownership rule; the pricing_cost suite is authoritative.
 
 ``SessionPrincipal`` (tenancy subsystem) and ``UsageReport`` (streaming
 subsystem) are used strictly as collaborators.
@@ -34,22 +42,32 @@ def _principal() -> SessionPrincipal:
     )
 
 
-def test_minimal_construction_defaults():
-    s = TurnSettlement(agent_uuid="agent-1", run_id="run-1")
-    assert s.agent_uuid == "agent-1"
-    assert s.run_id == "run-1"
-    assert s.parent_agent_id is None
-    assert isinstance(s.turn_usage, Usage)
-    assert isinstance(s.turn_cost, CostBreakdown)
-    assert s.model is None
-    assert s.step_count is None
-    assert s.principal is None
+def _settlement(**overrides) -> TurnSettlement:
+    kwargs = dict(
+        agent_id="agent-1",
+        run_id="run-1",
+        parent_agent_id=None,
+        principal=None,
+        turn_usage=Usage(input_tokens=10, output_tokens=20),
+        turn_cost=CostBreakdown(total_cost=0.5, run_id="run-1"),
+        model="claude-sonnet-4-5",
+        step_count=3,
+    )
+    kwargs.update(overrides)
+    return TurnSettlement(**kwargs)
+
+
+def test_all_fields_are_required():
+    # §2.2: settle_turn always builds a fully-populated settlement — the type
+    # has no optional ceremony.
+    with pytest.raises(TypeError):
+        TurnSettlement(agent_id="agent-1", run_id="run-1")  # type: ignore[call-arg]
 
 
 def test_turn_settlement_is_frozen():
-    s = TurnSettlement(agent_uuid="agent-1", run_id="run-1")
+    s = _settlement()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        s.agent_uuid = "other"  # type: ignore[misc]
+        s.agent_id = "other"  # type: ignore[misc]
 
 
 def test_turn_level_only_field_set():
@@ -57,97 +75,81 @@ def test_turn_level_only_field_set():
     # SettlementAggregator / AgentResult, never on the per-turn settlement.
     names = {f.name for f in dataclasses.fields(TurnSettlement)}
     assert names == {
-        "agent_uuid",
+        "agent_id",
         "run_id",
         "parent_agent_id",
+        "principal",
         "turn_usage",
         "turn_cost",
         "model",
         "step_count",
-        "principal",
     }
 
 
 def test_to_dict_canonical_shape_and_stamp():
-    s = TurnSettlement(
-        agent_uuid="agent-1",
-        run_id="run-1",
-        parent_agent_id="agent-root",
-        turn_usage=Usage(input_tokens=10, output_tokens=20),
-        turn_cost=CostBreakdown(total_cost=0.5, run_id="run-1"),
-        model="claude-sonnet-4-5",
-        step_count=3,
-        principal=_principal(),
-    )
-    d = s.to_dict()
+    d = _settlement(
+        parent_agent_id="agent-root", principal=_principal()
+    ).to_dict()
     assert set(d) == {
         SCHEMA_VERSION_KEY,
-        "agent_uuid",
+        "agent_id",
         "run_id",
         "parent_agent_id",
-        "turn_usage",
-        "turn_cost",
+        "tenant",
+        "subject",
         "model",
         "step_count",
-        "principal",
+        "usage",
+        "cost",
     }
     assert d[SCHEMA_VERSION_KEY] == CORE_SCHEMA_VERSION
-    assert d["agent_uuid"] == "agent-1"
+    assert d["agent_id"] == "agent-1"
     assert d["run_id"] == "run-1"
     assert d["parent_agent_id"] == "agent-root"
     assert d["model"] == "claude-sonnet-4-5"
     assert d["step_count"] == 3
 
 
-def test_nested_usage_and_cost_serialize_via_their_own_to_dict():
-    s = TurnSettlement(
-        agent_uuid="agent-1",
-        run_id="run-1",
-        turn_usage=Usage(input_tokens=10),
-        turn_cost=CostBreakdown(total_cost=0.5),
-    )
-    d = s.to_dict()
-    assert d["turn_usage"]["input_tokens"] == 10
-    assert d["turn_usage"][SCHEMA_VERSION_KEY] == CORE_SCHEMA_VERSION
-    assert d["turn_cost"]["total_cost"] == 0.5
-    assert d["turn_cost"]["currency"] == "USD"
-    assert d["turn_cost"][SCHEMA_VERSION_KEY] == CORE_SCHEMA_VERSION
+def test_nested_usage_and_cost_serialize_via_their_own_methods():
+    # usage = turn_usage.totals_dict() (O5: X8 keys, no raw_usage);
+    # cost = turn_cost.to_dict() (stamped, currency default).
+    d = _settlement().to_dict()
+    assert d["usage"]["input_tokens"] == 10
+    assert d["usage"]["output_tokens"] == 20
+    assert d["usage"][SCHEMA_VERSION_KEY] == CORE_SCHEMA_VERSION
+    assert "raw_usage" not in d["usage"]
+    assert d["cost"]["total_cost"] == 0.5
+    assert d["cost"]["currency"] == "USD"
+    assert d["cost"][SCHEMA_VERSION_KEY] == CORE_SCHEMA_VERSION
 
 
-def test_to_dict_serializes_principal_scope_only():
-    # B2: tenant/subject ONLY — claims must never reach the wire.
-    d = TurnSettlement(
-        agent_uuid="agent-1", run_id="run-1", principal=_principal()
-    ).to_dict()
-    assert d["principal"] == {"tenant": "org-1", "subject": "member-9"}
-    assert "claims" not in d["principal"]
+def test_to_dict_serializes_flat_scope_key_only():
+    # B2: flat tenant/subject keys ONLY — claims must never reach the wire,
+    # and there is no nested "principal" mapping.
+    d = _settlement(principal=_principal()).to_dict()
+    assert d["tenant"] == "org-1"
+    assert d["subject"] == "member-9"
+    assert "principal" not in d
+    assert "claims" not in d
 
 
-def test_to_dict_with_no_principal_serializes_none():
-    d = TurnSettlement(agent_uuid="agent-1", run_id=None).to_dict()
-    assert d["principal"] is None
+def test_to_dict_with_no_principal_serializes_none_scope():
+    d = _settlement(principal=None).to_dict()
+    assert d["tenant"] is None
+    assert d["subject"] is None
 
 
 def test_in_process_principal_keeps_the_full_claims():
     # B2: only the WIRE is scope-only; the carried object is intact.
-    s = TurnSettlement(agent_uuid="agent-1", run_id="run-1", principal=_principal())
+    s = _settlement(principal=_principal())
     assert s.principal is not None
     assert s.principal.claims["role"] == "admin"
 
 
 def test_from_dict_round_trips_the_current_version():
-    s = TurnSettlement(
-        agent_uuid="agent-1",
-        run_id="run-1",
-        parent_agent_id="agent-root",
-        turn_usage=Usage(input_tokens=10, output_tokens=20),
-        turn_cost=CostBreakdown(total_cost=0.5, run_id="run-1"),
-        model="claude-sonnet-4-5",
-        step_count=3,
-        principal=_principal(),
-    )
+    s = _settlement(parent_agent_id="agent-root", principal=_principal())
     back = TurnSettlement.from_dict(s.to_dict())
-    assert back.agent_uuid == "agent-1"
+    assert back.agent_id == "agent-1"
     assert back.run_id == "run-1"
     assert back.parent_agent_id == "agent-root"
     assert back.turn_usage.input_tokens == 10
@@ -160,11 +162,7 @@ def test_from_dict_round_trips_the_current_version():
 
 def test_from_dict_claims_are_not_recoverable_from_the_wire():
     # B2: only tenant/subject were serialized.
-    back = TurnSettlement.from_dict(
-        TurnSettlement(
-            agent_uuid="agent-1", run_id="run-1", principal=_principal()
-        ).to_dict()
-    )
+    back = TurnSettlement.from_dict(_settlement(principal=_principal()).to_dict())
     assert back.principal is not None
     assert back.principal.tenant == "org-1"
     assert back.principal.subject == "member-9"
@@ -172,23 +170,24 @@ def test_from_dict_claims_are_not_recoverable_from_the_wire():
 
 
 def test_from_dict_missing_optionals_take_defaults():
-    back = TurnSettlement.from_dict({"agent_uuid": "agent-1"})
+    back = TurnSettlement.from_dict({"agent_id": "agent-1"})
+    assert back.agent_id == "agent-1"
     assert back.run_id is None
     assert back.parent_agent_id is None
     assert isinstance(back.turn_usage, Usage)
     assert isinstance(back.turn_cost, CostBreakdown)
-    assert back.model is None
-    assert back.step_count is None
+    assert back.model == ""
+    assert back.step_count == 0
     assert back.principal is None
 
 
-def test_as_usage_report_projects_turn_level_fields():
-    usage = Usage(input_tokens=10, output_tokens=20)
-    cost = CostBreakdown(total_cost=0.5, run_id="run-1")
-    s = TurnSettlement(
-        agent_uuid="agent-1", run_id="run-1", turn_usage=usage, turn_cost=cost
-    )
-    report = s.as_usage_report()
+def test_usage_report_of_projects_turn_level_dict_payloads():
+    # R2: pricing supplies the projection — UsageReport.of(settlement) with
+    # DICT payloads (the wire body), not live Usage/CostBreakdown objects.
+    s = _settlement()
+    report = UsageReport.of(s)
     assert isinstance(report, UsageReport)
-    assert report.usage == usage
-    assert report.cost == cost
+    assert report.kind == "usage_report"
+    assert report.usage["input_tokens"] == 10
+    assert report.usage["output_tokens"] == 20
+    assert report.cost["total_cost"] == 0.5

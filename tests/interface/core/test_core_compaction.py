@@ -212,9 +212,12 @@ def test_compaction_context_subclasses_hook_context():
 
 def test_compaction_context_before_compact_defaults():
     # before_compact view: trigger set, stats=None.
+    # estimated_tokens defaults to None per agent-loop-hooks.md §2.2 — the doc
+    # that OWNS the HookContext hierarchy (R4: superset is canonical) — and its
+    # suite pins `is None`; core.md §2.3's `int = 0` was the stale draft line.
     ctx = CompactionContext(**_base_hook_kwargs())
     assert ctx.trigger == "auto"
-    assert ctx.estimated_tokens == 0
+    assert ctx.estimated_tokens is None
     assert ctx.stats is None
     # Inherited identity threading (contract §1.2): stamped, not hand-passed.
     assert ctx.run_id == "run-1"

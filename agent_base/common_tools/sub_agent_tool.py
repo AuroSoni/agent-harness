@@ -4,12 +4,12 @@ from __future__ import annotations
 import asyncio
 import copy
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from agent_base.core.conversation_log import ConversationLog, ToolLogProjection
 from agent_base.core.types import ContentBlock, TextContent
 from agent_base.tools import ConfigurableToolBase
-from agent_base.tools.tool_types import ToolResultEnvelope
+from agent_base.tools.tool_types import ToolResultEnvelope, ToolSchema
 
 if TYPE_CHECKING:
     from agent_base.core.result import AgentResult
@@ -170,11 +170,12 @@ Args:
         agents: dict[str, SubAgentSpec | "AnthropicAgent"],
         child_agent_builder: ChildAgentBuilder | None = None,
         docstring_template: str | None = None,
-        schema_override: dict | None = None,
+        schema_override: "ToolSchema | None" = None,
     ):
         super().__init__(
             docstring_template=docstring_template,
             schema_override=schema_override,
+            name="spawn_subagent",
         )
         self.specs = {
             name: self._coerce_spec(name, agent_or_spec)
@@ -263,90 +264,85 @@ Args:
         child._parent_agent_uuid = parent_context.parent_agent_uuid or "unknown"
         return child
 
-    def get_tool(self) -> Callable[..., Awaitable[ToolResultEnvelope]]:
-        instance = self
-
-        async def spawn_subagent(
-            agent_name: str,
-            task: str,
-            resume_agent_uuid: str | None = None,
-        ) -> ToolResultEnvelope:
-            if agent_name not in instance.specs:
-                available = ", ".join(instance.specs.keys())
-                return ToolResultEnvelope.error(
-                    "spawn_subagent",
-                    "",
-                    f"Unknown agent '{agent_name}'. Available: {available}",
-                )
-
-            spec = instance.specs[agent_name]
-            child = instance._child_agent_builder(
-                spec,
-                resume_agent_uuid,
-                instance._parent_context,
+    async def run(
+        self,
+        agent_name: str,
+        task: str,
+        resume_agent_uuid: str | None = None,
+    ) -> ToolResultEnvelope:
+        if agent_name not in self.specs:
+            available = ", ".join(self.specs.keys())
+            return ToolResultEnvelope.error(
+                "spawn_subagent",
+                "",
+                f"Unknown agent '{agent_name}'. Available: {available}",
             )
 
-            # Inline-await relay for fresh children: their frontend pauses
-            # park on an asyncio.Future instead of returning stop_reason="relay"
-            # upward as a completed SubAgentEnvelope (which would leave them
-            # stranded). Rehydrated (resume_agent_uuid) children keep the
-            # default persist-return path so existing cold-resume flows work.
-            if resume_agent_uuid is None:
-                child._relay_mode = "inline_await"
+        spec = self.specs[agent_name]
+        child = self._child_agent_builder(
+            spec,
+            resume_agent_uuid,
+            self._parent_context,
+        )
 
-            # Propagate owner snapshot (organization_id, member_id,
-            # root_agent_uuid) through ``agent_config.extras["owner"]`` so
-            # the relay registry has auth context at registration time.
-            # The host (e.g. nova_backend) populates it on the root agent;
-            # we copy it down the tree here. We defer the copy until after
-            # ``child.initialize()`` runs, because fresh ``child.agent_config``
-            # may not exist yet. For resume, ``agent_config`` already exists
-            # but we still wait — ``run_stream`` calls ``initialize()`` which
-            # will respect the parent's extras via the pre-run hook below.
-            parent_agent = instance._parent_context.parent_agent
-            parent_owner = None
-            if parent_agent is not None and parent_agent.agent_config is not None:
-                parent_owner = parent_agent.agent_config.extras.get("owner")
+        # Inline-await relay for fresh children: their frontend pauses
+        # park on an asyncio.Future instead of returning stop_reason="relay"
+        # upward as a completed SubAgentEnvelope (which would leave them
+        # stranded). Rehydrated (resume_agent_uuid) children keep the
+        # default persist-return path so existing cold-resume flows work.
+        if resume_agent_uuid is None:
+            child._relay_mode = "inline_await"
 
-            # Share cumulative usage/cost upward so credits deducted from
-            # the root ``AgentResult.cost`` reflect the whole subtree.
-            if parent_agent is not None:
-                child._parent_usage_forward = parent_agent
+        # Propagate owner snapshot (organization_id, member_id,
+        # root_agent_uuid) through ``agent_config.extras["owner"]`` so
+        # the relay registry has auth context at registration time.
+        # The host (e.g. nova_backend) populates it on the root agent;
+        # we copy it down the tree here. We defer the copy until after
+        # ``child.initialize()`` runs, because fresh ``child.agent_config``
+        # may not exist yet. For resume, ``agent_config`` already exists
+        # but we still wait — ``run_stream`` calls ``initialize()`` which
+        # will respect the parent's extras via the pre-run hook below.
+        parent_agent = self._parent_context.parent_agent
+        parent_owner = None
+        if parent_agent is not None and parent_agent.agent_config is not None:
+            parent_owner = parent_agent.agent_config.extras.get("owner")
 
-            async def _propagate_owner() -> None:
-                if not child._initialized:
-                    await child.initialize()
-                if parent_owner is not None and child.agent_config is not None:
-                    child.agent_config.extras.setdefault("owner", parent_owner)
+        # Share cumulative usage/cost upward so credits deducted from
+        # the root ``AgentResult.cost`` reflect the whole subtree.
+        if parent_agent is not None:
+            child._parent_usage_forward = parent_agent
 
-            try:
-                await _propagate_owner()
-                if instance._parent_context.queue is not None:
-                    result = await child.run_stream(
-                        prompt=task,
-                        queue=instance._parent_context.queue,
-                        stream_formatter=instance._parent_context.formatter or "json",
-                        cancellation_event=instance._parent_context.parent_cancellation_event,
-                    )
-                else:
-                    result = await child.run(prompt=task)
-            except Exception as exc:
-                return ToolResultEnvelope.error(
-                    "spawn_subagent",
-                    "",
-                    f"Subagent '{agent_name}' error: {type(exc).__name__}: {exc}",
+        async def _propagate_owner() -> None:
+            if not child._initialized:
+                await child.initialize()
+            if parent_owner is not None and child.agent_config is not None:
+                child.agent_config.extras.setdefault("owner", parent_owner)
+
+        try:
+            await _propagate_owner()
+            if self._parent_context.queue is not None:
+                result = await child.run_stream(
+                    prompt=task,
+                    queue=self._parent_context.queue,
+                    stream_formatter=self._parent_context.formatter or "json",
+                    cancellation_event=self._parent_context.parent_cancellation_event,
                 )
-
-            return SubAgentEnvelope(
-                agent_name=agent_name,
-                child_agent_uuid=child.agent_uuid or "",
-                final_answer=result.final_answer,
-                stop_reason=result.stop_reason,
-                total_steps=result.total_steps,
-                child_model=result.model,
-                child_provider=result.provider,
-                nested_conversation=result.conversation_log,
+            else:
+                result = await child.run(prompt=task)
+        except Exception as exc:
+            return ToolResultEnvelope.error(
+                "spawn_subagent",
+                "",
+                f"Subagent '{agent_name}' error: {type(exc).__name__}: {exc}",
             )
 
-        spawn_subagent.__tool_instance__ = instance
-        return self._apply_schema(spawn_subagent)
+        return SubAgentEnvelope(
+            agent_name=agent_name,
+            child_agent_uuid=child.agent_uuid or "",
+            final_answer=result.final_answer,
+            stop_reason=result.stop_reason,
+            total_steps=result.total_steps,
+            child_model=result.model,
+            child_provider=result.provider,
+            nested_conversation=result.conversation_log,
+        )

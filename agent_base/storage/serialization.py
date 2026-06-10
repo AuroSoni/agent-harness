@@ -1,10 +1,19 @@
-"""Centralized serialization helpers for storage adapters.
+"""The public, versioned storage codec (storage.md §2.1 — fixes E3/E10).
 
-AgentConfig and Conversation intentionally have no to_dict()/from_dict() —
-serialization is the responsibility of the storage layer. These helpers
-convert between typed domain objects and JSON-safe dicts.
+Per R22, ``AgentConfig`` is the exception in the entity-serialization story:
+it stays **storage-codec-owned** (``serialize_config``/``deserialize_config``)
+and never grows a wire ``to_dict()`` — it is heavy and never crosses the FE
+wire as a unit. ``Conversation``/``LogEntry`` have canonical entity
+``to_dict()/from_dict()`` (core Variant S1); this codec internally calls them.
 
-LLMConfig subclasses own their own to_dict()/from_dict() methods.
+Entity-dict versioning DEFERS to core (R12): every dict embeds
+``{"_v": CORE_SCHEMA_VERSION}`` (the entity-wire axis) — distinct from
+``LIBRARY_SCHEMA_VERSION`` (DDL axis, ``storage.pg.schema``) and
+``streaming.WIRE_PROTOCOL_VERSION`` (SSE byte axis). Three axes, three owners.
+
+R23: ``PendingToolRelay.cid`` round-trips through ``AgentConfig.pending_relay``
+serialization — additive and nullable, so legacy payloads without ``cid``
+deserialize cleanly. Storage owns the round-trip; relay-await owns the meaning.
 """
 from __future__ import annotations
 
@@ -14,18 +23,29 @@ from typing import Any, TYPE_CHECKING
 from agent_base.core.config import (
     AgentConfig,
     Conversation,
-    CostBreakdown,
     LLMConfig,
     PendingToolRelay,
     SubAgentSchema,
 )
 from agent_base.core.conversation_log import ConversationLog
-from agent_base.core.messages import Message, Usage
+from agent_base.core.messages import Message
 from agent_base.core.result import LogEntry
+from agent_base.core.serializable import CORE_SCHEMA_VERSION, _stamp  # noqa: F401
 from agent_base.media_backend.media_types import MediaMetadata
 from agent_base.sandbox import deserialize_sandbox_config
 from agent_base.tools.registry import ToolCallInfo
 from agent_base.tools.tool_types import ToolSchema
+
+
+def _media_metadata_from_dict(data: dict[str, Any]) -> MediaMetadata:
+    """Hydrate MediaMetadata via its own ``from_dict`` when the media
+    subsystem provides one (it owns legacy key normalization — E5);
+    otherwise field-filtered construction."""
+    from_dict = getattr(MediaMetadata, "from_dict", None)
+    if callable(from_dict):
+        return from_dict(data)
+    valid = {f.name for f in dataclasses.fields(MediaMetadata)}
+    return MediaMetadata(**{k: v for k, v in data.items() if k in valid})
 
 
 # =============================================================================
@@ -34,8 +54,8 @@ from agent_base.tools.tool_types import ToolSchema
 
 
 def serialize_config(config: AgentConfig) -> dict[str, Any]:
-    """Serialize an AgentConfig to a JSON-safe dict."""
-    return {
+    """Serialize an AgentConfig to a JSON-safe dict (stamps ``_v``)."""
+    return _stamp({
         # Identity
         "agent_uuid": config.agent_uuid,
         "description": config.description,
@@ -87,9 +107,14 @@ def serialize_config(config: AgentConfig) -> dict[str, Any]:
         "updated_at": config.updated_at,
         "last_run_at": config.last_run_at,
         "total_runs": config.total_runs,
+        # Abort/steer state
+        "agent_phase": config.agent_phase,
+        # Ownership projection (tenancy §B.1 — persisted scope key)
+        "owner_tenant": config.owner_tenant,
+        "owner_subject": config.owner_subject,
         # Extension
         "extras": config.extras,
-    }
+    })
 
 
 def deserialize_config(
@@ -137,7 +162,7 @@ def deserialize_config(
         sandbox_config=deserialize_sandbox_config(data.get("sandbox_config")),
         # Media
         media_registry={
-            k: MediaMetadata(**v)
+            k: _media_metadata_from_dict(v)
             for k, v in data.get("media_registry", {}).items()
         },
         # Token tracking
@@ -159,6 +184,11 @@ def deserialize_config(
         updated_at=data.get("updated_at"),
         last_run_at=data.get("last_run_at"),
         total_runs=data.get("total_runs", 0),
+        # Abort/steer state
+        agent_phase=data.get("agent_phase"),
+        # Ownership projection
+        owner_tenant=data.get("owner_tenant"),
+        owner_subject=data.get("owner_subject"),
         # Extension
         extras=data.get("extras", {}),
     )
@@ -170,52 +200,22 @@ def deserialize_config(
 
 
 def serialize_conversation(conv: Conversation) -> dict[str, Any]:
-    """Serialize a Conversation to a JSON-safe dict."""
-    return {
-        "agent_uuid": conv.agent_uuid,
-        "run_id": conv.run_id,
-        "started_at": conv.started_at,
-        "completed_at": conv.completed_at,
-        "user_message": conv.user_message.to_dict() if conv.user_message else None,
-        "final_response": conv.final_response.to_dict() if conv.final_response else None,
-        "conversation_log": conv.conversation_log.to_dict(),
-        "stop_reason": conv.stop_reason,
-        "total_steps": conv.total_steps,
-        "usage": conv.usage.to_dict(),
-        "generated_files": [m.to_dict() for m in conv.generated_files],
-        "cost": dataclasses.asdict(conv.cost) if conv.cost else None,
-        "sequence_number": conv.sequence_number,
-        "created_at": conv.created_at,
-        "extras": conv.extras,
-    }
+    """Serialize a Conversation (delegates to the canonical entity
+    ``to_dict()`` — R22/core S1 — which stamps ``_v``), plus the storage-only
+    ownership projection the FE wire deliberately omits."""
+    data = conv.to_dict()
+    data["owner_tenant"] = conv.owner_tenant
+    data["owner_subject"] = conv.owner_subject
+    return data
 
 
 def deserialize_conversation(data: dict[str, Any]) -> Conversation:
-    """Deserialize a dict into a Conversation."""
-    raw_user = data.get("user_message")
-    raw_final = data.get("final_response")
-    raw_usage = data.get("usage")
-    raw_cost = data.get("cost")
-
-    return Conversation(
-        agent_uuid=data["agent_uuid"],
-        run_id=data["run_id"],
-        started_at=data.get("started_at"),
-        completed_at=data.get("completed_at"),
-        user_message=Message.from_dict(raw_user) if raw_user else None,
-        final_response=Message.from_dict(raw_final) if raw_final else None,
-        conversation_log=ConversationLog.from_dict(data.get("conversation_log")),
-        stop_reason=data.get("stop_reason"),
-        total_steps=data.get("total_steps"),
-        usage=Usage.from_dict(raw_usage) if raw_usage else Usage(),
-        generated_files=[
-            MediaMetadata(**f) for f in data.get("generated_files", [])
-        ],
-        cost=CostBreakdown(**raw_cost) if raw_cost else None,
-        sequence_number=data.get("sequence_number"),
-        created_at=data.get("created_at"),
-        extras=data.get("extras", {}),
-    )
+    """Deserialize a dict into a Conversation (canonical ``from_dict`` +
+    storage-only owner columns)."""
+    conversation = Conversation.from_dict(data)
+    conversation.owner_tenant = data.get("owner_tenant")
+    conversation.owner_subject = data.get("owner_subject")
+    return conversation
 
 
 # =============================================================================
@@ -224,30 +224,13 @@ def deserialize_conversation(data: dict[str, Any]) -> Conversation:
 
 
 def serialize_log_entry(entry: LogEntry) -> dict[str, Any]:
-    """Serialize a LogEntry to a JSON-safe dict."""
-    return {
-        "step": entry.step,
-        "event_type": entry.event_type,
-        "timestamp": entry.timestamp,
-        "message": entry.message,
-        "duration_ms": entry.duration_ms,
-        "usage": entry.usage.to_dict() if entry.usage else None,
-        "extras": entry.extras,
-    }
+    """Serialize a LogEntry (canonical entity ``to_dict()`` — stamps ``_v``)."""
+    return entry.to_dict()
 
 
 def deserialize_log_entry(data: dict[str, Any]) -> LogEntry:
     """Deserialize a dict into a LogEntry."""
-    raw_usage = data.get("usage")
-    return LogEntry(
-        step=data["step"],
-        event_type=data["event_type"],
-        timestamp=data["timestamp"],
-        message=data.get("message", ""),
-        duration_ms=data.get("duration_ms"),
-        usage=Usage.from_dict(raw_usage) if raw_usage else None,
-        extras=data.get("extras", {}),
-    )
+    return LogEntry.from_dict(data)
 
 
 # =============================================================================
@@ -256,7 +239,11 @@ def deserialize_log_entry(data: dict[str, Any]) -> LogEntry:
 
 
 def _serialize_pending_relay(relay: PendingToolRelay | None) -> dict[str, Any] | None:
-    """Serialize a PendingToolRelay to a JSON-safe dict."""
+    """Serialize a PendingToolRelay to a JSON-safe dict.
+
+    R23: ``cid`` (the pause-level reply key) round-trips additively — on a
+    cold-load resume, SessionManager reads it to re-arm the parked await.
+    """
     if relay is None:
         return None
     return {
@@ -264,14 +251,19 @@ def _serialize_pending_relay(relay: PendingToolRelay | None) -> dict[str, Any] |
         "confirmation_calls": [dataclasses.asdict(tc) for tc in relay.confirmation_calls],
         "completed_results": [m.to_dict() for m in relay.completed_results],
         "run_id": relay.run_id,
+        "cid": getattr(relay, "cid", None),
     }
 
 
 def _deserialize_pending_relay(data: dict[str, Any] | None) -> PendingToolRelay | None:
-    """Deserialize a dict into a PendingToolRelay."""
+    """Deserialize a dict into a PendingToolRelay.
+
+    R23: ``cid`` is additive + nullable — legacy payloads without it
+    deserialize cleanly (``cid=None``).
+    """
     if data is None:
         return None
-    return PendingToolRelay(
+    kwargs: dict[str, Any] = dict(
         frontend_calls=[
             ToolCallInfo(**tc) for tc in data.get("frontend_calls", [])
         ],
@@ -283,3 +275,6 @@ def _deserialize_pending_relay(data: dict[str, Any] | None) -> PendingToolRelay 
         ],
         run_id=data.get("run_id"),
     )
+    if any(f.name == "cid" for f in dataclasses.fields(PendingToolRelay)):
+        kwargs["cid"] = data.get("cid")
+    return PendingToolRelay(**kwargs)

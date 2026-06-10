@@ -17,6 +17,7 @@ from __future__ import annotations
 import typing
 
 from agent_base.core.errors import ErrorCode
+from agent_base.core.errors import AgentError
 from agent_base.core.errors import classify_provider_error as core_classify_provider_error
 from agent_base.streaming import StreamItem, classify_provider_error
 from agent_base.streaming.meta import MetaEnvelope
@@ -229,11 +230,19 @@ def test_classify_provider_error_is_reexported_from_streaming():
     assert classify_provider_error is core_classify_provider_error
 
 
-def test_classify_provider_error_returns_typed_error_delta():
-    # §2.1 signature: classify_provider_error(exc) -> ErrorDelta (shipped, public).
-    delta = classify_provider_error(RuntimeError("boom"))
+def test_classify_provider_error_returns_agent_error_projecting_to_delta():
+    # core.md §2.4 / R8 (the OWNING doc): classify_provider_error(exc) ->
+    # AgentError; the typed ErrorDelta terminal frame is its projection via
+    # to_error_delta(). (streaming-and-meta.md §2.1's `-> ErrorDelta` line is
+    # the stale draft — its own §4/§5 integration notes concede core.errors
+    # owns the symbol and the return type.)
+    err = classify_provider_error(RuntimeError("boom"))
+    assert isinstance(err, AgentError)
+    assert isinstance(err.code, ErrorCode)
+    assert isinstance(err.message, str)
+    delta = err.to_error_delta(agent_uuid="agent-1")
     assert isinstance(delta, ErrorDelta)
-    assert isinstance(delta.code, ErrorCode)
+    assert delta.code is err.code
     assert isinstance(delta.message, str)
 
 

@@ -11,12 +11,15 @@ from typing import Any, Callable, Dict, TYPE_CHECKING
 
 from agent_base.core.abort_types import TOOL_ABORT_TEXT
 
+from .base import ConfigurableToolBase
+from .bundle import ToolBundle
 from .tool_types import ToolResultEnvelope, GenericTextEnvelope, ToolSchema
 from .decorators import ExecutorType
 from .context import CTX_PARAM_NAME
 
 if TYPE_CHECKING:
     from agent_base.sandbox.sandbox_types import Sandbox
+    from .bundle import Toolish
     from .context import ToolContext
 
 
@@ -64,6 +67,25 @@ class ToolCallClassification:
         return bool(self.frontend_calls or self.confirmation_calls)
 
 
+# ─── Toolish coercion (tools.md §2.3) ──────────────────────────────────
+
+def _coerce_to_callables(item: "Toolish") -> list[Callable]:
+    """Coerce one ``Toolish`` item into registry-ready callables.
+
+    Instances compile via ``as_tool()``; bundles expand recursively; decorated
+    callables pass through. Anything else raises ``ValueError``.
+    """
+    if isinstance(item, ConfigurableToolBase):
+        return [item.as_tool()]
+    if isinstance(item, ToolBundle):
+        return [fn for member in item.tools() for fn in _coerce_to_callables(member)]
+    if callable(item) and hasattr(item, "__tool_schema__"):
+        return [item]
+    raise ValueError(
+        f"Not registrable: {item!r} (need @tool fn, ConfigurableToolBase, or ToolBundle)"
+    )
+
+
 # ─── Registry ──────────────────────────────────────────────────────────
 
 class ToolRegistry:
@@ -106,26 +128,20 @@ class ToolRegistry:
             needs_confirmation=needs_confirmation,
         )
 
-    def register_tools(self, tools: list[Callable]) -> None:
-        """Register multiple ``@tool``-decorated functions at once.
+    def register_tools(self, tools: "list[Toolish]") -> None:
+        """Register decorated functions AND ``ConfigurableToolBase`` instances.
 
-        Each function must have a ``__tool_schema__`` attribute (set by the
-        ``@tool`` decorator).
-
-        Args:
-            tools: List of decorated functions to register.
+        ``Toolish = Callable (has __tool_schema__) | ConfigurableToolBase | ToolBundle``.
+        For an instance, the registry calls ``.as_tool()`` internally — NO
+        consumer-side ``.get_tool()`` plumbing. For a ``ToolBundle``, it
+        expands ``.tools()`` (tools.md §2.3).
 
         Raises:
-            ValueError: If a function is missing the ``__tool_schema__`` attribute.
+            ValueError: If an item is not registrable.
         """
-        for func in tools:
-            if not hasattr(func, "__tool_schema__"):
-                raise ValueError(
-                    f"Function '{func.__name__}' is missing __tool_schema__ attribute. "
-                    f"Did you forget to apply the @tool decorator?"
-                )
-            schema: ToolSchema = func.__tool_schema__
-            self.register(schema.name, func, schema)
+        for item in tools:
+            for fn in _coerce_to_callables(item):  # instance→[as_tool()]; bundle→expand
+                self.register(fn.__tool_schema__.name, fn, fn.__tool_schema__)
 
     # ─── Schema Export ─────────────────────────────────────────────
 
@@ -161,6 +177,16 @@ class ToolRegistry:
             instance = getattr(registered.func, "__tool_instance__", None)
             if instance and callable(getattr(instance, "set_sandbox", None)):
                 instance.set_sandbox(sandbox)
+
+    # ─── Execution-mode read (tools.md §2.3) ───────────────────────
+
+    def executor_for(self, tool_name: str) -> ExecutorType:
+        """Public read of a tool's execution mode — the value ``ctx.executor``
+        exposes to ``before_tool``/``after_tool``/``on_tool_error`` so a hook
+        can branch (contract §2.1). Unknown names default to ``"backend"``.
+        """
+        registered = self._tools.get(tool_name)
+        return registered.executor if registered else "backend"
 
     # ─── Single Tool Execution ─────────────────────────────────────
 

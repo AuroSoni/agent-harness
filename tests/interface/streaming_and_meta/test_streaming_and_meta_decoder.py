@@ -199,9 +199,6 @@ def test_usage_reports_and_profile_changes_are_projected():
     usage = UsageReport(
         usage={"input_tokens": 5},
         cost={"total_usd": 0.01},
-        cumulative={"total_usd": 0.03},
-        tenant="org-1",
-        subject="member-1",
     )
     raw = _encode(
         _envelope(usage, seq=1),

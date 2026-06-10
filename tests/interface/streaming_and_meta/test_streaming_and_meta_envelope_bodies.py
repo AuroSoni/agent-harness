@@ -5,8 +5,10 @@ Covers interface_plan/subsystems/streaming-and-meta.md:
   the typed MetaBody union homed at ``agent_base/streaming/meta.py`` per R2),
 - AMENDMENTS B7 (``FrontendCallView.tool_use_id``; the envelope's
   ``correlation_id`` is the pause-level cid),
-- AMENDMENTS B2 (UsageReport carries scope key only — tenant/subject, never
-  claims),
+- AMENDMENTS O14(d) + pricing-cost.md §2.3 R2 (pricing supplies the
+  ``UsageReport`` payload shape: turn-level ``{kind, usage, cost}`` only; no
+  ``cumulative`` — the SettlementAggregator sums per-turn reports; B2 identity
+  rides the MetaEnvelope header, never the body),
 - the 2026-06-10 ProfileChanged amendment (minimal fact: ``profile`` only),
 - Fork D / R13 / O3 (Rollback is a MetaBody, the only rollback type),
 - §6 continuity row (``tool_use_id`` is one of the six unchanged v1 wire
@@ -65,9 +67,6 @@ def _library_bodies() -> list[MetaBody]:
         UsageReport(
             usage={"input_tokens": 10},
             cost={"total_usd": 0.12},
-            cumulative={"total_usd": 0.5},
-            tenant="org-1",
-            subject="member-1",
         ),
         ErrorReport(
             code=ErrorCode.RATE_LIMITED,
@@ -133,9 +132,6 @@ def test_meta_envelope_wire_round_trip_preserves_typed_body():
         UsageReport(
             usage={"input_tokens": 7},
             cost={"total_usd": 0.01},
-            cumulative={"total_usd": 0.02},
-            tenant="org-1",
-            subject="member-1",
         ),
         seq=5,
     )
@@ -211,23 +207,20 @@ def test_profile_changed_is_the_minimal_fact():
     assert ProfileChanged(profile="writer").profile == "writer"
 
 
-def test_usage_report_carries_scope_key_only():
-    # B2: tenant/subject only — claims never serialize on this body.
+def test_usage_report_payload_is_turn_level_and_scope_free():
+    # O14(d) + pricing-cost.md §2.3 (R2: pricing supplies the payload shape):
+    # turn-level {kind, usage, cost} only. No `cumulative` (the
+    # SettlementAggregator sums per-turn reports) and no identity fields —
+    # B2 identity (tenant/subject, never claims) rides the MetaEnvelope
+    # header, not this body.
     names = {f.name for f in dataclasses.fields(UsageReport)}
-    assert names == {"usage", "cost", "cumulative", "tenant", "subject"}
-    body = UsageReport(usage={}, cost={}, cumulative={})
-    assert body.tenant is None
-    assert body.subject is None
+    assert names == {"kind", "usage", "cost"}
     payload = UsageReport(
         usage={"input_tokens": 1},
-        cost={},
-        cumulative={},
-        tenant="org-1",
-        subject="member-1",
+        cost={"total_usd": 0.01},
     ).to_payload()
-    assert "claims" not in payload
-    assert payload["tenant"] == "org-1"
-    assert payload["subject"] == "member-1"
+    for identity_key in ("claims", "tenant", "subject", "cumulative"):
+        assert identity_key not in payload
 
 
 def test_error_report_typed_taxonomy_and_defaults():

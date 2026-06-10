@@ -101,6 +101,23 @@ def _agent_result(
     )
 
 
+def _settlement_for_result(**overrides) -> TurnSettlement:
+    # Canonical TurnSettlement per pricing-cost.md §2.2 (the owning doc):
+    # all fields required, `agent_id` (not `agent_uuid`).
+    kwargs = dict(
+        agent_id="agent-1",
+        run_id="run-1",
+        parent_agent_id=None,
+        principal=None,
+        turn_usage=Usage(input_tokens=3),
+        turn_cost=CostBreakdown(total_cost=0.5, run_id="run-1"),
+        model="claude-sonnet-4-5",
+        step_count=2,
+    )
+    kwargs.update(overrides)
+    return TurnSettlement(**kwargs)
+
+
 def _log_entry() -> LogEntry:
     return LogEntry(
         step=1,
@@ -204,14 +221,11 @@ def test_agent_result_to_dict_canonical_keys_and_stamp():
 
 
 def test_agent_result_to_dict_serializes_the_attached_settlement():
-    settlement = TurnSettlement(
-        agent_uuid="agent-1",
-        run_id="run-1",
-        turn_usage=Usage(input_tokens=3),
-        turn_cost=CostBreakdown(total_cost=0.5, run_id="run-1"),
-    )
+    # Canonical TurnSettlement shape per pricing-cost.md §2.2 (re-pinned:
+    # `agent_id`, all fields required).
+    settlement = _settlement_for_result(turn_usage=Usage(input_tokens=3))
     d = _agent_result(settlement=settlement).to_dict()
-    assert d["settlement"]["agent_uuid"] == "agent-1"
+    assert d["settlement"]["agent_id"] == "agent-1"
     assert d["settlement"]["run_id"] == "run-1"
     assert d["settlement"][SCHEMA_VERSION_KEY] == CORE_SCHEMA_VERSION
 
@@ -240,7 +254,7 @@ def test_agent_result_round_trips_populated_agent_logs():
 
 
 def test_agent_result_round_trips_the_current_version():
-    settlement = TurnSettlement(agent_uuid="agent-1", run_id="run-1")
+    settlement = _settlement_for_result()
     back = AgentResult.from_dict(_agent_result(settlement=settlement).to_dict())
     assert back.final_answer == "done"
     assert back.stop_reason == "end_turn"
@@ -250,7 +264,7 @@ def test_agent_result_round_trips_the_current_version():
     assert back.cumulative_usage.input_tokens == 30
     assert back.total_steps == 2
     assert back.settlement is not None
-    assert back.settlement.agent_uuid == "agent-1"
+    assert back.settlement.agent_id == "agent-1"
     assert back.settlement.run_id == "run-1"
 
 
@@ -326,7 +340,7 @@ def test_every_wire_crossing_entity_stamps_the_same_version_axis():
     entities = [
         Usage(),
         CostBreakdown(),
-        TurnSettlement(agent_uuid="agent-1", run_id=None),
+        _settlement_for_result(run_id=None),
         ConversationLog(),
         _conversation(),
         _agent_result(),

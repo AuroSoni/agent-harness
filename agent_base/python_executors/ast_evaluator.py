@@ -94,6 +94,8 @@ def evaluate_while(
     authorized_imports: list[str],
 ) -> None:
     iterations = 0
+    # U2: per-executor limit threaded via state; falls back to the module global.
+    max_while_iterations = state.get("_max_while_iterations", MAX_WHILE_ITERATIONS)
     while evaluate_ast(while_loop.test, state, static_tools, custom_tools, authorized_imports):
         for node in while_loop.body:
             try:
@@ -103,8 +105,8 @@ def evaluate_while(
             except ContinueException:
                 break
         iterations += 1
-        if iterations > MAX_WHILE_ITERATIONS:
-            raise InterpreterError(f"Maximum number of {MAX_WHILE_ITERATIONS} iterations in While loop exceeded")
+        if iterations > max_while_iterations:
+            raise InterpreterError(f"Maximum number of {max_while_iterations} iterations in While loop exceeded")
     return None
 
 
@@ -656,8 +658,8 @@ def evaluate_for(
     static_tools: dict[str, callable],
     custom_tools: dict[str, callable],
     authorized_imports: list[str],
-) -> Any:
-    result = None
+) -> None:
+    # A `for` is a statement, not an expression: it yields no value (output is None).
     iterator = evaluate_ast(for_loop.iter, state, static_tools, custom_tools, authorized_imports)
     for counter in iterator:
         set_value(
@@ -670,17 +672,15 @@ def evaluate_for(
         )
         for node in for_loop.body:
             try:
-                line_result = evaluate_ast(node, state, static_tools, custom_tools, authorized_imports)
-                if line_result is not None:
-                    result = line_result
+                evaluate_ast(node, state, static_tools, custom_tools, authorized_imports)
             except BreakException:
-                break
+                return None
             except ContinueException:
-                continue
+                break
         else:
             continue
         break
-    return result
+    return None
 
 
 def evaluate_listcomp(
@@ -1047,9 +1047,11 @@ def evaluate_ast(
             The list of modules that can be imported by the code. By default, only a few safe modules are allowed.
             If it contains "*", it will authorize any import. Use this at your own risk!
     """
-    if state.setdefault("_operations_count", {"counter": 0})["counter"] >= MAX_OPERATIONS:
+    # U2: per-executor limit threaded via state; falls back to the module global.
+    max_operations = state.get("_max_operations", MAX_OPERATIONS)
+    if state.setdefault("_operations_count", {"counter": 0})["counter"] >= max_operations:
         raise InterpreterError(
-            f"Reached the max number of operations of {MAX_OPERATIONS}. Maybe there is an infinite loop somewhere in the code, or you're just asking too many calculations."
+            f"Reached the max number of operations of {max_operations}. Maybe there is an infinite loop somewhere in the code, or you're just asking too many calculations."
         )
     state["_operations_count"]["counter"] += 1
     common_params = (state, static_tools, custom_tools, authorized_imports)

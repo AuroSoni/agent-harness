@@ -146,15 +146,36 @@ async def test_attach_to_anonymous_session_allows_any_claimant():
     assert await mgr.get_or_create("root-1", INTRUDER) is first
 
 
-async def test_attach_without_principal_skips_the_check():
-    # `if principal is not None and not policy...` — the trusted in-process
-    # path (no claimant supplied) attaches without consulting the policy.
-    deny = _DenyAllPolicy()
-    mgr = SessionManager(_RecordingFactory(), principal_policy=deny)
+async def test_attach_without_principal_is_checked_as_anonymous_claimant():
+    # ADJUDICATED: session-control.md §2.5 owns the attach check (tenancy's
+    # own Wiring(I1) note: "the session subsystem owns that ctor and the
+    # get_or_create attach check") and pins it UNCONDITIONAL — a None
+    # claimant is consulted as anonymous, never silently waved through.
+    # (tenancy §A.1's `if principal is not None and ...` pseudocode was the
+    # stale draft: skip-on-None would be auth bypass by omission.)
+    class _RecordingAllowPolicy:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, object]] = []
+
+        def authorizes(self, owner, claimant) -> bool:
+            self.calls.append((owner, claimant))
+            return True
+
+    allow = _RecordingAllowPolicy()
+    mgr = SessionManager(_RecordingFactory(), principal_policy=allow)
     first = await mgr.get_or_create("root-1", OWNER)
-    deny.calls.clear()
+    allow.calls.clear()
+    # The policy verdict decides; the claimant reaches it as None.
     assert await mgr.get_or_create("root-1") is first
-    assert deny.calls == []
+    assert len(allow.calls) == 1
+    owner, claimant = allow.calls[0]
+    assert claimant is None
+    # Under the default StrictScopePolicy the same anonymous attach to an
+    # owned session is refused (pinned in depth by session_control).
+    strict = SessionManager(_RecordingFactory())
+    await strict.get_or_create("root-2", OWNER)
+    with pytest.raises(SessionNotFound):
+        await strict.get_or_create("root-2")
 
 
 # ─── I1: the ONE ctor-injected policy ────────────────────────────────

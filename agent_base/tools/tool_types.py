@@ -82,6 +82,118 @@ class ToolResultEnvelope(ABC):
             is_error=True, error_message=message,
         )
 
+    # ─── Parameterized builders (Fork J DECIDED -> A, R10; tools.md §2.1) ───
+
+    @classmethod
+    def from_blocks(
+        cls,
+        *,
+        context_blocks: list[ContentBlock] | None = None,   # what the LLM sees next turn
+        log_summary: str,                                    # one-line UI summary
+        log_blocks: list[ContentBlock] | None = None,        # UI blocks (default: reuse context_blocks)
+        details: dict[str, Any] | None = None,               # structured UI payload
+        tool_name: str = "",
+        tool_id: str = "",
+        is_error: bool = False,
+    ) -> "ToolResultEnvelope":
+        """Build a fully-projected result from data — no subclass required.
+
+        PRIMARY builder (R10, Fork J DECIDED -> A): ``from_text`` delegates here;
+        the ``with_text``/``append_text`` mutation surface rebuilds via the same
+        path. (O11(b): ``from_image`` is deferred — removed from the v1 surface.)
+        """
+        return _StructuredEnvelope(
+            tool_name=tool_name, tool_id=tool_id, is_error=is_error,
+            _context_blocks=list(context_blocks or []),
+            _log_summary=log_summary,
+            _log_blocks=list(log_blocks) if log_blocks is not None else None,
+            _details=dict(details or {}),
+        )
+
+    @classmethod
+    def from_text(
+        cls,
+        summary: str,
+        *,
+        details: dict | None = None,
+        tool_name: str = "",
+        tool_id: str = "",
+    ) -> "ToolResultEnvelope":
+        """Convenience builder: single ``TextContent`` projection from a string."""
+        return cls.from_blocks(
+            context_blocks=[TextContent(text=summary)],
+            log_summary=summary[:200],
+            details=details,
+            tool_name=tool_name,
+            tool_id=tool_id,
+        )
+
+    # ─── Stable mutation surface (R10, O11(b)) — the after_tool/on_tool_error update= path ───
+    # CONCRETE default implementations on the ABC: each returns a NEW
+    # _StructuredEnvelope rebuilt from this envelope's own projections, so a
+    # genuinely-custom subclass inherits working mutation without overriding
+    # anything. (O11(b): with_blocks is deferred — removed from the v1 surface.)
+
+    def with_text(self, text: str) -> "ToolResultEnvelope":
+        """Replace the context-window projection with a single ``TextContent(text)``.
+
+        Default impl rebuilds from this envelope's log projection so subclasses
+        inherit it.
+        """
+        log = self.for_conversation_log()
+        return _StructuredEnvelope(
+            tool_name=self.tool_name, tool_id=self.tool_id, is_error=self.is_error,
+            duration_ms=self.duration_ms,
+            _context_blocks=[TextContent(text=text)],
+            _log_summary=log.summary,
+            _log_blocks=log.content_blocks,
+            _details=log.details,
+        )
+
+    def append_text(self, text: str) -> "ToolResultEnvelope":
+        """Append a ``TextContent(text)`` to the context-window projection.
+
+        Default impl rebuilds by reading ``for_context_window()`` and appending.
+        """
+        log = self.for_conversation_log()
+        return _StructuredEnvelope(
+            tool_name=self.tool_name, tool_id=self.tool_id, is_error=self.is_error,
+            duration_ms=self.duration_ms,
+            _context_blocks=[*self.for_context_window(), TextContent(text=text)],
+            _log_summary=log.summary,
+            _log_blocks=log.content_blocks,
+            _details=log.details,
+        )
+
+
+@dataclass
+class _StructuredEnvelope(ToolResultEnvelope):
+    """Concrete envelope produced by ``from_blocks``/``from_text`` and the
+    ``with_text``/``append_text`` mutators.
+
+    PRIVATE only (O3: no public ``StructuredEnvelope`` alias).
+    """
+
+    _context_blocks: list[ContentBlock] = field(default_factory=list)
+    _log_summary: str = ""
+    _log_blocks: list[ContentBlock] | None = None
+    _details: dict[str, Any] = field(default_factory=dict)
+
+    def for_context_window(self) -> list[ContentBlock]:
+        return self._context_blocks
+
+    def for_conversation_log(self) -> ToolLogProjection:
+        blocks = self._log_blocks if self._log_blocks is not None else self._context_blocks
+        return ToolLogProjection(
+            tool_name=self.tool_name,
+            tool_id=self.tool_id,
+            is_error=self.is_error,
+            summary=self._log_summary,
+            content_blocks=blocks,
+            details=self._details,
+            duration_ms=self.duration_ms,
+        )
+
 
 # --- A simple fallback for tools that don't define their own envelope ---
 

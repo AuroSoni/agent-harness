@@ -344,10 +344,15 @@ def test_assert_allowed_returns_resolved_for_valid_path_no_arg():
     assert resolved.sandbox_path == "workspace/data.csv"
 
 
-def test_assert_allowed_raises_access_denied_for_outside_root():
+def test_assert_allowed_workspace_defaults_bare_multi_segment_paths():
+    # MAINTAINER-RATIFIED (2026-06-10): §2.2 "anything else → defaulted under
+    # the workspace zone" applies to bare multi-segment paths too —
+    # "etc/passwd" is just a relative filename inside the sandbox
+    # (workspace/etc/passwd), NOT a host-root reference; nothing escapes.
+    # Real traversals (../../etc/passwd) are still denied below.
     sb = _BareSandbox()
-    with pytest.raises(SandboxAccessDeniedError):
-        sb.assert_allowed("etc/passwd")
+    resolved = sb.assert_allowed("etc/passwd")
+    assert resolved.sandbox_path == "workspace/etc/passwd"
 
 
 def test_assert_allowed_raises_for_escaping_dotdot():
@@ -388,9 +393,12 @@ def test_access_denied_error_subclasses_path_escape_error():
 
 
 def test_access_denied_error_caught_as_path_escape():
+    # An actually-denied path (escaping traversal — "etc/passwd" itself is
+    # workspace-defaulted and allowed per the ratified §2.2 grammar) is
+    # catchable via the broader SandboxPathEscapeError.
     sb = _BareSandbox()
     with pytest.raises(SandboxPathEscapeError):
-        sb.assert_allowed("etc/passwd")
+        sb.assert_allowed("../../etc/passwd")
 
 
 def test_escaping_dotdot_caught_as_path_escape():

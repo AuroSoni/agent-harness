@@ -21,6 +21,7 @@ come verbatim from their owning subsystems.
 """
 from __future__ import annotations
 
+import dataclasses
 import inspect
 from typing import Protocol
 

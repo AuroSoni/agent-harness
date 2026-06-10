@@ -5,9 +5,12 @@ Conversation is a single run record for UI display and pagination.
 LLMConfig is the base for provider-specific LLM configuration.
 PendingToolRelay captures state when the agent pauses for frontend/user tool responses.
 
-Serialization note: AgentConfig and Conversation do NOT have to_dict()/from_dict() —
-storage adapters handle their serialization externally via storage/serialization.py.
-LLMConfig has to_dict()/from_dict() so provider subclasses can own their serialization.
+Serialization note (core.md §4.1, Fork S1 / R22): the wire-crossing entities
+(``Conversation``, ``AgentResult``, ``CostBreakdown``, ``Usage``,
+``TurnSettlement``) carry their own canonical, ``_v``-stamped
+``to_dict()``/``from_dict()`` (the ``Serializable`` convention, O15(c)).
+``AgentConfig`` stays storage-codec-owned — it is heavy and never crosses the
+wire as a unit; the storage codec MAY call child ``to_dict()``s internally.
 """
 from __future__ import annotations
 
@@ -17,11 +20,12 @@ from typing import Any, TYPE_CHECKING
 
 from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.messages import Message, Usage
+from agent_base.core.serializable import _stamp
 from agent_base.media_backend.media_types import MediaMetadata
 from agent_base.tools.tool_types import ToolSchema
 
 if TYPE_CHECKING:
-    from agent_base.providers.anthropic.compaction import CompactionConfig
+    from agent_base.core.compaction_types import CompactionConfig
     from agent_base.sandbox.sandbox_types import SandboxConfig
     from agent_base.tools.registry import ToolCallInfo
 
@@ -106,6 +110,10 @@ class PendingToolRelay:
     confirmation_calls: list[ToolCallInfo] = field(default_factory=list)
     completed_results: list[Message] = field(default_factory=list)
     run_id: str | None = None
+    # R23 (relay-await §2.4): the persisted cold-match field — a ToolReply(cid)
+    # for an evicted session rehydrates then re-arms THIS cid. Additive and
+    # nullable for old rows; storage round-trips it.
+    cid: str | None = None
 
 
 # ==============================================================================
@@ -135,24 +143,12 @@ class SubAgentSchema:
 # ==============================================================================
 # Cost Breakdown
 # ==============================================================================
+#
+# Canonical home (R11): agent_base/core/cost.py (pricing-cost subsystem); this
+# module re-exports it (core.md §2.1.1) so legacy importers
+# (`from agent_base.core.config import CostBreakdown`) bind the one runtime class.
 
-
-@dataclass
-class CostBreakdown:
-    """Cost information for a single agent run.
-
-    Provides a ``total_cost`` for quick access and a ``breakdown``
-    dict for provider-specific cost line items. The breakdown keys
-    vary by provider (e.g., ``"input_cost"``, ``"output_cost"``,
-    ``"cache_read_cost"``, ``"thinking_cost"``).
-
-    Fields:
-        total_cost: Total cost in USD for this run.
-        breakdown: Per-category cost breakdown. Keys are provider-specific
-            cost categories, values are USD amounts.
-    """
-    total_cost: float = 0.0
-    breakdown: dict[str, float] = field(default_factory=dict)
+from agent_base.core.cost import CostBreakdown  # noqa: F401  (canonical home)
 
 
 # ==============================================================================
@@ -257,8 +253,23 @@ class AgentConfig:
     # Persisted agent phase for AWAITING_RELAY cold-start abort.
     agent_phase: str | None = None
 
+    # --- Ownership (typed, indexed, scope-flagged) — tenancy §B.1 ---
+    # Replaces extras["owner"]; the bound storage adapter stamps/filters these
+    # internally (O2: `for_principal` is the one public seam).
+    owner_tenant: str | None = None        # was organization_id
+    owner_subject: str | None = None       # was member_id
+
     # --- User extension point ---
     extras: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def principal(self) -> "Any":
+        """Bridge to the shared identity type (tenancy §B.1): the persisted
+        scope key as a ``SessionPrincipal``. The row persists only the scope
+        key — claims are runtime-only state."""
+        from agent_base.core.identity import SessionPrincipal
+
+        return SessionPrincipal(tenant=self.owner_tenant, subject=self.owner_subject)
 
 
 # ==============================================================================
@@ -314,6 +325,12 @@ class Conversation:
     # --- Cost breakdown ---
     cost: CostBreakdown | None = None
 
+    # --- Ownership (typed; tenancy §B.1 — storage-plane columns) ---
+    # Stamped/filtered by the bound storage adapter; deliberately NOT part of
+    # the FE wire projection (`to_dict()` — core.md §2.1.2 key set).
+    owner_tenant: str | None = None
+    owner_subject: str | None = None
+
     # --- Pagination ---
     sequence_number: int | None = None
 
@@ -322,3 +339,74 @@ class Conversation:
 
     # --- User extension point ---
     extras: dict[str, Any] = field(default_factory=dict)
+
+    # --- Canonical versioned serialization (core.md §2.1.2 — resolves E10) ---
+
+    def to_dict(self) -> dict[str, Any]:
+        """Canonical, versioned, JSON-safe projection of a single run record.
+
+        Every child uses ITS OWN ``to_dict()`` — no ``dataclasses.asdict``
+        anywhere. This is the projection the UI list endpoint and storage
+        both consume.
+        """
+        return _stamp({
+            "agent_uuid": self.agent_uuid,
+            "run_id": self.run_id,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "user_message": self.user_message.to_dict() if self.user_message else None,
+            "final_response": self.final_response.to_dict() if self.final_response else None,
+            "conversation_log": self.conversation_log.to_dict(),
+            "stop_reason": self.stop_reason,
+            "total_steps": self.total_steps,
+            "usage": self.usage.to_dict(),
+            "generated_files": [m.to_dict() for m in self.generated_files],
+            "cost": self.cost.to_dict() if self.cost else None,
+            "sequence_number": self.sequence_number,
+            "created_at": self.created_at,
+            "extras": dict(self.extras),
+        })
+
+    def to_clean_dict(self) -> dict[str, Any]:
+        """UI form: ``user_message`` via ``Message.to_clean_dict`` (drops
+        contributions). Everything else is the canonical projection."""
+        d = self.to_dict()
+        if self.user_message is not None:
+            d["user_message"] = self.user_message.to_clean_dict()
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Conversation":
+        """Round-trips the current version; tolerates older versions and
+        unknown/missing keys (Serializable convention)."""
+        raw_cost = data.get("cost")
+        return cls(
+            agent_uuid=data["agent_uuid"],
+            run_id=data["run_id"],
+            started_at=data.get("started_at"),
+            completed_at=data.get("completed_at"),
+            user_message=Message.from_dict(data["user_message"]) if data.get("user_message") else None,
+            final_response=Message.from_dict(data["final_response"]) if data.get("final_response") else None,
+            conversation_log=ConversationLog.from_dict(data.get("conversation_log")),
+            stop_reason=data.get("stop_reason"),
+            total_steps=data.get("total_steps"),
+            usage=Usage.from_dict(data["usage"]) if data.get("usage") else Usage(),
+            generated_files=[
+                _media_metadata_from_dict(f) for f in data.get("generated_files", [])
+            ],
+            cost=CostBreakdown.from_dict(raw_cost) if raw_cost else None,
+            sequence_number=data.get("sequence_number"),
+            created_at=data.get("created_at"),
+            extras=dict(data.get("extras", {})),
+        )
+
+
+def _media_metadata_from_dict(data: dict[str, Any]) -> MediaMetadata:
+    """Hydrate a MediaMetadata child via its own ``from_dict`` (media-backend
+    subsystem). Field-filtered construction until that subsystem lands its
+    tolerant ``from_dict``."""
+    from_dict = getattr(MediaMetadata, "from_dict", None)
+    if callable(from_dict):
+        return from_dict(data)
+    valid = {f.name for f in dataclasses.fields(MediaMetadata)}
+    return MediaMetadata(**{k: v for k, v in data.items() if k in valid})
