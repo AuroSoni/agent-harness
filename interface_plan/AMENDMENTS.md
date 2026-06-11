@@ -195,3 +195,48 @@ switch capability). Library auto-emits minimal `ProfileChanged(profile)`.
 | `MemoryContribution` | `agent_base/memory/base.py` |
 | `namespaced_base_dir` | sandbox module (replaces `NamespacePolicy`) |
 | `runs_matching`, `RunSummary` | storage analytics module |
+
+---
+
+## Implementation-cut ratifications (2026-06-10, post-round-2 — maintainer-ratified)
+
+Decided while landing the TDD implementation + follow-up cuts; each overrides any stale draft
+line in a subsystem doc (the affected docs carry matching AMENDED banners).
+
+- **M1 — `UsageReport` is turn-level + scope-free** (O14d/R2/B2): body = `{kind, usage, cost}`;
+  no `cumulative`, no `tenant`/`subject` on the body (identity rides the `MetaEnvelope` header).
+  Pricing supplies the projection `UsageReport.of(settlement)` (dict payloads).
+- **M2 — `classify_provider_error(exc) -> AgentError`** (R8): the wire projection is
+  `err.to_error_delta(agent_uuid=...)`; the §2.1 `-> ErrorDelta` draft line was stale.
+- **M3 — `TurnSettlement` canonical shape is pricing-cost.md §2.2**: `agent_id` (not
+  `agent_uuid`), ALL fields required, `to_dict` writes FLAT `tenant`/`subject` keys (no nested
+  `principal` mapping), `from_dict` defaults `model=""`/`step_count=0`; `as_usage_report()` does
+  not exist (see M1). core.md §2.2 amended to match.
+- **M4 — `CompactionContext.estimated_tokens: int | None = None`** (hooks doc owns the
+  HookContext hierarchy): `None` = no estimate; an `int` 0 would read as a real estimate.
+- **M5 — SessionManager attach check is UNCONDITIONAL**: a `None` claimant is consulted as
+  anonymous (skip-on-None = auth bypass by omission); `StrictScopePolicy` refuses anonymous
+  attach to an owned session. tenancy §A.1 pseudocode amended.
+- **M6 — sandbox bare multi-segment paths workspace-default** (sandbox.md §2.2 confirmed):
+  `assert_allowed("etc/passwd")` resolves to `workspace/etc/passwd`; traversals still denied.
+- **M7 — `agent.submit(command)` carries NO principal** (session-control §2.2 wins; §6 bans
+  arity-inspection): the claimant rides `SessionManager.submit(..., principal=)` only; at Rung 1
+  the manager-level addressing check is the reply-auth gate, with the per-call claimant seam on
+  `AwaitTable.resolve(principal=, policy=)` available at the cid layer. tenancy §A.1 amended.
+- **M8 — R34 constants: ONE spelling, the BARE names** (`TENANT`, `SUBJECT`, `RUN_ID`,
+  `AGENT_ID`, `PARENT_AGENT_ID`, `SEQ`, `EVENT_ID`) re-exported verbatim by logging (O5).
+  The `FIELD_*` aliases from the tenancy §2.0 draft are DELETED (G0: no dual spellings).
+- **M9 — `ctx.emit_capped_bytes` always persists**: bytes are persisted and the reference
+  returned even under `max_bytes` — binary payloads never inline into context; idempotent via
+  `ctx.once` keyed on the content digest.
+- **M10 — relay retirement landed** (relay-await §2.3/§2.4/§6 now literal): the `_relay_mode`
+  fork, `resume_with_relay_results`, and `on_relay_result` are deleted; root AND child pauses
+  persist `pending_relay.cid` (`relay_{run_id}_{step}`) and park on `await_external`; cold
+  resume is rehydrate-then-resolve through `SessionManager.submit(ToolReply(cid))`
+  (`_rearm_pending_await` + an out-of-band `_resume_rearmed` continuation). The per-provider
+  `message_sanitizer` modules are deleted; `agent_base/core/chain.py` (+ provider methods
+  `sanitize_chain`/`plan_stream_abort`) is the only repair surface, with the shared
+  `plan_relay_abort` promoted there. Agent ctor retry scalars (`max_retries`/`base_delay`)
+  are deleted — the retry budget is the provider value's `RetryPolicy` (O12c); `SubAgentSpec`
+  snapshots `retry_policy`. `extras["owner"]` read-through is gone; `SubAgentTool` stamps
+  `_root_session_id_value` + adopts the parent principal at spawn.

@@ -10,14 +10,13 @@ Covers interface_plan/subsystems/tenancy-principal.md:
     mapped to ``Ack(disposition=NOT_FOUND)`` (session-control.md §2.2 "no
     information leak"; tenancy-principal.md's own §A.4 note and §5 agree).
   - §A.1 ``submit(root_session_id, command, *, principal=None)``: the claimant
-    identity rides submit; its threading into ``AwaitTable.resolve`` (the cid
-    layer) is specced in the await file. NOTE (unreconciled doc conflict,
-    flagged for the maintainer): tenancy-principal.md §A.1 pseudocode shows
-    ``agent.submit(command, principal=principal)`` while session-control.md
-    §2.2 pins ``AgentRuntime.submit(self, command)`` with NO principal param
-    (and §6 bans arity-inspection compat) — so this suite asserts only that
-    the command reaches the resident agent, staying agnostic about the
-    ``agent.submit`` signature.
+    identity rides the MANAGER-level submit only. RECONCILED (2026-06-10,
+    maintainer-ratified; tenancy §A.1 amended): session-control.md §2.2 pins
+    ``AgentRuntime.submit(self, command)`` with NO principal param (§6 bans
+    arity-inspection compat) — at Rung 1 the manager's session-addressing
+    policy check is the reply-auth gate, and the per-call claimant seam on
+    ``AwaitTable.resolve(principal=, policy=)`` stays available at the cid
+    layer (specced in the await file).
   - §6 migration: the legacy 1-arg factory is REMOVED — the 2-arg factory is
     the only shape this suite constructs.
 
@@ -50,10 +49,9 @@ class _FakeAgent:
     async def initialize(self) -> None:  # pragma: no cover - already initialized
         self._initialized = True
 
-    async def submit(self, command, **kwargs) -> Ack:
-        # Tolerant signature: records the command regardless of whether the
-        # manager forwards a principal kwarg (see module docstring NOTE on the
-        # tenancy §A.1 vs session-control §2.2 agent.submit conflict).
+    async def submit(self, command) -> Ack:
+        # session-control.md §2.2 (RECONCILED): agent.submit takes the command
+        # only — the manager never forwards a principal kwarg into it.
         self.submitted.append(command)
         return Ack(seq=len(self.submitted), disposition=Disposition.RESOLVED)
 
@@ -224,11 +222,10 @@ async def test_injected_deny_policy_rejects_even_the_exact_owner():
 
 
 async def test_submit_delivers_the_command_to_the_resident_agent():
-    # §A.1: the claimant rides submit(..., principal=) and the command reaches
-    # the resident agent. Whether the manager ALSO forwards the principal kwarg
-    # into agent.submit is the unreconciled doc conflict flagged in the module
-    # docstring; claimant→AwaitTable.resolve threading is asserted at the cid
-    # layer in the await suite instead.
+    # §A.1 (RECONCILED — see module docstring): the claimant rides
+    # submit(..., principal=) at the MANAGER layer only; agent.submit receives
+    # the bare command (session-control §2.2). claimant→AwaitTable.resolve
+    # threading is asserted at the cid layer in the await suite instead.
     factory = _RecordingFactory()
     mgr = SessionManager(factory)
     agent = await mgr.get_or_create("root-1", OWNER)

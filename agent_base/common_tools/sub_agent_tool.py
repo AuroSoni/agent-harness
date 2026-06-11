@@ -39,8 +39,9 @@ class SubAgentSpec:
     tools: list[Callable[..., Any]] | None = None
     frontend_tools: list[Callable[..., Any]] | None = None
     subagents: dict[str, "SubAgentSpec"] | None = None
-    max_retries: int = 5
-    base_delay: float = 1.0
+    # O12(c): the retry budget is a provider concern — the spec snapshots the
+    # parent provider's RetryPolicy for the child's provider value.
+    retry_policy: Any = None
     max_parallel_tool_calls: int = 5
     max_tool_result_tokens: int = 25_000
     memory_store: "MemoryStore | None" = None
@@ -78,8 +79,7 @@ class SubAgentSpec:
             tools=list(agent._constructor_tools or []),
             frontend_tools=None,
             subagents=nested_specs,
-            max_retries=agent.max_retries,
-            base_delay=agent.base_delay,
+            retry_policy=copy.copy(getattr(agent.provider, "retry_policy", None)),
             max_parallel_tool_calls=agent.max_parallel_tool_calls,
             max_tool_result_tokens=agent.max_tool_result_tokens,
             memory_store=agent.memory_store,
@@ -233,7 +233,14 @@ Args:
         parent_context: SubAgentParentContext,
     ) -> "AnthropicAgent":
         from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
+        from agent_base.providers.anthropic.provider import AnthropicProvider
 
+        # O12(c): the retry budget rides the provider VALUE, not ctor scalars.
+        provider_value = (
+            AnthropicProvider(retry_policy=spec.retry_policy)
+            if spec.retry_policy is not None
+            else None
+        )
         child = AnthropicAgent(
             system_prompt=spec.system_prompt,
             description=spec.description,
@@ -245,8 +252,7 @@ Args:
             tools=list(spec.tools or []),
             frontend_tools=list(spec.frontend_tools or []),
             subagents=copy.deepcopy(spec.subagents),
-            max_retries=spec.max_retries,
-            base_delay=spec.base_delay,
+            provider_value=provider_value,
             max_parallel_tool_calls=spec.max_parallel_tool_calls,
             max_tool_result_tokens=spec.max_tool_result_tokens,
             memory_store=spec.memory_store or parent_context.memory_store,
@@ -282,41 +288,28 @@ Args:
             self._parent_context,
         )
 
-        # Inline-await relay for fresh children: their frontend pauses
-        # park on an asyncio.Future instead of returning stop_reason="relay"
-        # upward as a completed SubAgentEnvelope (which would leave them
-        # stranded). Rehydrated (resume_agent_uuid) children keep the
-        # default persist-return path so existing cold-resume flows work.
-        if resume_agent_uuid is None:
-            child._relay_mode = "inline_await"
-
-        # Propagate owner snapshot (organization_id, member_id,
-        # root_agent_uuid) through ``agent_config.extras["owner"]`` so
-        # the relay registry has auth context at registration time.
-        # The host (e.g. nova_backend) populates it on the root agent;
-        # we copy it down the tree here. We defer the copy until after
-        # ``child.initialize()`` runs, because fresh ``child.agent_config``
-        # may not exist yet. For resume, ``agent_config`` already exists
-        # but we still wait — ``run()`` calls ``initialize()`` which
-        # will respect the parent's extras via the pre-run hook below.
+        # Tenancy §A.4 / §3.4 (G0 — ``extras["owner"]`` is GONE): identity
+        # threads down the tree as typed runtime state. The child's
+        # ``_root_session_id_value`` is stamped at spawn so its relay pauses
+        # group under the ROOT session on the await table, and the parent's
+        # ambient ``SessionPrincipal`` is adopted before ``initialize()`` so
+        # reply-auth and storage scoping see the same identity.
         parent_agent = self._parent_context.parent_agent
-        parent_owner = None
-        if parent_agent is not None and parent_agent.agent_config is not None:
-            parent_owner = parent_agent.agent_config.extras.get("owner")
+        if parent_agent is not None:
+            root_fn = getattr(parent_agent, "_root_session_id", None)
+            if callable(root_fn):
+                child._root_session_id_value = root_fn()
+            if getattr(parent_agent, "principal", None) is not None:
+                child.principal = parent_agent.principal
 
         # Share cumulative usage/cost upward so credits deducted from
-        # the root ``AgentResult.cost`` reflect the whole subtree.
+        # the root settlement reflect the whole subtree.
         if parent_agent is not None:
             child._parent_usage_forward = parent_agent
 
-        async def _propagate_owner() -> None:
+        try:
             if not child._initialized:
                 await child.initialize()
-            if parent_owner is not None and child.agent_config is not None:
-                child.agent_config.extras.setdefault("owner", parent_owner)
-
-        try:
-            await _propagate_owner()
             if self._parent_context.stream_queue is not None:
                 # Share the parent's Rung-1 stream so the child's deltas land
                 # on the same agent.stream() read path (R30).

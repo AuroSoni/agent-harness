@@ -25,10 +25,11 @@ from typing import Any, Mapping, Protocol
 
 # ──────────────────────────────────────────────────────────────────────
 # R34 — identity/correlation field-name constants (the single source of
-# truth for key spellings). The bare names are what logging re-exports
-# (logging.md §2.1, O5); the ``FIELD_``-prefixed names are the aliases
-# tenancy-principal.md §2.0 documents. Both bind the SAME string objects,
-# so ``is``-identity holds across every importer.
+# truth for key spellings; "one spelling, never redeclared"). The BARE
+# names are the canonical spelling — logging re-exports them verbatim
+# (logging.md §2.1, O5). The FIELD_*-prefixed aliases the earlier tenancy
+# §2.0 draft documented are DELETED (maintainer-ratified 2026-06-10, G0:
+# no dual spellings).
 # ──────────────────────────────────────────────────────────────────────
 
 TENANT = "tenant"                    # SessionPrincipal.tenant   (Nova org id maps here)
@@ -38,14 +39,6 @@ AGENT_ID = "agent_id"
 PARENT_AGENT_ID = "parent_agent_id"
 SEQ = "seq"                          # MetaEnvelope.seq, when logging an emit
 EVENT_ID = "event_id"                # MetaEnvelope.event_id, when correlating
-
-FIELD_TENANT = TENANT
-FIELD_SUBJECT = SUBJECT
-FIELD_RUN_ID = RUN_ID
-FIELD_AGENT_ID = AGENT_ID
-FIELD_PARENT_AGENT_ID = PARENT_AGENT_ID
-FIELD_SEQ = SEQ
-FIELD_EVENT_ID = EVENT_ID
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -155,7 +148,7 @@ __all__ = [
     "PrincipalPolicy",
     "StrictScopePolicy",
     "PrincipalConflict",
-    # R34 field-name constants (bare canonical spellings)
+    # R34 field-name constants (bare canonical spellings — the ONLY spelling)
     "TENANT",
     "SUBJECT",
     "RUN_ID",
@@ -163,12 +156,4 @@ __all__ = [
     "PARENT_AGENT_ID",
     "SEQ",
     "EVENT_ID",
-    # FIELD_-prefixed aliases (tenancy-principal.md §2.0 spellings)
-    "FIELD_TENANT",
-    "FIELD_SUBJECT",
-    "FIELD_RUN_ID",
-    "FIELD_AGENT_ID",
-    "FIELD_PARENT_AGENT_ID",
-    "FIELD_SEQ",
-    "FIELD_EVENT_ID",
 ]

@@ -277,7 +277,13 @@ class ToolContext:
                                 max_bytes: int = DEFAULT_EMIT_MAX_BYTES) -> str:
         """Bytes variant. When ctx.media/BlobStore is configured, persistence DELEGATES
         to the content-addressed blob store (R16/Fork H); otherwise falls back to
-        ctx.sandbox. Returns a reference (BlobStore key or sandbox path)."""
+        ctx.sandbox. Returns a reference (BlobStore key or sandbox path).
+
+        CLARIFIED (2026-06-10, maintainer-ratified): bytes are ALWAYS persisted and
+        the reference returned, even under `max_bytes` — binary payloads never inline
+        into the context regardless of size (the budget caps what a consumer may
+        re-materialize, not whether persistence happens). Idempotent via ctx.once
+        keyed on the content digest."""
         ...
 
     # ─── relay primitive (I4) — call a frontend tool and AWAIT its reply ───

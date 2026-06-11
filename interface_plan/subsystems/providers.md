@@ -342,14 +342,16 @@ class AgentRuntime(Agent):
         for m in generated:
             self.agent_config.media_registry[m.media_id] = m
         await self.memory_store.update(...)                        # shared
-        cost = self._compute_cost()                                # shared
-        self._finalize_conversation(response_message, stop_reason, generated, cost)  # shared
+        self._finalize_conversation(response_message, stop_reason, generated)  # shared
         await self.checkpoint()                                    # shared persist seam
         result = self._build_agent_result(response_message, stop_reason)  # provider name from self.provider.name
-        # §6 cost/usage: auto-emit UsageReport once per turn (no double extraction).
+        # §6 cost/usage (AMENDED 2026-06-10 — O14(d)/R2/B6): settle ONCE per turn; the
+        # UsageReport projection is turn-level dict payloads only (no cumulative, no
+        # identity on the body — the envelope header carries scope).
+        settlement = self._settle_turn()
+        result.settlement = settlement
         if sink is not None:
-            sink.emit_meta(MetaBody.UsageReport(usage=result.cumulative_usage,
-                                                cost=result.cost, cumulative=self._cumulative_usage))
+            sink.emit_meta(UsageReport.of(settlement))
             if generated:
                 sink.emit_meta(MetaBody.Custom(name="meta_files",
                                                data={"files": [f.to_dict() for f in generated]}))

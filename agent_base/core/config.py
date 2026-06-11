@@ -90,8 +90,9 @@ class PendingToolRelay:
     Created by the agent loop when ``ToolCallClassification.needs_relay``
     is ``True``. The loop executes all backend tool calls immediately,
     stores the results here alongside the pending frontend/confirmation
-    calls, then pauses. ``resume_with_relay_results()`` consumes this
-    state to continue the loop.
+    calls, then parks on the cid-keyed await table. ``submit(ToolReply(cid))``
+    resumes the loop — hot in place, or cold via rehydrate-then-resolve on
+    the persisted ``cid`` (relay-await §2.4).
 
     When ``AgentConfig.pending_relay`` is ``None``, no relay is pending.
     When set, the agent is mid-turn awaiting external tool results.

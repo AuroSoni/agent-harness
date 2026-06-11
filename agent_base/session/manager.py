@@ -314,11 +314,34 @@ class SessionManager:
         ``Ack(disposition=NOT_FOUND)`` (no information leak). This is the
         abort-by-id seam that resolves A9. The agent's ``Ack`` is returned
         verbatim, never re-wrapped.
+
+        relay-await §2.4 (rehydrate-then-resolve): a ``ToolReply`` whose cid
+        has NO live record on the await table is the cold path — the session
+        is brought back, its persisted ``pending_relay`` pause is re-armed on
+        the SAME cid (§B4: reply in hand → re-open WITHOUT re-emit), and the
+        redelivered reply then resolves it through the one ``agent.submit``
+        contract. (The doc sketch gates on residency; the live record is the
+        sharper discriminator — a freshly-resident agent whose parked
+        coroutine died with a prior process still needs the re-arm.)
         """
+        from agent_base.core.commands import ToolReply
+
         try:
             agent = await self.get_or_create(root_session_id, principal)
         except SessionNotFound:
             return Ack(seq=-1, disposition=Disposition.NOT_FOUND)
+
+        if isinstance(command, ToolReply):
+            table = get_await_table()
+            if table.owner_of(command.cid) is None:
+                relay = getattr(
+                    getattr(agent, "agent_config", None), "pending_relay", None
+                )
+                if relay is not None and relay.cid == command.cid:
+                    rearm = getattr(agent, "_rearm_pending_await", None)
+                    if callable(rearm):
+                        await rearm(reply=command)
+
         return await agent.submit(command)
 
     # ── Peek (§2.4 — drives NOT_RUNNING; never materializes) ────────────────

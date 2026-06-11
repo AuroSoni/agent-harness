@@ -24,7 +24,7 @@ from agent_base.tools.registry import ToolCallInfo
 
 from .formatters import LiteLLMMessageFormatter
 from .litellm_config import LiteLLMConfig
-from .message_sanitizer import AbortToolCall
+from agent_base.core.chain import ChainToolCall
 from .token_estimation import LiteLLMTokenEstimator
 
 if TYPE_CHECKING:
@@ -146,15 +146,13 @@ class LiteLLMProvider(Provider):
     def plan_stream_abort(self, turn: ProviderTurn) -> ChainPatch:
         """Synthesize tool_results for tool_uses left open by a mid-stream
         abort.  Reads ``turn.stream_bookkeeping`` (the completed tool-call ids
-        this provider stored on the way out — O12a)."""
-        from .message_sanitizer import plan_stream_abort as _plan
+        this provider stored on the way out — O12a); the chain patch comes
+        from the shared ``agent_base.core.chain`` planner (the module-level
+        ``message_sanitizer`` helpers are removed — §6, G0)."""
+        from agent_base.core.chain import plan_abort_from_completed
 
-        completed: list[AbortToolCall] = list(turn.stream_bookkeeping or [])
-        patch = _plan(
-            partial_message=turn.message,
-            completed_tool_calls=completed,
-        )
-        return ChainPatch(append_messages=list(patch.append_messages))
+        completed: list[ChainToolCall] = list(turn.stream_bookkeeping or [])
+        return plan_abort_from_completed(turn.message, completed)
 
     # -- Tool-call extraction ----------------------------------------------------
 
@@ -225,7 +223,7 @@ class LiteLLMProvider(Provider):
         text_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_buffers: dict[int, dict[str, Any]] = {}
-        completed_tool_calls: list[AbortToolCall] = []
+        completed_tool_calls: list[ChainToolCall] = []
 
         async for chunk in response:
             if cancellation_event is not None and cancellation_event.is_set():
@@ -424,7 +422,7 @@ class LiteLLMProvider(Provider):
         text_parts: list[str],
         thinking_parts: list[str],
         tool_buffers: dict[int, dict[str, Any]],
-        completed_tool_calls: list[AbortToolCall],
+        completed_tool_calls: list[ChainToolCall],
         model: str,
     ) -> Message:
         from agent_base.core.types import ThinkingContent
@@ -467,15 +465,15 @@ class LiteLLMProvider(Provider):
         tool_buffers: dict[int, dict[str, Any]],
         agent_uuid: str,
         sink: "DeltaSink",
-    ) -> list[AbortToolCall]:
-        completed_calls: list[AbortToolCall] = []
+    ) -> list[ChainToolCall]:
+        completed_calls: list[ChainToolCall] = []
         for _, buffer in sorted(tool_buffers.items()):
             tool_id = buffer.get("id", "")
             tool_name = buffer.get("name", "")
             arguments = buffer.get("arguments", "")
             if not tool_id or not tool_name:
                 continue
-            completed_calls.append(AbortToolCall(tool_id=tool_id, tool_name=tool_name))
+            completed_calls.append(ChainToolCall(tool_id=tool_id, tool_name=tool_name))
             sink.emit(
                 ToolCallDelta(
                     agent_uuid=agent_uuid,

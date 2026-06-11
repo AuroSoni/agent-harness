@@ -16,14 +16,18 @@ from __future__ import annotations
 
 import dataclasses
 
+# RECONCILED (2026-06-10, maintainer-ratified): R34 pins ONE canonical spelling —
+# the BARE names (logging.md §2.1 / O5 re-exports them verbatim). The FIELD_*-
+# prefixed aliases the earlier tenancy §2.0 draft documented are DELETED (G0:
+# no dual spellings); tenancy §2.0 is amended to the bare names.
 from agent_base.core.identity import (
-    FIELD_AGENT_ID,
-    FIELD_EVENT_ID,
-    FIELD_PARENT_AGENT_ID,
-    FIELD_RUN_ID,
-    FIELD_SEQ,
-    FIELD_SUBJECT,
-    FIELD_TENANT,
+    AGENT_ID,
+    EVENT_ID,
+    PARENT_AGENT_ID,
+    RUN_ID,
+    SEQ,
+    SUBJECT,
+    TENANT,
     SessionPrincipal,
 )
 
@@ -163,13 +167,13 @@ def test_from_dict_null_claims_defaults_to_empty_mapping():
 
 
 def test_identity_field_name_constants_spellings():
-    assert FIELD_TENANT == "tenant"
-    assert FIELD_SUBJECT == "subject"
-    assert FIELD_RUN_ID == "run_id"
-    assert FIELD_AGENT_ID == "agent_id"
-    assert FIELD_PARENT_AGENT_ID == "parent_agent_id"
-    assert FIELD_SEQ == "seq"
-    assert FIELD_EVENT_ID == "event_id"
+    assert TENANT == "tenant"
+    assert SUBJECT == "subject"
+    assert RUN_ID == "run_id"
+    assert AGENT_ID == "agent_id"
+    assert PARENT_AGENT_ID == "parent_agent_id"
+    assert SEQ == "seq"
+    assert EVENT_ID == "event_id"
 
 
 def test_field_constants_match_principal_field_spellings():
@@ -177,5 +181,21 @@ def test_field_constants_match_principal_field_spellings():
     # must use them, so importers (logging, storage columns, MetaEnvelope header)
     # never redeclare divergent names.
     names = {f.name for f in dataclasses.fields(SessionPrincipal)}
-    assert FIELD_TENANT in names
-    assert FIELD_SUBJECT in names
+    assert TENANT in names
+    assert SUBJECT in names
+
+
+def test_field_prefixed_aliases_are_deleted():
+    # R34 "one spelling, never redeclared" — the FIELD_* aliases are GONE.
+    import agent_base.core.identity as identity
+
+    for alias in (
+        "FIELD_TENANT",
+        "FIELD_SUBJECT",
+        "FIELD_RUN_ID",
+        "FIELD_AGENT_ID",
+        "FIELD_PARENT_AGENT_ID",
+        "FIELD_SEQ",
+        "FIELD_EVENT_ID",
+    ):
+        assert not hasattr(identity, alias), alias

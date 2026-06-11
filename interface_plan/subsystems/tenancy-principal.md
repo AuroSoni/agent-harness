@@ -48,11 +48,13 @@ Both variants below make that dict vanish.
 ```python
 # agent_base/core/identity.py  (NEW — the canonical home; contract §1.1 type; RECONCILIATION R1)
 # This module is the library-wide identity + correlation VOCABULARY home: it exports both
-# SessionPrincipal (below) AND the canonical field-name constants (RECONCILIATION R34) —
-#   FIELD_TENANT="tenant", FIELD_SUBJECT="subject", FIELD_RUN_ID="run_id",
-#   FIELD_AGENT_ID="agent_id", FIELD_PARENT_AGENT_ID="parent_agent_id",
-#   FIELD_SEQ="seq", FIELD_EVENT_ID="event_id"
-# so logging (LogField), storage read-model columns, and the MetaEnvelope header all import
+# SessionPrincipal (below) AND the canonical field-name constants (RECONCILIATION R34).
+# AMENDED (2026-06-10, maintainer-ratified): ONE spelling — the BARE names that
+# logging.md §2.1 (O5) re-exports verbatim; the FIELD_*-prefixed aliases this draft
+# originally listed are DELETED (G0: no dual spellings) —
+#   TENANT="tenant", SUBJECT="subject", RUN_ID="run_id", AGENT_ID="agent_id",
+#   PARENT_AGENT_ID="parent_agent_id", SEQ="seq", EVENT_ID="event_id"
+# so logging, storage read-model columns, and the MetaEnvelope header all import
 # these spellings from ONE place instead of redeclaring them in three.
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -182,7 +184,12 @@ class SessionManager:
             # await-table and returns REJECTED — §A.4 — a deliberately different disposition.)
             # I1: consult the ONE ctor-injected policy (SessionPrincipal.authorizes is DELETED);
             # the SAME self._principal_policy is also passed to AwaitTable.resolve (§A.4).
-            if principal is not None and not self._principal_policy.authorizes(
+            # AMENDED (2026-06-10, maintainer-ratified): the check is UNCONDITIONAL —
+            # session-control.md §2.5 owns the attach check (see Wiring I1 below); a None
+            # claimant is consulted as anonymous, never silently waved through (skip-on-None
+            # would be auth bypass by omission; StrictScopePolicy then refuses an anonymous
+            # attach to an owned session).
+            if not self._principal_policy.authorizes(
                 owner=entry.agent.principal, claimant=principal
             ):
                 raise SessionNotFound(root_session_id)   # mapped to Disposition.NOT_FOUND / 404
@@ -196,11 +203,15 @@ class SessionManager:
         *, principal: SessionPrincipal | None = None,
     ) -> "Ack":
         # get_or_create raises SessionNotFound (→ NOT_FOUND) on a session-addressing mismatch.
-        # For a ToolReply, the principal is then forwarded to the actor, which calls
-        # AwaitTable.resolve(cid, results, principal=…) — where a cid-record mismatch yields
-        # Ack(disposition=REJECTED). Two layers, two dispositions (R9).
+        # AMENDED (2026-06-10, maintainer-ratified): session-control.md §2.2 pins
+        # `AgentRuntime.submit(self, command)` with NO principal parameter (and §6 bans
+        # arity-inspection compat) — the claimant rides THIS manager-level submit only.
+        # At Rung 1 the session-addressing policy check above is the reply-auth gate;
+        # the per-call claimant seam on AwaitTable.resolve(cid, results, principal=,
+        # policy=) remains available for callers that hold a claimant (the cid-record
+        # mismatch there yields REJECTED — §A.4; two layers, two dispositions, R9).
         agent = await self.get_or_create(root_session_id, principal)
-        return await agent.submit(command, principal=principal)
+        return await agent.submit(command)
 ```
 
 ### A.2 Storage isolation — `for_principal` binds the adapter, consumer writes zero SQL

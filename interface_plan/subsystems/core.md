@@ -325,72 +325,56 @@ it is NOT delivered via `on_turn_end` — that hook carries no settlement.)
 > `EndTurnContext` does NOT carry it; `AgentResult.settlement` carries it and the
 > runtime auto-emits `UsageReport` (billing subscribes via `agent.on_usage_report`).
 
+> **AMENDED (2026-06-10, maintainer-ratified):** the sketch below is superseded by
+> **pricing-cost.md §2.2 — the CANONICAL shape** (the README ownership table assigns
+> `TurnSettlement` deep-testing to the pricing suite). Differences from the earlier
+> core draft: field is **`agent_id`** (not `agent_uuid`); **all fields required**
+> (`settle_turn` always builds fully populated); `to_dict` writes **flat
+> `tenant`/`subject`** wire keys (no nested `"principal"` mapping); the streaming
+> projection is **`UsageReport.of(settlement)`** with dict payloads (R2 — pricing
+> supplies it; the `as_usage_report()` method does not exist).
+
 ```python
 # agent_base/core/cost.py  (core owns the type + serialization; pricing's settle_turn() computes it)
 
 @dataclass(frozen=True)
 class TurnSettlement:
-    """The once-per-turn billing fact (R11 — was `Settlement`). Carries run_id as
-    a real field so consumers stop digging it out of cost.breakdown['run_id'],
-    plus parent_agent_id + model + step_count for attribution/analytics.
+    """The once-per-turn billing fact (R11; canonical shape: pricing-cost.md §2.2).
 
-    (O14(d)) TURN-LEVEL ONLY: the `cumulative_usage`/`cumulative_cost` fields are
-    REMOVED — run-to-date totals are served by the `SettlementAggregator` (which
-    subscribes to the UsageReport channel) and by `AgentResult.cumulative_usage`.
-    Per-turn settlements stay un-rolled.
-
-    Produced by pricing's module function `settle_turn(ctx, steps)` (O14(d) — the
-    `_Settler` class is gone); serialized here. Delivered identically via
-    AgentResult.settlement and the auto-emitted UsageReport MetaEnvelope. (B1:
-    NOT via EndTurnContext — on_turn_end carries no settlement; billing subscribes
-    via agent.on_usage_report.)"""
+    (O14(d)) TURN-LEVEL ONLY: no `cumulative_*` fields — run-to-date totals are
+    served by the `SettlementAggregator` / `AgentResult.settlement` aggregation.
+    Produced by pricing's `settle_turn` (the `_Settler` class is gone); delivered
+    identically via AgentResult.settlement and the auto-emitted UsageReport (B1:
+    NOT via EndTurnContext)."""
     # (O15(c)) no per-entity SCHEMA_VERSION ClassVar — _stamp() writes CORE_SCHEMA_VERSION.
 
-    agent_uuid: str                            # == agent_id; the billed run's agent
+    agent_id: str                              # the billed run's agent
     run_id: str | None
-    parent_agent_id: str | None = None         # sub-agent attribution (None at root)
-    turn_usage: Usage = field(default_factory=Usage)        # this turn only
-    turn_cost: CostBreakdown = field(default_factory=CostBreakdown)
-    model: str | None = None
-    step_count: int | None = None
-    principal: SessionPrincipal | None = None  # §1.1 — who to bill (threaded by runtime).
-                                               # Full principal in-process; serialization is scope-only (B2).
+    parent_agent_id: str | None                # sub-agent attribution (None at root)
+    principal: SessionPrincipal | None         # §1.1 — who to bill; full object in-process
+    turn_usage: Usage                          # this turn only
+    turn_cost: CostBreakdown
+    model: str
+    step_count: int
 
     def to_dict(self) -> dict[str, Any]:
-        # (B2) Serialize ONLY the scope key (tenant/subject) from the principal —
-        # NEVER claims. The in-process `principal` object keeps the full principal.
+        # (B2) FLAT scope key only — tenant/subject, NEVER claims, no nested mapping.
         return _stamp({
-            "agent_uuid": self.agent_uuid,
+            "agent_id": self.agent_id,
             "run_id": self.run_id,
             "parent_agent_id": self.parent_agent_id,
-            "turn_usage": self.turn_usage.to_dict(),
-            "turn_cost": self.turn_cost.to_dict(),
+            "tenant": self.principal.tenant if self.principal else None,
+            "subject": self.principal.subject if self.principal else None,
             "model": self.model,
             "step_count": self.step_count,
-            "principal": {"tenant": self.principal.tenant, "subject": self.principal.subject}
-                         if self.principal else None,    # (B2) scope only; no claims
+            "usage": self.turn_usage.totals_dict(),   # O5: X8 keys, no raw_usage
+            "cost": self.turn_cost.to_dict(),
         })
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TurnSettlement":
-        p = data.get("principal")
-        return cls(
-            agent_uuid=data["agent_uuid"],
-            run_id=data.get("run_id"),
-            parent_agent_id=data.get("parent_agent_id"),
-            turn_usage=Usage.from_dict(data["turn_usage"]) if data.get("turn_usage") else Usage(),
-            turn_cost=CostBreakdown.from_dict(data["turn_cost"]) if data.get("turn_cost") else CostBreakdown(),
-            model=data.get("model"),
-            step_count=data.get("step_count"),
-            # (B2) only tenant/subject were serialized; claims are not recoverable from the wire.
-            principal=SessionPrincipal(tenant=p.get("tenant"), subject=p.get("subject")) if p else None,
-        )
-
-    def as_usage_report(self) -> "UsageReport":
-        """Adapt to the contract's MetaBody so the runtime can auto-emit it (§3).
-        UsageReport lives in streaming.meta (R2); pricing supplies its payload shape.
-        Turn-level only (O14(d)); cumulative roll-up is the SettlementAggregator's job."""
-        return UsageReport(usage=self.turn_usage, cost=self.turn_cost)
+    def from_dict(cls, data: dict[str, Any]) -> "TurnSettlement": ...
+    # missing optionals take defaults (model="", step_count=0); claims are never
+    # recoverable from the wire (B2) — see pricing-cost.md §2.2 for the full contract.
 ```
 
 > **How X9 vanishes:** pricing's `settle_turn(ctx, steps)` (O14(d)) builds the
@@ -474,7 +458,10 @@ class CompactionContext(HookContext):
     Inherits run_id/agent_id/principal/emit/once from HookContext (§1.2).
     """
     trigger: Literal["auto", "manual", "overflow"] = "auto"   # (I10) "overflow" added
-    estimated_tokens: int = 0
+    # AMENDED (2026-06-10, maintainer-ratified): `int | None = None` — the hooks doc
+    # (agent-loop-hooks.md §2.2) owns the HookContext hierarchy and pins None as
+    # "no estimate available" (an int 0 would read as a real zero-token estimate).
+    estimated_tokens: int | None = None
     stats: CompactionStats | None = None     # populated only for after_compact
 
 
@@ -731,7 +718,7 @@ async def deduct_on_usage(s: TurnSettlement) -> None:     # the on_usage_report 
     if s.turn_cost.total_cost > 0:
         await credit_manager.deduct_credits(
             org_id=s.principal.tenant, member_id=s.principal.subject,   # scope key (B2)
-            agent_uuid=s.agent_uuid, run_id=s.run_id,     # typed field, not breakdown[...]
+            agent_uuid=s.agent_id, run_id=s.run_id,       # typed field, not breakdown[...]
             cost_data=s.turn_cost.to_dict(),              # turn-level; cumulative via SettlementAggregator
             usage_data=s.turn_usage.to_dict())
 
@@ -859,7 +846,7 @@ storage codec internally (R22); this doc mandates entity methods only for the
 **Consumes (contract shared types — verbatim):**
 - `SessionPrincipal` (§1.1, home **`agent_base/core/identity.py`** — R1) — stamped onto `TurnSettlement` and `CommandAuditRecord`; threaded by the **session/actor** subsystem (we never construct it).
 - `HookContext` / `HookOutcome` (§1.2/§1.3) — base of `CompactionContext`; composition + most-restrictive-wins enforced by the **hooks/loop** subsystem.
-- `MetaEnvelope` / `MetaBody`, specifically `UsageReport` + `ErrorReport` (§3, home **`agent_base/streaming/meta.py`** — R2) — produced as projections (`TurnSettlement.as_usage_report`, turn-level only per O14(d); `AgentError.to_error_report`); stamped/emitted by the runtime via `ctx.emit`.
+- `MetaEnvelope` / `MetaBody`, specifically `UsageReport` + `ErrorReport` (§3, home **`agent_base/streaming/meta.py`** — R2) — produced as projections (`UsageReport.of(settlement)` — R2, turn-level only per O14(d); `AgentError.to_error_report`); stamped/emitted by the runtime via `ctx.emit`.
 - `StreamDelta` / `ErrorDelta` (§1.4) — `AgentError.to_error_delta` produces an `ErrorDelta`; the **streaming** subsystem owns the wire encoding.
 - `ctx` / `ToolContext` (§1, shipped; extended by **tools** with `sandbox`/`principal`/`emit`/`media`/`await_external` — R3) — referenced for the idempotency/once seam parity.
 - `AgentInput` / `ToolReply` / `Ack` / `Disposition` (§1.5, shipped) — documented, kept verbatim.

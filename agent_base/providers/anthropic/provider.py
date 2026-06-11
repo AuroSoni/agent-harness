@@ -589,15 +589,28 @@ class AnthropicProvider(Provider):
     def plan_stream_abort(self, turn: ProviderTurn) -> ChainPatch:
         """Synthesize tool_results for tool_uses left open by a mid-stream
         abort.  Reads ``turn.stream_bookkeeping`` (the completed block indices
-        this provider stored on the way out — O12a)."""
-        from .message_sanitizer import plan_stream_abort as _plan
+        this provider stored on the way out — O12a); the chain patch itself
+        comes from the shared ``agent_base.core.chain`` planner (the
+        module-level ``message_sanitizer`` helpers are removed — §6, G0)."""
+        from agent_base.core.chain import ChainToolCall, plan_abort_from_completed
 
         completed: set[int] = turn.stream_bookkeeping or set()
-        patch = _plan(
-            partial_message=turn.message,
-            completed_block_indices=completed,
-        )
-        return ChainPatch(append_messages=list(patch.append_messages))
+        partial = turn.message
+
+        # Provider-private: keep only blocks that received content_block_stop;
+        # completed client tool_use blocks whose tools never ran are orphaned.
+        kept: list = []
+        orphaned: list[ChainToolCall] = []
+        for i, block in enumerate(partial.content):
+            if i not in completed:
+                continue  # drop incomplete blocks entirely
+            kept.append(block)
+            if isinstance(block, ToolUseContent):
+                orphaned.append(
+                    ChainToolCall(tool_id=block.tool_id, tool_name=block.tool_name)
+                )
+
+        return plan_abort_from_completed(partial, orphaned, kept_blocks=kept)
 
     # -- Tool-call extraction (providers.md §2.1 — lifted from the agents) ---
 

@@ -306,6 +306,9 @@ class AgentRuntime:
         self._run_id: str | None = None
         self._root_session_id_value: str | None = None
         self._rearmed_join: Join | None = None
+        # Strong ref to the cold-resume continuation task (§2.4) so it is
+        # not garbage-collected mid-turn.
+        self._rearmed_resume_task: "asyncio.Task | None" = None
 
         # session/actor state (session-control.md §2.3): the three-plane
         # router's working set — the bounded plane-1 mailbox, the lifecycle
@@ -825,6 +828,23 @@ class AgentRuntime:
             )
         return join
 
+    def _kick_rearmed_resume(self) -> None:
+        """Restart a cold-rehydrated turn whose re-armed join just resolved.
+
+        relay-await §2.4: on the reply-triggered cold path there is no live
+        parked coroutine — ``_rearm_pending_await`` left the re-opened join on
+        ``self._rearmed_join``; once ``submit(ToolReply)`` resolves it, the
+        concrete runtime's ``_resume_rearmed`` re-enters the suspended turn on
+        a background task (CQRS — submit never blocks on the turn). Hot-path
+        and non-rearmed submits are a no-op.
+        """
+        if self._rearmed_join is None:
+            return
+        resume = getattr(self, "_resume_rearmed", None)
+        if not callable(resume):
+            return
+        self._rearmed_resume_task = asyncio.create_task(resume())
+
     async def call_frontend_tool(
         self, name: str, tool_input: dict[str, Any], *, ctx: Any
     ) -> "list[ContentBlock]":
@@ -967,6 +987,11 @@ class AgentRuntime:
             disposition = await get_await_table().resolve(
                 command.cid, command.results
             )
+            if disposition is Disposition.RESOLVED:
+                # relay-await §2.4 cold path: a re-armed join has no live
+                # parked coroutine — restart the suspended turn out-of-band
+                # (hot path: no-op, the original await_external wakes).
+                self._kick_rearmed_resume()
             self._audit_command(seq, command, disposition)
             return Ack(seq=seq, disposition=disposition)
 

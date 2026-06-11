@@ -259,9 +259,15 @@ class FrontendToolResult(BaseModel):
 
 
 class ToolResultsRequest(BaseModel):
-    """Request to submit frontend tool results and resume agent execution."""
+    """Request to submit frontend tool results and resume agent execution.
+
+    ``cid`` is the echo token from the ``AwaitInput`` envelope
+    (``correlation_id``); older clients may omit it and the server falls back
+    to the session's persisted ``pending_relay.cid``.
+    """
     agent_uuid: str
     tool_results: list[FrontendToolResult]
+    cid: Optional[str] = None
     agent_type: Optional[AgentType] = None  # Original agent type for correct config (defaults to agent_frontend_tools)
 
 
@@ -560,7 +566,11 @@ async def stream_agent_response(
 
         agent_task = asyncio.create_task(run_agent_and_signal())
 
-        # Encode typed StreamItems as SSE frames as they arrive
+        # Encode typed StreamItems as SSE frames as they arrive. A frontend-
+        # tool pause no longer ends the turn (relay-await §2.3 — the actor
+        # stays PARKED in RAM on the cid); this response closes at the
+        # AwaitInput frame and the continuation streams from /tool_results.
+        paused = False
         try:
             while True:
                 item = await queue.get()
@@ -569,14 +579,18 @@ async def stream_agent_response(
                 for frame in _SSE_CODEC.encode(item):
                     yield _SSE_CODEC.render(frame)
                 queue.task_done()
+                if getattr(item, "kind", None) == "await_input":
+                    paused = True
+                    break
         except asyncio.CancelledError:
             # 5c: a dropped SSE connection must NOT kill the resident turn.
             # Detach from the stream and let the turn run to its checkpoint;
             # teardown happens only via explicit /abort or idle-TTL eviction.
             raise
 
-        # Wait for agent to complete (re-raises if agent.run() failed)
-        await agent_task
+        if not paused:
+            # Wait for agent to complete (re-raises if agent.run() failed)
+            await agent_task
 
         # Send final SSE marker to close stream
         yield _SSE_CODEC.render(_SSE_CODEC.encode_terminal())
@@ -597,26 +611,33 @@ async def stream_tool_results_response(
 ) -> AsyncGenerator[str, None]:
     """Generate SSE-formatted stream after frontend tools complete.
 
-    Re-hydrates the agent from the database using agent_uuid, submits
-    the frontend tool results, and continues streaming the response.
+    The ONE resume contract (relay-await §2.4 / §6): ``submit(ToolReply(cid))``
+    through the SessionManager. Hot (resident, parked) sessions wake in place;
+    evicted sessions rehydrate-then-resolve on the SAME cid — there is no
+    separate cold endpoint, and ``resume_with_relay_results`` is deleted (G0).
 
     Args:
-        request: Tool results request containing agent_uuid and results
+        request: Tool results request containing agent_uuid, cid and results
 
     Yields:
         SSE-formatted strings containing agent output chunks
     """
     try:
-        # Re-hydrate agent from DB (state is loaded automatically via agent_uuid)
-        # Use the specified agent_type config, defaulting to agent_frontend_tools
-        agent_type = request.agent_type or "agent_frontend_tools"
-        config = AGENT_CONFIGS.get(agent_type, AGENT_CONFIGS["agent_frontend_tools"])
+        from agent_base.core.commands import ToolReply
 
-        agent = _create_agent(config, agent_uuid=request.agent_uuid)
-
-        # Fresh Rung-1 read point for the resumed turn (see above).
+        # Resolve the RESIDENT session (cold-loads persisted state if evicted)
+        # and attach this request as the fresh stream read point.
+        agent = await session_manager.get_or_create(request.agent_uuid)
         queue: asyncio.Queue = asyncio.Queue()
         agent._stream_queue = queue
+
+        # The cid is the FE's echo token; fall back to the persisted pause for
+        # clients that predate the cid echo.
+        pending = agent.agent_config.pending_relay if agent.agent_config else None
+        cid = request.cid or (pending.cid if pending else None)
+        if cid is None:
+            yield f"data: {json.dumps({'error': 'NoOpenAwait', 'message': 'No pending frontend-tool pause for this session.'})}\n\n"
+            return
 
         # Build relay result content blocks from frontend tool results
         relay_blocks = []
@@ -628,32 +649,25 @@ async def stream_tool_results_response(
                 is_error=r.is_error,
             ))
 
-        # Continue the agent with frontend tool results
-        async def run_continuation():
-            try:
-                return await agent.resume_with_relay_results(
-                    relay_results=relay_blocks,
-                )
-            finally:
-                queue.put_nowait(_STREAM_DONE)  # Always signal completion
+        ack = await session_manager.submit(
+            request.agent_uuid, ToolReply(cid=cid, results=relay_blocks)
+        )
+        if ack.disposition.value not in ("resolved", "accepted"):
+            yield f"data: {json.dumps({'error': 'ReplyNotAccepted', 'disposition': ack.disposition.value})}\n\n"
+            return
 
-        agent_task = asyncio.create_task(run_continuation())
-
-        # Encode typed StreamItems as SSE frames as they arrive
-        try:
-            while True:
-                item = await queue.get()
-                if item is _STREAM_DONE:
-                    break
-                for frame in _SSE_CODEC.encode(item):
-                    yield _SSE_CODEC.render(frame)
-                queue.task_done()
-        except asyncio.CancelledError:
-            agent_task.cancel()
-            raise
-
-        # Wait for agent to complete (re-raises if continuation failed)
-        await agent_task
+        # Stream the continuation; the turn ends with the RunCompleted meta
+        # frame (the resumed turn runs on the resident agent's own task —
+        # submit() never blocks on it, CQRS).
+        while True:
+            item = await queue.get()
+            if item is _STREAM_DONE:
+                break
+            for frame in _SSE_CODEC.encode(item):
+                yield _SSE_CODEC.render(frame)
+            queue.task_done()
+            if getattr(item, "kind", None) == "run_completed":
+                break
 
         # Send final SSE marker
         yield _SSE_CODEC.render(_SSE_CODEC.encode_terminal())

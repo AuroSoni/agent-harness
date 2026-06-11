@@ -125,7 +125,9 @@ class ErrorDelta(StreamDelta):
 # reusing the logic that already exists privately in retry._extract_api_status_error_type.
 # This helper lives at agent_base/core/errors.py (with the taxonomy it returns), R8 — it is
 # re-exported from agent_base/streaming for ergonomics but is NOT defined here.
-def classify_provider_error(exc: BaseException) -> ErrorDelta: ...   # PUBLIC, shipped (core.errors)
+# AMENDED (2026-06-10, maintainer-ratified): returns the typed AgentError (R8 — core.errors
+# owns the taxonomy); the wire projection is err.to_error_delta(agent_uuid=...).
+def classify_provider_error(exc: BaseException) -> AgentError: ...   # PUBLIC, shipped (core.errors)
 ```
 
 ### 2.2 Layer A — MetaEnvelope control channel (contract §3, verbatim header)
@@ -190,14 +192,14 @@ class ProfileChanged(MetaBody):
 @dataclass(frozen=True)
 class UsageReport(MetaBody):             # auto-emitted per turn by the runtime
     kind = "usage_report"
+    # AMENDED (2026-06-10, maintainer-ratified — O14(d) + R2 + B2): TURN-LEVEL ONLY
+    # and scope-free. No cumulative_* field (run-to-date totals live on the
+    # SettlementAggregator / AgentResult, never the per-turn body) and no
+    # tenant/subject on the BODY — identity rides the MetaEnvelope header (B2).
+    # Pricing supplies the projection: UsageReport.of(settlement) with
+    # usage = settlement.turn_usage.totals_dict(), cost = settlement.turn_cost.to_dict().
     usage: dict[str, Any]
     cost: dict[str, Any]
-    cumulative: dict[str, Any]
-    # §B2 (cross-ref): the identity this body carries is the SCOPE KEY ONLY —
-    # tenant/subject from the principal, NEVER claims. (Mirrors TurnSettlement.to_dict(),
-    # which serializes only tenant/subject; the full principal stays in-process on cost.py.)
-    tenant: str | None = None
-    subject: str | None = None
 
 @dataclass(frozen=True)
 class ErrorReport(MetaBody):            # control-channel mirror of ErrorDelta taxonomy

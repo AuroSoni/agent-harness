@@ -37,12 +37,10 @@ async def test_steer_defaults_to_forceful(agent):
 
 
 async def test_control_rejected_for_subagent(agent):
-    # Simulate a sub-agent: owner extras name a different root session.
-    agent.agent_config.extras["owner"] = {
-        "organization_id": "o",
-        "member_id": "m",
-        "root_agent_uuid": "other-root",
-    }
+    # Simulate a sub-agent: the spawn-stamped root id names a different root
+    # session (tenancy §A.4 — SubAgentTool stamps `_root_session_id_value`;
+    # the legacy extras["owner"] read-through is removed, G0).
+    agent._root_session_id_value = "other-root"
     a1 = await agent.submit(Abort())
     assert a1.disposition is Disposition.REJECTED
     assert a1.detail == "not_root"
@@ -52,7 +50,7 @@ async def test_control_rejected_for_subagent(agent):
 
 
 async def test_control_allowed_for_root(agent):
-    # No owner extras → this agent is its own root → control is accepted.
+    # No spawn stamp → this agent is its own root → control is accepted.
     # session-control.md SS2.4: idle (nothing in flight) ⇒ typed NOT_RUNNING,
     # NOT a rejection — the root-only guard passed.
     ack = await agent.submit(Abort())

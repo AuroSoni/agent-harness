@@ -190,8 +190,6 @@ class AnthropicAgent(AgentRuntime):
         tools: list[Callable[..., Any]] | None = None,
         frontend_tools: list[Callable[..., Any]] | None = None,
         subagents: dict[str, "AnthropicAgent"] | None = None,
-        max_retries: int = 5,
-        base_delay: float = 1.0,
         max_parallel_tool_calls: int = MAX_PARALLEL_TOOL_CALLS,
         max_tool_result_tokens: int = DEFAULT_MAX_TOOL_RESULT_TOKENS,
         memory_store: "MemoryStore | None" = None,
@@ -273,10 +271,6 @@ class AnthropicAgent(AgentRuntime):
 
         self.max_parallel_tool_calls = max_parallel_tool_calls
         self.max_tool_result_tokens = max_tool_result_tokens
-        # O12(c): retained as the provider's retry-budget INPUT (and for
-        # SubAgentSpec cloning) — never threaded into generate calls.
-        self.max_retries = max_retries
-        self.base_delay = base_delay
 
         self.stream_meta_history_and_tool_results = stream_meta_history_and_tool_results
 
@@ -294,16 +288,12 @@ class AnthropicAgent(AgentRuntime):
         self._runtime_target_msg_id: str | None = None
 
         # Composition (Fork P-A): the provider is a VALUE on the runtime.
-        # O12(c): the ctor retry scalars land on the provider's RetryPolicy.
+        # O12(c): the retry budget is the provider's RetryPolicy — there are
+        # no ctor retry scalars; customize via ``provider_value=``.
         if provider_value is not None:
             self.provider = provider_value
         else:
-            from agent_base.core.provider import RetryPolicy
-
-            self.provider = AnthropicProvider(
-                fallback_api_keys=fallback_api_keys,
-                retry_policy=RetryPolicy(max_retries=max_retries, base_delay=base_delay),
-            )
+            self.provider = AnthropicProvider(fallback_api_keys=fallback_api_keys)
 
         # Pricing policy for settle_turn (pricing-cost.md §2.5; CSV default).
         self.pricing_policy = pricing_policy or CsvPricingPolicy()
@@ -311,13 +301,6 @@ class AnthropicAgent(AgentRuntime):
         # Abort/steer state — cooperative cancellation.
         self._abort_completion: asyncio.Event | None = None
         self._run_task: asyncio.Task | None = None
-
-        # Relay mode for frontend-tool pauses. Root agents ``persist_return``
-        # (serialize ``pending_relay``, close the stream, resume via
-        # ``resume_with_relay_results`` / ``submit(ToolReply)``). Inline-await
-        # children park on the cid-keyed AwaitTable through the runtime's
-        # ``await_external`` and continue the loop on resume.
-        self._relay_mode: str = "persist_return"
 
         # Optional upstream forward for cumulative usage/cost so inline-await
         # children fold their per-step tokens and $ into the root's sinks.
@@ -711,39 +694,52 @@ class AnthropicAgent(AgentRuntime):
         # Agent Loop
         return await self._resume_loop(sink)
 
-    async def resume_with_relay_results(
-        self,
-        relay_results: list[ContentBlock],
-        cancellation_event: asyncio.Event | None = None,
-    ) -> AgentResult:
-        """Resume a ``persist_return`` relay pause with frontend results.
+    async def _resume_rearmed(self) -> "AgentResult | None":
+        """Re-enter a cold-rehydrated turn after rehydrate-then-resolve.
 
-        The hot/resident path is ``submit(ToolReply(cid))`` resolving the
-        parked ``await_external``; this is the COLD rehydrate path.
+        relay-await §2.4 / §6: the public ``resume_with_relay_results`` is
+        DELETED (G0) — the one resume contract is ``submit(ToolReply(cid))``.
+        On the cold path ``_rearm_pending_await(reply=...)`` re-opened the
+        persisted pause's cid and parked the join here; ``submit`` resolved it
+        and kicked this continuation. It runs the ``await_external`` tail
+        (reconcile → splice → checkpoint — the §2.5 guarantee runs for hot
+        AND cold) and then resumes the loop.
         """
-        if not self._initialized:
-            await self.initialize()
+        join = self._rearmed_join
+        if join is None:
+            return None
+        self._rearmed_join = None
 
-        pending = self.agent_config.pending_relay
-        if pending is None:
-            raise RuntimeError("No pending relay to resume. Call run() first.")
+        pending = self.agent_config.pending_relay if self.agent_config else None
+        self._reset_cancellation_state(None)
 
-        self._reset_cancellation_state(cancellation_event)
-
-        # Initialize per-run tracking state for the resumed run.
-        self._run_id = pending.run_id or str(uuid.uuid4())
+        # Per-run tracking state for the resumed run.
+        self._run_id = (pending.run_id if pending else None) or str(uuid.uuid4())
         self._run_logs = []
         self._run_cumulative_usage = Usage()
         self._cumulative_cost = CostBreakdown()
         self._turn_steps = []
 
-        await self._splice_relay_results(
-            pending.cid, list(relay_results), self._emit_ctx()
-        )
+        from agent_base.await_table import get_await_table
+        from agent_base.core.runtime import _AwaitCancelled
 
-        sink = self._active_sink()
+        table = get_await_table()
+        try:
+            results = await self._race_join_against_cancel(join)
+        except _AwaitCancelled:
+            await self._repair_self_chain()
+            return self._build_aborted_result()
+        finally:
+            table.pop(join.cid)
+
+        results = await self._reconcile_relay_reply(
+            join.cid, join.tool_use_ids, results
+        )
+        await self._splice_relay_results(join.cid, results, self._emit_ctx())
+        await self.checkpoint()
+
         # Resume the agent loop.
-        return await self._resume_loop(sink)
+        return await self._resume_loop(self._active_sink())
 
     async def _splice_relay_results(
         self,
@@ -754,8 +750,10 @@ class AnthropicAgent(AgentRuntime):
         """Fold completed backend + incoming frontend results into context.
 
         Overrides the runtime's relay splice with the externalizer-aware fold:
-        ``pending_relay.completed_results`` + the incoming reply land as ONE
-        user message; ``on_relay_result`` fires per incoming ToolResult;
+        ``after_tool`` (``executor="frontend"`` — agent-loop-hooks §2.1, the
+        replacement for the deleted ``on_relay_result``) fires per incoming
+        ToolResult as a pre-splice transform; ``pending_relay.completed_results``
+        + the (possibly transformed) reply land as ONE user message;
         ``pending_relay`` clears on success.
         """
         del ctx
@@ -766,6 +764,20 @@ class AnthropicAgent(AgentRuntime):
             logger.warning(
                 "relay_cid_mismatch", expected=pending.cid, received=cid
             )
+
+        # after_tool per incoming ToolResult — pre-splice transform (§2.1).
+        calls_by_id = {
+            call.tool_id: call
+            for call in (*pending.frontend_calls, *pending.confirmation_calls)
+        }
+        transformed: list[ContentBlock] = []
+        for block in results:
+            if isinstance(block, ToolResultBase):
+                block = await self._run_relay_after_tool(
+                    block, calls_by_id.get(block.tool_id)
+                )
+            transformed.append(block)
+        results = transformed
 
         all_result_blocks: list[ContentBlock] = []
         for completed_msg in pending.completed_results:
@@ -785,16 +797,6 @@ class AnthropicAgent(AgentRuntime):
             context_message = combined_message
 
         self._append_message_variants(context_message, combined_message)
-
-        for block in results:
-            if isinstance(block, ToolResultBase):
-                tool_name = block.tool_name or self._get_relay_tool_name(block.tool_id, pending)
-                tool_input = self._get_relay_tool_input(block.tool_id, pending)
-                await self.on_relay_result(
-                    tool_name=tool_name,
-                    tool_input=tool_input,
-                    result=block,
-                )
 
         self.agent_config.pending_relay = None
 
@@ -817,16 +819,12 @@ class AnthropicAgent(AgentRuntime):
     def _root_session_id(self) -> str:
         """The owning root-session tree id (== root agent_uuid).
 
-        Prefers the runtime's spawn-stamped ``_root_session_id_value``; falls
-        back to the legacy ``extras['owner']`` snapshot for hosts that still
-        populate it; a root is its own root.
+        Tenancy §A.4 / §6 (G0): spawn-stamped ``_root_session_id_value`` for
+        sub-agents; a root is its own root. The legacy ``extras['owner']``
+        read-through is REMOVED — no fallback.
         """
         if self._root_session_id_value:
             return self._root_session_id_value
-        extras = (self.agent_config.extras if self.agent_config else None) or {}
-        owner = extras.get("owner")
-        if isinstance(owner, dict) and owner.get("root_agent_uuid"):
-            return str(owner["root_agent_uuid"])
         if self.agent_config is not None:
             return self.agent_config.agent_uuid
         return self.agent_uuid or self._agent_uuid or ""
@@ -1078,38 +1076,12 @@ class AnthropicAgent(AgentRuntime):
             else AWAIT_REASON_FRONTEND_TOOL
         )
 
-        if self._relay_mode == "inline_await":
-            # Inline child: park on the cid-keyed AwaitTable through the ONE
-            # relay primitive (the runtime's await_external). No persistence
-            # of pending_relay (the parent still holds this coroutine).
-            cid = self.agent_config.agent_uuid
-            self.agent_config.pending_relay = PendingToolRelay(
-                frontend_calls=classification.frontend_calls,
-                confirmation_calls=classification.confirmation_calls,
-                completed_results=completed_result_messages,
-                run_id=self._run_id,
-                cid=cid,
-            )
-            outcome = await self.await_external(
-                cid=cid,
-                tool_use_ids=pending_tool_ids,
-                outbound=outbound,
-                reason=reason,
-                ctx=self._emit_ctx(),
-                child_agent_id=self.agent_config.agent_uuid,
-            )
-            if outcome.status == "aborted":
-                self._phase = AgentPhase.IDLE
-                if self._abort_completion is not None:
-                    self._abort_completion.set()
-                return self._build_aborted_result()
-            # Results spliced in; continue the loop for the next LLM call.
-            return None
-
-        # Root branch (persist_return): serialize state, emit the ONE await
-        # frame (B5 — AwaitInput is the only await frame), close the turn with
-        # stop_reason="relay"; submit(ToolReply(cid)) / the client's POST to
-        # ``/tool_results`` rehydrates and continues.
+        # ONE relay primitive for root and child alike (relay-await §2.3 — the
+        # ``_relay_mode`` fork is GONE, G0): persist the pause (the cold-match
+        # cid rides ``pending_relay.cid``, R23), then park on the cid-keyed
+        # AwaitTable via the runtime's ``await_external``. The actor stays
+        # parked in RAM; ``submit(ToolReply(cid))`` wakes it in place, and an
+        # evicted session rehydrates through the SAME cid (§2.4).
         cid = self._allocate_relay_cid(classification)
         self.agent_config.pending_relay = PendingToolRelay(
             frontend_calls=classification.frontend_calls,
@@ -1119,15 +1091,28 @@ class AnthropicAgent(AgentRuntime):
             cid=cid,
         )
 
+        # Suspend-side checkpoint: the pause must be on disk BEFORE parking so
+        # an eviction/crash can cold-resume it (await_external checkpoints the
+        # resume side).
         await self._persist_state()
 
-        from agent_base.streaming.meta import AwaitInput
-
-        self._hook_emit(
-            AwaitInput(tools=outbound), correlation_id=cid, expects_reply=True
+        outcome = await self.await_external(
+            cid=cid,
+            tool_use_ids=pending_tool_ids,
+            outbound=outbound,
+            reason=reason,
+            ctx=self._emit_ctx(),
+            child_agent_id=(
+                self.agent_config.agent_uuid if self._parent_agent_uuid else None
+            ),
         )
-
-        return self._build_agent_result(response_message, "relay")
+        if outcome.status == "aborted":
+            self._phase = AgentPhase.IDLE
+            if self._abort_completion is not None:
+                self._abort_completion.set()
+            return self._build_aborted_result()
+        # Results spliced in; continue the loop for the next LLM call.
+        return None
 
     # ── Actor loop & checkpoint ────────────────────────────────────────────
 
@@ -1307,9 +1292,12 @@ class AnthropicAgent(AgentRuntime):
         return self._build_aborted_result()
 
     async def _abort_awaiting_relay(self) -> None:
-        """Handle abort during relay wait (Scenario C)."""
-        from agent_base.providers.anthropic.message_sanitizer import plan_relay_abort
-        from agent_base.providers.anthropic.message_sanitizer import AbortToolCall
+        """Handle abort during relay wait (Scenario C).
+
+        Uses the shared ``agent_base.core.chain`` planner — the per-provider
+        ``message_sanitizer`` modules are removed (providers.md §6, G0).
+        """
+        from agent_base.core.chain import ChainToolCall, plan_relay_abort
 
         relay = self.agent_config.pending_relay
         if relay is None:
@@ -1317,7 +1305,7 @@ class AnthropicAgent(AgentRuntime):
 
         # Collect IDs of pending frontend/confirmation tools
         pending_tool_uses = [
-            AbortToolCall(tool_id=tc.tool_id, tool_name=tc.name)
+            ChainToolCall(tool_id=tc.tool_id, tool_name=tc.name)
             for tc in (*relay.frontend_calls, *relay.confirmation_calls)
         ]
 
@@ -1766,20 +1754,6 @@ class AnthropicAgent(AgentRuntime):
             self.system_prompt = system_prompt
             self.agent_config.system_prompt = system_prompt
 
-    async def on_relay_result(
-        self,
-        tool_name: str,
-        tool_input: dict[str, Any],
-        result: ContentBlock,
-    ) -> None:
-        """Lifecycle hook fired after each frontend/confirmation tool result.
-
-        Called once per relay result in the splice path, after results are
-        combined into the context but before the loop resumes. Override in
-        subclasses to trigger ``reconfigure()`` or perform side-effects.
-        """
-        pass
-
     async def _on_tool_results(
         self,
         envelopes: list[ToolResultEnvelope],
@@ -1791,24 +1765,6 @@ class AnthropicAgent(AgentRuntime):
         todo updates) based on tool results. Default is a no-op.
         """
         pass
-
-    def _get_relay_tool_name(
-        self, tool_id: str, pending: PendingToolRelay
-    ) -> str:
-        """Look up the original tool name for a relay tool call by tool_id."""
-        for call_info in (*pending.frontend_calls, *pending.confirmation_calls):
-            if call_info.tool_id == tool_id:
-                return call_info.name
-        return ""
-
-    def _get_relay_tool_input(
-        self, tool_id: str, pending: PendingToolRelay
-    ) -> dict[str, Any]:
-        """Look up the original tool_input for a relay tool call by tool_id."""
-        for call_info in (*pending.frontend_calls, *pending.confirmation_calls):
-            if call_info.tool_id == tool_id:
-                return call_info.input
-        return {}
 
     def _inject_stream_context_to_tools(self, stream_queue: Any) -> None:
         """Inject or clear the live stream queue into tools that support it.

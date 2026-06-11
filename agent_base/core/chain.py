@@ -303,10 +303,40 @@ def plan_abort_from_completed(
     return ChainPatch(append_messages=[sanitized])
 
 
+def plan_relay_abort(
+    completed_result_messages: list["Message"],
+    pending_tool_uses: list["ChainToolCall"],
+) -> ChainPatch:
+    """Build the chain patch for an abort while parked on a relay pause.
+
+    Folds the already-completed backend results with synthetic ``is_error``
+    results for every still-pending frontend/confirmation call into ONE user
+    message, so no ``tool_use`` is left orphaned.  Loop-owned and
+    provider-agnostic — the per-provider ``message_sanitizer`` modules are
+    removed (providers.md §6, G0); this shared home is the only copy.
+    """
+    from agent_base.core.messages import Message as Msg
+
+    all_result_blocks: list[ContentBlock] = []
+    for completed_msg in completed_result_messages:
+        all_result_blocks.extend(completed_msg.content)
+
+    if pending_tool_uses:
+        all_result_blocks.extend(
+            synthesize_abort_tool_results(pending_tool_uses)  # type: ignore[arg-type]
+        )
+
+    if not all_result_blocks:
+        return ChainPatch()
+
+    return ChainPatch(append_messages=[Msg.user(all_result_blocks)])  # type: ignore[arg-type]
+
+
 __all__ = [
     "ChainPatch",
     "ChainToolCall",
     "ensure_chain_validity",
     "synthesize_abort_tool_results",
     "plan_abort_from_completed",
+    "plan_relay_abort",
 ]

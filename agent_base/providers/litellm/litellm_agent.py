@@ -59,8 +59,6 @@ class LiteLLMAgent(AnthropicAgent):
         tools: list[Callable[..., Any]] | None = None,
         frontend_tools: list[Callable[..., Any]] | None = None,
         subagents: dict[str, "LiteLLMAgent"] | None = None,
-        max_retries: int = DEFAULT_MAX_RETRIES,
-        base_delay: float = DEFAULT_BASE_DELAY,
         max_parallel_tool_calls: int = MAX_PARALLEL_TOOL_CALLS,
         max_tool_result_tokens: int = DEFAULT_MAX_TOOL_RESULT_TOKENS,
         memory_store: "MemoryStore | None" = None,
@@ -73,9 +71,12 @@ class LiteLLMAgent(AnthropicAgent):
         run_adapter: "AgentRunAdapter | None" = None,
         media_backend: "MediaBackend | None" = None,
     ) -> None:
+        # O12(c): the retry budget rides the provider value — no ctor scalars.
         provider = LiteLLMProvider(
             formatter=LiteLLMMessageFormatter(),
-            retry_policy=RetryPolicy(max_retries=max_retries, base_delay=base_delay),
+            retry_policy=RetryPolicy(
+                max_retries=DEFAULT_MAX_RETRIES, base_delay=DEFAULT_BASE_DELAY
+            ),
         )
         super().__init__(
             system_prompt=system_prompt,
@@ -90,8 +91,6 @@ class LiteLLMAgent(AnthropicAgent):
             tools=tools,
             frontend_tools=frontend_tools,
             subagents=subagents,
-            max_retries=max_retries,
-            base_delay=base_delay,
             max_parallel_tool_calls=max_parallel_tool_calls,
             max_tool_result_tokens=max_tool_result_tokens,
             memory_store=memory_store,
