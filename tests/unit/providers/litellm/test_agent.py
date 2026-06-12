@@ -90,7 +90,7 @@ def test_abort_awaiting_relay_clears_pending_state(tmp_path: Path) -> None:
         assert agent.agent_config.pending_relay is None
         assert any(
             isinstance(block, ToolResultContent)
-            for msg in agent.agent_config.conversation_history
+            for msg in agent.agent_config.context_messages
             for block in msg.content
         )
 
@@ -126,7 +126,7 @@ def test_abort_repairs_pending_relay_even_when_idle(tmp_path: Path) -> None:
         assert agent.agent_config.pending_relay is None
         assert any(
             isinstance(block, ToolResultContent) and block.tool_id == "toolu_idle"
-            for msg in agent.agent_config.conversation_history
+            for msg in agent.agent_config.context_messages
             for block in msg.content
         )
 

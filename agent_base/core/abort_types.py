@@ -1,24 +1,30 @@
 """Types for abort/steer functionality.
 
-AgentPhase tracks where the agent is in its execution lifecycle.
-RunningAgentHandle is the value stored in the AbortSteerRegistry.
+``AgentPhase`` tracks where the agent is in its execution lifecycle; the
+abort path uses it to pick the right cleanup, and the session subsystem's
+``SessionStatus`` derives ``in_flight`` from it (session-control.md §2.2 /
+§O15d).
 
-Provider-specific types (e.g. StreamResult) live in their respective
-provider packages — see ``agent_base.providers.anthropic.abort_types``.
+The legacy ``AbortSteerRegistry`` and its ``RunningAgentHandle`` value are
+RETIRED (G0 — session-control.md §1 A1/A4/A9, §6): abort/steer now flow
+through ``submit(Abort()/Steer())`` on the runtime, routed by
+``SessionManager`` — no caller-owned task/queue/cancellation-event handle
+remains.
+
+The per-provider ``StreamResult`` dataclasses are DELETED (providers.md
+§6 / O12a / G0) — the loop consumes the shared ``ProviderTurn`` from
+``agent_base.core.provider``.
 """
 from __future__ import annotations
 
-import asyncio
-import time
-from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
 
 
 class AgentPhase(str, Enum):
     """Where the agent is in its execution lifecycle.
 
-    Used by abort() to determine which cleanup path to take.
+    Used by abort() to determine which cleanup path to take, and surfaced
+    on the ``SessionStatus`` peek (IDLE ⇒ nothing in flight).
     """
     IDLE = "idle"
     STREAMING = "streaming"
@@ -29,19 +35,15 @@ class AgentPhase(str, Enum):
 STREAM_ABORT_TEXT = "Agent run was aborted by the user."
 TOOL_ABORT_TEXT = "Tool execution was aborted by the user."
 
+# Cooperative-abort grace window: after an Abort signal, a non-cooperative tool
+# or a wedged stream is hard-cancelled once this elapses. Configurable per agent
+# via the ``_abort_grace_ms`` attribute.
+ABORT_GRACE_MS = 5000
 
-@dataclass
-class RunningAgentHandle:
-    """Handle to a running agent, stored in the AbortSteerRegistry.
 
-    The SSE stream handler creates this when starting an agent run and
-    registers it so that separate abort/steer requests can reach the
-    running agent's cancellation event.
-    """
-    agent_uuid: str
-    task: asyncio.Task[Any]
-    cancellation_event: asyncio.Event
-    queue: asyncio.Queue[Any]
-    phase: AgentPhase = AgentPhase.IDLE
-    steer_instruction: str | None = None
-    created_at: float = field(default_factory=time.monotonic)
+__all__ = [
+    "ABORT_GRACE_MS",
+    "AgentPhase",
+    "STREAM_ABORT_TEXT",
+    "TOOL_ABORT_TEXT",
+]

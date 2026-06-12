@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+# UPDATED (2026-06-10, P-A lift): LiteLLMProvider conforms to the expanded
+# Provider protocol (providers.md §2.1/§6) — keyword-only generate/
+# generate_stream returning ProviderTurn, retry budget on self.retry_policy
+# (O12c — no max_retries/base_delay params), and a DeltaSink instead of the
+# deleted (queue, stream_formatter) pair (R30/G0).
+
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any
@@ -11,7 +17,6 @@ from agent_base.core.types import Role, TextContent, ToolResultContent, ToolUseC
 from agent_base.providers.litellm.formatters import LiteLLMMessageFormatter
 from agent_base.providers.litellm.litellm_config import LiteLLMConfig
 from agent_base.providers.litellm.provider import LiteLLMProvider
-from agent_base.streaming.base import StreamFormatter
 from agent_base.streaming.types import TextDelta, ToolCallDelta
 from agent_base.tools.tool_types import ToolSchema
 
@@ -112,13 +117,25 @@ class FakeAsyncStream:
         return chunk
 
 
-class CollectingStreamFormatter(StreamFormatter):
+class RecorderSink:
+    """Minimal DeltaSink (R30) recording emitted deltas."""
+
     def __init__(self) -> None:
         self.deltas: list[Any] = []
+        self.metas: list[Any] = []
 
-    async def format_delta(self, delta: Any, queue: Any) -> None:
+    def emit(self, delta: Any) -> None:
         self.deltas.append(delta)
-        await queue.put(delta)
+
+    def emit_meta(self, body: Any, **kwargs: Any) -> None:
+        self.metas.append(body)
+
+
+async def _generate_message(provider, **kwargs):
+    """generate() now returns a ProviderTurn (providers.md §2.1); these tests
+    assert on the canonical message."""
+    turn = await provider.generate(**kwargs)
+    return turn.message
 
 
 @pytest.fixture()
@@ -165,7 +182,7 @@ async def test_generate_builds_request_and_parses_usage(
     monkeypatch.setattr("agent_base.providers.litellm.provider.litellm.acompletion", fake_acompletion)
 
     provider = LiteLLMProvider(formatter=formatter)
-    result = await provider.generate(
+    result = await _generate_message(provider, 
         system_prompt="You are brief.",
         messages=[Message.user("Ping")],
         tool_schemas=[tool_schema],
@@ -177,8 +194,6 @@ async def test_generate_builds_request_and_parses_usage(
             api_kwargs={"temperature": 0.1, "max_tokens": 55},
         ),
         model="openai/gpt-4o-mini",
-        max_retries=3,
-        base_delay=1.0,
     )
 
     assert captured["model"] == "openai/gpt-4o-mini"
@@ -230,14 +245,12 @@ async def test_generate_formats_assistant_history_tool_calls(
         ),
     ])
 
-    await provider.generate(
+    await _generate_message(provider, 
         system_prompt=None,
         messages=[Message.user("Weather?"), assistant_message],
         tool_schemas=[],
         llm_config=LiteLLMConfig(),
         model="openai/gpt-4o-mini",
-        max_retries=1,
-        base_delay=0.1,
     )
 
     assistant_wire = captured["messages"][1]
@@ -283,14 +296,12 @@ async def test_generate_formats_tool_results_before_follow_up_user_text(
         ],
     )
 
-    await provider.generate(
+    await _generate_message(provider, 
         system_prompt=None,
         messages=[user_message],
         tool_schemas=[],
         llm_config=LiteLLMConfig(),
         model="openai/gpt-4o-mini",
-        max_retries=1,
-        base_delay=0.1,
     )
 
     assert captured["messages"] == [
@@ -336,14 +347,12 @@ async def test_generate_maps_tool_call_finish_reason(
     monkeypatch.setattr("agent_base.providers.litellm.provider.litellm.acompletion", fake_acompletion)
 
     provider = LiteLLMProvider(formatter=formatter)
-    result = await provider.generate(
+    result = await _generate_message(provider, 
         system_prompt=None,
         messages=[Message.user("What is the weather in Tokyo?")],
         tool_schemas=[],
         llm_config=LiteLLMConfig(),
         model="openai/gpt-4o-mini",
-        max_retries=1,
-        base_delay=0.1,
     )
 
     assert result.stop_reason == "tool_use"
@@ -373,14 +382,12 @@ async def test_generate_parses_usage_detail_objects(
     monkeypatch.setattr("agent_base.providers.litellm.provider.litellm.acompletion", fake_acompletion)
 
     provider = LiteLLMProvider(formatter=formatter)
-    result = await provider.generate(
+    result = await _generate_message(provider, 
         system_prompt=None,
         messages=[Message.user("Ping")],
         tool_schemas=[],
         llm_config=LiteLLMConfig(),
         model="openai/gpt-4o-mini",
-        max_retries=1,
-        base_delay=0.1,
     )
 
     assert result.usage is not None
@@ -412,24 +419,20 @@ async def test_generate_stream_emits_text_deltas_and_reconstructs_message(
     )
 
     provider = LiteLLMProvider(formatter=formatter)
-    queue: Any = asyncio.Queue()
-    stream_formatter = CollectingStreamFormatter()
+    sink = RecorderSink()
     result = await provider.generate_stream(
         system_prompt=None,
         messages=[Message.user("Ping")],
         tool_schemas=[],
         llm_config=LiteLLMConfig(),
         model="openai/gpt-4o-mini",
-        max_retries=1,
-        base_delay=0.1,
-        queue=queue,
-        stream_formatter=stream_formatter,
+        sink=sink,
         agent_uuid="agent-1",
     )
 
     assert result.was_cancelled is False
     assert result.message.content[0].text == "PONG"
-    text_deltas = [delta for delta in stream_formatter.deltas if isinstance(delta, TextDelta)]
+    text_deltas = [delta for delta in sink.deltas if isinstance(delta, TextDelta)]
     assert [delta.text for delta in text_deltas] == ["P", "ONG"]
 
 
@@ -499,22 +502,18 @@ async def test_generate_stream_buffers_tool_call_until_complete(
     )
 
     provider = LiteLLMProvider(formatter=formatter)
-    queue: Any = asyncio.Queue()
-    stream_formatter = CollectingStreamFormatter()
+    sink = RecorderSink()
     result = await provider.generate_stream(
         system_prompt=None,
         messages=[Message.user("Weather?")],
         tool_schemas=[],
         llm_config=LiteLLMConfig(),
         model="openai/gpt-4o-mini",
-        max_retries=1,
-        base_delay=0.1,
-        queue=queue,
-        stream_formatter=stream_formatter,
+        sink=sink,
         agent_uuid="agent-1",
     )
 
-    tool_deltas = [delta for delta in stream_formatter.deltas if isinstance(delta, ToolCallDelta)]
+    tool_deltas = [delta for delta in sink.deltas if isinstance(delta, ToolCallDelta)]
     assert len(tool_deltas) == 1
     assert tool_deltas[0].tool_name == "get_weather"
     assert result.message.stop_reason == "tool_use"
@@ -551,26 +550,22 @@ async def test_generate_stream_cancellation_returns_safe_partial_message(
             ]
         )
 
-    async def cancelling_format_delta(delta: Any, queue: Any) -> None:
-        await queue.put(delta)
-        cancel_event.set()
+    class _CancellingSink(RecorderSink):
+        def emit(self, delta: Any) -> None:
+            super().emit(delta)
+            cancel_event.set()
 
     monkeypatch.setattr("agent_base.providers.litellm.provider.litellm.acompletion", fake_acompletion)
 
     provider = LiteLLMProvider(formatter=formatter)
-    queue: Any = asyncio.Queue()
-    stream_formatter = CollectingStreamFormatter()
-    stream_formatter.format_delta = cancelling_format_delta  # type: ignore[method-assign]
+    sink = _CancellingSink()
     result = await provider.generate_stream(
         system_prompt=None,
         messages=[Message.user("Weather?")],
         tool_schemas=[],
         llm_config=LiteLLMConfig(),
         model="openai/gpt-4o-mini",
-        max_retries=1,
-        base_delay=0.1,
-        queue=queue,
-        stream_formatter=stream_formatter,
+        sink=sink,
         agent_uuid="agent-1",
         cancellation_event=cancel_event,
     )

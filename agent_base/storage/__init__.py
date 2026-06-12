@@ -42,6 +42,24 @@ from .base import (
     AgentRunAdapter,
 )
 
+# The bundle the runtime threads onto HookContext.storage (storage.md §2.0)
+from .handles import StorageHandles
+
+# Typed cross-agent analytics read-API (storage.md §2.7)
+from .analytics import (
+    TERMINAL_STOP_REASONS,
+    AgentTotals,
+    AnalyticsReader,
+    AnalyticsTotals,
+    LatencyStats,
+    PgAnalyticsReader,
+    RunFilter,
+    RunSummary,
+    TimeBucket,
+    ToolUsageStat,
+    is_error_stop,
+)
+
 # Serialization helpers
 from .serialization import (
     serialize_config,
@@ -93,6 +111,19 @@ __all__ = [
     "AgentConfigAdapter",
     "ConversationAdapter",
     "AgentRunAdapter",
+    # Handles bundle
+    "StorageHandles",
+    # Analytics
+    "TERMINAL_STOP_REASONS",
+    "AnalyticsReader",
+    "AnalyticsTotals",
+    "LatencyStats",
+    "PgAnalyticsReader",
+    "RunFilter",
+    "RunSummary",
+    "TimeBucket",
+    "ToolUsageStat",
+    "is_error_stop",
     # Serialization
     "serialize_config",
     "deserialize_config",

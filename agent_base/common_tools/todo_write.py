@@ -1,13 +1,21 @@
-"""TodoWriteTool — create, update, or delete todos in bulk."""
+"""TodoWriteTool — create, update, or delete todos in bulk.
+
+Migrated to the template-method ``run()`` authoring style (tools.md §2.2).
+Streaming migrated off the deleted legacy ``MetaDelta`` surface to
+``ctx.emit(Custom(...))`` on the MetaEnvelope control channel (tools.md §2.2
+B8; streaming meta union per DESIGN_CONTRACT §3).
+"""
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import yaml
 
-from agent_base.streaming.types import MetaDelta
+from agent_base.streaming.meta import Custom
 from agent_base.tools import ConfigurableToolBase
+from agent_base.tools.context import ToolContext
+from agent_base.tools.tool_types import ToolSchema
 
 TODO_FILENAME = "todos.yaml"
 
@@ -57,88 +65,69 @@ Returns:
     def __init__(
         self,
         docstring_template: str | None = None,
-        schema_override: dict | None = None,
+        schema_override: ToolSchema | None = None,
     ):
         super().__init__(
             docstring_template=docstring_template,
             schema_override=schema_override,
+            name="todo_write",
         )
-        self._current_queue: asyncio.Queue | None = None
-        self._current_formatter: Any = None
-        self._agent_uuid: str | None = None
 
-    def set_run_context(
+    @staticmethod
+    def _emit_event(ctx: ToolContext | None, event_data: dict[str, Any]) -> None:
+        """Emit a ``meta_todo`` Custom body on the control channel when wired.
+
+        ``ctx.emit`` RAISES when unwired (B8) — todo events are best-effort UI
+        notifications, so an unwired context simply skips the emit.
+        """
+        if ctx is None:
+            return
+        try:
+            ctx.emit(Custom(name="meta_todo", data=event_data))
+        except RuntimeError:
+            pass  # unwired context (standalone/test use) — event is optional
+
+    async def run(
         self,
-        queue: asyncio.Queue | None,
-        formatter: Any,
-    ) -> None:
-        """Receive or clear the streaming queue and formatter."""
-        self._current_queue = queue
-        self._current_formatter = formatter
+        todos: list[dict[str, Any]],
+        ctx: ToolContext | None = None,
+    ) -> str:
+        if not isinstance(todos, list) or not todos:
+            return "Error: todos must be a non-empty list of todo operation objects."
 
-    def set_agent_uuid(self, agent_uuid: str) -> None:
-        """Receive the owning agent's UUID for streaming metadata."""
-        self._agent_uuid = agent_uuid
+        sandbox = self._sandbox
 
-    async def _emit_event(self, event_data: dict[str, Any]) -> None:
-        """Emit a ``meta_todo`` stream event if a queue is available."""
-        if self._current_queue and self._current_formatter:
-            delta = MetaDelta(
-                agent_uuid=self._agent_uuid or "",
-                type="meta_todo",
-                payload=event_data,
-                is_final=True,
-            )
-            await self._current_formatter.format_delta(
-                delta, self._current_queue,
-            )
+        async with _todo_lock:
+            exists, _ = await sandbox.file_exists(TODO_FILENAME)
+            if exists:
+                chunks: list[bytes] = []
+                async for chunk in sandbox.read_file_bytes(TODO_FILENAME):
+                    chunks.append(chunk)
+                raw = b"".join(chunks)
+                data = yaml.safe_load(raw.decode("utf-8")) or {}
+            else:
+                data = {}
 
-    def get_tool(self) -> Callable[..., Awaitable[str]]:
-        """Return a @tool decorated async function for use with an agent."""
-        instance = self
+            next_id: int = data.get("next_id", 1)
+            stored_todos: list[dict[str, Any]] = data.get("todos", [])
+            result_lines: list[str] = []
+            did_modify = False
 
-        async def todo_write(todos: list[dict[str, Any]]) -> str:
-            """Placeholder docstring - replaced by template."""
-            if not isinstance(todos, list) or not todos:
-                return "Error: todos must be a non-empty list of todo operation objects."
+            for operation in todos:
+                result, applied, next_id, event = _apply_operation(
+                    operation=operation,
+                    todos=stored_todos,
+                    next_id=next_id,
+                )
+                result_lines.append(result)
+                did_modify = did_modify or applied
+                if event is not None:
+                    self._emit_event(ctx, event)
 
-            sandbox = instance._sandbox
+            if did_modify:
+                await _save(sandbox, next_id, stored_todos)
 
-            async with _todo_lock:
-                exists, _ = await sandbox.file_exists(TODO_FILENAME)
-                if exists:
-                    chunks: list[bytes] = []
-                    async for chunk in sandbox.read_file_bytes(TODO_FILENAME):
-                        chunks.append(chunk)
-                    raw = b"".join(chunks)
-                    data = yaml.safe_load(raw.decode("utf-8")) or {}
-                else:
-                    data = {}
-
-                next_id: int = data.get("next_id", 1)
-                stored_todos: list[dict[str, Any]] = data.get("todos", [])
-                result_lines: list[str] = []
-                did_modify = False
-
-                for operation in todos:
-                    result, applied, next_id, event = _apply_operation(
-                        operation=operation,
-                        todos=stored_todos,
-                        next_id=next_id,
-                    )
-                    result_lines.append(result)
-                    did_modify = did_modify or applied
-                    if event is not None:
-                        await instance._emit_event(event)
-
-                if did_modify:
-                    await _save(sandbox, next_id, stored_todos)
-
-                return "\n".join(result_lines)
-
-        func = self._apply_schema(todo_write)
-        func.__tool_instance__ = instance
-        return func
+            return "\n".join(result_lines)
 
 
 def _apply_operation(

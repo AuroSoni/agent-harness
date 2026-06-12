@@ -1,36 +1,32 @@
-"""Execute Python code in a persistent sandboxed environment."""
+"""Execute Python code in a persistent sandboxed environment.
+
+Migrated to the rebuilt executor surface (python-executors.md §3.1/§6, G0):
+``ExecutorPolicy``/``file_io_policy`` replace the legacy ctor kwargs,
+``bind_tools`` replaces ``send_tools``, ``executor.arun(code)`` replaces the
+``executor(code)`` call style, and the no-raise ``ExecutorResult.error``
+contract replaces try/except around the call. Output budgeting goes through
+``ctx.emit_capped`` (tools.md §2.4, I5/O11(a)) — ``_truncate_tail`` and the
+``tool_result_storage`` fork are deleted (F6, G0).
+"""
 from __future__ import annotations
 
-import asyncio
 import builtins
-import functools
 import inspect
 import os
-import queue
 import subprocess
 import sys
-import threading
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Callable, Dict, List
 
-from agent_base.python_executors.base import BASE_BUILTIN_MODULES, InterpreterError
-from agent_base.python_executors.local_python_executor import CodeOutput, LocalPythonExecutor
+from agent_base.python_executors import (
+    InterpreterError,
+    LocalPythonExecutor,
+)
+from agent_base.python_executors.presets import file_io_policy
 from agent_base.tools import ConfigurableToolBase
-
-from .utils.tool_result_storage import save_tool_result, truncation_reference
-
-DEFAULT_STANDARD_LIBRARY_IMPORTS = [
-    "csv",
-    "glob",
-    "io",
-    "json",
-    "os",
-    "pathlib",
-    "shutil",
-    "tempfile",
-    "textwrap",
-]
+from agent_base.tools.context import ToolContext
+from agent_base.tools.tool_types import ToolSchema
 
 
 class CodeExecutionTool(ConfigurableToolBase):
@@ -63,9 +59,13 @@ Returns:
         pip_install: bool = False,
         max_output_chars: int = 10_000,
         docstring_template: str | None = None,
-        schema_override: dict | None = None,
+        schema_override: ToolSchema | None = None,
     ):
-        super().__init__(docstring_template=docstring_template, schema_override=schema_override)
+        super().__init__(
+            docstring_template=docstring_template,
+            schema_override=schema_override,
+            name="code_execution",
+        )
         self.embedded_tools = embedded_tools or []
         self.authorized_imports = authorized_imports or []
         self.pip_install = pip_install
@@ -80,53 +80,20 @@ Returns:
             name = getattr(getattr(tool_func, "__tool_schema__", None), "name", tool_func.__name__)
             if name in tools:
                 raise ValueError(f"Duplicate tool name '{name}' in embedded_tools.")
-            tools[name] = self._wrap_async_tool(tool_func)
+            tools[name] = tool_func
         return tools
-
-    @staticmethod
-    def _wrap_async_tool(tool_func: Callable) -> Callable:
-        if not inspect.iscoroutinefunction(tool_func):
-            return tool_func
-
-        @functools.wraps(tool_func)
-        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-            result_queue: "queue.Queue[tuple[bool, Any]]" = queue.Queue()
-
-            def runner() -> None:
-                loop = asyncio.new_event_loop()
-                try:
-                    asyncio.set_event_loop(loop)
-                    result_queue.put((True, loop.run_until_complete(tool_func(*args, **kwargs))))
-                except Exception as exc:
-                    result_queue.put((False, exc))
-                finally:
-                    asyncio.set_event_loop(None)
-                    loop.close()
-
-            thread = threading.Thread(target=runner)
-            thread.start()
-            thread.join()
-            ok, value = result_queue.get()
-            if ok:
-                return value
-            raise value
-
-        return sync_wrapper
-
-    def _get_additional_authorized_imports(self) -> List[str]:
-        if "*" in self.authorized_imports:
-            return ["*"]
-        return sorted(set(DEFAULT_STANDARD_LIBRARY_IMPORTS) | set(self.authorized_imports))
 
     def _get_executor(self) -> LocalPythonExecutor:
         if self._executor is None:
-            imports = ["*"] if self.pip_install else self._get_additional_authorized_imports()
-            self._executor = LocalPythonExecutor(
-                additional_authorized_imports=imports,
-                max_print_output_length=self.max_output_chars,
-                additional_functions={"open": self._sandboxed_open},
+            # python-executors.md §3.1 "after": preset + policy; `open` is a
+            # typed extra-builtin; one-call construction (bind_tools composes).
+            policy = file_io_policy(
+                extra=tuple(imp for imp in self.authorized_imports if imp != "*"),
+                allow_all_imports=self.pip_install or "*" in self.authorized_imports,
+                extra_builtins={"open": self._sandboxed_open},
+                max_output_chars=self.max_output_chars,
             )
-            self._executor.send_tools(self._static_tools)
+            self._executor = LocalPythonExecutor(policy=policy, tools=self._static_tools)
         return self._executor
 
     def _get_initial_execution_cwd(self) -> Path:
@@ -219,7 +186,9 @@ Returns:
             return "All imports allowed. Use `pypi_packages` for third-party dependencies."
         if "*" in self.authorized_imports:
             return "All imports are allowed (unrestricted mode)."
-        return ", ".join(sorted(set(BASE_BUILTIN_MODULES) | set(self._get_additional_authorized_imports())))
+        # Single source of truth: the executor policy's effective import set
+        # (python-executors.md §3.2 — no hand re-merged lists).
+        return ", ".join(sorted(self._get_executor().policy.effective_imports))
 
     def _get_template_context(self) -> Dict[str, Any]:
         if self.pip_install:
@@ -236,7 +205,7 @@ Returns:
         return {
             "embedded_tools_docs": self._format_embedded_tool_docs(),
             "authorized_imports_str": self._format_authorized_imports(),
-            "full_result_path_pattern": ".tool_results/code_execution/<id>.txt",
+            "full_result_path_pattern": ".tool_results/",
             "pip_install_intro": pip_install_intro,
             "pypi_packages_docs": pypi_packages_docs,
         }
@@ -244,12 +213,6 @@ Returns:
     def reset_state(self) -> None:
         self._executor = None
         self._execution_cwd = None
-
-    def _truncate_tail(self, content: str) -> str:
-        if len(content) <= self.max_output_chars:
-            return content
-        notice = f"\n... [truncated, showing last {self.max_output_chars} chars] ...\n"
-        return notice + content[-max(0, self.max_output_chars - len(notice)) :]
 
     @staticmethod
     def _normalize_pypi_packages(pypi_packages: List[str] | None) -> List[str]:
@@ -324,65 +287,63 @@ Returns:
             "distribution names."
         )
 
-    def get_tool(self) -> Callable[..., Awaitable[str]]:
-        instance = self
+    async def run(
+        self,
+        code: str,
+        pypi_packages: List[str] | None = None,
+        ctx: ToolContext | None = None,
+    ) -> str:
+        output_parts: list[str] = []
 
-        async def code_execution(
-            code: str,
-            pypi_packages: List[str] | None = None,
-        ) -> str:
-            """Placeholder docstring - replaced by template."""
-            output_parts: list[str] = []
-
-            if pypi_packages and not instance.pip_install:
-                output_parts.append(
-                    "[Execution Error]: `pypi_packages` can only be used when "
-                    "`pip_install=True` for this tool instance."
-                )
+        if pypi_packages and not self.pip_install:
+            output_parts.append(
+                "[Execution Error]: `pypi_packages` can only be used when "
+                "`pip_install=True` for this tool instance."
+            )
+        else:
+            try:
+                install_guidance = self._install_pypi_packages(pypi_packages) if self.pip_install else None
+            except ValueError as exc:
+                output_parts.append(f"[Execution Error]: {exc}")
             else:
-                try:
-                    install_guidance = instance._install_pypi_packages(pypi_packages) if instance.pip_install else None
-                except ValueError as exc:
-                    output_parts.append(f"[Execution Error]: {exc}")
+                if install_guidance:
+                    output_parts.append(install_guidance)
                 else:
-                    if install_guidance:
-                        output_parts.append(install_guidance)
-                    else:
-                        executor = instance._get_executor()
-                        host_cwd = Path.cwd().resolve()
-                        execution_cwd = instance._get_execution_cwd()
-                        try:
-                            os.chdir(execution_cwd)
-                            code_output: CodeOutput = executor(code)
-                            instance._persist_execution_cwd()
-                            if code_output.logs:
-                                output_parts.append(code_output.logs)
-                            if code_output.output is not None:
-                                output_parts.append(f"\n[Last value]: {code_output.output}")
-                            if code_output.is_final_answer:
-                                output_parts.append("\n[Final answer reached]")
-                        except InterpreterError as exc:
-                            instance._persist_execution_cwd()
-                            error_message = str(exc)
+                    executor = self._get_executor()
+                    host_cwd = Path.cwd().resolve()
+                    execution_cwd = self._get_execution_cwd()
+                    try:
+                        os.chdir(execution_cwd)
+                        # No-raise structured-error contract (O14): arun never
+                        # raises an InterpreterError — check result.error.
+                        result = await executor.arun(code, ctx=ctx)
+                        self._persist_execution_cwd()
+                        if result.error is not None:
+                            error_message = str(result.error)
+                            if result.logs:
+                                output_parts.append(result.logs)
                             output_parts.append(f"[Execution Error]: {error_message}")
-                            guidance = instance._build_missing_package_guidance(error_message, pypi_packages)
+                            guidance = self._build_missing_package_guidance(error_message, pypi_packages)
                             if guidance:
                                 output_parts.append(f"\n[Guidance]: {guidance}")
-                        except Exception as exc:
-                            instance._persist_execution_cwd()
-                            output_parts.append(f"[Unexpected Error]: {type(exc).__name__}: {exc}")
-                        finally:
-                            os.chdir(host_cwd)
+                        else:
+                            if result.logs:
+                                output_parts.append(result.logs)
+                            if result.output is not None:
+                                output_parts.append(f"\n[Last value]: {result.output}")
+                            if result.is_final_answer:
+                                output_parts.append("\n[Final answer reached]")
+                    except Exception as exc:
+                        self._persist_execution_cwd()
+                        output_parts.append(f"[Unexpected Error]: {type(exc).__name__}: {exc}")
+                    finally:
+                        os.chdir(host_cwd)
 
-            full_output = "".join(output_parts) if output_parts else "[No output]"
-            result_path = await save_tool_result(instance._sandbox, "code_execution", full_output)
-            was_truncated = len(full_output) > instance.max_output_chars
-            result = instance._truncate_tail(full_output)
-            if was_truncated:
-                result += truncation_reference(result_path)
-                result += "\n[Hint: Use read_file to inspect the full output or grep_search to find patterns in it.]"
-            return result
-
-        func = self._apply_schema(code_execution)
-        func.__tool_instance__ = instance
-        return func
+        full_output = "".join(output_parts) if output_parts else "[No output]"
+        if ctx is not None:
+            # One call replaces save_tool_result + _truncate_tail +
+            # truncation_reference + hint (tools.md §3 "After F6").
+            return await ctx.emit_capped(full_output, max_chars=self.max_output_chars)
+        if len(full_output) <= self.max_output_chars:
+            return full_output
+        return full_output[: self.max_output_chars] + "\n[Truncated.]"

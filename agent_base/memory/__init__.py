@@ -1,57 +1,120 @@
 """Memory module for agent_base.
 
-Cross-session knowledge stores that operate at run boundaries only.
-Independent of context compaction.
+Cross-session knowledge stores that operate at run boundaries only. Independent of
+context compaction. The store contract is a ``@runtime_checkable`` Protocol
+(``MemoryStore``); registration is an **open registry** (X3 fix) so consumers add
+custom stores without editing library source.
 
 Usage::
 
-    from agent_base.memory import NoOpMemoryStore
+    from agent_base.memory import (
+        NoOpMemoryStore, get_memory_store, register_memory_store,
+    )
 
-    memory_store = NoOpMemoryStore()
+    # Decorator registration (recommended; strict defaults to False)
+    @register_memory_store("redis_vector")
+    class RedisVectorMemoryStore: ...
+
+    # Imperative registration (dynamic / plugin discovery)
+    register_memory_store("auth_facts", AuthFactStore, strict=True)  # strict recall
 
     # Factory
     memory_store = get_memory_store("none")
 """
-from typing import Any
+from __future__ import annotations
 
-from .base import MemoryStore, MemoryStoreType
+from dataclasses import dataclass
+from typing import Any, Callable, TYPE_CHECKING
+
+from .base import MemoryContribution, MemoryStore, MemoryUpdate
 from .stores import NoOpMemoryStore
 
-# Registry mapping string names to store classes.
-MEMORY_STORES: dict[str, type[MemoryStore]] = {
-    "none": NoOpMemoryStore,
-}
+if TYPE_CHECKING:
+    pass
 
 
-def get_memory_store(name: MemoryStoreType, **kwargs: Any) -> MemoryStore:
-    """Get a memory store instance by name.
+@dataclass(frozen=True)
+class _StoreRegistration:
+    """Private backing record: the store class plus its O13 ``strict`` flag.
+
+    ``strict`` flips a ``retrieve()`` failure from best-effort swallow+log to
+    turn-fatal. It is recorded here at registration; the runtime call site reads it.
+    """
+
+    store_cls: type
+    strict: bool = False
+
+
+# Private backing store (the public seam is ``register_memory_store`` / ``get_memory_store``).
+_MEMORY_STORES: dict[str, _StoreRegistration] = {}
+
+
+def register_memory_store(
+    name: str,
+    store_cls: type | None = None,
+    *,
+    strict: bool = False,
+) -> Any:
+    """Register a ``MemoryStore`` (Protocol-conforming) under ``name``.
+
+    Usable as a decorator or imperatively. ``strict=False`` (O13, default):
+    ``retrieve()`` failures are swallowed+logged. ``strict=True``: a ``retrieve()``
+    failure is turn-fatal. ``update()`` is never turn-fatal regardless of ``strict``.
 
     Args:
-        name: Memory store name (currently ``"none"``).
-        **kwargs: Additional arguments to pass to the constructor.
+        name: Registry key (plain ``str`` — consumer names are first-class).
+        store_cls: The store class. Omit when used as a decorator.
+        strict: Whether recall failures are turn-fatal (keyword-only).
 
     Returns:
-        An instance of the requested memory store.
+        The store class (so the decorator preserves class identity), or — when
+        ``store_cls`` is omitted — a decorator that registers and returns the class.
+    """
+
+    def _register(cls: type) -> type:
+        _MEMORY_STORES[name] = _StoreRegistration(store_cls=cls, strict=strict)
+        return cls
+
+    if store_cls is None:
+        # Decorator form: ``@register_memory_store("name")`` / ``(..., strict=True)``.
+        return _register
+
+    # Imperative form: register immediately and return the class.
+    return _register(store_cls)
+
+
+def get_memory_store(name: str, **kwargs: Any) -> MemoryStore:
+    """Factory: build a registered ``MemoryStore`` by name.
+
+    Args:
+        name: Registry key (plain ``str``, not a closed Literal).
+        **kwargs: Forwarded to the store constructor.
+
+    Returns:
+        A ``MemoryStore`` instance.
 
     Raises:
-        ValueError: If memory store name is not recognized.
+        ValueError: If ``name`` is not registered (message lists availability).
     """
-    if name not in MEMORY_STORES:
-        available = ", ".join(MEMORY_STORES.keys())
+    if name not in _MEMORY_STORES:
         raise ValueError(
-            f"Unknown memory store '{name}'. Available: {available}"
+            f"Unknown memory store {name!r}. Available: {sorted(_MEMORY_STORES)}"
         )
+    return _MEMORY_STORES[name].store_cls(**kwargs)
 
-    return MEMORY_STORES[name](**kwargs)
+
+# The shipped default is registered under "none" (decorator-style at import).
+register_memory_store("none", NoOpMemoryStore)
 
 
 __all__ = [
-    # ABC
+    # Protocol + value types
     "MemoryStore",
-    "MemoryStoreType",
+    "MemoryContribution",
+    "MemoryUpdate",
     # Implementations
     "NoOpMemoryStore",
-    # Factory
-    "MEMORY_STORES",
+    # Open registry (public seam)
+    "register_memory_store",
     "get_memory_store",
 ]

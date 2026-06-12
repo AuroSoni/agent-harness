@@ -1,81 +1,103 @@
-"""Abstract base class for memory store implementations.
+"""Memory subsystem core types — the store contract + its value objects.
 
-Memory stores manage persistent **cross-session** knowledge. They operate
-at run boundaries only: ``retrieve()`` at the start of a run to inject
-relevant prior knowledge, and ``update()`` at the end to extract and
-persist new learnings for future runs.
+Memory stores manage persistent **cross-session** knowledge. They operate at run
+boundaries only: ``retrieve()`` at the start of a run to inject relevant prior
+knowledge, and ``update()`` at the end to extract and persist new learnings for
+future runs. Memory is independent of context compaction.
 
-Memory stores are independent of context compaction and manage
-*across-session* knowledge only.
+This module is the canonical home (O13) for:
+
+  - ``MemoryContribution`` — what ``retrieve()`` returns (recall blocks + placement).
+  - ``MemoryUpdate`` — the typed, serializable outcome of ``update()``.
+  - ``MemoryStore`` — the ``@runtime_checkable`` Protocol (the ABC is DELETED, O5/O13).
+
+The store methods take the locked ``HookContext`` directly (O13): the bespoke
+``MemoryRetrieveContext`` / ``MemoryUpdateContext`` types are deleted. A store reads
+``ctx.principal`` for tenant scoping and ``ctx.emit(...)`` for correlated control
+events; everything else on the hook context is ignored.
 """
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Any, Literal, TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import Any, Literal, Mapping, Protocol, TYPE_CHECKING, runtime_checkable
 
 if TYPE_CHECKING:
     from agent_base.core.conversation_log import ConversationLog
+    from agent_base.core.hooks import HookContext
     from agent_base.core.messages import Message
     from agent_base.core.types import ContentBlock
 
-# Type alias for memory store names
-MemoryStoreType = Literal["none"]
 
+# ---------------------------------------------------------------------------
+# Contributed recall shape (NEW — O13; homed here per AMENDMENTS canonical-homes)
+# ---------------------------------------------------------------------------
 
-class MemoryStore(ABC):
-    """Abstract base class for memory store implementations.
+@dataclass(frozen=True)
+class MemoryContribution:
+    """What a store contributes at run start.
 
-    Memory stores manage persistent cross-session knowledge that can be
-    injected into agent conversations. They operate at run boundaries:
-    ``retrieve()`` at the start of a run, ``update()`` at the end.
-
-    All concrete memory stores must inherit from this class and implement
-    both ``retrieve()`` and ``update()``.
+    The store names the *placement*; the loop splices accordingly (and never
+    persists the blocks into ``context_messages``). ``blocks`` is mandatory (no
+    default) — an explicit empty list means "inject nothing" (a recall miss).
     """
 
-    @abstractmethod
+    blocks: list["ContentBlock"]
+    placement: Literal["user_suffix", "system_suffix"] = "user_suffix"
+
+
+# ---------------------------------------------------------------------------
+# Typed update outcome (NEW — replaces dict[str, Any]; O13)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class MemoryUpdate:
+    """Typed, serializable result of a memory write.
+
+    Replaces the free ``dict[str, Any]``. O13 slims this to ``store_type`` plus a
+    free ``details`` mapping; the typed counters (``memories_created`` /
+    ``memories_updated`` / ``memories_evicted``) are dropped — a store puts whatever
+    counters it cares about into ``details``.
+    """
+
+    store_type: str
+    details: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Canonical serialization (§6): exactly ``{store_type, details}``."""
+        return {"store_type": self.store_type, "details": dict(self.details)}
+
+
+# ---------------------------------------------------------------------------
+# The store contract (Protocol ONLY — O5/O13; the BaseMemoryStore ABC is deleted)
+# ---------------------------------------------------------------------------
+
+@runtime_checkable
+class MemoryStore(Protocol):
+    """Cross-session knowledge store. Operates at run boundaries ONLY.
+
+    ``retrieve()`` at run start injects prior knowledge; ``update()`` at run end
+    persists new learnings. Independent of context compaction. Scoped to a
+    ``SessionPrincipal`` (read off ``ctx.principal``) so multi-tenant stores isolate
+    by org/member for free.
+
+    FAILURE CONTRACT (O13):
+      - retrieve(): best-effort. The runtime SWALLOWS+LOGS any exception and
+        proceeds with no contribution — a recall miss never fails a turn —
+        UNLESS the store was registered ``strict=True``, which flips a recall
+        failure to turn-fatal.
+      - update(): never turn-fatal. The runtime catches any exception and emits
+        a ``MetaBody.ErrorReport`` (the turn's result still settles); the write is
+        simply lost for that turn.
+    """
+
     async def retrieve(
-        self,
-        user_message: Message,
-        messages: list[Message],
-        **kwargs: Any,
-    ) -> list[ContentBlock]:
-        """Retrieve relevant memories to inject into the prompt.
-
-        Called once per ``agent.run()`` before the agent loop begins.
-        Returns content blocks that the caller appends to the user
-        message's content list.
-
-        Args:
-            user_message: The current user message.
-            messages: Current ``context_messages`` list.
-            **kwargs: Additional context (e.g., model, tools).
-
-        Returns:
-            List of ``ContentBlock`` instances to inject into the prompt.
-            Empty list means no memories to inject.
-        """
+        self, ctx: "HookContext", user_message: "Message"
+    ) -> MemoryContribution:
+        """Return blocks to inject + their placement. Empty blocks = inject nothing."""
         ...
 
-    @abstractmethod
     async def update(
-        self,
-        messages: list[Message],
-        conversation_log: ConversationLog,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        """Update memory store with learnings from the completed run.
-
-        Called after ``agent.run()`` completes successfully. The memory
-        store can extract facts, entities, or summaries to persist for
-        future retrieval.
-
-        Args:
-            messages: Compacted ``context_messages`` (what was sent to the LLM).
-            conversation_log: Full persisted conversation log for the run.
-            **kwargs: Additional context (e.g., model, tools).
-
-        Returns:
-            Metadata dict describing what was stored/updated.
-        """
+        self, ctx: "HookContext", log: "ConversationLog", stop_reason: str | None
+    ) -> MemoryUpdate:
+        """Persist learnings from the completed run. Return a typed summary."""
         ...

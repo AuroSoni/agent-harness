@@ -3,18 +3,33 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import functools
 import inspect
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Dict, TYPE_CHECKING
 
 from agent_base.core.abort_types import TOOL_ABORT_TEXT
 
+from .base import ConfigurableToolBase
+from .bundle import ToolBundle
 from .tool_types import ToolResultEnvelope, GenericTextEnvelope, ToolSchema
 from .decorators import ExecutorType
+from .context import CTX_PARAM_NAME
 
 if TYPE_CHECKING:
     from agent_base.sandbox.sandbox_types import Sandbox
+    from .bundle import Toolish
+    from .context import ToolContext
+
+
+@functools.lru_cache(maxsize=None)
+def _accepts_ctx(func: Callable) -> bool:
+    """True if ``func`` declares the reserved ``ctx`` injection parameter."""
+    try:
+        return CTX_PARAM_NAME in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 # ─── Data Structures ───────────────────────────────────────────────────
@@ -39,6 +54,13 @@ class ToolCallInfo:
     tool_id: str
     input: dict[str, Any] = field(default_factory=dict)
 
+    def with_input(self, new_input: dict[str, Any]) -> "ToolCallInfo":
+        """Return a copy with ``input`` replaced — the documented
+        ``before_tool`` enrichment idiom (agent-loop-hooks §3.2):
+        ``return HookOutcome(update=ctx.call.with_input({**ctx.tool_input, ...}))``.
+        """
+        return dataclass_replace(self, input=dict(new_input))
+
 @dataclass
 class ToolCallClassification:
     """Result of classifying a batch of tool calls by execution mode."""
@@ -50,6 +72,25 @@ class ToolCallClassification:
     def needs_relay(self) -> bool:
         """True if any calls require frontend execution or user confirmation."""
         return bool(self.frontend_calls or self.confirmation_calls)
+
+
+# ─── Toolish coercion (tools.md §2.3) ──────────────────────────────────
+
+def _coerce_to_callables(item: "Toolish") -> list[Callable]:
+    """Coerce one ``Toolish`` item into registry-ready callables.
+
+    Instances compile via ``as_tool()``; bundles expand recursively; decorated
+    callables pass through. Anything else raises ``ValueError``.
+    """
+    if isinstance(item, ConfigurableToolBase):
+        return [item.as_tool()]
+    if isinstance(item, ToolBundle):
+        return [fn for member in item.tools() for fn in _coerce_to_callables(member)]
+    if callable(item) and hasattr(item, "__tool_schema__"):
+        return [item]
+    raise ValueError(
+        f"Not registrable: {item!r} (need @tool fn, ConfigurableToolBase, or ToolBundle)"
+    )
 
 
 # ─── Registry ──────────────────────────────────────────────────────────
@@ -94,26 +135,20 @@ class ToolRegistry:
             needs_confirmation=needs_confirmation,
         )
 
-    def register_tools(self, tools: list[Callable]) -> None:
-        """Register multiple ``@tool``-decorated functions at once.
+    def register_tools(self, tools: "list[Toolish]") -> None:
+        """Register decorated functions AND ``ConfigurableToolBase`` instances.
 
-        Each function must have a ``__tool_schema__`` attribute (set by the
-        ``@tool`` decorator).
-
-        Args:
-            tools: List of decorated functions to register.
+        ``Toolish = Callable (has __tool_schema__) | ConfigurableToolBase | ToolBundle``.
+        For an instance, the registry calls ``.as_tool()`` internally — NO
+        consumer-side ``.get_tool()`` plumbing. For a ``ToolBundle``, it
+        expands ``.tools()`` (tools.md §2.3).
 
         Raises:
-            ValueError: If a function is missing the ``__tool_schema__`` attribute.
+            ValueError: If an item is not registrable.
         """
-        for func in tools:
-            if not hasattr(func, "__tool_schema__"):
-                raise ValueError(
-                    f"Function '{func.__name__}' is missing __tool_schema__ attribute. "
-                    f"Did you forget to apply the @tool decorator?"
-                )
-            schema: ToolSchema = func.__tool_schema__
-            self.register(schema.name, func, schema)
+        for item in tools:
+            for fn in _coerce_to_callables(item):  # instance→[as_tool()]; bundle→expand
+                self.register(fn.__tool_schema__.name, fn, fn.__tool_schema__)
 
     # ─── Schema Export ─────────────────────────────────────────────
 
@@ -150,6 +185,16 @@ class ToolRegistry:
             if instance and callable(getattr(instance, "set_sandbox", None)):
                 instance.set_sandbox(sandbox)
 
+    # ─── Execution-mode read (tools.md §2.3) ───────────────────────
+
+    def executor_for(self, tool_name: str) -> ExecutorType:
+        """Public read of a tool's execution mode — the value ``ctx.executor``
+        exposes to ``before_tool``/``after_tool``/``on_tool_error`` so a hook
+        can branch (contract §2.1). Unknown names default to ``"backend"``.
+        """
+        registered = self._tools.get(tool_name)
+        return registered.executor if registered else "backend"
+
     # ─── Single Tool Execution ─────────────────────────────────────
 
     async def execute(
@@ -157,6 +202,7 @@ class ToolRegistry:
         tool_name: str,
         tool_id: str,
         tool_input: dict[str, Any],
+        ctx: "ToolContext | None" = None,
     ) -> ToolResultEnvelope:
         """Execute a single registered tool and return a ``ToolResultEnvelope``.
 
@@ -180,16 +226,25 @@ class ToolRegistry:
         registered = self._tools[tool_name]
         start = time.monotonic()
 
+        call_kwargs = dict(tool_input)
+        if ctx is not None and _accepts_ctx(registered.func):
+            call_kwargs[CTX_PARAM_NAME] = ctx
+
         try:
             if inspect.iscoroutinefunction(registered.func):
-                result = await registered.func(**tool_input)
+                result = await registered.func(**call_kwargs)
             else:
-                result = await asyncio.to_thread(registered.func, **tool_input)
+                result = await asyncio.to_thread(registered.func, **call_kwargs)
 
             envelope = self._wrap_result(result, tool_name, tool_id)
 
         except Exception as e:
             envelope = ToolResultEnvelope.error(tool_name, tool_id, str(e))
+            # CM-G4: keep the RAISED exception on the envelope so the loop's
+            # ``on_tool_error`` hook can distinguish a raise from a returned
+            # error and synthesize a recovery result. Runtime-only — never
+            # serialized (it is not a dataclass field of any projection).
+            envelope.raised_error = e
 
         envelope.duration_ms = (time.monotonic() - start) * 1000
         return envelope
@@ -201,6 +256,7 @@ class ToolRegistry:
         tool_calls: list[ToolCallInfo],
         max_parallel: int = 5,
         cancellation_event: asyncio.Event | None = None,
+        ctx_factory: "Callable[[ToolCallInfo], ToolContext] | None" = None,
     ) -> list[ToolResultEnvelope]:
         """Execute multiple tool calls with bounded parallelism and cancellation.
 
@@ -230,7 +286,8 @@ class ToolRegistry:
 
         async def _run_one(tc: ToolCallInfo) -> tuple[str, ToolResultEnvelope]:
             async with semaphore:
-                envelope = await self.execute(tc.name, tc.tool_id, tc.input)
+                ctx = ctx_factory(tc) if ctx_factory is not None else None
+                envelope = await self.execute(tc.name, tc.tool_id, tc.input, ctx=ctx)
                 return tc.tool_id, envelope
 
         # Create tasks and track full call info for each
@@ -260,11 +317,13 @@ class ToolRegistry:
                         try:
                             tool_id, envelope = task.result()
                             results[tool_id] = envelope
-                        except Exception:
+                        except Exception as task_exc:
                             tc = tasks[task]
-                            results[tc.tool_id] = ToolResultEnvelope.error(
+                            failed = ToolResultEnvelope.error(
                                 tc.name, tc.tool_id, "Tool execution failed.",
                             )
+                            failed.raised_error = task_exc  # CM-G4 (see execute())
+                            results[tc.tool_id] = failed
 
                 # All tool calls have finished; stop waiting on the cancellation sentinel.
                 if len(results) == len(tool_calls):

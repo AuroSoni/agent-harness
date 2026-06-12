@@ -13,6 +13,8 @@ from posixpath import normpath as _posix_normpath
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from agent_base.tools import ConfigurableToolBase
+from agent_base.tools.context import ToolContext
+from agent_base.tools.tool_types import ToolSchema
 
 from .utils.filesystem_path_helpers import (
     build_access_denied_message,
@@ -751,9 +753,13 @@ Returns:
         blocked_ops: list[str] | None = None,
         mode: str = "allow",
         docstring_template: Optional[str] = None,
-        schema_override: Optional[dict] = None,
+        schema_override: Optional["ToolSchema"] = None,
     ):
-        super().__init__(docstring_template=docstring_template, schema_override=schema_override)
+        super().__init__(
+            docstring_template=docstring_template,
+            schema_override=schema_override,
+            name="apply_patch",
+        )
         self.max_patch_size = int(max_patch_size_bytes)
         self.max_file_size = int(max_file_size_bytes)
         self.allowed_base_dirs = normalize_allowed_roots(allowed_base_dirs)
@@ -768,231 +774,227 @@ Returns:
             "max_file_size_mb": self.max_file_size // 1024 // 1024,
         }
 
-    def get_tool(self) -> Callable:
-        instance = self
+    def _resolve_for_patch(self, agent_path: str) -> tuple[str, str] | tuple[None, str]:
+        try:
+            resolved = resolve_agent_path(agent_path, allowed_roots=self.allowed_base_dirs)
+        except Exception as exc:
+            return None, _make_error_response(f"Invalid path: {agent_path}", hint=str(exc))
+        sandbox_path = resolved.sandbox_path
+        canonical_path = resolved.canonical_path
+        if not is_allowed_sandbox_path(sandbox_path, self.allowed_base_dirs):
+            return None, _make_error_response(
+                build_access_denied_message(sandbox_path, self.allowed_base_dirs),
+                path=canonical_path,
+            )
+        if self.blocked_base_dirs and is_allowed_sandbox_path(sandbox_path, self.blocked_base_dirs):
+            return None, _make_error_response(
+                f"Access denied: {canonical_path} is inside a blocked directory.",
+                path=canonical_path,
+            )
+        return sandbox_path, canonical_path
 
-        def _resolve_for_patch(agent_path: str) -> tuple[str, str] | tuple[None, str]:
-            try:
-                resolved = resolve_agent_path(agent_path, allowed_roots=instance.allowed_base_dirs)
-            except Exception as exc:
-                return None, _make_error_response(f"Invalid path: {agent_path}", hint=str(exc))
-            sandbox_path = resolved.sandbox_path
-            canonical_path = resolved.canonical_path
-            if not is_allowed_sandbox_path(sandbox_path, instance.allowed_base_dirs):
-                return None, _make_error_response(
-                    build_access_denied_message(sandbox_path, instance.allowed_base_dirs),
-                    path=canonical_path,
-                )
-            if instance.blocked_base_dirs and is_allowed_sandbox_path(sandbox_path, instance.blocked_base_dirs):
-                return None, _make_error_response(
-                    f"Access denied: {canonical_path} is inside a blocked directory.",
-                    path=canonical_path,
-                )
-            return sandbox_path, canonical_path
+    def _op_allowed(self, op: str) -> bool:
+        if self.allowed_ops is not None and op not in self.allowed_ops:
+            return False
+        if op in self.blocked_ops:
+            return False
+        return True
 
-        def _op_allowed(op: str) -> bool:
-            if instance.allowed_ops is not None and op not in instance.allowed_ops:
-                return False
-            if op in instance.blocked_ops:
-                return False
-            return True
+    async def run(
+        self,
+        patch: str,
+        ctx: ToolContext | None = None,
+    ) -> str:
 
-        async def apply_patch(patch: str) -> str:
-            """Placeholder docstring - replaced by template."""
-
-            # Size / binary checks for the incoming patch text.
-            if len(patch.encode("utf-8")) > instance.max_patch_size:
-                return _make_error_response(
-                    f"Patch exceeds maximum size ({instance.max_patch_size // 1024 // 1024} MB)",
-                    hint="Split into smaller patches",
-                )
-
-            if _contains_null_bytes_str(patch):
-                return _make_error_response(
-                    "Patch contains null bytes (binary content not allowed)",
-                    hint="Ensure patch contains only text content",
-                )
-
-            # Parse patch.
-            try:
-                parsed = _parse_patch(patch)
-            except PatchError as e:
-                return _make_error_response(e.error, e.path, e.hint)
-
-            if not _op_allowed(parsed.op):
-                return _make_error_response(
-                    f"Operation '{parsed.op}' is not permitted in the current apply_patch configuration."
-                )
-
-            file_path, display_path_or_error = _resolve_for_patch(parsed.path)
-            if file_path is None:
-                return display_path_or_error
-            display_path = display_path_or_error
-
-            move_to_path: Optional[str] = None
-            display_move_to: Optional[str] = None
-            if parsed.move_to is not None:
-                move_to_path, display_move_to_or_error = _resolve_for_patch(parsed.move_to)
-                if move_to_path is None:
-                    return display_move_to_or_error
-                display_move_to = display_move_to_or_error
-
-            # Add file.
-            if parsed.op == "add":
-                exists = _exists_result_to_bool(await instance._sandbox.file_exists(file_path))
-                if exists:
-                    return _make_error_response(
-                        "Cannot add file: already exists",
-                        path=display_path,
-                        hint="Use '*** Update File:' to modify existing files",
-                    )
-
-                content = parsed.add_content or ""
-
-                if len(content.encode("utf-8")) > instance.max_file_size:
-                    return _make_error_response(
-                        f"Content exceeds maximum file size ({instance.max_file_size // 1024 // 1024} MB)",
-                        path=file_path,
-                    )
-
-                lines_added = content.count("\n") + (1 if content else 0)
-
-                try:
-                    await _write_all_bytes(instance._sandbox, file_path, content.encode("utf-8"))
-                except Exception as e:
-                    return _make_error_response(f"Failed to create file: {e}", path=display_path)
-
-                return _make_success_response(
-                    op="add",
-                    path=display_path,
-                    hunks_applied=0,
-                    lines_added=lines_added,
-                    lines_removed=0,
-                )
-
-            # Delete file.
-            if parsed.op == "delete":
-                exists = _exists_result_to_bool(await instance._sandbox.file_exists(file_path))
-                if not exists:
-                    return _make_error_response(
-                        "Cannot delete file: does not exist",
-                        path=display_path,
-                        hint="File may have already been deleted",
-                    )
-
-                lines_removed = 0
-                try:
-                    data = await _read_all_bytes(instance._sandbox, file_path)
-                    if _contains_null_bytes_bytes(data):
-                        return _make_error_response(
-                            "Cannot delete: file appears to be binary (contains NUL bytes)",
-                            path=display_path,
-                        )
-                    txt, _ = _decode_utf8_preserve_bom(data)
-                    lines_removed = txt.count("\n") + (1 if txt else 0)
-                except Exception:
-                    lines_removed = 0
-
-                try:
-                    await instance._sandbox.delete(file_path)
-                except Exception as e:
-                    return _make_error_response(f"Failed to delete file: {e}", path=display_path)
-
-                return _make_success_response(
-                    op="delete",
-                    path=display_path,
-                    hunks_applied=0,
-                    lines_added=0,
-                    lines_removed=lines_removed,
-                )
-
-            # Update file.
-            exists = _exists_result_to_bool(await instance._sandbox.file_exists(file_path))
-            if not exists:
-                return _make_error_response(
-                    "Cannot update file: does not exist",
-                    path=display_path,
-                    hint="Use '*** Add File:' to create new files",
-                )
-
-            try:
-                raw = await _read_all_bytes(instance._sandbox, file_path)
-            except Exception as e:
-                return _make_error_response(f"Cannot read file: {e}", path=display_path)
-
-            if _contains_null_bytes_bytes(raw):
-                return _make_error_response(
-                    "Cannot read file: appears to be binary (contains NUL bytes)",
-                    path=display_path,
-                    hint="This tool only supports UTF-8 text files",
-                )
-
-            try:
-                current_content, bom = _decode_utf8_preserve_bom(raw)
-            except UnicodeDecodeError:
-                return _make_error_response(
-                    "Cannot read file: not valid UTF-8 text",
-                    path=display_path,
-                    hint="This tool only supports UTF-8 text files",
-                )
-
-            # Apply hunks.
-            try:
-                new_content, fuzz_level = _apply_hunks(current_content, parsed.hunks, file_path)
-            except PatchError as e:
-                return _make_error_response(e.error, e.path, e.hint)
-
-            if len(new_content.encode("utf-8")) > instance.max_file_size:
-                return _make_error_response(
-                    f"Result exceeds maximum file size ({instance.max_file_size // 1024 // 1024} MB)",
-                    path=display_path,
-                )
-
-            total_added = sum(h.lines_added for h in parsed.hunks)
-            total_removed = sum(h.lines_removed for h in parsed.hunks)
-
-            # Determine destination.
-            target_path = display_path
-            moved_from: Optional[str] = None
-
-            if parsed.move_to:
-                assert move_to_path is not None
-                target_path = display_move_to or display_path
-                moved_from = display_path
-                try:
-                    await _write_all_bytes(instance._sandbox, move_to_path, bom + new_content.encode("utf-8"))
-                except Exception as e:
-                    return _make_error_response(f"Failed to write move target: {e}", path=display_move_to or display_path)
-
-                if move_to_path != file_path:
-                    try:
-                        await instance._sandbox.delete(file_path)
-                    except Exception as e:
-                        try:
-                            await instance._sandbox.delete(move_to_path)
-                        except Exception:
-                            pass
-                        return _make_error_response(
-                            f"Failed to remove original file after move: {e}",
-                            path=display_path,
-                            hint="No changes were committed if rollback succeeded; otherwise both files may exist.",
-                        )
-            else:
-                try:
-                    await _write_all_bytes(instance._sandbox, file_path, bom + new_content.encode("utf-8"))
-                except Exception as e:
-                    return _make_error_response(f"Failed to write file: {e}", path=display_path)
-
-            return _make_success_response(
-                op="update",
-                path=target_path,
-                hunks_applied=len(parsed.hunks),
-                lines_added=total_added,
-                lines_removed=total_removed,
-                fuzz_level=fuzz_level,
-                moved_from=moved_from,
+        # Size / binary checks for the incoming patch text.
+        if len(patch.encode("utf-8")) > self.max_patch_size:
+            return _make_error_response(
+                f"Patch exceeds maximum size ({self.max_patch_size // 1024 // 1024} MB)",
+                hint="Split into smaller patches",
             )
 
-        func = self._apply_schema(apply_patch)
-        func.__tool_instance__ = instance
-        return func
+        if _contains_null_bytes_str(patch):
+            return _make_error_response(
+                "Patch contains null bytes (binary content not allowed)",
+                hint="Ensure patch contains only text content",
+            )
+
+        # Parse patch.
+        try:
+            parsed = _parse_patch(patch)
+        except PatchError as e:
+            return _make_error_response(e.error, e.path, e.hint)
+
+        if not self._op_allowed(parsed.op):
+            return _make_error_response(
+                f"Operation '{parsed.op}' is not permitted in the current apply_patch configuration."
+            )
+
+        file_path, display_path_or_error = self._resolve_for_patch(parsed.path)
+        if file_path is None:
+            return display_path_or_error
+        display_path = display_path_or_error
+
+        move_to_path: Optional[str] = None
+        display_move_to: Optional[str] = None
+        if parsed.move_to is not None:
+            move_to_path, display_move_to_or_error = self._resolve_for_patch(parsed.move_to)
+            if move_to_path is None:
+                return display_move_to_or_error
+            display_move_to = display_move_to_or_error
+
+        # Add file.
+        if parsed.op == "add":
+            exists = _exists_result_to_bool(await self._sandbox.file_exists(file_path))
+            if exists:
+                return _make_error_response(
+                    "Cannot add file: already exists",
+                    path=display_path,
+                    hint="Use '*** Update File:' to modify existing files",
+                )
+
+            content = parsed.add_content or ""
+
+            if len(content.encode("utf-8")) > self.max_file_size:
+                return _make_error_response(
+                    f"Content exceeds maximum file size ({self.max_file_size // 1024 // 1024} MB)",
+                    path=file_path,
+                )
+
+            lines_added = content.count("\n") + (1 if content else 0)
+
+            try:
+                await _write_all_bytes(self._sandbox, file_path, content.encode("utf-8"))
+            except Exception as e:
+                return _make_error_response(f"Failed to create file: {e}", path=display_path)
+
+            return _make_success_response(
+                op="add",
+                path=display_path,
+                hunks_applied=0,
+                lines_added=lines_added,
+                lines_removed=0,
+            )
+
+        # Delete file.
+        if parsed.op == "delete":
+            exists = _exists_result_to_bool(await self._sandbox.file_exists(file_path))
+            if not exists:
+                return _make_error_response(
+                    "Cannot delete file: does not exist",
+                    path=display_path,
+                    hint="File may have already been deleted",
+                )
+
+            lines_removed = 0
+            try:
+                data = await _read_all_bytes(self._sandbox, file_path)
+                if _contains_null_bytes_bytes(data):
+                    return _make_error_response(
+                        "Cannot delete: file appears to be binary (contains NUL bytes)",
+                        path=display_path,
+                    )
+                txt, _ = _decode_utf8_preserve_bom(data)
+                lines_removed = txt.count("\n") + (1 if txt else 0)
+            except Exception:
+                lines_removed = 0
+
+            try:
+                await self._sandbox.delete(file_path)
+            except Exception as e:
+                return _make_error_response(f"Failed to delete file: {e}", path=display_path)
+
+            return _make_success_response(
+                op="delete",
+                path=display_path,
+                hunks_applied=0,
+                lines_added=0,
+                lines_removed=lines_removed,
+            )
+
+        # Update file.
+        exists = _exists_result_to_bool(await self._sandbox.file_exists(file_path))
+        if not exists:
+            return _make_error_response(
+                "Cannot update file: does not exist",
+                path=display_path,
+                hint="Use '*** Add File:' to create new files",
+            )
+
+        try:
+            raw = await _read_all_bytes(self._sandbox, file_path)
+        except Exception as e:
+            return _make_error_response(f"Cannot read file: {e}", path=display_path)
+
+        if _contains_null_bytes_bytes(raw):
+            return _make_error_response(
+                "Cannot read file: appears to be binary (contains NUL bytes)",
+                path=display_path,
+                hint="This tool only supports UTF-8 text files",
+            )
+
+        try:
+            current_content, bom = _decode_utf8_preserve_bom(raw)
+        except UnicodeDecodeError:
+            return _make_error_response(
+                "Cannot read file: not valid UTF-8 text",
+                path=display_path,
+                hint="This tool only supports UTF-8 text files",
+            )
+
+        # Apply hunks.
+        try:
+            new_content, fuzz_level = _apply_hunks(current_content, parsed.hunks, file_path)
+        except PatchError as e:
+            return _make_error_response(e.error, e.path, e.hint)
+
+        if len(new_content.encode("utf-8")) > self.max_file_size:
+            return _make_error_response(
+                f"Result exceeds maximum file size ({self.max_file_size // 1024 // 1024} MB)",
+                path=display_path,
+            )
+
+        total_added = sum(h.lines_added for h in parsed.hunks)
+        total_removed = sum(h.lines_removed for h in parsed.hunks)
+
+        # Determine destination.
+        target_path = display_path
+        moved_from: Optional[str] = None
+
+        if parsed.move_to:
+            assert move_to_path is not None
+            target_path = display_move_to or display_path
+            moved_from = display_path
+            try:
+                await _write_all_bytes(self._sandbox, move_to_path, bom + new_content.encode("utf-8"))
+            except Exception as e:
+                return _make_error_response(f"Failed to write move target: {e}", path=display_move_to or display_path)
+
+            if move_to_path != file_path:
+                try:
+                    await self._sandbox.delete(file_path)
+                except Exception as e:
+                    try:
+                        await self._sandbox.delete(move_to_path)
+                    except Exception:
+                        pass
+                    return _make_error_response(
+                        f"Failed to remove original file after move: {e}",
+                        path=display_path,
+                        hint="No changes were committed if rollback succeeded; otherwise both files may exist.",
+                    )
+        else:
+            try:
+                await _write_all_bytes(self._sandbox, file_path, bom + new_content.encode("utf-8"))
+            except Exception as e:
+                return _make_error_response(f"Failed to write file: {e}", path=display_path)
+
+        return _make_success_response(
+            op="update",
+            path=target_path,
+            hunks_applied=len(parsed.hunks),
+            lines_added=total_added,
+            lines_removed=total_removed,
+            fuzz_level=fuzz_level,
+            moved_from=moved_from,
+        )

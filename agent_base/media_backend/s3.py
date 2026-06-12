@@ -21,7 +21,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from .media_types import MEDIA_READ_CHUNK_SIZE, MediaBackend, MediaMetadata
+from .media_types import MEDIA_READ_CHUNK_SIZE, MediaBackend, MediaMetadata, MediaScope
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -77,6 +77,8 @@ class S3MediaBackend(MediaBackend):
         region: str = "us-east-1",
         endpoint_url: str | None = None,
         presigned_url_expiry: int = 3600,
+        *,
+        blob_store: Any = None,
     ) -> None:
         """Initialize S3 media backend.
 
@@ -87,7 +89,9 @@ class S3MediaBackend(MediaBackend):
             endpoint_url: Custom endpoint for S3-compatible services
                 (e.g., MinIO, LocalStack).
             presigned_url_expiry: Seconds until presigned URLs expire.
+            blob_store: Optional content-addressed object store (§2.4).
         """
+        super().__init__(blob_store=blob_store)
         self.bucket = bucket
         self.prefix = prefix.strip("/")
         self.region = region
@@ -380,6 +384,40 @@ class S3MediaBackend(MediaBackend):
         existing = await self._load_extras(agent_uuid, media_id)
         existing.update(extras)
         await self._save_extras(agent_uuid, media_id, existing)
+
+    async def find_by_content_hash(
+        self,
+        content_hash: str,
+        agent_uuid: str,
+        *,
+        scope: MediaScope | None = None,
+    ) -> MediaMetadata | None:
+        # I13(a): scope-derived namespace, default scope-filtered.
+        from agent_base.blob_store.hashing import derive_namespace
+
+        namespace = derive_namespace(agent_uuid, scope)
+        prefix = f"{self.prefix}/{namespace}/"
+        response = await asyncio.to_thread(
+            self.client.list_objects_v2,
+            Bucket=self.bucket,
+            Prefix=prefix,
+        )
+        for obj in response.get("Contents", []):
+            key = obj["Key"]
+            basename = key.rsplit("/", 1)[-1]
+            if basename.endswith(".meta.json"):
+                continue
+            media_id = basename.split("_", 1)[0]
+            extras = await self._load_extras(namespace, media_id)
+            if (
+                extras.get("content_hash") == content_hash
+                or extras.get("blake3_hash") == content_hash
+            ):
+                meta = await self.get_metadata(media_id, namespace)
+                if meta is not None:
+                    meta.content_hash = content_hash
+                    return meta
+        return None
 
     # ─── Resolution ───────────────────────────────────────────────────
 
