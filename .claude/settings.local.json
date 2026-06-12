@@ -3,7 +3,25 @@
     "allow": [
       "mcp__filesystem__directory_tree",
       "mcp__firecrawl__firecrawl_scrape",
-      "Bash(uv run python -m pytest:*)"
+      "Bash(uv run python -m pytest:*)",
+      "WebSearch",
+      "Bash(grep -c '```mermaid' AGENT_ARCHITECTURE_EVALUATION.md)",
+      "Bash(grep -c '```' AGENT_ARCHITECTURE_EVALUATION.md)",
+      "Bash(grep -c '^\\\\s*end\\\\s*$' AGENT_ARCHITECTURE_EVALUATION.md)",
+      "Bash(echo \"=== eng-55 wc ===\")",
+      "Read(//c/Users/aurok/.gstack/projects/AuroSoni-anthropic-agent/**)",
+      "Bash(echo \"=== last codex marker ===\")",
+      "Bash(grep -q EXIT= 'C:\\\\Users\\\\aurok/.gstack/projects/AuroSoni-anthropic-agent/eng2.out')",
+      "Bash(wc -l)",
+      "Bash(echo 'STATUS: DONE \\(__CMDSUB_OUTPUT__ lines\\)')",
+      "Bash(tail -1 'C:\\\\Users\\\\aurok/.gstack/projects/AuroSoni-anthropic-agent/eng2.out')",
+      "Bash(echo 0)",
+      "Bash(echo \"=== file size / mtime ===\")",
+      "Bash(tasklist)",
+      "Bash(grep -n '^codex$' 'C:\\\\Users\\\\aurok/.gstack/projects/AuroSoni-anthropic-agent/eng2.out')",
+      "Bash(tail -1 'C:\\\\Users\\\\aurok/.gstack/projects/AuroSoni-anthropic-agent/codex-concise.out')",
+      "Bash(echo 'lines: __CMDSUB_OUTPUT__  exit: __CMDSUB_OUTPUT__')",
+      "Bash(grep -n '^codex$' 'C:\\\\Users\\\\aurok/.gstack/projects/AuroSoni-anthropic-agent/codex-concise.out')"
     ]
   }
 }
