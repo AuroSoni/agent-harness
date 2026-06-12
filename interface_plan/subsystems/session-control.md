@@ -306,6 +306,20 @@ class SessionManager:
         ``self.principal_policy.authorizes(entry.principal, principal)`` (§I1 — the SAME policy
         the await-table uses); rejection → ``Ack(disposition=NOT_FOUND)`` (no information leak).
         This is the abort-by-id seam that resolves A9.
+
+        NV-3 — control commands never CREATE a session: an ``Abort``/``Steer`` addressed to
+        a NON-resident id is probed with a throwaway, never-``initialize()``d build instead
+        of riding the GF-P6G1 create-branch. No persisted state → ``Ack(NOT_FOUND)``
+        (unknown and not-yours indistinguishable); persisted Abort target →
+        ``Ack(NOT_RUNNING)`` without resuming residency (Rung 1: non-resident ⇒ nothing in
+        flight); persisted Steer target → normal resume (steer queues for the next turn).
+        ``UserMessage``/``ToolReply`` keep materializing (create/resume + cold
+        rehydrate-then-resolve are their jobs).
+
+        NV-4 — the FORCEFUL-steer preemption marker on the wire is ``Custom('steered')``,
+        NOT the terminal ``Custom('aborted')``: a consumer keeps its read point open and
+        the steered turn streams on it (``custom('steered') → run_started → … →
+        run_completed``). Real aborts keep ``Custom('aborted')`` (GF-P6G4).
         """
 
     async def status(self, root_session_id: str) -> "SessionStatus":

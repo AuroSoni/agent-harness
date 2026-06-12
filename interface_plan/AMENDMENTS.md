@@ -541,3 +541,73 @@ append here in the same cut series.
   consumer's workaround). Kills Nova's `credits/manager.py::_propagate_to_subagents` wrap of the
   library-private `SubAgentTool._child_agent_builder`. Specs:
   `tests/interface/pricing_cost/test_pricing_cost_settlement_identity.py`.
+
+## Notebook-verification fixes (2026-06-12)
+
+Found by running nova_backend's `api_test.ipynb` end-to-end against the redesigned
+wire surface (sandbox server + live API).
+
+- **NV-1 — `PgConversationAdapterBase.save` auto-assigns `sequence_number`** (bug: the pg
+  base inserted `conversation.sequence_number` verbatim — always `None` from the runtime —
+  so every `conversation_history` row carried NULL and `load_cursor`'s
+  `sequence_number < before` pagination could never advance; the base contract
+  ("auto-assigned by the adapter", storage/base.py) and schemas.md ("application-managed,
+  MAX+1 on insert") already promised adapter assignment, and the filesystem adapter
+  honors it). Fix: on `sequence_number is None`, update-in-place (same
+  `agent_uuid`+`run_id`) reuses the existing row's slot via `load_by_run_id`, else a
+  **scoped** `COALESCE(MAX(sequence_number), 0) + 1` probe assigns the next per-agent slot
+  (single-writer actor ⇒ no concurrent insert per agent); the value is set back on the
+  dataclass (filesystem parity). The composed upsert already excludes `sequence_number`
+  from `DO UPDATE SET` (conflict-key column), so re-saves never move a slot; explicit
+  caller-assigned values skip the probe. Subsystem doc: storage.md §2.2 note. Specs:
+  `tests/interface/storage/test_storage_pg_adapters.py` (+4: auto-assign, caller-assigned
+  passthrough, update-in-place slot keep, principal-scoped probe).
+- **NV-2 — `ContentBlock.from_api_dict` decodes url/file sources and document block options**
+  (bug: the decode half read ONLY `source["data"]`, but the api source dict carries its
+  payload under a per-type key — base64/text → `data`, url → `url`, file → `file_id` — so a
+  url-source document/image arrived with `data=""` and the provider rejected the rendered
+  block with `Only HTTPS URLs are supported`; block-level `title`/`context`/`citations`
+  were silently dropped, so citations never fired for inbound documents. The ENCODE half
+  (`AnthropicMessageFormatter._block_to_wire`) already reads all three payloads off
+  `block.data` and the options off `kwargs["title"/"context"/"citations_config"]` — the
+  two halves disagreed). Fix: `_source_payload` resolves `data | url | file_id` for
+  image/document/attachment, and the document case lifts `title`/`context`/`citations`
+  into kwargs under the formatter's encode keys (`citations_config` for the api
+  `citations` dict), making from_api_dict → formatter a faithful round-trip. Surfaced by
+  api_test.ipynb's "PDF Citations" cell (url-source document → provider 400; the
+  error_report + run_completed(stop_reason="error") wire path worked as designed).
+  Subsystem doc: streaming-and-meta.md §2.7 note. Specs:
+  `tests/interface/streaming_and_meta/test_streaming_and_meta_inbound_results.py` (+3).
+- **NV-3 — control commands never CREATE a session** (bug: `SessionManager.submit` rode
+  EVERY command through `get_or_create`, so an `Abort`/`Steer` addressed to an unknown id
+  hit the GF-P6G1 create-branch — materializing a fresh persisted session (junk
+  `agent_config` row, on_session_start, residency slot) as a side effect of a control
+  probe, and answering `409 not_running` where the documented contract
+  (FRONTEND-WIRE-CHANGES disposition table; the consumer endpoint docstrings) says
+  `404 not_found` for unknown-or-not-yours). Fix: a non-resident `Abort`/`Steer` target is
+  probed with a throwaway, never-`initialize()`d build (state creation lives in
+  `initialize()`, so the probe is read-only and runs under the claimant's adapter scope):
+  no persisted state → `Ack(NOT_FOUND)` (unknown and not-yours stay indistinguishable,
+  R9(a)); persisted Abort target → `Ack(NOT_RUNNING)` WITHOUT resuming residency (Rung 1:
+  a non-resident session has nothing in flight); persisted Steer target → the normal
+  resume path proceeds (steer queues for the next turn). Resident targets are untouched
+  (the A9 abort-by-id seam). UserMessage/ToolReply keep materializing (create/resume and
+  cold rehydrate-then-resolve are their jobs). Surfaced by api_test.ipynb's
+  "Abort a non-existent agent" cell. Subsystem doc: session-control.md §2.2 note. Specs:
+  `tests/interface/session_control/test_session_control_control_no_create.py` (+5).
+- **NV-4 — forceful-steer preemption emits `Custom('steered')`, not the terminal
+  `Custom('aborted')`** (bug: `submit(Steer, FORCEFUL)` preempts through the same
+  `_do_abort` teardown as a real `Abort`, and the stream-abort path emitted the SAME
+  `Custom('aborted')` marker for both — so a consumer's stop-frame check closed its SSE at
+  the preemption and the steered turn's frames dropped while no read point was attached
+  (Rung-1 lossy), contradicting the contract's `steering 202 — output arrives on the open
+  stream` row; the turn still ran and billed server-side, output to nowhere). Fix: the
+  runtime scopes a `_steer_preempting` flag around the preempting `_do_abort`
+  (`finally`-cleared), and `_handle_stream_abort` emits `Custom('steered')` under it —
+  real aborts keep `Custom('aborted')` (GF-P6G4 terminal-frame contract unchanged). The
+  observed steer sequence on one stream becomes: `...old-turn deltas -> custom('steered')
+  -> run_started -> ...steered deltas -> usage_report -> run_completed -> [DONE]`. Nova
+  needs NO router change (`_is_stop_frame` matches only `aborted`). Surfaced by
+  api_test.ipynb's "Steer a Running Agent" cell (STEERED_OK text never reached the
+  stream). Subsystem docs: session-control.md steer note; FRONTEND-WIRE-CHANGES.md §5/§6.
+  Specs: `tests/interface/streaming_and_meta/test_streaming_and_meta_steer_marker.py` (+4).

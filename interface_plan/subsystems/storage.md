@@ -223,6 +223,16 @@ class PgConfigAdapterBase(AgentConfigAdapter):
     # delete / update_title likewise composed; all reads/writes go through _scoped_where.
 ```
 
+> **Conversation `sequence_number` is adapter-assigned (NV-1).** `PgConversationAdapterBase.save`
+> honors the base-contract promise ("auto-assigned by the adapter" — parity with the filesystem
+> adapter): when `conversation.sequence_number is None`, an update-in-place (same
+> `agent_uuid` + `run_id`) reuses the existing row's slot, otherwise the row takes a **scoped**
+> `COALESCE(MAX(sequence_number), 0) + 1` probe (safe under the single-writer session actor).
+> The assigned value is set back on the dataclass, and the composed upsert excludes
+> `sequence_number` from `DO UPDATE SET`, so a re-save never moves a row's slot. A
+> caller-supplied `sequence_number` skips the probe entirely. Specs:
+> `tests/interface/storage/test_storage_pg_adapters.py` (NV-1 block).
+
 ---
 
 #### **A1 — `ColumnSpec` list**  (the v1 extensibility surface)

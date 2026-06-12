@@ -331,8 +331,21 @@ class SessionManager:
         contract. (The doc sketch gates on residency; the live record is the
         sharper discriminator — a freshly-resident agent whose parked
         coroutine died with a prior process still needs the re-arm.)
+
+        NV-3: control commands (``Abort``/``Steer``) addressed to a
+        NON-resident session never CREATE one — see
+        ``_probe_non_resident_control``.
         """
-        from agent_base.core.commands import ToolReply
+        from agent_base.core.commands import Abort, Steer, ToolReply
+
+        if self._sessions.get(root_session_id) is None and isinstance(
+            command, (Abort, Steer)
+        ):
+            ack = await self._probe_non_resident_control(
+                root_session_id, command, principal
+            )
+            if ack is not None:
+                return ack
 
         try:
             agent = await self.get_or_create(root_session_id, principal)
@@ -351,6 +364,50 @@ class SessionManager:
                         await rearm(reply=command)
 
         return await agent.submit(command)
+
+    async def _probe_non_resident_control(
+        self,
+        root_session_id: str,
+        command: "AgentInput",
+        principal: "SessionPrincipal | None",
+    ) -> Ack | None:
+        """Control commands never CREATE a session (NV-3).
+
+        Before NV-3 an ``Abort``/``Steer`` addressed to an unknown id rode
+        ``get_or_create`` into the GF-P6G1 create-branch — materializing a
+        fresh persisted session as a side effect of a control probe and
+        answering 409 where the documented contract says 404. Instead the
+        target is probed with a throwaway, never-``initialize()``d build
+        (state creation lives in ``initialize()``, so the probe is read-only
+        and runs under the claimant's adapter scope):
+
+        - no persisted state → ``Ack(NOT_FOUND)`` — unknown and not-yours stay
+          indistinguishable (R9 layer a);
+        - persisted ``Abort`` target → ``Ack(NOT_RUNNING)`` without resuming
+          residency (Rung 1: a non-resident session has nothing in flight);
+        - persisted ``Steer`` target → ``None`` — steer queues for the next
+          turn, so the normal resume path proceeds.
+        """
+        from agent_base.core.commands import Steer
+
+        agent = self._call_factory(root_session_id, principal)
+        if inspect.isawaitable(agent):
+            agent = await agent
+        persisted = False
+        probe = getattr(agent, "has_persisted_state", None)
+        if callable(probe):
+            result = probe()
+            if inspect.isawaitable(result):
+                result = await result
+            persisted = bool(result)
+        aclose = getattr(agent, "aclose", None)
+        if callable(aclose):
+            await aclose()  # discard the probe build (mirrors the block path)
+        if not persisted:
+            return Ack(seq=-1, disposition=Disposition.NOT_FOUND)
+        if isinstance(command, Steer):
+            return None
+        return Ack(seq=-1, disposition=Disposition.NOT_RUNNING)
 
     # ── Peek (§2.4 — drives NOT_RUNNING; never materializes) ────────────────
 

@@ -1696,7 +1696,14 @@ class AnthropicAgent(AgentRuntime):
         self._append_messages_to_histories(patch.append_messages)
 
         if sink is not None:
-            sink.emit_meta(Custom(name="aborted", data={"phase": "streaming"}))
+            # NV-4: a forceful-steer preemption is NOT a terminal abort — the
+            # steered turn follows on the same stream, so the marker differs.
+            marker = (
+                "steered"
+                if getattr(self, "_steer_preempting", False)
+                else "aborted"
+            )
+            sink.emit_meta(Custom(name=marker, data={"phase": "streaming"}))
 
         self._phase = AgentPhase.IDLE
         if self._abort_completion:

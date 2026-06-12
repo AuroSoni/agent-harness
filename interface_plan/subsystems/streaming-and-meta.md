@@ -519,6 +519,14 @@ class WireToolResult:
 
 `WireToolResult.to_tool_reply()` produces the contract §1.5 `ToolReply(cid, results)` — the **same** primitive used for relay (§3.2), so the inbound endpoint becomes `submit(wire_result.to_tool_reply())`. The throwaway-`relay_uuid` hack (C1) disappears because the reply is keyed by the pause-level `cid` (the envelope correlation_id), not by a spoofed agent uuid; per-call results carry their own `tool_use_id` (§B7).
 
+> **`from_api_dict` source payloads + document options (NV-2).** The api source dict
+> carries its payload under a per-type key (`base64`/`text` → `data`, `url` → `url`,
+> `file` → `file_id`); `from_api_dict` resolves all three onto the block's canonical
+> `data` field — the same field the Anthropic formatter reads on encode. Document
+> block-level options (`title`, `context`, `citations`) are lifted into `kwargs` under
+> the formatter's encode keys (`title`/`context`/`citations_config`), so decode→encode
+> is a faithful round-trip.
+
 ---
 
 ## 3. Consumer override examples (the smell vanishing)

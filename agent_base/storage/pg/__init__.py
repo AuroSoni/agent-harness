@@ -383,6 +383,10 @@ class PgConversationAdapterBase(_PgAdapterBase, ConversationAdapter):
         return _CONVERSATION_BASE_COLUMNS
 
     async def save(self, conversation: Conversation) -> None:
+        if conversation.sequence_number is None:
+            conversation.sequence_number = await self._assign_sequence_number(
+                conversation
+            )
         cols = self._registry.insert_columns()
         sql = (
             f"INSERT INTO {self.table} ({', '.join(cols)}) "
@@ -393,6 +397,27 @@ class PgConversationAdapterBase(_PgAdapterBase, ConversationAdapter):
         values = self._registry.values_for(conversation)
         async with self._pool.acquire() as conn:
             await conn.execute(sql, *values)
+
+    async def _assign_sequence_number(self, conversation: Conversation) -> int:
+        """Auto-assign the per-agent sequence (the base-contract promise).
+
+        Update-in-place (same ``agent_uuid`` + ``run_id``) keeps the existing
+        slot; a new row takes scoped ``MAX(sequence_number) + 1``. Safe under
+        the single-writer session actor — no concurrent insert per agent.
+        """
+        existing = await self.load_by_run_id(
+            conversation.agent_uuid, conversation.run_id
+        )
+        if existing is not None and existing.sequence_number is not None:
+            return existing.sequence_number
+        where, args = self._scoped_where({"agent_uuid": conversation.agent_uuid})
+        sql = (
+            f"SELECT COALESCE(MAX(sequence_number), 0) + 1 "
+            f"FROM {self.table} WHERE {where}"
+        )
+        async with self._pool.acquire() as conn:
+            value = await conn.fetchval(sql, *args)
+        return int(value or 1)
 
     async def load_history(
         self, agent_uuid: str, limit: int = 20, offset: int = 0

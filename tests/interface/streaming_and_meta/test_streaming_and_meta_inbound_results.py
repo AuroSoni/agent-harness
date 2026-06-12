@@ -143,3 +143,60 @@ def test_content_block_from_api_dict_document():
     assert block.media_type == "application/pdf"
     assert block.source_type == "base64"
     assert block.data == "JVBERi0="
+
+
+# ---------------------------------------------------------------------------
+# §2.7 — type-specific source payload keys + document block options (NV-2).
+# The api source dict carries its payload under a per-type key (base64/text →
+# "data", url → "url", file → "file_id"); canonically all of them live on the
+# block's `data` field — the SAME field the Anthropic formatter reads back on
+# encode (url → {"type": "url", "url": block.data}). Block-level document
+# options (title/context/citations) ride in kwargs under the formatter's
+# encode keys, so a from_api_dict round-trip preserves them.
+# ---------------------------------------------------------------------------
+
+def test_content_block_from_api_dict_document_url_source_carries_url():
+    block = ContentBlock.from_api_dict(
+        {
+            "type": "document",
+            "source": {"type": "url", "url": "https://example.com/doc.pdf"},
+        }
+    )
+    assert isinstance(block, DocumentContent)
+    assert block.source_type == "url"
+    assert block.data == "https://example.com/doc.pdf"
+
+
+def test_content_block_from_api_dict_document_preserves_block_options():
+    block = ContentBlock.from_api_dict(
+        {
+            "type": "document",
+            "source": {
+                "type": "text",
+                "media_type": "text/plain",
+                "data": "The grass is green.",
+            },
+            "title": "My Document",
+            "context": "Trustworthy.",
+            "citations": {"enabled": True},
+        }
+    )
+    assert isinstance(block, DocumentContent)
+    assert block.data == "The grass is green."
+    assert block.kwargs["title"] == "My Document"
+    assert block.kwargs["context"] == "Trustworthy."
+    assert block.kwargs["citations_config"] == {"enabled": True}
+
+
+def test_content_block_from_api_dict_image_url_and_file_sources():
+    url_image = ContentBlock.from_api_dict(
+        {"type": "image", "source": {"type": "url", "url": "https://x.test/i.png"}}
+    )
+    assert isinstance(url_image, ImageContent)
+    assert url_image.data == "https://x.test/i.png"
+
+    file_image = ContentBlock.from_api_dict(
+        {"type": "image", "source": {"type": "file", "file_id": "file_123"}}
+    )
+    assert isinstance(file_image, ImageContent)
+    assert file_image.data == "file_123"

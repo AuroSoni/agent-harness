@@ -20,7 +20,7 @@ import inspect
 
 import asyncpg
 
-from agent_base.core.config import AgentConfig
+from agent_base.core.config import AgentConfig, Conversation
 from agent_base.core.identity import SessionPrincipal
 from agent_base.storage.base import (
     AgentConfigAdapter,
@@ -36,7 +36,7 @@ from agent_base.storage.pg import (
 )
 from agent_base.storage.pg.columns import ColumnSpec
 from agent_base.storage.pg.pool import PgConnectConfig, PgPool, create_pool
-from agent_base.storage.pg.row_mappers import config_to_row
+from agent_base.storage.pg.row_mappers import config_to_row, conversation_to_row
 
 
 # ---------------------------------------------------------------------------
@@ -440,3 +440,65 @@ async def test_create_adapters_from_pool_honors_custom_classes_and_principal():
     await config.save(_config())
     assert "org-1" in conn.all_args()
     assert "mem-1" in conn.all_args()
+
+
+# ---------------------------------------------------------------------------
+# §2.2 — conversation save auto-assigns sequence_number (NV-1; base contract
+# "The sequence_number should be auto-assigned by the adapter", schemas.md
+# "application-managed, MAX(sequence_number)+1 on insert" — parity with the
+# filesystem adapter, which already assigns it)
+# ---------------------------------------------------------------------------
+
+def _conversation(seq: int | None = None) -> Conversation:
+    return Conversation(agent_uuid="agent-1", run_id="run-1", sequence_number=seq)
+
+
+async def test_conversation_save_auto_assigns_scoped_max_plus_one():
+    conn = _FakeConn()
+    conn.fetchval_result = 4          # what the scoped MAX+1 probe returns
+    adapter = PgConversationAdapterBase(_FakePool(conn))
+    conversation = _conversation(seq=None)
+    await adapter.save(conversation)
+    probe = [sql for method, sql, _ in conn.calls if method == "fetchval"]
+    assert probe, "save() with sequence_number=None must issue the MAX+1 probe"
+    assert "COALESCE(MAX(sequence_number), 0) + 1" in probe[0]
+    assert conversation.sequence_number == 4          # mutated like filesystem
+    executed = [args for method, _, args in conn.calls if method == "execute"]
+    assert executed and 4 in executed[0]              # assigned value inserted
+
+
+async def test_conversation_save_respects_caller_assigned_sequence_number():
+    conn = _FakeConn()
+    adapter = PgConversationAdapterBase(_FakePool(conn))
+    await adapter.save(_conversation(seq=7))
+    probes = [m for m, _, _ in conn.calls if m in ("fetchval", "fetchrow")]
+    assert not probes, "explicit sequence_number must skip the probe round-trip"
+    executed = [args for method, _, args in conn.calls if method == "execute"]
+    assert executed and 7 in executed[0]
+
+
+async def test_conversation_save_update_in_place_keeps_existing_slot():
+    # Re-saving the same (agent_uuid, run_id) must keep its sequence slot, not
+    # climb to MAX+1: the existing row's sequence is reused for the entity...
+    conn = _FakeConn()
+    existing = dict(conversation_to_row(_conversation(seq=3)))
+    conn.fetchrow_result = existing
+    adapter = PgConversationAdapterBase(_FakePool(conn))
+    conversation = _conversation(seq=None)
+    await adapter.save(conversation)
+    assert conversation.sequence_number == 3
+    assert not [m for m, _, _ in conn.calls if m == "fetchval"]
+    # ...and the composed upsert ALSO never overwrites it on conflict.
+    executed = [sql for method, sql, _ in conn.calls if method == "execute"]
+    assert executed and "sequence_number = EXCLUDED.sequence_number" not in executed[0]
+
+
+async def test_conversation_sequence_probe_is_principal_scoped():
+    conn = _FakeConn()
+    bound = _OrgScopedConversationAdapter(_FakePool(conn)).for_principal(_PRINCIPAL)
+    await bound.save(_conversation(seq=None))
+    probe = [(sql, args) for method, sql, args in conn.calls if method == "fetchval"]
+    assert probe, "bound save() must issue the scoped MAX+1 probe"
+    sql, args = probe[0]
+    assert "organization_id" in sql and "member_id" in sql
+    assert "org-1" in args and "mem-1" in args

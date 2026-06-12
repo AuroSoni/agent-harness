@@ -21,7 +21,10 @@
       "Bash(grep -n '^codex$' 'C:\\\\Users\\\\aurok/.gstack/projects/AuroSoni-anthropic-agent/eng2.out')",
       "Bash(tail -1 'C:\\\\Users\\\\aurok/.gstack/projects/AuroSoni-anthropic-agent/codex-concise.out')",
       "Bash(echo 'lines: __CMDSUB_OUTPUT__  exit: __CMDSUB_OUTPUT__')",
-      "Bash(grep -n '^codex$' 'C:\\\\Users\\\\aurok/.gstack/projects/AuroSoni-anthropic-agent/codex-concise.out')"
+      "Bash(grep -n '^codex$' 'C:\\\\Users\\\\aurok/.gstack/projects/AuroSoni-anthropic-agent/codex-concise.out')",
+      "PowerShell(git -C \"D:\\\\AI Forge\\\\anthropic-agent\" status --short)",
+      "PowerShell(git -C \"D:\\\\AI Forge\\\\anthropic-agent\" worktree list)",
+      "PowerShell(git -C \"D:\\\\AI Forge\\\\anthropic-agent\" branch -vv --list main AuroSoni/docs-agent-architecture AuroSoni/agent-harness-refactor)"
     ]
   }
 }

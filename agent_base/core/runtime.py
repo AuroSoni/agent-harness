@@ -1387,7 +1387,14 @@ class AgentRuntime:
             if command.mode is SteerMode.FORCEFUL:
                 # FORCEFUL preempts the open round BEFORE the enqueue;
                 # COOPERATIVE lets the in-flight round's join finish first.
-                self._last_control_result = await self._do_abort()
+                # NV-4: the preemption marker on the wire is Custom('steered'),
+                # NOT the terminal Custom('aborted') — a consumer keeps its
+                # read point open and the steered turn streams on it.
+                self._steer_preempting = True
+                try:
+                    self._last_control_result = await self._do_abort()
+                finally:
+                    self._steer_preempting = False
             self._mailbox.offer(UserMessage(message=command.instruction))
             self._audit_command(seq, command, Disposition.STEERING)
             if self._can_auto_drive():
