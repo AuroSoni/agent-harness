@@ -278,6 +278,14 @@ class SessionManager:
             raise SessionBlocked(
                 getattr(outcome, "reason", None) or "on_session_start blocked"
             )
+        # §2.7 guarantee 4 (CM-G4): after the R20 precedence resolved
+        # (persisted restore in initialize() > the handler's
+        # set_default_profile above > ctor default), the runtime announces
+        # the active profile ONCE — auto ProfileChanged + on_profile_changed
+        # with is_initial=True. Idempotent on the runtime side.
+        announce = getattr(agent, "_announce_initial_profile", None)
+        if callable(announce):
+            await announce()
 
     async def _fire_session_end(
         self, agent: "AgentRuntime", entry: SessionEntry, *, reason: str

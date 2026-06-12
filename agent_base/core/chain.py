@@ -106,9 +106,101 @@ def synthesize_abort_tool_results(
 # The shared pre-generate guarantee (R18a)
 # ---------------------------------------------------------------------------
 
+#: Server-tool id prefix — server tool blocks never participate in the
+#: client-side ``tool_result`` contract (the API rejects client results for
+#: server ids).
+_SERVER_TOOL_ID_PREFIX = "srvtoolu_"
+
+
+def _is_server_tool_id(tool_id: str | None) -> bool:
+    return bool(tool_id) and str(tool_id).startswith(_SERVER_TOOL_ID_PREFIX)
+
+
+def _scrub_persisted_history(messages: list["Message"]) -> list["Message"]:
+    """Scrub ALREADY-PERSISTED history damage before structural repair
+    (AMENDMENTS CM-G5; replaces the old consumer ``_repair_orphaned_tool_results``).
+
+    Four scrub rules (all idempotent, pure):
+
+    - **G5a** — a leaked ``srvtoolu_*`` *client* ``tool_use`` in an assistant
+      message is STRIPPED (and, because it never reaches the synthesis pass, no
+      bogus client-side ``tool_result`` is fabricated for a server id). Real
+      ``ServerToolUseContent`` blocks are NOT touched — they are not
+      ``ToolUseContent`` and live outside the client contract.
+    - **G5b** — a leaked ``srvtoolu_*`` ``tool_result`` in a user message is
+      stripped (server results never ride the user-side contract).
+    - **G5c** — an orphaned ``tool_result`` (its ``tool_use`` was compacted /
+      cleared away — no matching client ``tool_use`` anywhere in the chain) is
+      dropped.
+    - **G5d** — a duplicate ``tool_result`` repeated across user messages is
+      deduped, keeping the FIRST occurrence.
+
+    A message scrubbed empty is dropped from the chain entirely.
+    """
+    from agent_base.core.messages import Message as Msg
+
+    client_use_ids: set[str] = {
+        block.tool_id
+        for msg in messages
+        if msg.role.value == "assistant"
+        for block in msg.content
+        if isinstance(block, ToolUseContent)
+        and not _is_server_tool_id(block.tool_id)
+    }
+
+    out: list["Message"] = []
+    seen_result_ids: set[str] = set()
+    for msg in messages:
+        role = msg.role.value
+        kept: list[ContentBlock] = []
+        changed = False
+        for block in msg.content:
+            if (
+                role == "assistant"
+                and isinstance(block, ToolUseContent)
+                and _is_server_tool_id(block.tool_id)
+            ):
+                changed = True  # G5a — leaked server tool_use
+                continue
+            if role == "user" and isinstance(block, ToolResultBase):
+                tid = block.tool_id
+                if _is_server_tool_id(tid):
+                    changed = True  # G5b — leaked server tool_result
+                    continue
+                if tid and tid not in client_use_ids:
+                    changed = True  # G5c — orphaned tool_result
+                    continue
+                if tid and tid in seen_result_ids:
+                    changed = True  # G5d — duplicate across user messages
+                    continue
+                if tid:
+                    seen_result_ids.add(tid)
+            kept.append(block)
+        if not kept and msg.content:
+            continue  # the whole message was scrub damage — drop it
+        if not changed:
+            out.append(msg)
+        else:
+            out.append(Msg(
+                role=msg.role,
+                content=kept,
+                stop_reason=msg.stop_reason,
+                usage=msg.usage,
+                provider=msg.provider,
+                model=msg.model,
+            ))
+    return out
+
 
 def ensure_chain_validity(messages: list["Message"]) -> list["Message"]:
     """Walk the chain and fix structural violations (idempotent).
+
+    Scrubs (CM-G5 — persisted-history damage, BEFORE structural repair):
+    - Leaked ``srvtoolu_*`` client ``tool_use`` in assistant history → stripped,
+      never given a synthetic client ``tool_result`` (G5a).
+    - Leaked ``srvtoolu_*`` ``tool_result`` in user history → stripped (G5b).
+    - Orphaned ``tool_result`` (its ``tool_use`` is gone) → dropped (G5c).
+    - Duplicate ``tool_result`` across user messages → deduped, first kept (G5d).
 
     Fixes:
     - Trailing assistant message with ``tool_use`` but no following
@@ -124,6 +216,8 @@ def ensure_chain_validity(messages: list["Message"]) -> list["Message"]:
     use the user-side ``tool_result`` contract.
     """
     from agent_base.core.messages import Message as Msg
+
+    messages = _scrub_persisted_history(messages)
 
     result: list["Message"] = []
     consumed_indices: set[int] = set()

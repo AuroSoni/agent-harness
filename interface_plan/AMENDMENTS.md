@@ -240,3 +240,106 @@ line in a subsystem doc (the affected docs carry matching AMENDED banners).
   are deleted — the retry budget is the provider value's `RetryPolicy` (O12c); `SubAgentSpec`
   snapshots `retry_policy`. `extras["owner"]` read-through is gone; `SubAgentTool` stamps
   `_root_session_id_value` + adopts the parent principal at spawn.
+
+---
+
+## Consumer-migration fixes (2026-06-11)
+
+Maintainer-ratified resolutions of the library gaps filed by the Nova Wave-1 migration
+(P1–P4 plan files, `## Library gaps found`). Each landed WITH its `tests/interface` /
+`tests/unit` spec (living-spec rule); the consumer's strict-xfail repros
+(`tests/unit/test_chain_integrity_regression.py` G5a–d, `tests/unit/test_excel_profiles.py`
+G3a) flip to XPASS and lose their marks in the same cut.
+
+- **CM-G2 — hook contexts carry the LIVE resources** (consumer P3-G2).
+  `AgentRuntime._base_hook_kwargs` threads `run_id` (pre-minted in `run()` so even
+  `on_turn_start` carries it), `sandbox`, `media`, `memory`, `conversation`, and
+  `parent_agent_id` from the concrete runtime — the `None` stamping is gone. This
+  generalizes the threading the `end_turn_hook` ctor seam already did for sandbox.
+- **CM-G4 — the lifecycle catalog fires on the LIVE loop** (consumer P3-G4).
+  Dispatch sites wired into `AnthropicAgent`: `on_turn_start` (block→typed ABORTED;
+  update→Message replace; prefix/suffix/additional_context land as render-time
+  contributions) and `on_turn_end` (`EndTurnOutcome(action="continue")` injects
+  `continue_prompt` and reruns; fires AFTER the legacy `end_turn_hook=` ctor seam, which
+  is retained) on `run()`; `before_tool` (update→ToolCall rewrite, block→deny with an
+  `is_error` envelope) / `on_tool_error` (fires for RAISED executions — the registry
+  stamps the live exception as `ToolResultEnvelope.raised_error`, runtime-only;
+  update→recovery envelope) / `after_tool` (PRE-splice transform, R10; switch applied
+  once post-composition, O7) around BACKEND execution on both the plain and the
+  relay-pause path; `before_compact`/`after_compact` around every loop compaction
+  (`trigger="auto"` for threshold, `"overflow"` for `_Recompact` +
+  `model_context_window_exceeded`; I10 veto semantics — auto block skips, overflow
+  block fails upward with `CONTEXT_OVERFLOW`); `on_abort` on the live `_do_abort`;
+  `on_subagent_start` (update→SubAgentSpec rewrite, block denies the spawn) /
+  `on_subagent_end` (observes the result envelope) fired on the PARENT runtime by
+  `SubAgentTool.run`. `AgentRuntime._make_session_context` now exists (R19), so
+  `SessionManager` reaches `on_session_start`/`on_session_end` with a real
+  `SessionContext` carrying the R20 handlers; after a non-blocking start hook the
+  manager triggers the runtime's idempotent `_announce_initial_profile()` (§2.7
+  guarantee 4 — ONE initial `ProfileChanged` + `on_profile_changed(is_initial=True)`).
+  Scope note: on the live loop `on_turn_end` fires on the `end_turn` boundary (where
+  retry/continue is meaningful); aborts surface via `on_abort`, hard cutoffs via
+  `AgentResult.stop_reason`. `ToolCallInfo.with_input` ships the documented §3.2
+  enrichment idiom.
+- **CM-G1 — `before_tool` fires on the in-loop frontend relay pause** (consumer P3-G1).
+  `_run_relay_pause` runs the before_tool chain per pending frontend/confirmation call
+  (`executor="frontend"`) BEFORE the `AwaitInput` emit; update→ToolCall enrichment lands
+  on BOTH the outbound `FrontendCallView` and the persisted `pending_relay` (a cold
+  re-emit re-sends the enriched input). Block denies the call with a synthesized
+  `is_error` result; when EVERY pending call is denied the loop splices and continues
+  without parking. Kills B5/C2 for LLM-initiated frontend calls.
+- **CM-G3 — profiles integrated into the concrete loop** (consumer P3-G3a–e).
+  (a) `initialize()` re-applies the persisted `active_profile` (R20: persisted >
+  `on_session_start` handler > ctor default; a FRESH never-persisted config is NOT a
+  restore — its ctor default still loses to the handler). The restore is silent; the
+  single announce is the session-start initial announce. (b) `_apply_profile_switch`
+  routes through the `_apply_profile_resources(profile)` seam — `AnthropicAgent`
+  rebuilds the live `ToolRegistry` from `Profile.tools`/`frontend_tools` (a profile
+  declaring NO tools at all is prompt-only: registry kept) and resolves
+  `system_prompt=None` to the agent ctor default; `initialize_run()` re-stamps the
+  prompt PROFILE-AWARE so a switch survives the next run. (c) `Profile.tail` feeds the
+  render view; the `_select_tail_for_mode()` override stub is DELETED (G0).
+  (d) `AnthropicAgent.__init__` gains `profiles=` / `default_profile=` / `hooks=`
+  kwargs; the boot profile seeds the registry when no explicit `tools=`/
+  `frontend_tools=` kwargs are given (the kwargs stay the profile-less override).
+  (e) `AgentConfig.active_profile` is a REAL dataclass field, serialized by the
+  storage codec (`serialize_config`/`deserialize_config`) and the pg column tables
+  (`active_profile TEXT`); pre-profile rows hydrate `None`.
+- **CM-G5 — `ensure_chain_validity` scrubs persisted-history damage** (consumer
+  P3-G5a–d). A scrub pass runs BEFORE structural repair: (a) leaked `srvtoolu_*`
+  *client* `tool_use` in assistant history is stripped and NEVER given a synthetic
+  client result (real `ServerToolUseContent` blocks are untouched); (b) leaked
+  `srvtoolu_*` tool_results in user history are stripped; (c) orphaned tool_results
+  (no matching client tool_use anywhere) are dropped; (d) duplicate tool_results
+  across user messages dedupe to the FIRST. A message scrubbed empty is dropped.
+  Consequence (spec updated): a tool_result whose tool_use exists NOWHERE in the
+  chain no longer survives a user-message merge — that chain was API-invalid anyway.
+  All prior synthesis/merge/reorder behaviors are preserved; the pass is idempotent.
+- **CM-P1G1 — the conversation `user_message` column persists the CLEAN form**
+  (consumer P1-G1). The pg row mapper uses `Message.to_clean_dict()` (transient
+  `contributions` dropped — the column shows exactly what the user typed); canonical
+  contributions/attachments keep round-tripping via the `conversation_log` column.
+  `Message.from_dict` hydrates both the clean and the old canonical form.
+- **CM-P4G2 — concrete blob backends accept the documented scope namespace**
+  (consumer P4 GAP-2). `LocalBlobStore`/`S3BlobStore` split the namespace on `/`
+  into individually-validated `safe_blob_key` segments (`split_namespace`), so
+  `derive_namespace`'s `"tenant/subject"` output (I13a) is storable by the shipped
+  backends; single-segment namespaces keep their exact historical layout.
+- **CM-P4G1 — a minimal KEY-addressed blob surface ships** (consumer P4 GAP-1).
+  `KeyedBlobStore` protocol (`put_at(key, data, *, mime_type)` / `get_by_key` /
+  `exists_key` / `delete_key`), implemented by BOTH shipped backends beside the
+  unchanged content-addressed ABC. Caller keys are opaque, validated segment-wise via
+  `safe_blob_key`, live under the same store `prefix`, and OVERWRITE in place (the
+  key is the address; no dedupe skip, no key→hash index). `put_at`'s `BlobRef` still
+  carries the blake3 `content_hash` for caller-side integrity. Nova's
+  `KeyAddressedBlobStore` facade collapses onto this.
+- **CM-P2 — containment-CLAMP is canonical for both P2 behavior notes** (consumer P2
+  GAP-2/GAP-3; adjudication, mostly no behavior change). (a) The sandbox path grammar
+  KEEPS the `..`-escape clamp (`normpath` collapse = escape prevention; consistent
+  with M6) — a strict-reject affordance remains a possible future ADDITIVE flag, not
+  v1 surface. (b) `image_block`/`fit_image_to_budget` clamp an out-of-bounds
+  `crop_bbox` by intersecting it with the image bounds (FIXED in the same cut: the
+  previous code let Pillow PAD out-of-bounds regions with black — neither reject nor
+  clamp; a region clamped empty falls back to the full image). Decode failures still
+  raise. Rationale: one containment philosophy across path grammar and image
+  projection; clamping is friendlier to LLM-generated inputs than error-retry loops.

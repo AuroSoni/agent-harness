@@ -237,6 +237,12 @@ class AgentConfig:
     # --- Run tracking ---
     current_step: int = 0
 
+    # --- Profiles (contract §6 / agent-loop-hooks §2.7; CM-G3e) ---
+    # The active declarative profile NAME. Persisted so a resume re-applies
+    # the profile's tools + system prompt (R20: persisted wins). ``None`` =
+    # the runtime was built without profiles (or pre-profile rows).
+    active_profile: str | None = None
+
     # --- Subagent hierarchy ---
     parent_agent_uuid: str | None = None
     subagent_schemas: list[SubAgentSchema] = field(default_factory=list)

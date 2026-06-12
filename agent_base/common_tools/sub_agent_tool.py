@@ -282,6 +282,30 @@ Args:
             )
 
         spec = self.specs[agent_name]
+
+        # CM-G4: on_subagent_start fires on the PARENT runtime BEFORE the
+        # child is built — matcher key = agent_type, update→SubAgentSpec
+        # rewrites the spec the child is built from, block denies the spawn.
+        parent_hook_fire = getattr(
+            self._parent_context.parent_agent, "_fire_hooks", None
+        ) if self._parent_context.parent_agent is not None else None
+        if callable(parent_hook_fire):
+            start_outcome = await parent_hook_fire(
+                "on_subagent_start", agent_type=agent_name, spec=spec, depth=0
+            )
+            if (
+                start_outcome is not None
+                and start_outcome.decision == "block"
+            ):
+                return ToolResultEnvelope.error(
+                    "spawn_subagent",
+                    "",
+                    start_outcome.reason
+                    or f"Subagent '{agent_name}' blocked by on_subagent_start.",
+                )
+            if start_outcome is not None and start_outcome.update is not None:
+                spec = start_outcome.update
+
         child = self._child_agent_builder(
             spec,
             resume_agent_uuid,
@@ -319,13 +343,19 @@ Args:
                 cancellation_event=self._parent_context.parent_cancellation_event,
             )
         except Exception as exc:
-            return ToolResultEnvelope.error(
+            error_envelope = ToolResultEnvelope.error(
                 "spawn_subagent",
                 "",
                 f"Subagent '{agent_name}' error: {type(exc).__name__}: {exc}",
             )
+            if callable(parent_hook_fire):
+                # CM-G4: on_subagent_end observes the failed spawn too.
+                await parent_hook_fire(
+                    "on_subagent_end", agent_type=agent_name, result=error_envelope
+                )
+            return error_envelope
 
-        return SubAgentEnvelope(
+        envelope = SubAgentEnvelope(
             agent_name=agent_name,
             child_agent_uuid=child.agent_uuid or "",
             final_answer=result.final_answer,
@@ -335,3 +365,9 @@ Args:
             child_provider=result.provider,
             nested_conversation=result.conversation_log,
         )
+        # CM-G4: on_subagent_end fires on the parent runtime (observe + emit).
+        if callable(parent_hook_fire):
+            await parent_hook_fire(
+                "on_subagent_end", agent_type=agent_name, result=envelope
+            )
+        return envelope

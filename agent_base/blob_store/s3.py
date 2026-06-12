@@ -15,7 +15,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from .base import BlobRef, BlobStore, safe_blob_key
+from .base import BlobRef, BlobStore, safe_blob_key, split_namespace
 from .hashing import compute_blake3, derive_namespace
 
 if TYPE_CHECKING:
@@ -65,7 +65,15 @@ class S3BlobStore(BlobStore):
     def _key(self, namespace: str, content_hash: str) -> str:
         bare = self._bare(content_hash)
         shard = bare[:2] if len(bare) >= 2 else "00"
-        return f"{self.prefix}/" + safe_blob_key(namespace, shard, bare)
+        # CM-P4G2: split a multi-segment namespace ("tenant/subject" from
+        # derive_namespace, I13a) so safe_blob_key validates each segment.
+        return f"{self.prefix}/" + safe_blob_key(
+            *split_namespace(namespace), shard, bare
+        )
+
+    def _keyed_key(self, key: str) -> str:
+        # CM-P4G1: caller key validated segment-wise under the store prefix.
+        return f"{self.prefix}/" + safe_blob_key(*split_namespace(key))
 
     def _location(self, key: str) -> str:
         return f"s3://{self.bucket}/{key}"
@@ -164,5 +172,71 @@ class S3BlobStore(BlobStore):
             return False
         await asyncio.to_thread(
             self.client.delete_object, Bucket=self.bucket, Key=key
+        )
+        return True
+
+    # ─── KeyedBlobStore surface (CM-P4G1) ─────────────────────────────
+
+    async def put_at(
+        self, key: str, data: bytes, *, mime_type: str | None = None
+    ) -> BlobRef:
+        """Write ``data`` at the caller-built ``key`` (overwrite-in-place).
+
+        The returned :class:`BlobRef` carries the blake3 ``content_hash`` so
+        callers can run their own integrity checks; the KEY is the address.
+        """
+        s3_key = self._keyed_key(key)
+        extra: dict[str, Any] = {}
+        if mime_type:
+            extra["ContentType"] = mime_type
+        await asyncio.to_thread(
+            self.client.put_object,
+            Bucket=self.bucket,
+            Key=s3_key,
+            Body=data,
+            **extra,
+        )
+        return BlobRef(
+            content_hash=compute_blake3(data),
+            size=len(data),
+            storage_type="s3",
+            storage_location=self._location(s3_key),
+            mime_type=mime_type,
+            url=self._url(s3_key),
+        )
+
+    async def get_by_key(self, key: str) -> bytes:
+        s3_key = self._keyed_key(key)
+        response = await asyncio.to_thread(
+            self.client.get_object, Bucket=self.bucket, Key=s3_key
+        )
+        body = response["Body"]
+        chunks: list[bytes] = []
+        while True:
+            chunk = await asyncio.to_thread(body.read, _READ_CHUNK)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    async def exists_key(self, key: str) -> BlobRef | None:
+        s3_key = self._keyed_key(key)
+        head = await self._head(s3_key)
+        if head is None:
+            return None
+        return BlobRef(
+            content_hash="",
+            size=int(head.get("ContentLength", 0)),
+            storage_type="s3",
+            storage_location=self._location(s3_key),
+            url=self._url(s3_key),
+        )
+
+    async def delete_key(self, key: str) -> bool:
+        s3_key = self._keyed_key(key)
+        if await self._head(s3_key) is None:
+            return False
+        await asyncio.to_thread(
+            self.client.delete_object, Bucket=self.bucket, Key=s3_key
         )
         return True

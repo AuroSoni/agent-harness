@@ -5,7 +5,7 @@ one ``safe_blob_key``, one ``S3Settings.from_env``; concrete ``LocalBlobStore`` 
 ``S3BlobStore`` backends. media owns it; storage/snapshots/skills reuse it.
 """
 
-from .base import BlobRef, BlobStore, safe_blob_key
+from .base import BlobRef, BlobStore, KeyedBlobStore, safe_blob_key, split_namespace
 from .local import LocalBlobStore
 from .s3 import S3BlobStore
 from .s3_config import S3Settings
@@ -13,8 +13,10 @@ from .s3_config import S3Settings
 __all__ = [
     "BlobRef",
     "BlobStore",
+    "KeyedBlobStore",
     "LocalBlobStore",
     "S3BlobStore",
     "S3Settings",
     "safe_blob_key",
+    "split_namespace",
 ]

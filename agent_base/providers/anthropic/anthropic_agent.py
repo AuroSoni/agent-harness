@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import inspect
 import json
 import uuid
@@ -50,7 +51,11 @@ from agent_base.core.end_turn_hook import (
     EndTurnHookEvent,
     EndTurnHookResult,
 )
-from agent_base.core.errors import ErrorCode
+from agent_base.core.errors import AgentError, ErrorCode
+from agent_base.core.hooks.context import (
+    EndTurnContext as HookEndTurnContext,
+    TurnContext as HookTurnContext,
+)
 from agent_base.core.messages import Message, Usage
 from agent_base.core.provider import ProviderTurn
 from agent_base.core.result import AgentResult, LogEntry
@@ -197,6 +202,10 @@ class AnthropicAgent(AgentRuntime):
         sandbox_factory: Callable[[str], "Sandbox"] | None = None,
         end_turn_hook: EndTurnHook | None = None,
         agent_uuid: str | None = None,
+        # Declarative profiles + hook registry (contract §6 / §2.2; CM-G3d).
+        profiles: "list[Any] | None" = None,
+        default_profile: str | None = None,
+        hooks: "dict[str, list[Any]] | None" = None,
         # Storage and Media Adapter Configurations.
         config_adapter: "AgentConfigAdapter | None" = None,
         conversation_adapter: "ConversationAdapter | None" = None,
@@ -212,6 +221,9 @@ class AnthropicAgent(AgentRuntime):
         super().__init__(
             agent_uuid=agent_uuid,
             max_steps=int(max_steps) if max_steps else DEFAULT_MAX_STEPS,
+            profiles=profiles,
+            default_profile=default_profile,
+            hooks=hooks,
         )
         # Restore lazy-uuid semantics: ``None`` means "create in initialize()"
         # (the base generated an eager uuid through the property setter).
@@ -245,6 +257,19 @@ class AnthropicAgent(AgentRuntime):
 
         # Tools (backend and frontend) - registry takes care of how to execute tools.
         self.tool_registry: ToolRegistry = ToolRegistry()
+
+        # CM-G3d: the boot profile's declarative tool bundle seeds the registry
+        # when no explicit tools=/frontend_tools= kwargs are given (the kwargs
+        # stay the override for profile-less construction).
+        boot_profile = self.active_profile
+        if tools is None and boot_profile is not None and boot_profile.tools:
+            tools = list(boot_profile.tools)
+        if (
+            frontend_tools is None
+            and boot_profile is not None
+            and boot_profile.frontend_tools
+        ):
+            frontend_tools = list(boot_profile.frontend_tools)
 
         if tools:
             self.tool_registry.register_tools(tools)
@@ -395,6 +420,8 @@ class AnthropicAgent(AgentRuntime):
             self._agent_uuid = str(uuid.uuid4())
 
             self.agent_config = AgentConfig(agent_uuid=self._agent_uuid)
+            # CM-G3e: stamp the boot profile so the first checkpoint persists it.
+            self.agent_config.active_profile = self._active_profile_name
             self.conversation = None  # Created per-run in initialize_run()
             self._configure_compaction_controller()
 
@@ -418,6 +445,11 @@ class AnthropicAgent(AgentRuntime):
             if isinstance(raw_session_usage, dict):
                 self._cumulative_usage = Usage.from_dict(raw_session_usage)
             self._configure_compaction_controller()
+
+            # R20 "persisted wins" (CM-G3a): re-apply the persisted
+            # active_profile to the live registry + prompt BEFORE the sandbox
+            # attaches and BEFORE initialize_run() re-stamps tool_schemas.
+            self._restore_persisted_profile()
 
             logger.debug(
                 "loaded_agent_config",
@@ -452,9 +484,13 @@ class AnthropicAgent(AgentRuntime):
         except Exception as e:
             raise RuntimeError(f"Failed to load agent state: {e}") from e
 
-    def initialize_run(self, prompt: Message) -> None:
-        """Initialize tracking state for a new agent run."""
-        run_id = str(uuid.uuid4())
+    def initialize_run(self, prompt: Message, *, run_id: str | None = None) -> None:
+        """Initialize tracking state for a new agent run.
+
+        ``run_id`` may be pre-minted by ``run()`` (CM-G2) so the
+        ``on_turn_start`` hook context already carries the live run id.
+        """
+        run_id = run_id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
         # Create fresh Conversation for this run.
@@ -471,8 +507,14 @@ class AnthropicAgent(AgentRuntime):
         # Reset step counter.
         self.agent_config.current_step = 0
 
-        # Populate AgentConfig with constructor params.
-        self.agent_config.system_prompt = self.system_prompt
+        # Populate AgentConfig with constructor params. CM-G3b: the active
+        # profile's prompt WINS over the ctor default (``None`` on the profile
+        # = inherit the agent default) — a profile switch survives the next run.
+        active = self.active_profile
+        self.agent_config.system_prompt = (
+            active.system_prompt if active is not None and active.system_prompt
+            else self.system_prompt
+        )
         self.agent_config.model = self.model or self.provider.default_model()
         self.agent_config.llm_config = self.config
         self.agent_config.provider = self.provider.name
@@ -626,16 +668,35 @@ class AnthropicAgent(AgentRuntime):
                 )
         return runtime
 
-    def _select_tail_for_mode(self) -> str | None:
-        """Return the tail instruction for the current agent mode."""
-        return None
+    def _apply_profile_resources(self, profile: Any) -> None:
+        """CM-G3b: apply a profile to the LIVE agent — rebuild the tool
+        registry from the profile's declarative bundle and resolve the
+        system prompt (``None`` on the profile = the agent ctor default).
+
+        A profile that declares NO tools at all (both lists empty) is a
+        prompt-only profile: the current registry is kept.
+        """
+        if profile.tools or profile.frontend_tools:
+            self.reconfigure(
+                tools=list(profile.tools),
+                frontend_tools=list(profile.frontend_tools),
+            )
+        if self.agent_config is not None:
+            self.agent_config.system_prompt = (
+                profile.system_prompt or self.system_prompt
+            )
 
     def _build_render_view(self, messages: list[Message]) -> list[Message]:
         """Render every message for the LLM wire, applying runtime contributions
-        to the target user message only."""
+        to the target user message only.
+
+        CM-G3c: the tail instruction comes from the ACTIVE profile
+        (``Profile.tail`` — §2.7 guarantee 3; the ``_select_tail_for_mode``
+        override stub is deleted, G0)."""
         target_id = self._runtime_target_msg_id
         runtime = self._runtime_contributions
-        tail = self._select_tail_for_mode()
+        active = self.active_profile
+        tail = active.tail if active is not None else None
         rendered: list[Message] = []
         for msg in messages:
             view_msg = (
@@ -675,9 +736,19 @@ class AnthropicAgent(AgentRuntime):
         if isinstance(prompt, str):
             prompt = Message.user(prompt)
 
-        self.initialize_run(prompt)
+        # ── on_turn_start fires on the LIVE loop (CM-G4; same chain as
+        # record_turn): block aborts the turn, update replaces the prompt,
+        # ctx.switch_profile applies once post-composition (O7), and
+        # prefix/suffix/additional_context land as render-time contributions.
+        # The run id is pre-minted (CM-G2) so the hook context carries it.
+        pending_run_id = str(uuid.uuid4())
+        self._run_id = pending_run_id
+        prompt, turn_start_outcome = await self._run_live_turn_start(prompt)
+
+        self.initialize_run(prompt, run_id=pending_run_id)
 
         self._runtime_contributions = await self._build_runtime_contributions(prompt)
+        self._apply_turn_start_contributions(turn_start_outcome)
         self._runtime_target_msg_id = prompt.id
 
         if self._context_externalizer is not None:
@@ -862,7 +933,8 @@ class AnthropicAgent(AgentRuntime):
             while self.agent_config.current_step < self.max_steps:
                 self._phase = AgentPhase.STREAMING
 
-                # --- Proactive compaction check ---
+                # --- Proactive compaction check (before/after_compact fire,
+                # trigger="auto" — CM-G4; an auto veto skips the compaction) ---
                 estimated_tokens = self.estimate_current_context_tokens()
                 if (
                     self._compaction_controller is not None
@@ -871,15 +943,12 @@ class AnthropicAgent(AgentRuntime):
                         estimated_tokens,
                     )
                 ):
-                    compacted_messages = await self._compaction_controller.compact(
-                        context_messages=self.agent_config.context_messages,
-                        model=self.agent_config.model,
-                        agent_uuid=self.agent_config.agent_uuid,
-                        sink=sink,
+                    await self._compact_with_hooks(
                         reason="threshold",
+                        trigger="auto",
+                        sink=sink,
+                        estimated_tokens=estimated_tokens,
                     )
-                    if compacted_messages != self.agent_config.context_messages:
-                        self._replace_context_messages(compacted_messages)
 
                 # --- The ONE provider invocation (runtime seam, §2.2) ---
                 try:
@@ -888,15 +957,12 @@ class AnthropicAgent(AgentRuntime):
                         render_view=render_view, sink=sink
                     )
                 except _Recompact as recompact:
-                    compacted_messages = await self._compaction_controller.compact(
-                        context_messages=self.agent_config.context_messages,
-                        model=self.agent_config.model,
-                        agent_uuid=self.agent_config.agent_uuid,
-                        sink=sink,
-                        reason=recompact.reason,
-                    )
-                    if compacted_messages != self.agent_config.context_messages:
-                        self._replace_context_messages(compacted_messages)
+                    # I10: overflow routes through before_compact(trigger=
+                    # "overflow"); a block fails the turn upward with a typed
+                    # CONTEXT_OVERFLOW (raised inside _compact_with_hooks).
+                    if await self._compact_with_hooks(
+                        reason=recompact.reason, trigger="overflow", sink=sink
+                    ):
                         continue
                     raise (recompact.__cause__ or recompact)
 
@@ -928,15 +994,11 @@ class AnthropicAgent(AgentRuntime):
 
                 if stop_reason == "model_context_window_exceeded":
                     if self._compaction_controller is not None:
-                        compacted_messages = await self._compaction_controller.compact(
-                            context_messages=self.agent_config.context_messages,
-                            model=self.agent_config.model,
-                            agent_uuid=self.agent_config.agent_uuid,
-                            sink=sink,
+                        if await self._compact_with_hooks(
                             reason="context_window_exceeded",
-                        )
-                        if compacted_messages != self.agent_config.context_messages:
-                            self._replace_context_messages(compacted_messages)
+                            trigger="overflow",
+                            sink=sink,
+                        ):
                             continue
                     return await self._finalize_run(
                         response_message,
@@ -968,10 +1030,23 @@ class AnthropicAgent(AgentRuntime):
                     # ---- Tool execution phase ----
                     self._phase = AgentPhase.EXECUTING_TOOLS
 
+                    # CM-G4: the unified tool lifecycle fires on the LIVE
+                    # backend path — before_tool (update→ToolCall / block) →
+                    # execute → on_tool_error (raised → recovery) →
+                    # after_tool (PRE-splice transform + switch_profile).
+                    allowed_calls, denied = await self._run_backend_before_tool(
+                        tool_calls
+                    )
                     tool_results = await self.tool_registry.execute_tools(
-                        tool_calls, self.max_parallel_tool_calls,
+                        allowed_calls, self.max_parallel_tool_calls,
                         cancellation_event=self._cancellation_event,
                         ctx_factory=self._tool_ctx_factory(),
+                    )
+                    tool_results = self._merge_denied_results(
+                        tool_calls, tool_results, denied
+                    )
+                    tool_results = await self._apply_backend_tool_hooks(
+                        tool_results, tool_calls
                     )
 
                     # Fire _on_tool_results hook for subclass side-effects.
@@ -1011,6 +1086,14 @@ class AnthropicAgent(AgentRuntime):
                     if should_retry:
                         continue
 
+                    # CM-G4: the catalog on_turn_end fires on the live
+                    # end-of-turn boundary (after the legacy ctor seam);
+                    # EndTurnOutcome(action="continue") reruns the loop.
+                    if await self._run_turn_end_hooks(
+                        response_message, stop_reason="end_turn"
+                    ):
+                        continue
+
                     return await self._finalize_run(response_message, "end_turn", sink)
 
                 elif stop_reason == "max_tokens":
@@ -1025,6 +1108,241 @@ class AnthropicAgent(AgentRuntime):
             # Always clear streaming context to avoid stale references.
             self._inject_stream_context_to_tools(None)
 
+    # ── live-loop lifecycle-hook dispatch (CM-G4 / CM-G1) ──────────────────
+
+    async def _run_live_turn_start(
+        self, prompt: Message
+    ) -> tuple[Message, Any]:
+        """Fire ``on_turn_start`` on the live loop (same chain as
+        ``record_turn``): block → typed ABORTED; update → replaces the
+        prompt; ``ctx.switch_profile`` applied once post-composition (O7).
+        Returns ``(possibly-replaced prompt, folded outcome)``."""
+        pending_switches: list[str] = []
+
+        async def _record_switch(name: str) -> None:
+            pending_switches.append(name)
+
+        ctx = HookTurnContext(
+            **self._base_hook_kwargs(),
+            message=prompt,
+            is_first_prompt=not (
+                self.agent_config.context_messages if self.agent_config else []
+            ),
+            profile=self.active_profile,
+            switch_profile=_record_switch,
+        )
+        outcome = await self._run_hook("on_turn_start", ctx)
+        self._emit_outcome_events(outcome)
+        if pending_switches:
+            await self._apply_profile_switch(
+                pending_switches[-1], source="hook_switch"
+            )
+        if outcome is not None and outcome.decision == "block":
+            raise AgentError(
+                code=ErrorCode.ABORTED,
+                message=outcome.reason or "on_turn_start blocked the turn",
+            )
+        return ctx.message, outcome
+
+    def _apply_turn_start_contributions(self, outcome: Any) -> None:
+        """Land ``TurnStartOutcome.prompt_prefix`` / ``prompt_suffix`` /
+        ``additional_context`` as render-time runtime contributions on the
+        target user message (never persisted into context_messages)."""
+        if outcome is None:
+            return
+        prefix = getattr(outcome, "prompt_prefix", None)
+        suffix = getattr(outcome, "prompt_suffix", None)
+        extra = getattr(outcome, "additional_context", None)
+        if prefix:
+            self._runtime_contributions.append(Contribution(
+                slot="hook_prefix",
+                content=[TextContent(text=prefix)],
+                source="hook",
+                position=ContributionPosition.BEFORE.value,
+            ))
+        if suffix:
+            self._runtime_contributions.append(Contribution(
+                slot="hook_suffix",
+                content=[TextContent(text=suffix)],
+                source="hook",
+                position=ContributionPosition.AFTER.value,
+            ))
+        if extra:
+            self._runtime_contributions.append(Contribution(
+                slot="hook_context",
+                content=[TextContent(text=extra)],
+                source="hook",
+                position=ContributionPosition.AFTER.value,
+            ))
+
+    async def _run_turn_end_hooks(
+        self, response_message: Message, *, stop_reason: str
+    ) -> bool:
+        """Fire the catalog ``on_turn_end`` on the live end-of-turn boundary
+        (CM-G4 — distinct from the legacy ``end_turn_hook=`` ctor seam, which
+        runs first). ``EndTurnOutcome(action="continue")`` injects the
+        synthetic ``continue_prompt`` and reruns the loop; events ride the
+        delivery-guaranteed channel. Returns True when the loop must rerun."""
+        ctx = HookEndTurnContext(
+            **self._base_hook_kwargs(),
+            response_message=response_message,
+            final_text=self._extract_text(response_message),
+            stop_reason=stop_reason,
+            current_step=self.agent_config.current_step,
+            max_steps=(
+                None if self.max_steps == float("inf") else int(self.max_steps)
+            ),
+        )
+        outcome = await self._run_hook("on_turn_end", ctx)
+        self._emit_outcome_events(outcome)
+        if outcome is None or getattr(outcome, "action", "pass") != "continue":
+            return False
+        prompt_text = getattr(outcome, "continue_prompt", None) or "Continue."
+        continue_prompt = Message.user([
+            TextContent(
+                text=prompt_text,
+                kwargs={
+                    "synthetic_kind": "hook_continue",
+                    "visible_to_user": False,
+                },
+            )
+        ])
+        self.agent_config.context_messages.append(continue_prompt)
+        self._append_message_to_logs(continue_prompt)
+        await self._persist_state()
+        return True
+
+    async def _run_backend_before_tool(
+        self, tool_calls: list[Any]
+    ) -> tuple[list[Any], dict[str, ToolResultEnvelope]]:
+        """``before_tool`` per backend call (CM-G4): update→ToolCall rewrites
+        the input that executes; block DENIES the call (an ``is_error``
+        envelope stands in so the chain stays valid). Returns
+        ``(allowed_calls_with_rewritten_input, denied_envelopes_by_id)``."""
+        allowed: list[Any] = []
+        denied: dict[str, ToolResultEnvelope] = {}
+        for tc in tool_calls:
+            prepared, outcome = await self._before_tool_chain(
+                tc.name,
+                dict(tc.input or {}),
+                tool_use_id=tc.tool_id,
+                executor="backend",
+                call=tc,
+            )
+            if outcome is not None and outcome.decision == "block":
+                denied[tc.tool_id] = ToolResultEnvelope.error(
+                    tc.name,
+                    tc.tool_id,
+                    outcome.reason or "Tool call blocked by before_tool.",
+                )
+                continue
+            allowed.append(dataclasses.replace(tc, input=prepared))
+        return allowed, denied
+
+    @staticmethod
+    def _merge_denied_results(
+        tool_calls: list[Any],
+        executed: list[ToolResultEnvelope],
+        denied: dict[str, ToolResultEnvelope],
+    ) -> list[ToolResultEnvelope]:
+        """Fold denied-call envelopes back into the executed results, in the
+        original call order."""
+        if not denied:
+            return executed
+        by_id = {env.tool_id: env for env in executed}
+        by_id.update(denied)
+        return [by_id[tc.tool_id] for tc in tool_calls if tc.tool_id in by_id]
+
+    async def _apply_backend_tool_hooks(
+        self, envelopes: list[ToolResultEnvelope], tool_calls: list[Any]
+    ) -> list[ToolResultEnvelope]:
+        """``on_tool_error`` (for RAISED executions, update→recovery envelope)
+        then ``after_tool`` (PRE-splice, update→ToolResultEnvelope, R10) per
+        backend result; ``ctx.switch_profile`` applies once post-composition
+        (O7 — last call in the chain wins)."""
+        inputs = {tc.tool_id: dict(tc.input or {}) for tc in tool_calls}
+        pending_switches: list[str] = []
+
+        async def _record_switch(name: str) -> None:
+            pending_switches.append(name)
+
+        out: list[ToolResultEnvelope] = []
+        for envelope in envelopes:
+            raised = getattr(envelope, "raised_error", None)
+            if raised is not None:
+                outcome = await self._fire_hooks(
+                    "on_tool_error",
+                    tool_name=envelope.tool_name,
+                    tool_input=inputs.get(envelope.tool_id, {}),
+                    tool_use_id=envelope.tool_id,
+                    error=raised,
+                )
+                if outcome is not None and outcome.update is not None:
+                    envelope = outcome.update  # synthesized recovery (R10)
+            outcome = await self._fire_hooks(
+                "after_tool",
+                tool_name=envelope.tool_name,
+                tool_input=inputs.get(envelope.tool_id, {}),
+                tool_use_id=envelope.tool_id,
+                result=envelope,
+                switch_profile=_record_switch,
+            )
+            if outcome is not None and outcome.update is not None:
+                envelope = outcome.update  # pre-splice transform (R10)
+            out.append(envelope)
+        if pending_switches:
+            await self._apply_profile_switch(
+                pending_switches[-1], source="hook_switch"
+            )
+        return out
+
+    async def _compact_with_hooks(
+        self,
+        *,
+        reason: str,
+        trigger: str,
+        sink: "DeltaSink | None",
+        estimated_tokens: int | None = None,
+    ) -> bool:
+        """``before_compact`` → compact → ``after_compact`` (CM-G4; I10).
+
+        ``before_compact`` block on ``trigger="auto"`` skips the compaction;
+        on ``trigger="overflow"`` the turn FAILS UPWARD with a typed
+        ``CONTEXT_OVERFLOW`` error. Returns True when the context was
+        replaced."""
+        outcome = await self._fire_hooks(
+            "before_compact", trigger=trigger, estimated_tokens=estimated_tokens
+        )
+        if outcome is not None and outcome.decision == "block":
+            if trigger == "overflow":
+                raise AgentError(
+                    code=ErrorCode.CONTEXT_OVERFLOW,
+                    message=outcome.reason
+                    or "overflow compaction vetoed by before_compact",
+                )
+            return False
+        messages_before = len(self.agent_config.context_messages)
+        compacted_messages = await self._compaction_controller.compact(
+            context_messages=self.agent_config.context_messages,
+            model=self.agent_config.model,
+            agent_uuid=self.agent_config.agent_uuid,
+            sink=sink,
+            reason=reason,
+        )
+        changed = compacted_messages != self.agent_config.context_messages
+        if changed:
+            self._replace_context_messages(compacted_messages)
+        await self._fire_hooks(
+            "after_compact",
+            trigger=trigger,
+            stats={
+                "reason": reason,
+                "messages_before": messages_before,
+                "messages_after": len(compacted_messages),
+            },
+        )
+        return changed
+
     async def _run_relay_pause(
         self,
         response_message: Message,
@@ -1037,13 +1355,23 @@ class AnthropicAgent(AgentRuntime):
         Returns ``None`` when the loop should ``continue`` (inline resume),
         else the AgentResult to surface (root persist_return / abort).
         """
-        # Execute backend calls immediately.
+        # Execute backend calls immediately — the full tool-hook lifecycle
+        # (before_tool / on_tool_error / after_tool) fires here too (CM-G4).
         backend_results: list[ToolResultEnvelope] = []
         if classification.backend_calls:
+            allowed_calls, denied = await self._run_backend_before_tool(
+                classification.backend_calls
+            )
             backend_results = await self.tool_registry.execute_tools(
-                classification.backend_calls, self.max_parallel_tool_calls,
+                allowed_calls, self.max_parallel_tool_calls,
                 cancellation_event=self._cancellation_event,
                 ctx_factory=self._tool_ctx_factory(),
+            )
+            backend_results = self._merge_denied_results(
+                classification.backend_calls, backend_results, denied
+            )
+            backend_results = await self._apply_backend_tool_hooks(
+                backend_results, classification.backend_calls
             )
 
         # Stream backend tool results in relay path.
@@ -1057,10 +1385,55 @@ class AnthropicAgent(AgentRuntime):
                 self._build_tool_result_message(backend_results)
             )
 
+        # ── CM-G1: before_tool fires per pending frontend/confirmation call
+        # BEFORE the AwaitInput emit (exactly what call_frontend_tool already
+        # did on the scripted path): update→ToolCall enrichment lands on BOTH
+        # the outbound FrontendCallView AND the persisted pause (a cold
+        # re-emit re-sends the enriched input); block DENIES the call with a
+        # synthesized is_error result.
+        frontend_calls: list[Any] = []
+        confirmation_calls: list[Any] = []
+        blocked_blocks: list[ContentBlock] = []
+        for source_calls, bucket in (
+            (classification.frontend_calls, frontend_calls),
+            (classification.confirmation_calls, confirmation_calls),
+        ):
+            for tc in source_calls:
+                prepared, outcome = await self._before_tool_chain(
+                    tc.name,
+                    dict(tc.input or {}),
+                    tool_use_id=tc.tool_id,
+                    executor="frontend",
+                    call=tc,
+                )
+                if outcome is not None and outcome.decision == "block":
+                    blocked_blocks.append(ToolResultContent(
+                        tool_name=tc.name,
+                        tool_id=tc.tool_id,
+                        tool_result=outcome.reason
+                        or "Tool call blocked by before_tool.",
+                        is_error=True,
+                    ))
+                    continue
+                bucket.append(dataclasses.replace(tc, input=prepared))
+        if blocked_blocks:
+            completed_result_messages.append(Message.user(list(blocked_blocks)))
+
+        pending_calls = (*frontend_calls, *confirmation_calls)
+        if not pending_calls:
+            # Every pending call was denied — nothing to relay. Splice the
+            # backend + denied results and continue the loop.
+            fold = Message.user([
+                block
+                for message in completed_result_messages
+                for block in message.content
+            ])
+            self._append_message_variants(fold)
+            return None
+
         # ---- Awaiting relay phase ----
         self._phase = AgentPhase.AWAITING_RELAY
 
-        pending_calls = (*classification.frontend_calls, *classification.confirmation_calls)
         pending_tool_ids = [tc.tool_id for tc in pending_calls]
         outbound = [
             FrontendCallView(
@@ -1072,7 +1445,7 @@ class AnthropicAgent(AgentRuntime):
         ]
         reason = (
             AWAIT_REASON_CONFIRMATION
-            if classification.confirmation_calls
+            if confirmation_calls
             else AWAIT_REASON_FRONTEND_TOOL
         )
 
@@ -1084,8 +1457,8 @@ class AnthropicAgent(AgentRuntime):
         # evicted session rehydrates through the SAME cid (§2.4).
         cid = self._allocate_relay_cid(classification)
         self.agent_config.pending_relay = PendingToolRelay(
-            frontend_calls=classification.frontend_calls,
-            confirmation_calls=classification.confirmation_calls,
+            frontend_calls=frontend_calls,
+            confirmation_calls=confirmation_calls,
             completed_results=completed_result_messages,
             run_id=self._run_id,
             cid=cid,
@@ -1221,6 +1594,16 @@ class AnthropicAgent(AgentRuntime):
 
                 # Signal cancellation, then let cooperative tools clean up.
                 self._cancellation_event.set()
+
+                # CM-G4: the catalog on_abort observer fires on the live
+                # abort path (observe + emit only; tool-level on_abort()
+                # cleanup below is retained separately — §2.6).
+                await self._fire_hooks(
+                    "on_abort",
+                    grace_ms=int(self._abort_grace_seconds() * 1000),
+                    phase=self._phase.value,
+                )
+
                 await self._run_on_abort_hooks()
 
                 phase = self._phase

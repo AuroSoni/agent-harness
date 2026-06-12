@@ -143,3 +143,75 @@ def test_log_entry_row_round_trip_preserves_entry_fields():
     assert isinstance(restored, LogEntry)
     assert restored.step == 3
     assert restored.event_type == "tool_execution"
+
+
+# ---------------------------------------------------------------------------
+# Consumer-migration fixes (AMENDMENTS 2026-06-11)
+# ---------------------------------------------------------------------------
+
+def test_config_row_round_trips_active_profile():
+    # CM-G3e: `active_profile` is a persisted column — a resume re-applies it
+    # (R20 "persisted wins"); pre-profile rows hydrate as None.
+    config = AgentConfig(agent_uuid="agent-1", active_profile="plan")
+    row = config_to_row(config)
+    assert row["active_profile"] == "plan"
+    restored = row_to_config(row)
+    assert restored.active_profile == "plan"
+
+
+def test_config_row_tolerates_missing_active_profile_column():
+    # Pre-profile rows (old DBs) hydrate with active_profile=None.
+    row = config_to_row(AgentConfig(agent_uuid="agent-1"))
+    row.pop("active_profile")
+    assert row_to_config(row).active_profile is None
+
+
+def test_conversation_user_message_column_is_the_clean_form():
+    # CM-P1G1: the persisted user_message column shows exactly what the user
+    # typed — transient `contributions` are dropped (they round-trip via the
+    # conversation_log column instead).
+    from agent_base.core.messages import Message
+    from agent_base.core.types import Contribution, ContributionPosition, TextContent
+
+    message = Message.user("what did I type")
+    message.contributions.append(Contribution(
+        slot="current_time",
+        content=[TextContent(text="2026-06-11T00:00:00Z")],
+        source="runtime",
+        position=ContributionPosition.BEFORE.value,
+    ))
+    conversation = Conversation(agent_uuid="a", run_id="r", user_message=message)
+
+    row = conversation_to_row(conversation)
+    stored = json.loads(row["user_message"])
+    assert "contributions" not in stored
+    assert stored["content"][0]["text"] == "what did I type"
+
+
+def test_conversation_user_message_hydrates_from_clean_and_canonical_forms():
+    # from_dict tolerates BOTH the clean form (no `contributions` key) and the
+    # old canonical form (with it) — old rows keep loading.
+    from agent_base.core.messages import Message
+    from agent_base.core.types import Contribution, ContributionPosition, TextContent
+
+    message = Message.user("hello")
+    message.contributions.append(Contribution(
+        slot="current_time",
+        content=[TextContent(text="now")],
+        source="runtime",
+        position=ContributionPosition.BEFORE.value,
+    ))
+    conversation = Conversation(agent_uuid="a", run_id="r", user_message=message)
+
+    # New (clean) row:
+    clean_row = conversation_to_row(conversation)
+    restored_clean = row_to_conversation(clean_row)
+    assert restored_clean.user_message.content[0].text == "hello"
+    assert restored_clean.user_message.contributions == []
+
+    # Old (canonical) row — simulate the pre-fix column payload:
+    old_row = dict(clean_row)
+    old_row["user_message"] = to_jsonb(message.to_dict())
+    restored_old = row_to_conversation(old_row)
+    assert restored_old.user_message.content[0].text == "hello"
+    assert len(restored_old.user_message.contributions) == 1

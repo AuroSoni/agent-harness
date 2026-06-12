@@ -123,8 +123,18 @@ def fit_image_to_budget(
     original_dimensions = (image.width, image.height)
 
     if crop_bbox is not None:
+        # CM-P2 (AMENDMENTS 2026-06-11): CLAMP is canonical — the crop region
+        # is intersected with the image bounds (same containment philosophy
+        # as the sandbox path grammar), never an "Invalid crop_bbox" error
+        # and never Pillow's black out-of-bounds padding. A region clamped
+        # empty falls back to the full image.
         left, top, right, bottom = crop_bbox
-        image = image.crop((left, top, right, bottom))
+        left = max(0, min(int(left), image.width))
+        top = max(0, min(int(top), image.height))
+        right = max(0, min(int(right), image.width))
+        bottom = max(0, min(int(bottom), image.height))
+        if right > left and bottom > top:
+            image = image.crop((left, top, right, bottom))
 
     # Downscale so the largest side fits max_dimension (aspect preserved).
     largest = max(image.width, image.height)

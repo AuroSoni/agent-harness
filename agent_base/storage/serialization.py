@@ -95,6 +95,8 @@ def serialize_config(config: AgentConfig) -> dict[str, Any]:
         "pending_relay": _serialize_pending_relay(config.pending_relay),
         # Run tracking
         "current_step": config.current_step,
+        # Profiles (contract §6; CM-G3e)
+        "active_profile": config.active_profile,
         # Hierarchy
         "parent_agent_uuid": config.parent_agent_uuid,
         "subagent_schemas": [
@@ -172,6 +174,8 @@ def deserialize_config(
         pending_relay=_deserialize_pending_relay(data.get("pending_relay")),
         # Run tracking
         current_step=data.get("current_step", 0),
+        # Profiles (contract §6; CM-G3e — absent on pre-profile rows)
+        active_profile=data.get("active_profile"),
         # Hierarchy
         parent_agent_uuid=data.get("parent_agent_uuid"),
         subagent_schemas=[

@@ -158,6 +158,7 @@ _CONFIG_COLUMNS: list[tuple[str, str, Callable[[AgentConfig], Any]]] = [
     ("pending_relay", "JSONB",
      lambda c: to_jsonb(_serialize_pending_relay(c.pending_relay))),
     ("current_step", "INTEGER", lambda c: c.current_step),
+    ("active_profile", "TEXT", lambda c: c.active_profile),
     ("parent_agent_uuid", "TEXT", lambda c: c.parent_agent_uuid),
     ("subagent_schemas", "JSONB",
      lambda c: to_jsonb([dataclasses.asdict(s) for s in c.subagent_schemas])),
@@ -175,8 +176,11 @@ _CONVERSATION_COLUMNS: list[tuple[str, str, Callable[[Conversation], Any]]] = [
     ("sequence_number", "INTEGER", lambda c: c.sequence_number),
     ("started_at", "TIMESTAMPTZ", lambda c: to_datetime(c.started_at)),
     ("completed_at", "TIMESTAMPTZ", lambda c: to_datetime(c.completed_at)),
+    # CM-P1G1: the persisted ``user_message`` column shows exactly what the
+    # user typed — the CLEAN form (transient contributions dropped). The
+    # canonical contributions/attachments round-trip via ``conversation_log``.
     ("user_message", "JSONB",
-     lambda c: to_jsonb(c.user_message.to_dict() if c.user_message else None)),
+     lambda c: to_jsonb(c.user_message.to_clean_dict() if c.user_message else None)),
     ("final_response", "JSONB",
      lambda c: to_jsonb(c.final_response.to_dict() if c.final_response else None)),
     ("conversation_log", "JSONB",
@@ -259,6 +263,7 @@ def row_to_config(row: Mapping[str, Any]) -> AgentConfig:
         last_known_output_tokens=_val(row, "last_known_output_tokens", 0),
         pending_relay=_deserialize_pending_relay(raw_relay),
         current_step=_val(row, "current_step", 0),
+        active_profile=_val(row, "active_profile"),
         parent_agent_uuid=_val(row, "parent_agent_uuid"),
         subagent_schemas=[SubAgentSchema(**s) for s in raw_subagents],
         title=_val(row, "title"),

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from agent_base.core.conversation_log import ToolLogProjection
 from agent_base.core.types import ContentBlock, TextContent
-from typing import Any
+from typing import Any, ClassVar
 
 
 @dataclass
@@ -46,6 +46,13 @@ class ToolResultEnvelope(ABC):
     is_error: bool = False
     error_message: str | None = None
     duration_ms: float | None = None
+
+    # CM-G4: when tool execution RAISED (vs returning an error result), the
+    # registry stamps the live exception onto the instance so the loop's
+    # ``on_tool_error`` hook fires with the real error. Runtime-only state —
+    # a ClassVar default, NOT a dataclass field, so it never serializes into
+    # any projection.
+    raised_error: ClassVar[BaseException | None] = None
 
     # ─── Projection 1: For the LLM context window ───
 

@@ -67,6 +67,7 @@ from agent_base.core.errors import AgentError, ErrorCode
 from agent_base.core.hooks.context import (
     EndTurnContext,
     ProfileChangedContext,
+    SessionContext,
     ToolCallContext,
     ToolResultContext,
     TurnContext,
@@ -250,6 +251,13 @@ class AgentRuntime:
         self._active_profile_name: str | None = default_profile or (
             next(iter(self._profiles)) if self._profiles else None
         )
+        # R20 startup-precedence state (CM-G3a): whether a persisted
+        # ``active_profile`` was restored (persisted beats the session-start
+        # handler), which source the initial §2.3a announce reports, and
+        # whether that announce already fired (idempotent).
+        self._profile_restored: bool = False
+        self._startup_profile_source: str = "session_default"
+        self._initial_profile_announced: bool = False
 
         # The ONE composition engine (contract §2.2; O8): subclass-declared
         # (method-synthesized) entries first, then the constructor registry,
@@ -431,6 +439,13 @@ class AgentRuntime:
             # A→B: forward-stamp ownership onto the persisted columns.
             self._agent_config.owner_tenant = self.principal.tenant
             self._agent_config.owner_subject = self.principal.subject
+
+        # R20 (CM-G3a): a persisted ``active_profile`` wins on resume — the
+        # runtime re-applies the matching Profile to the live state HERE,
+        # before any run re-stamps tool_schemas / system_prompt. A fresh
+        # (never-loaded) config is NOT a restore — its ctor-stamped default
+        # must still lose to an on_session_start handler.
+        self._restore_persisted_profile(loaded=persisted_config is not None)
 
         await self.checkpoint()
 
@@ -874,6 +889,38 @@ class AgentRuntime:
         )
         return outcome.results
 
+    async def _before_tool_chain(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        *,
+        tool_use_id: str,
+        executor: str = "backend",
+        call: Any | None = None,
+    ) -> tuple[dict[str, Any], HookOutcome | None]:
+        """Run the ``before_tool`` chain (enrich / rewrite / block) and return
+        ``(prepared_input, folded_outcome)`` — the caller decides the block
+        policy (deny-envelope on the loop paths, raise on the scripted path).
+        CM-G1/CM-G4: shared by the live backend execution, the in-loop relay
+        pause, and ``call_frontend_tool``.
+        """
+        base = self._base_hook_kwargs()
+        base["executor"] = executor
+        hook_ctx = ToolCallContext(
+            **base,
+            tool_name=tool_name,
+            tool_input=dict(tool_input),
+            tool_use_id=tool_use_id,
+            call=call
+            if call is not None
+            else SimpleNamespace(
+                name=tool_name, tool_id=tool_use_id, input=dict(tool_input)
+            ),
+        )
+        outcome = await self._run_hook("before_tool", hook_ctx)
+        self._emit_outcome_events(outcome)
+        return dict(hook_ctx.tool_input), outcome
+
     async def _run_before_tool(
         self,
         tool_name: str,
@@ -882,27 +929,18 @@ class AgentRuntime:
         tool_use_id: str,
         executor: str = "frontend",
     ) -> dict[str, Any]:
-        """Run the ``before_tool`` chain (enrich / rewrite / block) and return
-        the prepared input — the outbound ``AwaitInput`` payload (§2.1)."""
-        base = self._base_hook_kwargs()
-        base["executor"] = executor
-        hook_ctx = ToolCallContext(
-            **base,
-            tool_name=tool_name,
-            tool_input=dict(tool_input),
-            tool_use_id=tool_use_id,
-            call=SimpleNamespace(
-                name=tool_name, tool_id=tool_use_id, input=dict(tool_input)
-            ),
+        """Run the ``before_tool`` chain and return the prepared input — the
+        outbound ``AwaitInput`` payload (§2.1). A ``block`` outcome raises a
+        typed ``TOOL_FAILED`` (the scripted ``call_frontend_tool`` contract)."""
+        prepared, outcome = await self._before_tool_chain(
+            tool_name, tool_input, tool_use_id=tool_use_id, executor=executor
         )
-        outcome = await self._run_hook("before_tool", hook_ctx)
-        self._emit_outcome_events(outcome)
         if outcome is not None and outcome.decision == "block":
             raise AgentError(
                 code=ErrorCode.TOOL_FAILED,
                 message=outcome.reason or f"before_tool blocked {tool_name!r}",
             )
-        return dict(hook_ctx.tool_input)
+        return prepared
 
     def _existing_tool_result_ids(self) -> set[str]:
         """tool_use_ids that already have a result in context (§2.5 rule 2)."""
@@ -1219,23 +1257,39 @@ class AgentRuntime:
         runtime-stamped base kwargs + ``payload`` and run the chain.
 
         Thin convenience over :meth:`_run_hook` for call sites that do not
-        need the context back afterwards.
+        need the context back afterwards. ``HookOutcome.events`` are applied
+        here (the delivery-guaranteed channel, R21) so live-loop dispatch
+        sites (CM-G4) never forget them. ``executor=`` in ``payload``
+        overrides the base stamp (tool hooks on the frontend path).
         """
         from agent_base.core.hooks import context as _hook_contexts
 
         ctx_cls = _EVENT_CONTEXT_CLASSES.get(event)
         if ctx_cls is None:
             return None
-        ctx = getattr(_hook_contexts, ctx_cls)(**self._base_hook_kwargs(), **payload)
-        return await self._run_hook(event, ctx)
+        base = self._base_hook_kwargs()
+        if "executor" in payload:
+            base["executor"] = payload.pop("executor")
+        ctx = getattr(_hook_contexts, ctx_cls)(**base, **payload)
+        outcome = await self._run_hook(event, ctx)
+        self._emit_outcome_events(outcome)
+        return outcome
 
     def _base_hook_kwargs(self) -> dict[str, Any]:
         """The R4-canonical ``HookContext`` base field set, runtime-stamped
-        ("never hand-passed") with the wired capabilities."""
+        ("never hand-passed") with the wired capabilities.
+
+        CM-G2: the LIVE resource handles are threaded, not ``None``-stamped —
+        ``run_id`` from the current run, and ``sandbox`` / ``media`` /
+        ``memory`` / ``conversation`` / ``parent_agent_id`` from whatever the
+        concrete runtime carries (the base runtime has none, so they read as
+        ``None`` there). This generalizes the threading the ``end_turn_hook``
+        ctor seam already did for sandbox.
+        """
         return dict(
-            run_id=None,
+            run_id=self._run_id,
             agent_id=self.agent_uuid,
-            parent_agent_id=None,
+            parent_agent_id=getattr(self, "_parent_agent_uuid", None),
             principal=self.principal,
             executor="backend",
             storage=SimpleNamespace(
@@ -1243,11 +1297,11 @@ class AgentRuntime:
                 conversation=self.conversation_adapter,
                 run=self.run_adapter,
             ),
-            sandbox=None,
-            media=None,
-            memory=None,
+            sandbox=getattr(self, "_sandbox", None),
+            media=getattr(self, "media_backend", None),
+            memory=getattr(self, "memory_store", None),
             agent_config=self._agent_config,
-            conversation=None,
+            conversation=getattr(self, "conversation", None),
             emit=self._hook_emit,
             once=self._hook_once,
             logger=self._logger,
@@ -1321,16 +1375,8 @@ class AgentRuntime:
         fact, then fire the ``on_profile_changed`` observer hook (§2.3a) —
         whose context deliberately has no switch capability (no cascades).
         """
-        if name not in self._profiles:
-            raise AgentError(
-                code=ErrorCode.INTERNAL,
-                message=f"switch_profile: unknown profile {name!r}",
-            )
         old_profile = self._active_profile_name
-        self._active_profile_name = name
-        self._agent_config.active_profile = name
-        if self.active_profile is not None and self.active_profile.system_prompt:
-            self._agent_config.system_prompt = self.active_profile.system_prompt
+        self._activate_profile(name)
 
         try:
             from agent_base.streaming.meta import ProfileChanged
@@ -1345,6 +1391,128 @@ class AgentRuntime:
             new_profile=name,
             source=source,  # type: ignore[arg-type]
             is_initial=False,
+        )
+        await self._run_hook("on_profile_changed", observer_ctx)
+
+    # ── profile activation internals (contract §6 / §2.7; CM-G3) ───────────
+
+    def _activate_profile(self, name: str) -> None:
+        """Apply ONE profile to the live runtime WITHOUT announcing: set the
+        active name, persist it on ``agent_config``, and swap the live
+        resources via :meth:`_apply_profile_resources` (concrete runtimes
+        extend that seam to rebuild the tool registry — CM-G3b)."""
+        if name not in self._profiles:
+            raise AgentError(
+                code=ErrorCode.INTERNAL,
+                message=f"switch_profile: unknown profile {name!r}",
+            )
+        self._active_profile_name = name
+        self._agent_config.active_profile = name
+        profile = self._profiles[name]
+        self._apply_profile_resources(profile)
+
+    def _apply_profile_resources(self, profile: Profile) -> None:
+        """Swap the live resources a profile declares (§2.7 guarantee 1).
+
+        Base runtime: only the persisted ``system_prompt`` (the base carries
+        no tool registry). ``AnthropicAgent`` overrides this to also rebuild
+        the live ``ToolRegistry`` from ``profile.tools``/``frontend_tools``
+        and to resolve ``system_prompt=None`` to the agent default (CM-G3b).
+        """
+        if profile.system_prompt:
+            self._agent_config.system_prompt = profile.system_prompt
+
+    def _restore_persisted_profile(self, *, loaded: bool = True) -> None:
+        """R20 "persisted wins" (CM-G3a): re-apply ``agent_config.active_profile``
+        after a load. Silent — the §2.3a announce is the SINGLE initial
+        announce fired at session start (:meth:`_announce_initial_profile`).
+
+        ``loaded=False`` marks a fresh (never-persisted) config: its
+        ctor-stamped default is NOT a restore and must still lose to the
+        ``on_session_start`` handler (the R20 middle rung).
+        """
+        if not self._profiles:
+            return
+        persisted = (
+            getattr(self._agent_config, "active_profile", None) if loaded else None
+        )
+        if persisted and persisted in self._profiles:
+            self._activate_profile(persisted)
+            self._profile_restored = True
+            self._startup_profile_source = "restore"
+        elif self._active_profile_name is not None:
+            # Fresh row, or a (possibly adopted) persisted row that predates
+            # profiles — stamp the ctor default so the next checkpoint
+            # persists it.
+            self._agent_config.active_profile = self._active_profile_name
+
+    # ── session hooks (R19/R20; CM-G4) ─────────────────────────────────────
+
+    def _set_profiles_handler(self, profiles: "list[Profile]") -> None:
+        """``SessionContext.set_profiles`` — replace the profile registry
+        BEFORE the first turn (the R20 dynamic configure path)."""
+        self._profiles = {p.name: p for p in profiles}
+        if self._active_profile_name not in self._profiles:
+            self._active_profile_name = (
+                next(iter(self._profiles)) if self._profiles else None
+            )
+            self._agent_config.active_profile = self._active_profile_name
+
+    def _set_session_default_profile(self, name: str) -> None:
+        """``SessionContext.set_default_profile`` — the R20 middle rung: a
+        dynamic per-session default. IGNORED when a persisted profile was
+        restored (persisted wins)."""
+        if self._profile_restored:
+            return
+        self._activate_profile(name)
+        self._startup_profile_source = "session_default"
+
+    def _make_session_context(
+        self,
+        *,
+        source: str = "create",
+        is_cold_load: bool = False,
+        principal: "SessionPrincipal | None" = None,
+        reason: str | None = None,
+    ) -> SessionContext:
+        """Build the ``SessionContext`` for ``on_session_start``/``on_session_end``
+        (R19 — ``SessionManager`` invokes this; CM-G4 makes the session hooks
+        reachable)."""
+        base = self._base_hook_kwargs()
+        if principal is not None:
+            base["principal"] = principal
+        return SessionContext(
+            **base,
+            source=source,  # type: ignore[arg-type]
+            is_cold_load=is_cold_load,
+            reason=reason,
+            set_profiles=self._set_profiles_handler,
+            set_default_profile=self._set_session_default_profile,
+        )
+
+    async def _announce_initial_profile(self) -> None:
+        """§2.7 guarantee 4: the ONE initial profile announce — auto-emit
+        ``ProfileChanged`` + fire ``on_profile_changed(is_initial=True)`` with
+        ``source ∈ {restore, session_default}``. Fired by ``SessionManager``
+        right after a non-blocking ``on_session_start``; idempotent."""
+        if self._initial_profile_announced:
+            return
+        name = self._active_profile_name
+        if name is None or not self._profiles:
+            return
+        self._initial_profile_announced = True
+        try:
+            from agent_base.streaming.meta import ProfileChanged
+
+            self._hook_emit(ProfileChanged(profile=name))
+        except Exception:  # pragma: no cover - the announce is lossy (R21)
+            pass
+        observer_ctx = ProfileChangedContext(
+            **self._base_hook_kwargs(),
+            old_profile=None,
+            new_profile=name,
+            source=self._startup_profile_source,  # type: ignore[arg-type]
+            is_initial=True,
         )
         await self._run_hook("on_profile_changed", observer_ctx)
 

@@ -19,7 +19,10 @@ from agent_base.core.chain import (
 from agent_base.core.abort_types import TOOL_ABORT_TEXT
 from agent_base.core.messages import Message
 from agent_base.core.types import (
+    ServerToolResultContent,
+    ServerToolUseContent,
     TextContent,
+    ToolResultBase,
     ToolResultContent,
     ToolUseContent,
 )
@@ -157,13 +160,17 @@ class TestEnsureChainValidity:
         assert isinstance(user_content[-1], TextContent)
 
     def test_consecutive_user_messages_merged(self):
+        # CM-G5c NOTE: the tool_result needs a live tool_use upstream — a
+        # result with NO matching tool_use anywhere is an orphan and is now
+        # DROPPED by the scrub pass (the API rejects such a chain anyway).
         chain = [
+            Message.assistant([_tool_use("t1")]),
             Message.user([_tool_result("t1", "done")]),
             Message.user("follow-up"),
         ]
         result = ensure_chain_validity(chain)
-        assert len(result) == 1
-        merged = result[0]
+        assert len(result) == 2
+        merged = result[1]
         assert isinstance(merged.content[0], ToolResultContent)
         texts = [b.text for b in merged.content if isinstance(b, TextContent)]
         assert texts == ["follow-up"]
@@ -200,6 +207,129 @@ class TestEnsureChainValidity:
         ]
         result = ensure_chain_validity(chain)
         assert len(result) == 2
+
+
+# ===========================================================================
+# Persisted-history scrub (AMENDMENTS CM-G5 — consumer gaps G5a–d; the
+# scenarios replicate nova's strict-xfail repros in
+# tests/unit/test_chain_integrity_regression.py, which flip to XPASS now)
+# ===========================================================================
+
+
+class TestPersistedHistoryScrub:
+    def test_g5a_leaked_server_tool_use_in_assistant_history_is_stripped(self):
+        """A leaked ``srvtoolu_*`` client tool_use is stripped — and NO bogus
+        client-side tool_result is synthesized for the server id."""
+        chain = [
+            Message.user("go"),
+            Message.assistant([
+                _text("searching"),
+                ToolUseContent(tool_name="web_search", tool_id="srvtoolu_leak", tool_input={}),
+            ]),
+        ]
+        result = ensure_chain_validity(chain)
+        blocks = [b for m in result for b in m.content]
+        assert not [
+            b for b in blocks
+            if isinstance(b, ToolUseContent) and b.tool_id == "srvtoolu_leak"
+        ]
+        assert not [
+            b for b in blocks
+            if isinstance(b, ToolResultBase) and b.tool_id == "srvtoolu_leak"
+        ]
+
+    def test_g5a_legit_server_tool_use_block_is_untouched(self):
+        """Real ``ServerToolUseContent`` (+ its server result) in assistant
+        history is OUTSIDE the client contract — never stripped, never given
+        a synthetic client result."""
+        chain = [
+            Message.user("go"),
+            Message.assistant([
+                ServerToolUseContent(
+                    tool_name="web_search", tool_id="srvtoolu_real", tool_input={}
+                ),
+                ServerToolResultContent(tool_id="srvtoolu_real", tool_result="hits"),
+                _text("found it"),
+            ]),
+        ]
+        result = ensure_chain_validity(chain)
+        assert len(result) == 2
+        kept = result[1].content
+        assert isinstance(kept[0], ServerToolUseContent)
+        assert isinstance(kept[1], ServerToolResultContent)
+
+    def test_g5b_leaked_server_tool_result_in_user_history_is_stripped(self):
+        chain = [
+            Message.assistant([_tool_use("toolu_a", name="read")]),
+            Message.user([
+                _tool_result("toolu_a"),
+                ServerToolResultContent(tool_id="srvtoolu_leak", tool_result="server stuff"),
+            ]),
+        ]
+        result = ensure_chain_validity(chain)
+        leaked = [
+            b for m in result for b in m.content
+            if isinstance(b, ToolResultBase) and b.tool_id == "srvtoolu_leak"
+        ]
+        assert leaked == []
+        # The legitimate client result survives.
+        assert [
+            b.tool_id for m in result for b in m.content
+            if isinstance(b, ToolResultBase)
+        ] == ["toolu_a"]
+
+    def test_g5c_orphaned_tool_result_is_dropped(self):
+        """Context management cleared the tool_use but left the result — the
+        orphan must be dropped (the API rejects the chain otherwise)."""
+        chain = [
+            Message.user("go"),
+            Message.assistant("here is the answer"),
+            Message.user([_tool_result("toolu_gone", "orphaned result")]),
+        ]
+        result = ensure_chain_validity(chain)
+        orphans = [
+            b for m in result for b in m.content
+            if isinstance(b, ToolResultBase) and b.tool_id == "toolu_gone"
+        ]
+        assert orphans == []
+
+    def test_g5c_message_scrubbed_empty_is_dropped_entirely(self):
+        chain = [
+            Message.user("go"),
+            Message.assistant("answer"),
+            Message.user([_tool_result("toolu_gone", "orphan")]),  # nothing else
+        ]
+        result = ensure_chain_validity(chain)
+        assert len(result) == 2
+        assert result[-1].role.value == "assistant"
+
+    def test_g5d_duplicate_tool_result_across_user_messages_keeps_first(self):
+        chain = [
+            Message.assistant([_tool_use("toolu_a", name="read")]),
+            Message.user([_tool_result("toolu_a", "first")]),
+            Message.assistant("continuing"),
+            Message.user([_tool_result("toolu_a", "second copy")]),
+        ]
+        result = ensure_chain_validity(chain)
+        dupes = [
+            b for m in result for b in m.content
+            if isinstance(b, ToolResultBase) and b.tool_id == "toolu_a"
+        ]
+        assert len(dupes) == 1
+        assert dupes[0].tool_result == "first"
+
+    def test_scrub_is_idempotent(self):
+        chain = [
+            Message.assistant([
+                _tool_use("toolu_a"),
+                ToolUseContent(tool_name="web_search", tool_id="srvtoolu_leak", tool_input={}),
+            ]),
+            Message.user([_tool_result("toolu_a"), _tool_result("toolu_gone")]),
+            Message.user([_tool_result("toolu_a", "dup")]),
+        ]
+        first = ensure_chain_validity(chain)
+        second = ensure_chain_validity(first)
+        assert [m.to_dict() for m in first] == [m.to_dict() for m in second]
 
 
 # ===========================================================================

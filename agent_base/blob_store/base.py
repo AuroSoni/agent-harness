@@ -13,12 +13,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from agent_base.media_backend.media_types import MediaScope
 
-__all__ = ["BlobRef", "BlobStore", "safe_blob_key"]
+__all__ = ["BlobRef", "BlobStore", "KeyedBlobStore", "safe_blob_key", "split_namespace"]
 
 
 @dataclass(frozen=True)
@@ -68,6 +68,42 @@ def safe_blob_key(*parts: str) -> str:
         cleaned.append(seg)
 
     return "/".join(cleaned)
+
+
+def split_namespace(namespace: str) -> list[str]:
+    """Split a (possibly multi-segment) namespace into ``safe_blob_key``
+    segments (AMENDMENTS CM-P4G2).
+
+    The library's own ``derive_namespace`` (I13a) emits ``"tenant/subject"``
+    — WITH a slash — so the concrete backends must treat the namespace as a
+    path of segments, each individually validated. Single-segment namespaces
+    keep their exact historical path layout.
+    """
+    return [seg for seg in str(namespace).split("/")]
+
+
+@runtime_checkable
+class KeyedBlobStore(Protocol):
+    """KEY-addressed bytes beside the content-addressed surface (CM-P4G1).
+
+    The minimal surface for caller-built, opaque object keys (e.g.
+    ``"skills/org/{org}/{skill}/revisions/{rev}.tar.gz"``) — integrity is the
+    caller's separate concern (the returned :class:`BlobRef` still carries
+    the blake3 ``content_hash`` for it). Keys are validated segment-wise via
+    ``safe_blob_key`` (split on ``"/"``); no key→hash index exists — the key
+    IS the address. ``LocalBlobStore`` / ``S3BlobStore`` implement both this
+    protocol and the content-addressed :class:`BlobStore` ABC.
+    """
+
+    async def put_at(
+        self, key: str, data: bytes, *, mime_type: str | None = None
+    ) -> "BlobRef": ...
+
+    async def get_by_key(self, key: str) -> bytes: ...
+
+    async def exists_key(self, key: str) -> "BlobRef | None": ...
+
+    async def delete_key(self, key: str) -> bool: ...
 
 
 class BlobStore(ABC):

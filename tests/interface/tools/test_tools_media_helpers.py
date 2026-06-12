@@ -111,3 +111,15 @@ def test_image_result_envelope_uses_from_blocks():
     log = env.for_conversation_log()
     assert log.summary == "Rendered chart"
     assert log.details == {"kind": "chart"}
+
+
+def test_image_block_clamps_out_of_bounds_crop_to_image_bounds():
+    # CM-P2 (AMENDMENTS 2026-06-11): CLAMP is CANONICAL — an out-of-bounds
+    # crop_bbox is clamped to the image bounds and yields a valid image,
+    # never an "Invalid crop_bbox" error (the same containment philosophy as
+    # the sandbox path grammar's normpath collapse). Decode failures still
+    # raise from Pillow.
+    block, _ = image_block(_png(64, 64), crop_bbox=[32, 32, 400, 400])
+    assert isinstance(block, ImageContent)
+    decoded = Image.open(io.BytesIO(base64.b64decode(block.data)))
+    assert decoded.size == (32, 32)  # clamped to the 64x64 bounds

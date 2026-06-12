@@ -163,3 +163,18 @@ def test_agent_config_never_grows_a_wire_to_dict():
     # stays storage-codec-owned (serialize_config / deserialize_config).
     assert not hasattr(AgentConfig, "to_dict")
     assert not hasattr(AgentConfig, "from_dict")
+
+
+def test_serialize_config_round_trips_active_profile():
+    # CM-G3e (AMENDMENTS 2026-06-11): the active profile NAME is part of the
+    # persisted config codec; absent keys (pre-profile payloads) hydrate None.
+    from agent_base.core.config import AgentConfig
+    from agent_base.storage.serialization import deserialize_config, serialize_config
+
+    config = AgentConfig(agent_uuid="agent-1", active_profile="plan")
+    data = serialize_config(config)
+    assert data["active_profile"] == "plan"
+    assert deserialize_config(data).active_profile == "plan"
+
+    data.pop("active_profile")
+    assert deserialize_config(data).active_profile is None

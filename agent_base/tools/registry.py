@@ -6,7 +6,7 @@ import copy
 import functools
 import inspect
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Dict, TYPE_CHECKING
 
 from agent_base.core.abort_types import TOOL_ABORT_TEXT
@@ -53,6 +53,13 @@ class ToolCallInfo:
     name: str
     tool_id: str
     input: dict[str, Any] = field(default_factory=dict)
+
+    def with_input(self, new_input: dict[str, Any]) -> "ToolCallInfo":
+        """Return a copy with ``input`` replaced — the documented
+        ``before_tool`` enrichment idiom (agent-loop-hooks §3.2):
+        ``return HookOutcome(update=ctx.call.with_input({**ctx.tool_input, ...}))``.
+        """
+        return dataclass_replace(self, input=dict(new_input))
 
 @dataclass
 class ToolCallClassification:
@@ -233,6 +240,11 @@ class ToolRegistry:
 
         except Exception as e:
             envelope = ToolResultEnvelope.error(tool_name, tool_id, str(e))
+            # CM-G4: keep the RAISED exception on the envelope so the loop's
+            # ``on_tool_error`` hook can distinguish a raise from a returned
+            # error and synthesize a recovery result. Runtime-only — never
+            # serialized (it is not a dataclass field of any projection).
+            envelope.raised_error = e
 
         envelope.duration_ms = (time.monotonic() - start) * 1000
         return envelope
@@ -305,11 +317,13 @@ class ToolRegistry:
                         try:
                             tool_id, envelope = task.result()
                             results[tool_id] = envelope
-                        except Exception:
+                        except Exception as task_exc:
                             tc = tasks[task]
-                            results[tc.tool_id] = ToolResultEnvelope.error(
+                            failed = ToolResultEnvelope.error(
                                 tc.name, tc.tool_id, "Tool execution failed.",
                             )
+                            failed.raised_error = task_exc  # CM-G4 (see execute())
+                            results[tc.tool_id] = failed
 
                 # All tool calls have finished; stop waiting on the cancellation sentinel.
                 if len(results) == len(tool_calls):
