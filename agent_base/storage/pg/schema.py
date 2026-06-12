@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .pool import PgPool
 
 #: DDL/migration axis ONLY (R12) — NOT the entity-wire version.
-LIBRARY_SCHEMA_VERSION: int = 3
+LIBRARY_SCHEMA_VERSION: int = 4
 
 #: Single-row bookkeeping table ensure_schema() records the version in.
 VERSION_TABLE = "_agent_base_schema_version"
@@ -54,6 +54,14 @@ LIBRARY_MIGRATIONS: list[Migration] = [
     ]),
     Migration(2, 3, [
         "ALTER TABLE conversation_history ADD COLUMN IF NOT EXISTS cost JSONB",
+    ]),
+    # GF-SCHEMA4: `active_profile` was added to the agent_config CREATE column
+    # set by CM-G3e (row_mappers `_CONFIG_COLUMNS`) but the version was never
+    # bumped, so any DB stamped v3 before that landed silently lacks the column
+    # (CREATE TABLE IF NOT EXISTS no-ops on existing tables). IF NOT EXISTS keeps
+    # this a clean no-op on fresh-create and hand-patched DBs alike.
+    Migration(3, 4, [
+        "ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS active_profile TEXT",
     ]),
 ]
 

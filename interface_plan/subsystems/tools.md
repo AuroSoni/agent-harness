@@ -345,6 +345,19 @@ def _coerce_to_callables(item: "Toolish") -> list[Callable]:
 
 `SubAgentSpec.tools` / agent `tools=` accept the same `Toolish` union (the runtime coerces), so a sub-agent lists instances directly (F5).
 
+#### `SubAgentSpec` snapshot semantics — field-aware `__deepcopy__` (GF-P8G1)
+
+The runtime snapshots a `SubAgentSpec` with `copy.deepcopy` in two spots — `SubAgentTool._coerce_spec` (an explicitly-passed spec) and `SubAgentSpec.from_template_agent` (nested specs). A blanket deepcopy is wrong because `tools` may hold **live runtime objects**: Nova's skill tools carry the skills registry's process-wide asyncpg pool, whose `__deepcopy__` raises `TypeError: no default __reduce__` — so every spawn 500'd at construction (found by the P8 live SSE smoke). Even where deepcopy *succeeds*, duplicating a connection pool / sandbox binding is semantically wrong: those are shared singletons.
+
+`SubAgentSpec.__deepcopy__` is therefore **field-aware**:
+
+| field class | members | deepcopy behavior |
+|---|---|---|
+| runtime-resource (`_REFERENCE_FIELDS`) | `tools`, `frontend_tools`, `memory_store` | kept by **reference** — the snapshot's tool instances ARE the originals (identity preserved). The `tools`/`frontend_tools` **list containers** are copied fresh, so appending to a snapshot's list never mutates the original; `memory_store` is shared as-is. |
+| data | `name`, `system_prompt`, `description`, `model`, `config`, `compaction_config`, `externalization_config`, `max_steps`, `max_parallel_tool_calls`, `max_tool_result_tokens`, `retry_policy`, `subagents` | independent **deep copies** (`retry_policy` is a provider value object → data, not a resource). Nested `subagents` recurse through this same `__deepcopy__`, so their own tool instances stay shared too. |
+
+The hook is on `SubAgentSpec` itself (not buried in `_coerce_spec`), so **any** consumer that deepcopies a spec gets safe semantics. This upstreams Nova's `NovaSubAgentSpec` workaround, which now collapses back onto `SubAgentSpec` with zero behavior change. Specs: `tests/interface/tools/test_tools_subagent_spec_snapshot.py`.
+
 ---
 
 ### 2.4 Library-default output budgeting via `ctx` + `after_tool` override (kills F6; contract §6)

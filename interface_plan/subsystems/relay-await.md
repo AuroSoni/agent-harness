@@ -217,6 +217,34 @@ PrincipalPolicy = StrictScopePolicy()`, homed at `core.identity`) and consulted 
 owner, claimant)`. The *mechanism* (where the check fires) is the library's; only the *policy* is
 injectable.
 
+> **GF-P8G3 — plane-2 `submit(ToolReply)` self-resolves as OWNER (AMENDED 2026-06-12, ratified D1).**
+> The runtime's plane-2 dispatch presents its OWN ambient principal as the claimant:
+> `get_await_table().resolve(command.cid, command.results, principal=self.principal)`. Rationale:
+> the `SessionManager` already ran the attach/ownership check before routing (M7 keeps
+> `agent.submit` principal-free), so the runtime resolving a pause on its own session is
+> legitimate — and the previous claimant-FREE call made a NAMED runtime an anonymous claimant
+> against its own named-owner record: every reply `REJECTED` (R9), the await parked forever
+> (a live consumer hung on 422s the moment principal threading landed without this half —
+> the two fixes are interlocked by a failing-first spec). The pinned claimant matrix under the
+> per-call default `StrictScopePolicy`:
+>
+> | record owner | claimant | disposition |
+> |---|---|---|
+> | named | same named scope | `RESOLVED` |
+> | named | `None` / anonymous | `REJECTED` |
+> | named | different named scope | `REJECTED` |
+> | `None` **or** anonymous object | anything (incl. cross-tenant) | `RESOLVED` — an unscoped record has no auth to enforce |
+>
+> The anonymous-owner rows cover awaits opened BEFORE `set_principal` was ever called
+> (tenancy GF-P8G2's "open records keep their stamp" rule): a session can never strand its own
+> pre-threading pauses. Call-site audit (this cut): the plane-2 dispatch in
+> `core/runtime.py::submit` is the ONLY library `AwaitTable.resolve` caller — the cold path
+> (`SessionManager.submit(ToolReply)` → `_rearm_pending_await` re-OPENS the cid stamped with the
+> freshly-threaded principal → the SAME plane-2 dispatch resolves it) and the sub-agent path (a
+> child's record carries the parent's principal adopted at spawn; the ROOT runtime's plane-2
+> self-claimant matches it) both flow through this one call site. Specs:
+> `tests/interface/relay_await/test_relay_await_plane2_claimant.py`.
+
 ### 2.2 `await_external` — the one suspend primitive (delete the `_relay_mode` fork)
 
 `await_external` already exists and is correct in shape. The redesign **removes the

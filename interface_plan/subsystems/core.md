@@ -666,6 +666,90 @@ def submit(self, cmd: AgentInput) -> Ack:
     return Ack(seq=seq, disposition=disp, detail=detail)
 ```
 
+### 2.6 `record_turn` is a first-class turn + `scripted_ctx()` (GF-P5LG1 / GF-P5LG2)
+
+`AgentRuntime.record_turn(user_message, assistant_blocks, *,
+stop_reason="end_turn") -> AgentResult` (I7) records a scripted (non-LLM)
+exchange driving the **same** path as a model turn — and it persists + emits
+frames **identically**, so a consumer never hand-rolls a checkpoint, a
+`Conversation` row, or the run frames (GF-P5LG1, kills the Nova
+`persistence.py` workaround):
+
+- **(a) checkpoint.** After splicing the `(user, assistant)` pair into the
+  context, `record_turn` calls `await self.checkpoint()` at the turn boundary.
+  The splice lands on `agent_config.context_messages` (the location the live
+  loop reads and `checkpoint()` persists) — not just the private working set —
+  so the scripted exchange survives the checkpoint.
+- **(b) per-run `Conversation`.** `record_turn` builds + saves a `Conversation`
+  row through the bound conversation adapter (when configured), in the SAME
+  shape the live loop persists (`agent_uuid` / `run_id` / `started_at` /
+  `completed_at` / `user_message` / `final_response` / `stop_reason` /
+  `total_steps` / `conversation_log`). A scripted turn has no provider usage,
+  so `usage` is the empty default and `cost` / `generated_files` are absent.
+- **(c) `RunStarted` / `RunCompleted`.** A `RunStarted` meta frame is emitted
+  at turn start and a `RunCompleted` after persistence — but ONLY when a stream
+  consumer is attached (a Rung-1 `stream()` claim or a directly-assigned
+  `_stream_queue`); with no reader the frames drop silently (R21
+  lossy-by-policy), matching `_hook_emit`'s semantics.
+- **Settlement stays ABSENT (B6).** A scripted turn has no provider usage to
+  settle: `AgentResult.settlement` is `None` and no `UsageReport` fires.
+
+`AgentRuntime.scripted_ctx() -> ctx` (GF-P5LG2) is the public emitting context
+for scripted / out-of-band frontend-tool emission. Outside a hook there is no
+other public way to obtain an emitting `ctx`, so a scripted turn that calls
+`call_frontend_tool` previously shimmed over the private `_hook_emit`. The
+returned object's `emit(body, *, correlation_id=None, expects_reply=False)` has
+the SAME signature and behavior as the hook ctx's emit (B8), bound to the
+runtime's emit path (stamps the §3 envelope header, enqueues on the Rung-1
+stream, never raises). It is emit-only — no fake hook-lifecycle fields — and
+pairs with `call_frontend_tool`:
+
+```python
+ctx = agent.scripted_ctx()
+blocks = await agent.call_frontend_tool("pick_cell", {...}, ctx=ctx)
+```
+
+### 2.6a The actor/session public contract on the runtime (GF-P6G1..G4, 2026-06-12)
+
+The runtime surface a real consumer needs to drive a resident session is now
+fully public — the four seams Nova's `stream_glue.py` reached privately for:
+
+```python
+class AgentRuntime:
+    # GF-P6G1 — the SessionManager create-vs-resume probe (session-control §2.5).
+    async def has_persisted_state(self) -> bool: ...
+        # True iff the bound config adapter holds a row for agent_uuid.
+        # False with no adapter / no uuid yet / no row (== CREATE).
+
+    # GF-P6G3 — driving queued turns.
+    def ensure_actor(self) -> asyncio.Task: ...
+        # Idempotent: returns the live actor task or spawns ONE. submit()
+        # auto-kicks it on every accepted UserMessage/Steer enqueue (keyed on
+        # a concrete run() override — the base runtime never auto-spawns).
+        # The single-writer _actor_loop drain now LIVES on AgentRuntime.
+
+    # GF-P6G4 — the ONE blessed completion handle.
+    async def wait_idle(self) -> None: ...
+        # Awaits: no live actor / cold-resume continuation task, empty
+        # mailbox, _actor_running clear, phase IDLE. A turn PARKED on a relay
+        # pause is in flight (wait_idle keeps waiting); turn failures never
+        # raise here — they ride the stream (ErrorReport +
+        # RunCompleted(stop_reason="error")). Bound it with asyncio.wait_for.
+
+    # GF-P6G2 (owned by streaming-and-meta §2.4; listed for the surface map).
+    def stream(self) -> AsyncIterator[StreamItem]: ...          # claimed-once first attach
+    def attach_stream(self) -> AsyncIterator[StreamItem]: ...   # single-live-reader re-attach (D3)
+    def detach_stream(self) -> None: ...                        # no reader; frames drop
+```
+
+Teardown: `SessionManager.evict`/`shutdown` reap the actor task and any
+cold-resume continuation through the runtime's `_shutdown_actor()` seam —
+eviction never leaks tasks (session-control §2.2 amendment). The reference
+consumer flow is `get_or_create → attach_stream() → submit(UserMessage)` for a
+turn and `attach_stream() → submit(ToolReply) → wait_idle()` (or read to the
+guaranteed `RunCompleted` frame) for a continuation —
+`demos/fastapi_server/agent_router.py` is the worked example.
+
 ---
 
 ## 3. Consumer override examples (the "after")

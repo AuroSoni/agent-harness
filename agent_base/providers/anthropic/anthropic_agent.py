@@ -56,6 +56,7 @@ from agent_base.core.hooks.context import (
     EndTurnContext as HookEndTurnContext,
     TurnContext as HookTurnContext,
 )
+from agent_base.core.identity import PrincipalConflict
 from agent_base.core.messages import Message, Usage
 from agent_base.core.provider import ProviderTurn
 from agent_base.core.result import AgentResult, LogEntry
@@ -104,6 +105,7 @@ logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from agent_base.core.cost import TurnSettlement
+    from agent_base.core.identity import SessionPrincipal
     from agent_base.core.provider import Provider
     from agent_base.media_backend.media_types import MediaBackend, MediaMetadata
     from agent_base.memory.base import MemoryStore
@@ -202,6 +204,9 @@ class AnthropicAgent(AgentRuntime):
         sandbox_factory: Callable[[str], "Sandbox"] | None = None,
         end_turn_hook: EndTurnHook | None = None,
         agent_uuid: str | None = None,
+        # Tenancy §A.1 / GF-P8G2: the ONE identity input, forwarded to the
+        # AgentRuntime base (anonymous default — never None internally).
+        principal: "SessionPrincipal | None" = None,
         # Declarative profiles + hook registry (contract §6 / §2.2; CM-G3d).
         profiles: "list[Any] | None" = None,
         default_profile: str | None = None,
@@ -220,6 +225,7 @@ class AnthropicAgent(AgentRuntime):
         #    profiles, principal, stream state (Fork P-A derivation).
         super().__init__(
             agent_uuid=agent_uuid,
+            principal=principal,
             max_steps=int(max_steps) if max_steps else DEFAULT_MAX_STEPS,
             profiles=profiles,
             default_profile=default_profile,
@@ -238,6 +244,12 @@ class AnthropicAgent(AgentRuntime):
         self.config_adapter = config_adapter or MemoryAgentConfigAdapter()
         self.conversation_adapter = conversation_adapter or MemoryConversationAdapter()
         self.run_adapter = run_adapter or MemoryAgentRunAdapter()
+        # GF-P8G2: the concrete ctor replaces the base-bound adapters with the
+        # defaulted ones above — re-bind them to a NAMED ctor principal via the
+        # ONE for_principal seam (O2) so AnthropicAgent(principal=...) scopes
+        # storage exactly like the base runtime does.
+        if self.principal is not None and not self.principal.is_anonymous():
+            self._rebind_adapters(self.principal)
 
         # Media backend.
         self.media_backend = media_backend or LocalMediaBackend()
@@ -417,30 +429,32 @@ class AnthropicAgent(AgentRuntime):
 
         if not self._agent_uuid:
             # Fresh agent - create a new UUID. Initialize with fresh state.
-            self._agent_uuid = str(uuid.uuid4())
+            return await self._initialize_fresh(str(uuid.uuid4()))
 
-            self.agent_config = AgentConfig(agent_uuid=self._agent_uuid)
-            # CM-G3e: stamp the boot profile so the first checkpoint persists it.
-            self.agent_config.active_profile = self._active_profile_name
-            self.conversation = None  # Created per-run in initialize_run()
-            self._configure_compaction_controller()
-
-            await self._initialize_sandbox(self._agent_uuid)
-
-            self._initialized = True
-            return self.agent_config, self.conversation
-
-        # Agent already initialized - load state from storage backend.
+        # A ctor-supplied uuid: load-or-CREATE (GF-P6G1). Probe the row first —
+        # a consumer-minted root id with no persisted state is a CREATE under
+        # that exact uuid (root_session_id == agent_uuid, O15a), not a load
+        # failure. No pre-seeding required.
         try:
             loaded_config = await self.config_adapter.load(self._agent_uuid)
-            if loaded_config is None:
-                raise RuntimeError(f"Agent config not found for UUID: {self._agent_uuid}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load agent state: {e}") from e
+        if loaded_config is None:
+            return await self._initialize_fresh(self._agent_uuid)
+
+        # Agent already persisted - load state from storage backend.
+        try:
             # O12(b): re-land the persisted llm_config as the provider's
             # NATIVE config class (storage deserializes the base LLMConfig).
             loaded_config.llm_config = self.provider.make_llm_config(
                 loaded_config.llm_config
             )
             self.agent_config = loaded_config
+            # GF-P8G2 / I12(d): bidirectional reconciliation on a cold load —
+            # adopt a persisted owner when the ambient principal is anonymous
+            # (re-binding the adapters), raise PrincipalConflict on a scope
+            # mismatch, and forward-stamp the owner columns.
+            self._reconcile_identity()
             raw_session_usage = self.agent_config.extras.get("session_cumulative_usage")
             if isinstance(raw_session_usage, dict):
                 self._cumulative_usage = Usage.from_dict(raw_session_usage)
@@ -481,8 +495,40 @@ class AnthropicAgent(AgentRuntime):
             self._initialized = True
             return self.agent_config, self.conversation
 
+        except PrincipalConflict:
+            # I12(d): an identity conflict is a typed auth failure, never
+            # wrapped into the generic load error.
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to load agent state: {e}") from e
+
+    async def _initialize_fresh(
+        self, agent_uuid: str
+    ) -> tuple[AgentConfig, Conversation | None]:
+        """Initialize fresh state UNDER ``agent_uuid`` — the create branch
+        shared by lazy-uuid construction AND a consumer-minted root id with no
+        persisted row (GF-P6G1). Calls ``_reconcile_identity()`` exactly like
+        the load branch (GF-P8G2: both paths share the I12(d) logic)."""
+        self._agent_uuid = agent_uuid
+
+        self.agent_config = AgentConfig(agent_uuid=agent_uuid)
+        # CM-G3e: stamp the boot profile so the first checkpoint persists it.
+        self.agent_config.active_profile = self._active_profile_name
+        # GF-P8G2 / I12(d): forward-stamp the ambient principal onto the
+        # owner columns so the first checkpoint persists ownership.
+        self._reconcile_identity()
+        self.conversation = None  # Created per-run in initialize_run()
+        self._configure_compaction_controller()
+
+        await self._initialize_sandbox(agent_uuid)
+
+        self._initialized = True
+        # GF-P6G1: persist the fresh row at create (parity with the base
+        # runtime's initialize() checkpoint) — the consumer-minted id is
+        # externally addressable from this moment (has_persisted_state()
+        # flips True; a parallel cold attach resolves the same session).
+        await self.checkpoint()
+        return self.agent_config, self.conversation
 
     def initialize_run(self, prompt: Message, *, run_id: str | None = None) -> None:
         """Initialize tracking state for a new agent run.
@@ -1500,24 +1546,9 @@ class AnthropicAgent(AgentRuntime):
             return
         await self._persist_state()
 
-    async def _actor_loop(self) -> "AgentResult | None":
-        """Single-writer driver: drain the mailbox oldest-first, one turn at a
-        time, checkpointing at each turn boundary."""
-        self._ensure_actor_state()
-        if self._actor_running:
-            return None  # already draining — never double-drive a session
-        self._actor_running = True
-        last_result = None
-        try:
-            while True:
-                msg = self._mailbox.take()
-                if msg is None:
-                    break
-                last_result = await self.run(msg.message)
-                await self.checkpoint()
-        finally:
-            self._actor_running = False
-        return last_result
+    # ``_actor_loop`` is INHERITED from ``AgentRuntime`` (GF-P6G3 — the
+    # single-writer drain was lifted into the base so ``ensure_actor()`` and
+    # the submit auto-kick drive every concrete runtime identically).
 
     # ── Abort / Steer ──────────────────────────────────────────────────────
 
@@ -2531,22 +2562,29 @@ class AnthropicAgent(AgentRuntime):
                 sink.emit_meta(
                     FilesUpdated(files=[f.to_dict() for f in generated_files])
                 )
-            if self.stream_meta_history_and_tool_results:
-                sink.emit_meta(
-                    RunCompleted(
-                        stop_reason=result.stop_reason,
-                        total_steps=result.total_steps,
-                        generated_files=(
-                            [f.to_dict() for f in generated_files]
-                            if generated_files else None
-                        ),
-                        cost=settlement.turn_cost.to_dict(),
-                        cumulative_usage=self._run_cumulative_usage.to_dict(),
-                        conversation_log=_strip_binary_data(
-                            result.conversation_log.to_dict()
-                        ),
-                    )
+            # GF-P6G4: RunCompleted is UNCONDITIONAL at turn end — the ONE
+            # guaranteed terminal frame for every completed turn (LLM and
+            # ToolReply-continuation alike). The
+            # ``stream_meta_history_and_tool_results`` flag now gates ONLY the
+            # heavy ``conversation_log`` payload (and the other meta frames it
+            # always gated), never the frame itself.
+            sink.emit_meta(
+                RunCompleted(
+                    stop_reason=result.stop_reason,
+                    total_steps=result.total_steps,
+                    generated_files=(
+                        [f.to_dict() for f in generated_files]
+                        if generated_files else None
+                    ),
+                    cost=settlement.turn_cost.to_dict(),
+                    cumulative_usage=self._run_cumulative_usage.to_dict(),
+                    conversation_log=(
+                        _strip_binary_data(result.conversation_log.to_dict())
+                        if self.stream_meta_history_and_tool_results
+                        else None
+                    ),
                 )
+            )
 
         return result
 

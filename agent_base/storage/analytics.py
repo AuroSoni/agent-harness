@@ -21,6 +21,7 @@ AMENDMENTS O5: the aggregate here is :class:`AnalyticsTotals` — the shadow
 """
 from __future__ import annotations
 
+import dataclasses
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -116,6 +117,38 @@ class AnalyticsTotals:
 
 
 @dataclass(frozen=True)
+class AgentTotals:
+    """Per-AGENT rollup row (GF-P7G2): one row per ``agent_uuid``.
+
+    Mirrors the fields the consumer dashboard used to reconstruct in Python by
+    draining ``runs_matching`` (Nova's ``_AgentAgg``): identity columns + run
+    count, token/cost sums, error count, and first/last run timestamps. Lets the
+    dashboard's "one row per agent" view come straight from SQL ``GROUP BY
+    agent_uuid`` instead of a Python rollup.
+    """
+
+    agent_uuid: str
+    title: str | None
+    model: str | None
+    principal: SessionPrincipal
+    is_subagent: bool
+    runs: int
+    error_runs: int
+    total_cost: float
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    thinking_tokens: int
+    first_run: datetime | None
+    last_run: datetime | None
+
+    @property
+    def error_rate(self) -> float:
+        """Fraction of this agent's runs outside the terminal (success) set."""
+        return (self.error_runs / self.runs) if self.runs else 0.0
+
+
+@dataclass(frozen=True)
 class ToolUsageStat:
     tool_name: str
     calls: int
@@ -151,6 +184,13 @@ class AnalyticsReader(ABC):
 
     @abstractmethod
     async def usage_totals(self, f: RunFilter) -> AnalyticsTotals: ...
+
+    # Per-AGENT aggregate (GF-P7G2): one row per agent_uuid via GROUP BY, with a
+    # total agent-count for pagination (the list_runs return convention).
+    @abstractmethod
+    async def agent_totals(
+        self, f: RunFilter, *, limit: int = 50, offset: int = 0
+    ) -> tuple[list[AgentTotals], int]: ...
 
     @abstractmethod
     async def volume_timeseries(
@@ -364,6 +404,112 @@ class PgAnalyticsReader(AnalyticsReader):
             thinking_tokens=int(val("thinking_tokens")),
         )
 
+    async def agent_totals(
+        self, f: RunFilter, *, limit: int = 50, offset: int = 0
+    ) -> tuple[list[AgentTotals], int]:
+        """Per-AGENT rollup (GF-P7G2): one row per ``agent_uuid`` via ``GROUP
+        BY agent_uuid``, plus a total agent-count for pagination (the
+        ``list_runs`` return convention).
+
+        The WHERE is composed over the SAME :meth:`_compose_where` builder as
+        every other accessor, so principal scoping + per-run filters apply
+        identically. ``cost_at_least`` / ``errors_only`` are AGENT-level
+        thresholds here (total cost across the agent's runs; the agent has at
+        least one error run), so they move OFF the per-run WHERE into a HAVING
+        predicate — composing them into the WHERE would wrongly require every
+        run to clear the bar.
+        """
+        terminal = ", ".join(f"'{r}'" for r in sorted(TERMINAL_STOP_REASONS))
+        error_expr = (
+            "COUNT(*) FILTER (WHERE ch.stop_reason IS NOT NULL "
+            f"AND ch.stop_reason NOT IN ({terminal}))"
+        )
+        cost_expr = "COALESCE(SUM((ch.cost->>'total_cost')::float), 0)"
+
+        # Per-run WHERE with the agent-level thresholds neutralized — they ride
+        # HAVING below, not the per-run filter (so scoping stays identical).
+        where_filter = dataclasses.replace(
+            f, cost_at_least=None, errors_only=False
+        )
+        where, args = self._compose_where(where_filter)
+
+        having: list[str] = []
+        if f.cost_at_least is not None:
+            args.append(f.cost_at_least)
+            having.append(f"{cost_expr} >= ${len(args)}")
+        if f.errors_only:
+            having.append(f"{error_expr} > 0")
+        having_sql = (" HAVING " + " AND ".join(having)) if having else ""
+
+        # The principal filter columns must be in the GROUP BY so they project
+        # one value per agent (and rebuild the SessionPrincipal per row).
+        group_extra = "".join(f", ch.{spec.name}" for spec in self._filter_columns)
+        select_extra = group_extra  # selected as-is alongside the aggregate
+
+        agg_select = (
+            "SELECT ch.agent_uuid AS agent_uuid, "
+            "MAX(ac.title) AS title, "
+            "MAX(ac.model) AS model, "
+            "BOOL_OR(ac.parent_agent_uuid IS NOT NULL) AS is_subagent, "
+            "COUNT(*) AS runs, "
+            f"{error_expr} AS error_runs, "
+            f"{cost_expr} AS total_cost, "
+            "COALESCE(SUM((ch.usage->>'input_tokens')::bigint), 0) AS input_tokens, "
+            "COALESCE(SUM((ch.usage->>'output_tokens')::bigint), 0) AS output_tokens, "
+            "COALESCE(SUM((ch.usage->>'cache_read_tokens')::bigint), 0) "
+            "AS cache_read_tokens, "
+            "COALESCE(SUM((ch.usage->>'thinking_tokens')::bigint), 0) "
+            "AS thinking_tokens, "
+            "MIN(ch.started_at) AS first_run, "
+            "MAX(ch.started_at) AS last_run"
+            f"{select_extra} "
+            f"{_RUN_FROM} WHERE {where} "
+            f"GROUP BY ch.agent_uuid{group_extra}{having_sql}"
+        )
+        # Total distinct agents AFTER the HAVING cut, for pagination.
+        count_sql = f"SELECT COUNT(*) FROM ({agg_select}) AS agents"
+        page_sql = (
+            f"{agg_select} "
+            "ORDER BY last_run DESC NULLS LAST "
+            f"LIMIT ${len(args) + 1} OFFSET ${len(args) + 2}"
+        )
+        async with self._pool.acquire() as conn:
+            total = await conn.fetchval(count_sql, *args)
+            rows = await conn.fetch(page_sql, *args, limit, offset)
+        return [self._row_to_agent_totals(row) for row in rows], int(total or 0)
+
+    def _row_to_agent_totals(self, row: Mapping[str, Any]) -> AgentTotals:
+        def val(key: str, default: Any = None) -> Any:
+            try:
+                value = row[key]
+            except (KeyError, IndexError):
+                return default
+            return default if value is None else value
+
+        tenant = subject = None
+        for spec in self._filter_columns:
+            source = getattr(spec.get, "principal_source", None)
+            if source == "tenant":
+                tenant = val(spec.name)
+            elif source == "subject":
+                subject = val(spec.name)
+        return AgentTotals(
+            agent_uuid=str(val("agent_uuid", "")),
+            title=val("title"),
+            model=val("model"),
+            principal=SessionPrincipal(tenant=tenant, subject=subject),
+            is_subagent=bool(val("is_subagent", False)),
+            runs=int(val("runs", 0)),
+            error_runs=int(val("error_runs", 0)),
+            total_cost=float(val("total_cost", 0.0)),
+            input_tokens=int(val("input_tokens", 0)),
+            output_tokens=int(val("output_tokens", 0)),
+            cache_read_tokens=int(val("cache_read_tokens", 0)),
+            thinking_tokens=int(val("thinking_tokens", 0)),
+            first_run=val("first_run"),
+            last_run=val("last_run"),
+        )
+
     async def volume_timeseries(
         self, f: RunFilter, *, bucket: Literal["hour", "day"] = "hour"
     ) -> list[TimeBucket]:
@@ -518,6 +664,7 @@ __all__ = [
     "RunFilter",
     "RunSummary",
     "AnalyticsTotals",
+    "AgentTotals",
     "ToolUsageStat",
     "LatencyStats",
     "TimeBucket",

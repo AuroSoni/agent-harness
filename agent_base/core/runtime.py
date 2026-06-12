@@ -92,6 +92,7 @@ from agent_base.profiles import Profile
 from agent_base.session.mailbox import Mailbox
 
 if TYPE_CHECKING:
+    from agent_base.core.config import Conversation
     from agent_base.core.cost import TurnSettlement
     from agent_base.core.identity import SessionPrincipal
     from agent_base.streaming.meta import FrontendCallView, MetaBody
@@ -301,9 +302,14 @@ class AgentRuntime:
             Callable[["TurnSettlement"], Awaitable[None] | None]
         ] = []
 
-        # I3 Rung-1 stream state (single subscriber).
+        # I3 Rung-1 stream state (single LIVE reader — GF-P6G2/D3).
+        # ``_stream_queue`` is the one live read point; ``_stream_claimed``
+        # guards the claimed-once ``stream()`` compat surface;
+        # ``_stream_detached`` marks an explicit ``detach_stream()`` (frames
+        # emitted while detached DROP — never buffer unread).
         self._stream_queue: asyncio.Queue[Any] | None = None
         self._stream_claimed = False
+        self._stream_detached = False
 
         # relay-await runtime state (relay-await.md §2.2–§2.4): the loop's
         # cancellation event (abort/steer wakes every parked await), the
@@ -330,6 +336,11 @@ class AgentRuntime:
         self._seq_counter: int = 0
         self._audit = InMemoryCommandAuditLog()
         self._last_control_result: Any | None = None
+        # GF-P6G3: the ONE actor-task handle — ``ensure_actor`` spawns it,
+        # ``submit`` auto-kicks it, ``_shutdown_actor`` (eviction/shutdown)
+        # reaps it. Never double-driven: a live task short-circuits
+        # ``ensure_actor`` and ``_actor_loop`` keeps its own reentrancy guard.
+        self._actor_task: "asyncio.Task | None" = None
 
     # ── identity / profile read surface ────────────────────────────────────
 
@@ -392,6 +403,24 @@ class AgentRuntime:
 
     # ── tenancy threading (tenancy-principal.md §B.4 / §4; I12(d)) ─────────
 
+    async def has_persisted_state(self) -> bool:
+        """True when a persisted config row exists for this runtime's uuid
+        (GF-P6G1 — the ``SessionManager.get_or_create`` create-vs-resume probe,
+        session-control.md §2.5).
+
+        Probes the bound config adapter for the row. ``False`` when the
+        runtime has no adapter, no uuid yet (lazy-uuid concrete construction),
+        or the row is absent — all three mean the build is a CREATE
+        (``is_cold_load=True`` on ``on_session_start``).
+        """
+        agent_uuid = getattr(self, "agent_uuid", None)
+        if self.config_adapter is None or not agent_uuid:
+            return False
+        loader = getattr(self.config_adapter, "load", None)
+        if not callable(loader):
+            return False
+        return (await loader(agent_uuid)) is not None
+
     async def initialize(self) -> None:
         """Load-or-create the persisted config and reconcile identity.
 
@@ -416,6 +445,41 @@ class AgentRuntime:
         if persisted_config is not None:
             self._agent_config = persisted_config
 
+        self._reconcile_identity()
+
+        # R20 (CM-G3a): a persisted ``active_profile`` wins on resume — the
+        # runtime re-applies the matching Profile to the live state HERE,
+        # before any run re-stamps tool_schemas / system_prompt. A fresh
+        # (never-loaded) config is NOT a restore — its ctor-stamped default
+        # must still lose to an on_session_start handler.
+        self._restore_persisted_profile(loaded=persisted_config is not None)
+
+        await self.checkpoint()
+
+    def _rebind_adapters(self, principal: "SessionPrincipal") -> None:
+        """Re-bind ALL THREE adapters to ``principal`` via the ONE public
+        seam ``for_principal`` (O2) — keeping the bound views."""
+        self.config_adapter = self._bind_adapter(self.config_adapter, principal)
+        self.conversation_adapter = self._bind_adapter(
+            self.conversation_adapter, principal
+        )
+        self.run_adapter = self._bind_adapter(self.run_adapter, principal)
+
+    def _reconcile_identity(self) -> None:
+        """The I12(d) bidirectional principal reconciliation against the LIVE
+        ``_agent_config`` — shared by the base :meth:`initialize` and the
+        concrete runtimes' load-or-create paths (GF-P8G2: the concrete
+        ``AnthropicAgent.initialize`` previously skipped it, so a ctor-named
+        principal never stamped the owner columns and a cold load never
+        adopted them).
+
+        - **B→A back-fill**: anonymous ambient + named persisted owner →
+          ADOPT the row's principal and re-bind all three adapters.
+        - **Conflict**: named ambient vs DIFFERENT named persisted owner →
+          :class:`PrincipalConflict` (ambient unchanged).
+        - **A→B forward stamp**: the (possibly adopted) principal lands on
+          ``agent_config.owner_tenant``/``owner_subject``.
+        """
         ambient = self.principal
         persisted_owner = self._agent_config.principal
         if (
@@ -440,23 +504,56 @@ class AgentRuntime:
             self._agent_config.owner_tenant = self.principal.tenant
             self._agent_config.owner_subject = self.principal.subject
 
-        # R20 (CM-G3a): a persisted ``active_profile`` wins on resume — the
-        # runtime re-applies the matching Profile to the live state HERE,
-        # before any run re-stamps tool_schemas / system_prompt. A fresh
-        # (never-loaded) config is NOT a restore — its ctor-stamped default
-        # must still lose to an on_session_start handler.
-        self._restore_persisted_profile(loaded=persisted_config is not None)
+    def set_principal(self, principal: "SessionPrincipal | None") -> None:
+        """Thread the session identity onto a (possibly already-built) runtime
+        (contract §4; GF-P8G2 — the seam ``SessionManager.get_or_create``
+        duck-calls post-build, which silently no-op'd before this landed).
 
-        await self.checkpoint()
+        Semantics:
 
-    def _rebind_adapters(self, principal: "SessionPrincipal") -> None:
-        """Re-bind ALL THREE adapters to ``principal`` via the ONE public
-        seam ``for_principal`` (O2) — keeping the bound views."""
-        self.config_adapter = self._bind_adapter(self.config_adapter, principal)
-        self.conversation_adapter = self._bind_adapter(
-            self.conversation_adapter, principal
-        )
-        self.run_adapter = self._bind_adapter(self.run_adapter, principal)
+        - ``None`` / anonymous input → **no-op**. A missing claimant carries
+          no identity to thread, and threading it would unscope a principal
+          adopted from the persisted owner columns (I12(d): a session never
+          silently unscopes).
+        - named input over an anonymous runtime → **adopt**: ``self.principal``
+          is replaced, all three storage adapters re-bind via the ONE
+          ``for_principal`` seam (O2), and the live ``agent_config`` owner
+          columns are stamped so the next :meth:`checkpoint` persists
+          ownership.
+        - named input over the SAME named scope → the (possibly richer,
+          claims-bearing) supplied principal replaces the current one;
+          adapters re-bind to the new object.
+        - named input over a DIFFERENT named scope → raises
+          :class:`PrincipalConflict` WITHOUT swapping the ambient principal —
+          the same rule :meth:`initialize` applies to a persisted-owner
+          mismatch.
+
+        Already-running session: await records ALREADY open keep the
+        principal they were stamped with at ``open(...)`` (the table record is
+        immutable identity); the new principal applies from the NEXT
+        open/settlement/checkpoint onward. A pause opened anonymous before
+        ``set_principal`` therefore stays resolvable by the runtime's plane-2
+        self-claimant (``StrictScopePolicy``: an anonymous owner authorizes
+        any claimant).
+        """
+        if principal is None or principal.is_anonymous():
+            return
+        current = self.principal
+        if (
+            current is not None
+            and not current.is_anonymous()
+            and current.scope_key != principal.scope_key
+        ):
+            raise PrincipalConflict(
+                f"set_principal({principal.scope_key}) conflicts with the "
+                f"ambient principal {current.scope_key}"
+            )
+        self.principal = principal
+        self._rebind_adapters(principal)
+        config = getattr(self, "_agent_config", None)
+        if config is not None:
+            config.owner_tenant = principal.tenant
+            config.owner_subject = principal.subject
 
     # ── I7 — scripted turns drive the same path as a model turn ────────────
 
@@ -467,19 +564,37 @@ class AgentRuntime:
         *,
         stop_reason: str = "end_turn",
     ) -> AgentResult:
-        """Record a scripted exchange as a full turn (AMENDMENTS I7).
+        """Record a scripted exchange as a full, first-class turn (AMENDMENTS I7).
 
-        Drives the same path as a model turn: ``on_turn_start`` → (no provider
-        call) → ``on_turn_end`` → splice + persistence + checkpoint. Kills
-        X6/C6 — consumers stop hand-splicing ``context_messages``.
+        Drives the same path as a model turn: ``RunStarted`` →
+        ``on_turn_start`` → (no provider call) → ``on_turn_end`` → splice →
+        dual persistence (config ``checkpoint()`` + a per-run ``Conversation``
+        row) → ``RunCompleted``. Kills X6/C6 — consumers stop hand-splicing
+        ``context_messages``, hand-building the ``Conversation`` row, and
+        hand-emitting the run frames (GF-P5LG1).
 
         The hook chain fires through :meth:`_run_hook` (the ONE composition
-        engine, O8); dual persistence + ``RunStarted``/``RunCompleted``
-        emission attach when the storage and streaming wiring land.
-        ``settlement`` is attached by the runtime once pricing's
-        ``settle_turn`` ships (B6).
+        engine, O8). A ``RunStarted`` meta frame is emitted at turn start and a
+        ``RunCompleted`` after persistence — but ONLY when a stream consumer is
+        attached (a Rung-1 ``stream()`` or a directly-assigned
+        ``_stream_queue``); with no reader the frames drop silently, matching
+        ``_hook_emit``'s lossy-by-policy semantics (R21). The ``Conversation``
+        row is built+saved through the principal-bound conversation adapter
+        when one is configured, matching the shape the live LLM loop persists.
+
+        Settlement stays ABSENT (B6 amendment) — a scripted turn has no
+        provider usage, so there is nothing to settle and no ``UsageReport``
+        fires. Return type/signature are unchanged.
         """
         self._turn_count += 1
+        run_id = self._run_id or str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc).isoformat()
+
+        # (c) RunStarted at turn start — typed meta_init replacement; dropped
+        # silently when no stream consumer is attached.
+        self._emit_run_frame_if_attached(
+            self._build_run_started(user_message)
+        )
 
         # O7: ctx.switch_profile records calls; the LAST call in the chain
         # wins and is applied exactly ONCE, post-composition.
@@ -517,8 +632,13 @@ class AgentRuntime:
         assistant_message.provider = self.provider_name
 
         # Splice (the library guarantee — never a consumer responsibility).
-        self._context_messages.append(user_message)
-        self._context_messages.append(assistant_message)
+        # Splice onto BOTH the in-memory working set and the persisted
+        # ``agent_config.context_messages`` (the location the live loop reads
+        # and ``checkpoint()`` persists), guarding against double-append when a
+        # concrete runtime aliases the two lists. This makes the (a) checkpoint
+        # land the scripted exchange (GF-P5LG1).
+        self._splice_into_context(user_message)
+        self._splice_into_context(assistant_message)
         timestamp = datetime.now(timezone.utc).isoformat()
         self._conversation_log.add_message(
             user_message, agent_uuid=self.agent_uuid, timestamp=timestamp
@@ -546,8 +666,9 @@ class AgentRuntime:
 
         # pricing-cost.md §6 / B6 / G0: no `cost` / `cumulative_usage` on
         # AgentResult — per-turn cost rides `settlement`, cumulative rides the
-        # SettlementAggregator.
-        return AgentResult(
+        # SettlementAggregator. Settlement stays ABSENT here (B6): a scripted
+        # turn has no provider usage to settle.
+        result = AgentResult(
             final_message=assistant_message,
             final_answer=final_answer,
             conversation_log=self._conversation_log,
@@ -557,6 +678,159 @@ class AgentRuntime:
             usage=Usage(),  # scripted turn — no provider call
             total_steps=self._turn_count,
         )
+
+        # (b) Build + save the per-run Conversation row in the SAME shape the
+        # live LLM loop persists (anthropic_agent.initialize_run +
+        # finalize), through the principal-bound conversation adapter when one
+        # is configured. Scripted and live turns persist identically.
+        completed_at = datetime.now(timezone.utc).isoformat()
+        conversation = self._build_run_conversation(
+            run_id=run_id,
+            user_message=user_message,
+            final_response=assistant_message,
+            stop_reason=stop_reason,
+            total_steps=self._turn_count,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+        await self._save_run_conversation(conversation)
+
+        # (a) Checkpoint the config (context_messages spliced above) at the
+        # turn boundary — a scripted turn is a first-class turn.
+        await self.checkpoint()
+
+        # (c) RunCompleted after persistence — dropped silently with no reader.
+        self._emit_run_frame_if_attached(
+            self._build_run_completed(stop_reason, self._turn_count)
+        )
+        return result
+
+    # ── scripted-turn run persistence + frames (GF-P5LG1) ──────────────────
+
+    def _splice_into_context(self, message: Message) -> None:
+        """Append ``message`` to the live context AND the persisted
+        ``agent_config.context_messages`` (GF-P5LG1).
+
+        The base runtime keeps a private working set (``_context_messages``)
+        while ``checkpoint()`` persists ``agent_config.context_messages`` (the
+        location the live loop reads). Append to both so a scripted turn's
+        splice survives the checkpoint — but only once when a concrete runtime
+        aliases the two lists (identity guard)."""
+        self._context_messages.append(message)
+        config_messages = self._agent_config.context_messages
+        if config_messages is not self._context_messages:
+            config_messages.append(message)
+
+    def _build_run_conversation(
+        self,
+        *,
+        run_id: str,
+        user_message: Message,
+        final_response: Message,
+        stop_reason: str,
+        total_steps: int,
+        started_at: str,
+        completed_at: str,
+    ) -> "Conversation":
+        """Build the per-run :class:`Conversation` row for a scripted turn,
+        matching the shape the live LLM loop persists (GF-P5LG1).
+
+        The live loop (``initialize_run`` + finalize in the concrete provider
+        loop) stamps ``agent_uuid`` / ``run_id`` / ``started_at`` /
+        ``user_message`` at run start and ``final_response`` / ``stop_reason``
+        / ``total_steps`` / ``completed_at`` at the end; the run's
+        ``conversation_log`` is the rich UI history. A scripted turn has no
+        provider usage (``usage`` stays the empty default) and no
+        ``generated_files`` / ``cost`` (B6: nothing to settle). The bound
+        conversation adapter stamps ownership columns on save (O2).
+        """
+        from agent_base.core.config import Conversation
+
+        return Conversation(
+            agent_uuid=self.agent_uuid,
+            run_id=run_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            user_message=user_message,
+            final_response=final_response,
+            conversation_log=self._conversation_log,
+            stop_reason=stop_reason,
+            total_steps=total_steps,
+            usage=Usage(),  # scripted turn — no provider call (B6)
+        )
+
+    async def _save_run_conversation(self, conversation: "Conversation") -> None:
+        """Persist the per-run ``Conversation`` through the bound conversation
+        adapter (O2 — principal-scoped). No-op when no adapter is configured
+        (the base runtime may run adapter-less)."""
+        if self.conversation_adapter is None:
+            return
+        save = getattr(self.conversation_adapter, "save", None)
+        if callable(save):
+            await save(conversation)
+
+    def _build_run_started(self, user_message: Message) -> "MetaBody":
+        """Build the ``RunStarted`` meta body for a turn (GF-P5LG1).
+
+        ``user_query`` is the joined text of the user message — the same
+        derivation the live loop's ``_emit_run_started`` uses for the text
+        case. ``conversation_log`` rides only the full-history stream flag, off
+        by default for scripted turns."""
+        from agent_base.streaming.meta import RunStarted
+
+        user_query = " ".join(
+            block.text
+            for block in user_message.content
+            if isinstance(block, TextContent) and block.text
+        )
+        return RunStarted(
+            # Match the live loop's _emit_run_started: the model rides
+            # agent_config.model (the live/persisted value), not the ctor scalar.
+            user_query=user_query,
+            model=self._agent_config.model,
+            conversation_log=None,
+        )
+
+    def _build_run_completed(self, stop_reason: str, total_steps: int) -> "MetaBody":
+        """Build the ``RunCompleted`` meta body for a turn (GF-P5LG1)."""
+        from agent_base.streaming.meta import RunCompleted
+
+        return RunCompleted(stop_reason=stop_reason, total_steps=total_steps)
+
+    def _stream_consumer_attached(self) -> bool:
+        """True when a stream consumer can read frames off the Rung-1 queue —
+        either a ``stream()`` claim or a directly-assigned ``_stream_queue``
+        (the slash/demo per-request read point). With no consumer attached the
+        run frames are dropped silently (R21 lossy-by-policy)."""
+        return self._stream_queue is not None
+
+    def _emit_run_frame_if_attached(self, body: "MetaBody") -> None:
+        """Emit a run-lifecycle meta frame ONLY when a stream consumer is
+        attached (GF-P5LG1); a no-op otherwise so scripted turns with no reader
+        do not buffer orphaned frames."""
+        if self._stream_consumer_attached():
+            self._hook_emit(body)
+
+    # ── scripted frontend-tool emit ctx (GF-P5LG2) ─────────────────────────
+
+    def scripted_ctx(self) -> "_ScriptedEmitContext":
+        """Public emitting context for scripted / out-of-band frontend-tool
+        emission (GF-P5LG2).
+
+        Outside a hook there is no public way to obtain an emitting ``ctx``, so
+        a scripted turn that calls :meth:`call_frontend_tool` previously had to
+        shim over the private ``_hook_emit``. This returns a minimal context
+        object whose ``emit(body, *, correlation_id=None, expects_reply=False)``
+        has the SAME signature and behavior as the hook ctx's emit, bound to
+        this runtime's emit path (the §3 envelope header is stamped, the body
+        is enqueued on the Rung-1 stream). It is emit-only — it carries no fake
+        hook-lifecycle fields beyond what ``emit`` requires — and pairs with
+        :meth:`call_frontend_tool` for an out-of-band relay pause::
+
+            ctx = agent.scripted_ctx()
+            blocks = await agent.call_frontend_tool("pick_cell", {...}, ctx=ctx)
+        """
+        return _ScriptedEmitContext(self)
 
     # ── relay-await surface (relay-await.md §2.2–§2.6) ─────────────────────
 
@@ -858,7 +1132,47 @@ class AgentRuntime:
         resume = getattr(self, "_resume_rearmed", None)
         if not callable(resume):
             return
-        self._rearmed_resume_task = asyncio.create_task(resume())
+        self._rearmed_resume_task = asyncio.create_task(
+            self._guard_continuation(resume())
+        )
+
+    async def _guard_continuation(self, coro: "Awaitable[Any]") -> Any:
+        """Contain a driven-turn failure (actor drain or cold-resume
+        continuation — GF-P6G3/G4): log + ``ErrorReport`` +
+        ``RunCompleted(stop_reason="error")`` on the stream, return ``None`` —
+        never an unretrieved task exception. The success result passes
+        through so awaiting the task still yields the ``AgentResult``."""
+        try:
+            return await coro
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            try:
+                self._logger.warning(
+                    "continuation_turn_failed",
+                    agent_id=self.agent_uuid,
+                    error=str(exc),
+                )
+            except Exception:  # pragma: no cover - logger must never raise
+                pass
+            from agent_base.streaming.meta import ErrorReport
+
+            code = getattr(exc, "code", None)
+            if not isinstance(code, ErrorCode):
+                code = ErrorCode.INTERNAL
+            self._hook_emit(
+                ErrorReport(
+                    code=code,
+                    message=str(exc),
+                    retriable=bool(getattr(exc, "retriable", False)),
+                )
+            )
+            config = getattr(self, "_agent_config", None)
+            steps = int(getattr(config, "current_step", 0) or 0)
+            self._emit_run_frame_if_attached(
+                self._build_run_completed("error", steps)
+            )
+            return None
 
     async def call_frontend_tool(
         self, name: str, tool_input: dict[str, Any], *, ctx: Any
@@ -1018,12 +1332,28 @@ class AgentRuntime:
             disposition = Disposition.ACCEPTED if ok else Disposition.REJECTED
             detail = None if ok else "mailbox_full"
             self._audit_command(seq, command, disposition, detail)
+            if ok and self._can_auto_drive():
+                # GF-P6G3: an accepted UserMessage never parks undriven — the
+                # runtime auto-kicks the single-writer actor (idempotent; a
+                # live drain just picks the message up at its next boundary).
+                self.ensure_actor()
             return Ack(seq=seq, disposition=disposition, detail=detail)
 
         # ── Plane 2: joins (immediate — resolves a parked await_external) ─
         if isinstance(command, ToolReply):
+            # GF-P8G3 (ratified D1): the runtime SELF-RESOLVES AS OWNER — it
+            # presents its OWN ambient principal as the claimant. The
+            # SessionManager already ran the attach/ownership check before
+            # routing here (M7: `agent.submit` stays principal-free), so a
+            # runtime resolving a pause on its own session is legitimate.
+            # Without this, a named-principal runtime was an ANONYMOUS
+            # claimant against its own named-owner record → every reply
+            # REJECTED (R9) and the await parked forever (the live-smoke 422
+            # loop). Records opened with this same `self.principal` always
+            # authorize under StrictScopePolicy (owner == claimant); records
+            # opened anonymous (before set_principal) authorize any claimant.
             disposition = await get_await_table().resolve(
-                command.cid, command.results
+                command.cid, command.results, principal=self.principal
             )
             if disposition is Disposition.RESOLVED:
                 # relay-await §2.4 cold path: a re-armed join has no live
@@ -1060,6 +1390,10 @@ class AgentRuntime:
                 self._last_control_result = await self._do_abort()
             self._mailbox.offer(UserMessage(message=command.instruction))
             self._audit_command(seq, command, Disposition.STEERING)
+            if self._can_auto_drive():
+                # GF-P6G3: a Steer leaves runnable work parked exactly like a
+                # plane-1 enqueue — auto-kick the actor for it too.
+                self.ensure_actor()
             return Ack(seq=seq, disposition=Disposition.STEERING)
 
         raise TypeError(f"Unknown AgentInput: {type(command).__name__}")
@@ -1109,6 +1443,132 @@ class AgentRuntime:
         finally:
             self._mailbox.unfreeze()
         return None
+
+    # ── GF-P6G3/G4 — the public actor-drive surface ────────────────────────
+
+    def _can_auto_drive(self) -> bool:
+        """True when this runtime can actually run turns — i.e. a concrete
+        runtime overrode :meth:`run`. The base class's ``run`` raises
+        ``NotImplementedError`` by design (Fork E), so a bare ``AgentRuntime``
+        never auto-spawns a doomed actor task; explicit :meth:`ensure_actor`
+        remains available regardless."""
+        return type(self).run is not AgentRuntime.run
+
+    def ensure_actor(self) -> "asyncio.Task":
+        """Ensure the single-writer actor task is running; return its handle
+        (GF-P6G3 — the PUBLIC way to drive queued turns).
+
+        Idempotent: a live actor task is returned as-is — the runtime is
+        NEVER double-driven (belt: :meth:`_actor_loop` keeps its own
+        ``_actor_running`` reentrancy guard for foreign-driven loops). With an
+        empty mailbox the spawned task drains nothing and exits. ``submit``
+        auto-kicks this on every accepted ``UserMessage``/``Steer`` enqueue,
+        so calling it explicitly is only needed for out-of-band drives (e.g.
+        work offered before a consumer attached).
+        """
+        task = self._actor_task
+        if task is not None and not task.done():
+            return task
+        task = asyncio.create_task(self._drive_actor())
+        self._actor_task = task
+        return task
+
+    async def _drive_actor(self) -> "AgentResult | None":
+        """The actor-task body: run :meth:`_actor_loop` and CONTAIN failures.
+
+        A failed turn never becomes an unretrieved task exception: the error
+        is logged and surfaced on the stream as a typed ``ErrorReport``
+        followed by a terminal ``RunCompleted(stop_reason="error")`` (GF-P6G4:
+        every driven turn ends with a ``RunCompleted`` frame — completed or
+        errored; an aborted turn ends with the ``Custom('aborted')`` frame
+        contract). Cancellation passes through untouched.
+        """
+        return await self._guard_continuation(self._actor_loop())
+
+    async def _actor_loop(self) -> "AgentResult | None":
+        """Single-writer driver: drain the mailbox oldest-first, one turn at
+        a time, checkpointing at each turn boundary (lifted from the concrete
+        runtime — GF-P6G3; the ``_actor_running`` guard means a session is
+        never double-driven even when hand-driven alongside the task)."""
+        ensure_state = getattr(self, "_ensure_actor_state", None)
+        if callable(ensure_state):
+            ensure_state()
+        if self._actor_running:
+            return None  # already draining — never double-drive a session
+        self._actor_running = True
+        last_result = None
+        try:
+            while True:
+                msg = self._mailbox.take()
+                if msg is None:
+                    break
+                last_result = await self.run(msg.message)
+                await self.checkpoint()
+        finally:
+            self._actor_running = False
+        return last_result
+
+    async def wait_idle(self) -> None:
+        """Await the runtime reaching IDLE: no live actor or cold-resume
+        continuation task, an empty mailbox, ``_actor_running`` clear, and
+        phase ``IDLE`` (GF-P6G4 — the ONE blessed completion handle).
+
+        The pattern after a hot ``submit(ToolReply)`` resolve::
+
+            ack = await agent.submit(ToolReply(cid=cid, results=results))
+            await agent.wait_idle()          # the resumed turn has finished
+
+        Semantics:
+
+        - A turn PARKED on a relay pause (``await_external``) is in flight —
+          ``wait_idle`` keeps waiting until the pause resolves and the
+          continuation completes. Callers that want the pause boundary instead
+          read the stream (the ``AwaitInput`` frame).
+        - Turn failures do NOT raise here — they surface on the stream as
+          ``ErrorReport`` + ``RunCompleted(stop_reason="error")`` (the actor
+          task contains them); ``wait_idle`` simply returns once idle.
+        - No timeout parameter: wrap with ``asyncio.wait_for`` to bound it.
+        """
+        while True:
+            tasks = [
+                t
+                for t in (self._actor_task, self._rearmed_resume_task)
+                if t is not None and not t.done()
+            ]
+            if tasks:
+                done, _ = await asyncio.wait(tasks)
+                for t in done:  # retrieve, never raise (errors ride the stream)
+                    if not t.cancelled():
+                        t.exception()
+                continue
+            if (
+                self._actor_running
+                or len(self._mailbox) > 0
+                or self._phase is not AgentPhase.IDLE
+            ):
+                # Foreign-driven loop (no task handle) — settle by polling.
+                await asyncio.sleep(0.01)
+                continue
+            return
+
+    async def _shutdown_actor(self) -> None:
+        """Teardown seam for ``SessionManager.evict``/``shutdown`` (GF-P6G3):
+        reap the actor task and any cold-resume continuation so eviction never
+        leaks a pending/parked task. Cancellation is a no-op safety net for a
+        spawned-but-not-yet-started task — ``_is_evictable`` already refuses
+        eviction while a turn is actually in flight."""
+        for attr in ("_actor_task", "_rearmed_resume_task"):
+            task = getattr(self, attr, None)
+            setattr(self, attr, None)
+            if task is None or task.done():
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pragma: no cover - teardown is best-effort
+                pass
 
     # ── provider-agnostic generation step (providers.md §2.2 — the lift) ───
 
@@ -1196,36 +1656,93 @@ class AgentRuntime:
             "Use AnthropicAgent (back-compat factory) until it lands."
         )
 
-    # ── I3 — Rung-1 stream(): bare single-subscriber read path ─────────────
+    # ── I3 / GF-P6G2 — Rung-1 stream read path (single LIVE reader, D3) ────
 
     def stream(self) -> AsyncIterator[Any]:
-        """Single-subscriber typed read path (AMENDMENTS I3, Rung 1).
+        """Claimed-once first attach (AMENDMENTS I3, Rung 1; GF-P6G2 compat).
 
-        Returns the async iterator of ``StreamItem``s (content deltas +
-        ``MetaEnvelope`` control frames) for this session. No arguments at
-        Rung 1 — replay/fan-out is Rung 2 behind ``from_seq``.
-        ``run_stream(msg, queue, formatter)`` is deleted (G0).
+        ``stream()`` IS :meth:`attach_stream` behind a claimed-once guard: the
+        first (and only) ``stream()`` call hands back the live read iterator;
+        any later call raises — re-attach is the explicit
+        :meth:`attach_stream` surface. No arguments at Rung 1 — replay/fan-out
+        is Rung 2 behind ``from_seq``. ``run_stream(msg, queue, formatter)``
+        is deleted (G0).
         """
         if self._stream_claimed:
             raise RuntimeError(
-                "stream() is single-subscriber at Rung 1; it was already claimed"
+                "stream() is single-subscriber at Rung 1; it was already "
+                "claimed — use attach_stream() to hand the live stream to a "
+                "new reader"
             )
-        self._stream_claimed = True
-        if self._stream_queue is None:
-            self._stream_queue = asyncio.Queue()
-        return self._stream_items()
+        return self.attach_stream()
 
-    async def _stream_items(self) -> AsyncIterator[Any]:
-        assert self._stream_queue is not None
+    def attach_stream(self) -> AsyncIterator[Any]:
+        """Attach (or re-attach) THE single live reader (GF-P6G2, ratified D3).
+
+        Returns a fresh async iterator of ``StreamItem``s reading the live
+        Rung-1 stream from now on. Single-live-reader semantics:
+
+        - A prior reader (a ``stream()`` claim or an earlier
+          ``attach_stream()``) is detached and its iterator ENDS CLEANLY — it
+          stops yielding (``StopAsyncIteration``), no exception storm.
+        - The UNDELIVERED tail (frames produced but not yet read — e.g. the
+          first frames of a hot ToolReply continuation emitted between the
+          resolve and this attach) is handed to the new reader in order. This
+          is NOT replay: frames a prior reader already consumed are gone
+          (replay/fan-out stays Rung-2-gated behind ``from_seq``).
+        - Frames emitted after :meth:`detach_stream` (no reader) are DROPPED,
+          never buffered (R21 lossy-by-policy).
+        """
+        old = self._stream_queue
+        fresh: asyncio.Queue[Any] = asyncio.Queue()
+        if old is not None:
+            # Hand the undelivered tail to the new reader (order-preserving;
+            # synchronous — no interleave with a parked old reader), then end
+            # the prior iterator cleanly.
+            while not old.empty():
+                item = old.get_nowait()
+                if item is _STREAM_CLOSED:
+                    continue  # a stale close sentinel never ends the NEW reader
+                fresh.put_nowait(item)
+            old.put_nowait(_STREAM_CLOSED)
+        self._stream_queue = fresh
+        self._stream_claimed = True
+        self._stream_detached = False
+        return self._stream_items(fresh)
+
+    def detach_stream(self) -> None:
+        """Detach the current reader; the session keeps NO read point.
+
+        The live iterator ends cleanly (stops yielding) and every frame
+        emitted while detached is DROPPED — never buffered for a future
+        reader (GF-P6G2/D3; R21 lossy-by-policy). Idempotent. A later
+        :meth:`attach_stream` starts a fresh, empty read point.
+        """
+        old = self._stream_queue
+        self._stream_queue = None
+        self._stream_detached = True
+        if old is not None:
+            old.put_nowait(_STREAM_CLOSED)
+
+    async def _stream_items(self, queue: "asyncio.Queue[Any]") -> AsyncIterator[Any]:
+        """Reader bound to ITS attach-time queue — a steal ends exactly this
+        iterator via the close sentinel, never the thief's."""
         while True:
-            item = await self._stream_queue.get()
+            item = await queue.get()
             if item is _STREAM_CLOSED:
                 return
             yield item
 
     def _emit_stream_item(self, item: Any) -> None:
         """Internal producer seam: the loop/streaming wiring feeds the Rung-1
-        queue through this (lossy-by-policy decisions live with streaming)."""
+        queue through this (lossy-by-policy decisions live with streaming).
+
+        GF-P6G2/D3: after an explicit ``detach_stream()`` frames DROP here.
+        Before the FIRST attach the historical lazy buffer is kept (a
+        ``stream()``/``attach_stream()`` claim inherits it), preserving e.g.
+        the session-start ``ProfileChanged`` announce."""
+        if self._stream_detached:
+            return  # detached: no reader, frames drop by policy
         if self._stream_queue is None:
             self._stream_queue = asyncio.Queue()
         self._stream_queue.put_nowait(item)
@@ -1533,6 +2050,39 @@ class AgentRuntime:
         if callable(binder):
             return binder(principal)
         return adapter
+
+
+class _ScriptedEmitContext:
+    """Minimal emit-only ctx for scripted / out-of-band frontend-tool emission
+    (GF-P5LG2; returned by :meth:`AgentRuntime.scripted_ctx`).
+
+    Outside a hook there is no public way to obtain an emitting ``ctx``;
+    ``call_frontend_tool`` (and any scripted emit) needs one whose
+    ``emit(body, *, correlation_id=None, expects_reply=False)`` matches the
+    hook ctx's emit (B8 signature). This delegates straight to the runtime's
+    wired ``_hook_emit`` — same §3 header stamping, same Rung-1 stream, same
+    R21 lossy-by-policy guarantee (never raises into the caller) — and carries
+    NO other hook-lifecycle fields (it is a scripted-emit construct, not a full
+    ``ToolContext``).
+    """
+
+    __slots__ = ("_agent",)
+
+    def __init__(self, agent: "AgentRuntime") -> None:
+        self._agent = agent
+
+    def emit(
+        self,
+        body: "MetaBody",
+        *,
+        correlation_id: str | None = None,
+        expects_reply: bool = False,
+    ) -> None:
+        """Stamp + enqueue ``body`` on the runtime's stream (same as the hook
+        ctx emit; B8 signature)."""
+        self._agent._hook_emit(
+            body, correlation_id=correlation_id, expects_reply=expects_reply
+        )
 
 
 __all__ = ["AgentRuntime"]

@@ -313,12 +313,47 @@ class AgentStream(Protocol):
 # On the agent (output plane; aligns with the §1.5 submit()/Ack input plane). The read-surface
 # signature is session-control's (I3): a single-subscriber stream() at Rung 1.
 class Agent:
-    def stream(self) -> AsyncIterator[StreamItem]: ...   # I3: single-subscriber, ships Rung 1
+    def stream(self) -> AsyncIterator[StreamItem]: ...   # I3: claimed-once FIRST attach (GF-P6G2)
+    # AMENDED (2026-06-12, GF-P6G2/D3): the public re-attach surface.
+    def attach_stream(self) -> AsyncIterator[StreamItem]: ...   # hand the live stream to a new reader
+    def detach_stream(self) -> None: ...                        # no reader; frames DROP while detached
     # event_stream() is DELETED (O11c). To frame bytes for a browser, wrap stream() in
     # sse_response() (§2.5) — the one Layer-C framing owner.
 ```
 
 A server-side consumer that wants structure iterates `agent.stream()` and gets `StreamDelta`/`MetaEnvelope` objects directly — **the 672-line reverse parser never runs server-side** (D1). A consumer that proxies bytes to a browser wraps that same iterator with `sse_response(agent.stream())` (§2.5, §3.3).
+
+> **AMENDED (2026-06-12, GF-P6G2 — ratified D3; retires the consumer-alias P5 LG-3).** The
+> Rung-1 stream is **single-LIVE-reader, publicly re-attachable**:
+>
+> - `attach_stream()` returns a fresh iterator reading the live stream from now on. A second
+>   attach **STEALS** the stream: the prior reader's iterator ends CLEANLY (it stops yielding —
+>   `StopAsyncIteration`, no exception storm). The **undelivered tail** (frames produced but
+>   never read — e.g. a hot ToolReply continuation's first frames emitted between the resolve
+>   and the next request's attach) hands over to the new reader in order. This is NOT replay:
+>   frames a prior reader already consumed are gone — replay/fan-out stays Rung-2-gated behind
+>   `from_seq`.
+> - `detach_stream()` leaves NO reader: the live iterator ends cleanly and frames emitted while
+>   detached **DROP** (R21 lossy-by-policy — never buffered for a future reader). Idempotent.
+> - `stream()` **IS** `attach_stream()` behind a claimed-once guard: the first call returns the
+>   live iterator (inheriting any pre-claim lazy buffer, e.g. the session-start `ProfileChanged`
+>   announce); a second `stream()` raises `RuntimeError`; re-attach is always the explicit
+>   `attach_stream()`.
+> - The `record_turn` run-frame gate (`_stream_consumer_attached`, GF-P5LG1) composes: scripted
+>   turns emit run frames onto whatever read point is attached and drop them while detached.
+>
+> Kills the consumer-side `_stream_queue` swap (the demo router and Nova's
+> `stream_glue.attach_stream_queue` both did private-attr surgery for a per-request read point).
+>
+> **AMENDED (2026-06-12, GF-P6G4).** `RunCompleted` is **UNCONDITIONAL at turn end** on the live
+> loop: every completed turn — plain LLM and ToolReply-continuation alike — emits the terminal
+> `RunCompleted` frame whenever a read point is attached (it drops while detached, R21). The
+> `stream_meta_history_and_tool_results` flag now gates ONLY the heavy `conversation_log`
+> payload on `RunStarted`/`RunCompleted` (and the other meta frames it always gated — streamed
+> tool results, history) — never the `RunCompleted` frame itself. A FAILED driven turn still
+> terminates the contract: the actor/continuation guard emits `ErrorReport` then
+> `RunCompleted(stop_reason="error")`; an ABORTED turn keeps its `Custom('aborted')` terminal
+> frame. The matching awaitable handle is `agent.wait_idle()` (core.md §2.6a).
 
 ### 2.4a `DeltaSink` — the producer-side seam (resolves R30; what providers emit into)
 
@@ -602,7 +637,7 @@ ctx.emit(Custom(name="todo", data={"items": items}))
 # parks, and returns the per-call results — relay-await §2.6):
 reply = await ctx.call_frontend_tool("excel_write", args)   # emits AwaitInput, parks, returns results
 ```
-`RunStarted` is auto-emitted by the runtime at stream start (no `_emit_meta_init` override, retiring **B10** too). The FE substring match on `'"type":"meta_init"'` (`recovery._is_meta_init_chunk`) is replaced by `isinstance(item.body, RunStarted)` after decode.
+`RunStarted` is auto-emitted by the runtime at stream start (no `_emit_meta_init` override, retiring **B10** too). The FE substring match on `'"type":"meta_init"'` (`recovery._is_meta_init_chunk`) is replaced by `isinstance(item.body, RunStarted)` after decode. **Scripted turns are identical (GF-P5LG1):** `AgentRuntime.record_turn` emits `RunStarted` at turn start and `RunCompleted` after persistence whenever a stream consumer is attached (a `stream()` claim or a directly-assigned `_stream_queue`); with no reader the frames drop silently (R21). Consumers no longer hand-emit the run frames around a scripted turn.
 
 ### 3.5 D5 + C1(meta) — inbound wire results (delete `_build_relay_result` & friends)
 

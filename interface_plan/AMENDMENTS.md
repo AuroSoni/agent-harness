@@ -343,3 +343,201 @@ G3a) flip to XPASS and lose their marks in the same cut.
   clamp; a region clamped empty falls back to the full image). Decode failures still
   raise. Rationale: one containment philosophy across path grammar and image
   projection; clamping is friendlier to LLM-generated inputs than error-retry loops.
+
+## Open-gap fixes (2026-06-12)
+
+Closes the OPEN entries in the consumer gap ledger
+(`nova_backend/refactor_plans/LIBRARY-GAPS.md`). Wave L1 entries below; L2/L3
+append here in the same cut series.
+
+- **GF-P8G1 — `SubAgentSpec` deepcopy is field-aware** (consumer P8-G1; found by
+  the live SSE smoke). `SubAgentSpec.__deepcopy__` snapshots DATA fields
+  (`name`/`system_prompt`/`model`/`config`/limits/`retry_policy`/nested
+  `subagents`) as independent deep copies while keeping RUNTIME-RESOURCE fields —
+  `tools`, `frontend_tools`, `memory_store` (`_REFERENCE_FIELDS`) — by REFERENCE:
+  the snapshot's tool instances ARE the originals (identity preserved), only the
+  `tools`/`frontend_tools` LIST CONTAINERS are fresh (mutating a snapshot's list
+  never touches the original). Closes the regression where a spec whose tools
+  carry a live asyncpg pool 500'd at `SubAgentTool._coerce_spec`'s
+  `copy.deepcopy` (`TypeError: no default __reduce__`), and stops the silent
+  semantic bug of cloning a shared pool/sandbox singleton. The hook lives on
+  `SubAgentSpec` itself (not inside `_coerce_spec`), so EVERY consumer deepcopy
+  is safe; nested `subagents` recurse through the same `__deepcopy__`, so their
+  own tool instances stay shared too. Nova's `NovaSubAgentSpec` subclass
+  (`excel_agent/subagents/_spec.py`) collapses back onto `SubAgentSpec` with zero
+  behavior change. Specs: `tests/interface/tools/test_tools_subagent_spec_snapshot.py`.
+- **GF-P5LG1 — `record_turn` is a first-class turn: persists + emits run frames** (consumer
+  P5 LG-1). `AgentRuntime.record_turn` now (a) `checkpoint()`s the config at the turn
+  boundary — the `(user, assistant)` splice lands on `agent_config.context_messages` (the
+  persisted location the live loop reads) via `_splice_into_context`, identity-guarded
+  against double-append when a concrete runtime aliases the working set; (b) builds + saves
+  a per-run `Conversation` row through the principal-bound conversation adapter (when
+  configured) in the SAME shape the live LLM loop persists (`agent_uuid`/`run_id`/
+  `started_at`/`completed_at`/`user_message`/`final_response`/`stop_reason`/`total_steps`/
+  `conversation_log`; empty `usage`, no `cost`/`generated_files`); (c) emits `RunStarted`
+  (turn start) and `RunCompleted` (after persistence) ONLY when a stream consumer is
+  attached (a `stream()` claim or a directly-assigned `_stream_queue`), dropping silently
+  with no reader (R21). Settlement stays ABSENT (B6 — a scripted turn has no provider
+  usage; no `UsageReport`). Return type/signature unchanged. Kills Nova's
+  `excel_agent/slash_commands/persistence.py` hand-rolled checkpoint + `_save_slash_conversation`
+  + manual `RunStarted`/`RunCompleted` emission.
+- **GF-P5LG2 — public `scripted_ctx()` for out-of-band frontend-tool emits** (consumer
+  P5 LG-2). `AgentRuntime.scripted_ctx() -> ctx` returns an emit-only context whose
+  `emit(body, *, correlation_id=None, expects_reply=False)` has the SAME signature/behavior
+  as the hook ctx emit (B8), bound to the runtime's wired `_hook_emit` (stamps the §3
+  envelope header, enqueues on the Rung-1 stream, never raises). It carries no fake
+  hook-lifecycle fields and pairs with `call_frontend_tool` for a scripted relay pause.
+  Replaces Nova's private `_SlashEmitContext` shim over `agent._hook_emit`.
+- **GF-P7G2 — `AnalyticsReader.agent_totals` per-AGENT aggregate accessor** (consumer P7-G2).
+  `agent_totals(f, *, limit=50, offset=0) -> tuple[list[AgentTotals], int]` on the ABC +
+  `PgAnalyticsReader`: one row per `agent_uuid` via `GROUP BY agent_uuid`, composed over the
+  SAME `_compose_where` builder as every other accessor (identical principal scoping/filters),
+  with a total agent-count for pagination (the `list_runs` return convention). Agent-level
+  thresholds (`cost_at_least`, `errors_only`) move OFF the per-run WHERE into a `HAVING` over
+  the aggregate (composing them per-run would wrongly require every run to clear the bar). New
+  frozen `AgentTotals{agent_uuid, title, model, principal, is_subagent, runs, error_runs,
+  total_cost, input_tokens, output_tokens, cache_read_tokens, thinking_tokens, first_run,
+  last_run}` + derived `error_rate`. Kills the consumer's Python rollup
+  (`scripts/dashboard/queries.py::fetch_agent_list` draining `runs_matching` into `_AgentAgg`):
+  the dashboard's "one row per agent" view now comes straight from SQL.
+- **GF-SCHEMA4 — `LIBRARY_SCHEMA_VERSION` bumped to 4 for `active_profile`** (live-found heal gap).
+  `active_profile` joined the `agent_config` CREATE column set in CM-G3e but the version stayed
+  `3` and no migration was added, so `CREATE TABLE IF NOT EXISTS` no-op'd on any DB already
+  stamped `v3` — the column was silently missing and `ensure_schema()` could never heal it (bit a
+  real staging DB, hand-patched). Fix: `LIBRARY_SCHEMA_VERSION = 4` + `Migration(3, 4,
+  ["ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS active_profile TEXT"])`. Fresh-create stamps
+  `4`; a `v3` DB applies the idempotent ALTER; a hand-patched DB no-ops. Rule recorded in
+  storage.md §2.6: adding a CREATE column to a library table must bump the version + add the
+  matching idempotent ALTER in the same cut.
+- **GF-P8G2 — principal threading to the runtime is REAL** (consumer P8-G2; found by the live
+  smoke: every resident agent ran ANONYMOUS — `TurnSettlement.principal` anonymous so consumer
+  billing skipped every turn, checkpoints never stamped an owner). Three legs, one identity:
+  (a) `AgentRuntime.set_principal(principal)` is implemented — the seam
+  `SessionManager.get_or_create` ALREADY duck-called post-build (contract §4 "thread identity
+  BEFORE the hook & before publishing") but which no runtime implemented (silent no-op).
+  Semantics: `None`/anonymous → no-op (a missing claimant never unscopes — I12(d) extended);
+  named over anonymous → adopt + re-bind all three adapters via `for_principal` (O2) + stamp the
+  live `agent_config` owner columns (the next `checkpoint()` persists ownership); named over the
+  SAME scope → the richer claims-bearing principal replaces; named over a DIFFERENT scope →
+  `PrincipalConflict`, ambient unchanged. Already-running session: awaits ALREADY open keep the
+  principal they were stamped with at `open(...)`; the new principal applies from the next
+  open/settlement/checkpoint onward. (b) `AnthropicAgent.__init__` gains `principal=` forwarded
+  verbatim to the `AgentRuntime` base (the §A.1/§B.4 pseudocode is now literal; the concrete ctor
+  also re-binds its defaulted adapters when the ctor principal is named), and the I12(d)
+  reconciliation is extracted to the shared `AgentRuntime._reconcile_identity()` called by BOTH
+  the base AND the concrete `initialize()` load-or-create branches (the concrete loop previously
+  skipped it — `PrincipalConflict` now propagates untouched out of the concrete load instead of
+  being wrapped in `RuntimeError`). (c) The settlement path is verified end-to-end:
+  `_settle_turn`'s ctx reads the ambient `self.principal`, so once threaded the
+  `TurnSettlement`/`UsageReport` carry the named principal. Kills Nova's settlement-principal
+  injection inside `credits/manager.py::_make_deduction_callback`. Specs:
+  `tests/interface/session_control/test_session_control_set_principal.py`,
+  `tests/interface/pricing_cost/test_pricing_cost_settlement_identity.py`.
+- **GF-P8G3 — plane-2 `submit(ToolReply)` presents a claimant: the runtime SELF-RESOLVES AS
+  OWNER** (consumer P8-G3; found by the live smoke; ratified D1 over the alternatives). The
+  plane-2 dispatch now calls `resolve(command.cid, command.results, principal=self.principal)` —
+  previously claimant-FREE, so a NAMED runtime (G2 landed) was an anonymous claimant against its
+  own named-owner record: every `/tool_results` reply 422-`REJECTED` (R9, never downgraded) and
+  the await parked forever. Rationale: the SessionManager already ran the attach/ownership check
+  before routing (M7 stands — `agent.submit` stays principal-free; NO principal parameter was
+  added). Claimant matrix pinned (per-call default `StrictScopePolicy`): named-owner/same-named →
+  RESOLVED; named-owner/anonymous (None or anonymous object) → REJECTED; named-owner/
+  different-named → REJECTED; **anonymous-owner (None or anonymous object)/ANY claimant →
+  RESOLVED** (an unscoped record has no auth to enforce — the "await opened before
+  `set_principal`" case can never strand). Call-site audit: the plane-2 dispatch is the ONLY
+  library `AwaitTable.resolve` caller — the cold path (`SessionManager.submit(ToolReply)` →
+  `_rearm_pending_await` re-opens the cid stamped with the freshly-threaded principal → the same
+  plane-2 dispatch) and the sub-agent path (child records carry the parent principal adopted at
+  spawn; the root's self-claimant matches) both flow through it. The G2×G3 interlock is a
+  FAILING-FIRST spec: a named-principal runtime parking `await_external` + `submit(ToolReply)`
+  must RESOLVE — reverting the claimant pass-through alone turns it red (verified red during this
+  cut), so neither half can land without the other. Specs:
+  `tests/interface/relay_await/test_relay_await_plane2_claimant.py`; unit:
+  `tests/unit/session/test_cold_resume.py` (named-principal rearm case).
+- **GF-P6G1 — fresh consumer-minted root ids initialize with ZERO pre-seeding** (consumer
+  P6-G1). Two halves, one invariant (`root_session_id == agent_uuid`, O15a): (a)
+  `AgentRuntime.has_persisted_state() -> bool` is IMPLEMENTED — it probes the bound config
+  adapter for the row (`False` with no adapter, no uuid yet, or no row), so the
+  `SessionManager.get_or_create` create-vs-resume duck-probe (which NO runtime implemented —
+  every build silently read "cold") is real; (b) the concrete `AnthropicAgent.initialize()`
+  gains the CREATE branch for a ctor-supplied uuid with no persisted row — previously it
+  RAISED (`Agent config not found`), the create path existed only for `agent_uuid=None`, and
+  Nova's factory pre-seeded the scoped row to compensate. The branch is the extracted
+  `_initialize_fresh(agent_uuid)` shared with the lazy-uuid path: it stamps the boot profile
+  (CM-G3e), runs the SHARED `_reconcile_identity()` (GF-P8G2 — owner columns stamp on create,
+  same as both load branches), and CHECKPOINTS the fresh row (parity with the base
+  `initialize()`; the minted id is externally addressable from the create moment —
+  `has_persisted_state()` flips True). `set_principal` raising `PrincipalConflict` inside
+  `get_or_create`'s build path propagates to the caller untouched. Kills the
+  `excel_agent/agent_factory.py` "P6-G1" pre-seed. Specs:
+  `tests/interface/session_control/test_session_control_fresh_id_create.py`.
+- **GF-P6G2 — public stream re-attach: `attach_stream()`/`detach_stream()`** (consumer P6-G2;
+  ratified **D3**; RETIRES the duplicate consumer alias **P5 LG-3** — two consumers filed the
+  same gap). The Rung-1 stream is **single-LIVE-reader**: `attach_stream() ->
+  AsyncIterator[StreamItem]` hands the live stream to a new reader — a prior reader's iterator
+  ends CLEANLY (stops yielding, `StopAsyncIteration`, no exception storm; each iterator is
+  bound to its attach-time queue so a steal ends exactly the old one) and the UNDELIVERED tail
+  hands over in order (NOT replay — consumed frames are gone; replay/fan-out stays
+  Rung-2-gated behind `from_seq`). `detach_stream()` leaves NO reader: frames emitted while
+  detached DROP (R21 lossy-by-policy, never buffered); idempotent. `stream()` ==
+  `attach_stream()` behind a claimed-once guard (first call attaches — inheriting the
+  pre-claim lazy buffer, e.g. the session-start `ProfileChanged` announce; a second `stream()`
+  raises; re-attach is always the explicit surface). The `record_turn` run-frame gate
+  (`_stream_consumer_attached`, GF-P5LG1) composes unchanged: attached ⇒ emit, detached ⇒
+  drop. Kills the demo router's AND Nova's (`stream_glue.attach_stream_queue`) private
+  `_stream_queue` swap. Specs:
+  `tests/interface/streaming_and_meta/test_streaming_and_meta_stream_attach.py`.
+- **GF-P6G3 — queued turns are PUBLICLY drivable: submit auto-kick + `ensure_actor()`**
+  (consumer P6-G3). `submit(UserMessage)` (accepted) and `submit(Steer)` auto-kick the
+  single-writer actor after the enqueue — runnable work never parks undriven; the demo's
+  mailbox bypass (direct `agent.run`, stranding queued Steers) and Nova's
+  `stream_glue.spawn_turn_driver` over the private `agent._actor_loop()` both die.
+  `ensure_actor() -> asyncio.Task` is the public IDEMPOTENT handle (a live task is returned
+  as-is — never double-driven; `_actor_loop`'s `_actor_running` guard stays as the belt for
+  foreign-driven loops). The `_actor_loop` drain is LIFTED from `AnthropicAgent` into
+  `AgentRuntime`; auto-kick is keyed on a concrete `run()` override, so the BASE runtime
+  (whose `run()` raises by design, Fork E) parks plane-1 work without spawning a doomed task.
+  The actor task CONTAINS turn failures (log + `ErrorReport` +
+  `RunCompleted(stop_reason="error")`, task returns None — no unretrieved exceptions; the
+  cold-resume continuation task is wrapped by the same guard). Teardown defined:
+  `SessionManager.evict`/`shutdown` reap the actor + continuation tasks via the runtime's
+  `_shutdown_actor()` (abort → actor reap → end-hook → checkpoint → unregister) — eviction
+  never leaks a pending driver; queued-undrained messages are dropped by the abort step
+  (defined behavior). Plane-2 dispatch untouched: the GF-P8G3 self-claimant resolve and
+  `_kick_rearmed_resume` cold path stand verbatim. Specs:
+  `tests/interface/session_control/test_session_control_actor_drive.py`; unit:
+  `tests/unit/providers/anthropic/test_actor_loop.py`.
+- **GF-P6G4 — a completion handle after a hot ToolReply resolve + `RunCompleted` is ALWAYS
+  emitted at turn end** (consumer P6-G4). (a) The ONE blessed completion pattern is
+  `await agent.wait_idle()`: awaits no live actor/cold-resume continuation task, empty
+  mailbox, `_actor_running` clear, phase IDLE. A turn parked on a relay pause is IN FLIGHT
+  (wait_idle keeps waiting — read the stream for the `AwaitInput` boundary instead); turn
+  failures never raise out of it (they ride the stream); bound it with `asyncio.wait_for`.
+  The Ack deliberately does NOT grow a completion future (one pattern, not two). (b) The
+  live loop's `RunCompleted` emission is UNCONDITIONAL at turn end — previously gated on
+  `stream_meta_history_and_tool_results=True`, so a flag-off consumer had NOTHING to await
+  after a RESOLVED `submit(ToolReply)` and polled private task handles
+  (`stream_glue.spawn_done_watcher` over `_rearmed_resume_task`/driver tasks). The flag now
+  gates ONLY the heavy `conversation_log` payload (and the other meta frames it always
+  gated); the frame itself is guaranteed for BOTH plain-LLM and ToolReply-continuation turns
+  whenever a read point is attached (drops while detached, R21 — consistent with
+  `record_turn`'s GF-P5LG1 gate). One terminal-frame contract: completed → `RunCompleted`;
+  errored driven turn → `ErrorReport` + `RunCompleted(stop_reason="error")`; aborted →
+  `Custom('aborted')` (unchanged). Specs:
+  `tests/interface/streaming_and_meta/test_streaming_and_meta_run_completed.py`; unit:
+  `tests/unit/session/test_cold_resume.py` (wait_idle cold-continuation case).
+- **GF-P7G1 — `on_usage_report` subscribers propagate to sub-agent children** (consumer P7-G1;
+  ratified D2 — propagation at build time, recursively; NO `SettlementAggregator` wiring, that
+  stays I9 future work). `SubAgentTool.run` registers the parent's usage-report subscribers on
+  each child AT BUILD TIME via the PUBLIC `on_usage_report` path (after the builder returns, so
+  custom builders get it too), alongside the existing spawn stamps (`_root_session_id_value` +
+  parent-principal adoption — kept consistent). A child turn's `TurnSettlement` therefore reaches
+  the parent-registered subscriber stamped `agent_id=child`, `parent_agent_id=parent`, and the
+  spawn-inherited principal — NAMED once the parent is named (G2), so the whole subtree is
+  billable. Recursive by construction: the child's callback list now contains the propagated
+  entries, so the child's own `SubAgentTool` propagates them again to grandchildren at THEIR
+  spawn. Timing contract: subscribers registered on the parent AFTER a child was already built do
+  NOT retro-attach to that child — the next spawn picks them up (the same semantics as the
+  consumer's workaround). Kills Nova's `credits/manager.py::_propagate_to_subagents` wrap of the
+  library-private `SubAgentTool._child_agent_builder`. Specs:
+  `tests/interface/pricing_cost/test_pricing_cost_settlement_identity.py`.

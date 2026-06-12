@@ -23,6 +23,7 @@ import pytest
 
 from agent_base.core.identity import SessionPrincipal
 from agent_base.storage.analytics import (
+    AgentTotals,
     AnalyticsReader,
     AnalyticsTotals,
     LatencyStats,
@@ -176,6 +177,7 @@ def test_analytics_reader_abstract_surface_is_locked():
     assert set(AnalyticsReader.__abstractmethods__) == {
         "list_runs",
         "usage_totals",
+        "agent_totals",
         "volume_timeseries",
         "latency",
         "tool_usage",
@@ -197,6 +199,14 @@ def test_analytics_reader_keyword_only_defaults_are_pinned_on_the_abc():
     limit = inspect.signature(AnalyticsReader.subagent_fanout).parameters["limit"]
     assert limit.default == 20
     assert limit.kind is inspect.Parameter.KEYWORD_ONLY
+    # GF-P7G2: agent_totals(*, limit=50, offset=0) — keyword-only pagination.
+    agent_sig = inspect.signature(AnalyticsReader.agent_totals)
+    a_limit = agent_sig.parameters["limit"]
+    assert a_limit.default == 50
+    assert a_limit.kind is inspect.Parameter.KEYWORD_ONLY
+    a_offset = agent_sig.parameters["offset"]
+    assert a_offset.default == 0
+    assert a_offset.kind is inspect.Parameter.KEYWORD_ONLY
 
 
 class _FakeReader(AnalyticsReader):
@@ -214,6 +224,37 @@ class _FakeReader(AnalyticsReader):
             total_cost=0.0, input_tokens=0, output_tokens=0,
             cache_read_tokens=0, thinking_tokens=0,
         )
+
+    async def agent_totals(self, f, *, limit=50, offset=0):
+        rollup: dict[str, AgentTotals] = {}
+        for s in self._summaries:
+            existing = rollup.get(s.agent_uuid)
+            runs = (existing.runs if existing else 0) + 1
+            error_runs = (existing.error_runs if existing else 0) + (
+                1 if s.is_error else 0
+            )
+            rollup[s.agent_uuid] = AgentTotals(
+                agent_uuid=s.agent_uuid,
+                title=s.title,
+                model=s.model,
+                principal=s.principal,
+                is_subagent=s.is_subagent,
+                runs=runs,
+                error_runs=error_runs,
+                total_cost=(existing.total_cost if existing else 0.0) + s.total_cost,
+                input_tokens=(existing.input_tokens if existing else 0)
+                + s.input_tokens,
+                output_tokens=(existing.output_tokens if existing else 0)
+                + s.output_tokens,
+                cache_read_tokens=(existing.cache_read_tokens if existing else 0)
+                + s.cache_read_tokens,
+                thinking_tokens=(existing.thinking_tokens if existing else 0)
+                + s.thinking_tokens,
+                first_run=s.started_at,
+                last_run=s.started_at,
+            )
+        rows = list(rollup.values())
+        return rows[offset : offset + limit], len(rows)
 
     async def volume_timeseries(self, f, *, bucket="hour"):
         return []
@@ -341,3 +382,124 @@ async def test_pg_reader_composes_filter_columns_into_every_where():
         assert "WHERE" in sql.upper()
         assert "organization_id" in sql
         assert "member_id" in sql
+
+
+# ---------------------------------------------------------------------------
+# GF-P7G2 — per-AGENT aggregate accessor (agent_totals)
+# ---------------------------------------------------------------------------
+
+def _agent_totals(**overrides) -> AgentTotals:
+    base = dict(
+        agent_uuid="agent-1",
+        title="dashboard agent",
+        model="claude-sonnet-4-5",
+        principal=SessionPrincipal(tenant="org-1", subject="mem-1"),
+        is_subagent=False,
+        runs=4,
+        error_runs=1,
+        total_cost=0.2,
+        input_tokens=400,
+        output_tokens=200,
+        cache_read_tokens=40,
+        thinking_tokens=20,
+        first_run=datetime(2026, 6, 10, 9, 0, 0, tzinfo=timezone.utc),
+        last_run=datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    base.update(overrides)
+    return AgentTotals(**base)
+
+
+def test_agent_totals_shape_is_frozen_and_carries_the_rollup_fields():
+    a = _agent_totals()
+    assert a.agent_uuid == "agent-1"
+    assert a.title == "dashboard agent"
+    assert a.model == "claude-sonnet-4-5"
+    assert a.principal == SessionPrincipal(tenant="org-1", subject="mem-1")
+    assert a.is_subagent is False
+    assert (a.runs, a.error_runs) == (4, 1)
+    assert a.total_cost == pytest.approx(0.2)
+    assert (a.input_tokens, a.output_tokens) == (400, 200)
+    assert (a.cache_read_tokens, a.thinking_tokens) == (40, 20)
+    assert a.first_run < a.last_run
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        a.runs = 9  # type: ignore[misc]
+
+
+def test_agent_totals_error_rate_is_derived():
+    assert _agent_totals(runs=4, error_runs=1).error_rate == pytest.approx(0.25)
+    assert _agent_totals(runs=0, error_runs=0).error_rate == 0.0
+
+
+async def test_fake_reader_agent_totals_rolls_up_one_row_per_agent():
+    reader = _FakeReader([
+        _summary(agent_uuid="a1", run_id="r1", total_cost=0.10, stop_reason="end_turn"),
+        _summary(agent_uuid="a1", run_id="r2", total_cost=0.20, stop_reason="max_tokens"),
+        _summary(agent_uuid="a2", run_id="r3", total_cost=0.05, stop_reason="end_turn"),
+    ])
+    rows, total = await reader.agent_totals(RunFilter())
+    assert total == 2
+    by_uuid = {r.agent_uuid: r for r in rows}
+    assert by_uuid["a1"].runs == 2
+    assert by_uuid["a1"].error_runs == 1
+    assert by_uuid["a1"].total_cost == pytest.approx(0.30)
+    assert by_uuid["a2"].runs == 1
+    assert by_uuid["a2"].error_runs == 0
+
+
+async def test_pg_agent_totals_groups_by_agent_uuid_and_returns_total_count():
+    conn = _FakeConn()
+    conn.fetchval_result = 7          # total distinct agents (post-HAVING)
+    reader = PgAnalyticsReader(_FakePool(conn))
+    rows, total = await reader.agent_totals(RunFilter(), limit=5, offset=10)
+    assert rows == []
+    assert total == 7
+    reads = [(sql, args) for method, sql, args in conn.calls
+             if method in ("fetch", "fetchrow", "fetchval")]
+    page = [(sql, args) for sql, args in reads if "LIMIT" in sql.upper()]
+    assert page, "agent_totals() must issue a paginated page query"
+    page_sql, page_args = page[0]
+    assert "GROUP BY ch.agent_uuid" in page_sql
+    # list_runs return convention: LIMIT/OFFSET are the LAST two bound params.
+    assert page_args[-2:] == (5, 10)
+    count = [(sql, args) for sql, args in reads if "COUNT(*)" in sql.upper()
+             and "LIMIT" not in sql.upper()]
+    assert count, "agent_totals() must issue a total-count query for pagination"
+
+
+async def test_pg_agent_totals_composes_filter_columns_into_every_where():
+    # Same principal scoping as every other accessor (composed _compose_where).
+    conn = _FakeConn()
+    reader = PgAnalyticsReader(
+        _FakePool(conn),
+        filter_columns=principal_columns("organization_id", "member_id"),
+    )
+    f = RunFilter(principal=SessionPrincipal(tenant="org-1", subject="mem-1"))
+    rows, _total = await reader.agent_totals(f)
+    assert rows == []
+    reads = [sql for method, sql, _args in conn.calls
+             if method in ("fetch", "fetchrow", "fetchval")]
+    assert reads, "agent_totals() must issue scoped SQL"
+    for sql in reads:
+        assert "WHERE" in sql.upper()
+        assert "organization_id" in sql
+        assert "member_id" in sql
+        # the principal columns project per-agent → they ride the GROUP BY too
+        assert "GROUP BY ch.agent_uuid" in sql
+
+
+async def test_pg_agent_totals_pushes_agent_level_thresholds_into_having():
+    # cost_at_least / errors_only are AGENT-level here: they must land in HAVING
+    # over the aggregate, NOT in the per-run WHERE.
+    conn = _FakeConn()
+    reader = PgAnalyticsReader(_FakePool(conn))
+    f = RunFilter(cost_at_least=1.5, errors_only=True)
+    rows, _total = await reader.agent_totals(f)
+    assert rows == []
+    page = [sql for method, sql, _args in conn.calls
+            if method == "fetch" and "GROUP BY" in sql]
+    assert page, "agent_totals() must issue a grouped page query"
+    page_sql = page[0]
+    assert "HAVING" in page_sql.upper()
+    # the per-run WHERE must NOT carry the agent-level cost/error predicates
+    where_part = page_sql.split("GROUP BY")[0]
+    assert "total_cost')::float, 0) >=" not in where_part

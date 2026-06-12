@@ -1,9 +1,15 @@
-"""Phase 1 — submit() three-plane routing + friendly wrappers."""
+"""Phase 1 — submit() three-plane routing + friendly wrappers.
+
+GF-P6G3: plane-1 submits auto-kick the actor, so the fixture stubs the
+provider — an auto-driven turn must never reach the network in a unit test.
+"""
 import pytest
 
 from agent_base.core import Message
 from agent_base.core.commands import Abort, ToolReply, UserMessage
 from agent_base.core.ack import Disposition
+from agent_base.core.messages import Usage
+from agent_base.core.provider import ProviderTurn
 from agent_base.session.mailbox import Mailbox
 from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
 
@@ -11,8 +17,18 @@ from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
 @pytest.fixture()
 async def agent() -> AnthropicAgent:
     a = AnthropicAgent(system_prompt="test")
+
+    async def _fake_generate(**kwargs):
+        msg = Message.assistant("stubbed")
+        msg.stop_reason = "end_turn"
+        msg.usage = Usage()
+        return ProviderTurn(message=msg)
+
+    a.provider.generate = _fake_generate          # type: ignore[method-assign]
+    a.provider.generate_stream = _fake_generate   # type: ignore[method-assign]
     await a.initialize()
-    return a
+    yield a
+    await a._shutdown_actor()  # reap any auto-kicked pending task
 
 
 async def test_user_message_accepted_and_enqueued(agent):

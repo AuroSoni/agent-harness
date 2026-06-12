@@ -48,6 +48,7 @@ from .handles import StorageHandles
 # Typed cross-agent analytics read-API (storage.md §2.7)
 from .analytics import (
     TERMINAL_STOP_REASONS,
+    AgentTotals,
     AnalyticsReader,
     AnalyticsTotals,
     LatencyStats,

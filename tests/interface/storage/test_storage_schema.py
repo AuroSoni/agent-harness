@@ -140,6 +140,59 @@ def test_pg_schema_surface_is_async():
 
 
 # ---------------------------------------------------------------------------
+# GF-SCHEMA4 — active_profile bump (live-found heal gap)
+# ---------------------------------------------------------------------------
+
+def test_library_schema_version_is_at_least_4_for_active_profile():
+    # GF-SCHEMA4: active_profile joined the agent_config CREATE set (CM-G3e) but
+    # the version stayed 3, so DBs stamped v3 before that landed could never heal.
+    # The bump (+ 3->4 migration) is what makes ensure_schema() able to add it.
+    assert LIBRARY_SCHEMA_VERSION >= 4
+
+
+def test_active_profile_migration_3_to_4_exists_and_is_idempotent():
+    steps = [m for m in LIBRARY_MIGRATIONS
+             if m.from_version == 3 and m.to_version == 4]
+    assert len(steps) == 1, "exactly one 3->4 migration must exist"
+    stmts = steps[0].statements
+    joined = " ".join(stmts)
+    assert "agent_config" in joined
+    assert "active_profile" in joined
+    # idempotent so hand-patched DBs no-op cleanly
+    assert "IF NOT EXISTS" in joined.upper()
+    assert "ADD COLUMN" in joined.upper()
+
+
+async def test_ensure_schema_fresh_create_stamps_current_version():
+    # Fresh DB (version 0) → CREATE-all path stamps LIBRARY_SCHEMA_VERSION (now 4).
+    conn = _FakeConn()                          # fetchval_result=None → version 0
+    adapter = PgConfigAdapterBase(_FakePool(conn))
+    await adapter.ensure_schema()
+    set_version_calls = [
+        args for method, sql, args in conn.calls
+        if method == "execute" and "_agent_base_schema_version" in sql
+        and "INSERT" in sql.upper()
+    ]
+    assert set_version_calls, "fresh create must stamp the version"
+    assert set_version_calls[-1][0] == LIBRARY_SCHEMA_VERSION
+
+
+async def test_ensure_schema_v3_db_applies_active_profile_alter():
+    # A DB stamped v3 (before CM-G3e) heals via the 3->4 ALTER — the bug fix.
+    conn = _FakeConn()
+    conn.fetchval_result = 3                     # recorded at v3
+    adapter = PgConfigAdapterBase(_FakePool(conn))
+    await adapter.ensure_schema()
+    executed = conn.all_sql()
+    assert "active_profile" in executed
+    assert "ADD COLUMN IF NOT EXISTS active_profile" in executed
+    # the fresh CREATE-all path must NOT run on an already-stamped DB
+    creates = [sql for _, sql, _ in conn.calls
+               if "CREATE TABLE" in sql.upper() and "agent_config" in sql.lower()]
+    assert not creates
+
+
+# ---------------------------------------------------------------------------
 # ensure_schema() on the adapter (delegates to PgSchema)
 # ---------------------------------------------------------------------------
 

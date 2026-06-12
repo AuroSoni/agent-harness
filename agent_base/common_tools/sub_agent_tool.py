@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from agent_base.core.conversation_log import ConversationLog, ToolLogProjection
@@ -24,9 +24,39 @@ if TYPE_CHECKING:
     from agent_base.sandbox.sandbox_types import Sandbox
 
 
+# P8-G1: fields holding LIVE runtime objects — snapshotting a spec must keep
+# these by REFERENCE, never deepcopy them. ``tools``/``frontend_tools`` are tool
+# instances that may carry process-wide resources (an asyncpg pool, a sandbox
+# binding); ``memory_store`` is a shared store. Cloning them is both fatal
+# (deepcopy raises ``TypeError: no default __reduce__`` on pool-backed objects)
+# and semantically wrong (a connection pool is a singleton, not a value).
+# Everything else on the spec is plain DATA (prompts, model, config, limits,
+# ``retry_policy``, nested ``subagents``) and keeps deepcopy snapshot semantics —
+# nested ``subagents`` recurse through THIS ``__deepcopy__`` so their own tool
+# instances stay shared too.
+_REFERENCE_FIELDS = frozenset({"tools", "frontend_tools", "memory_store"})
+
+
 @dataclass
 class SubAgentSpec:
-    """Static specification for a subagent."""
+    """Static specification for a subagent.
+
+    **Snapshot semantics (P8-G1).** ``copy.deepcopy`` of a spec — which the
+    runtime performs in ``SubAgentTool._coerce_spec`` and in
+    ``from_template_agent`` for nested specs — is FIELD-AWARE:
+
+    - data fields (``name``/``system_prompt``/``model``/``config``/limits/
+      ``retry_policy``/``subagents``/...) are deep-copied, so a snapshot is an
+      independent value;
+    - runtime-resource fields (``tools``, ``frontend_tools``, ``memory_store``)
+      are kept by **reference** — the snapshot's tool instances ARE the
+      originals (identity preserved), but the ``tools``/``frontend_tools`` LIST
+      CONTAINERS are fresh, so appending to a snapshot's list never mutates the
+      original.
+
+    This makes a spec carrying tools backed by live resources (e.g. an asyncpg
+    pool) safe to deepcopy, and never duplicates a shared singleton.
+    """
 
     name: str | None = None
     system_prompt: str | None = None
@@ -84,6 +114,29 @@ class SubAgentSpec:
             max_tool_result_tokens=agent.max_tool_result_tokens,
             memory_store=agent.memory_store,
         )
+
+    def __deepcopy__(self, memo: dict) -> "SubAgentSpec":
+        """Field-aware snapshot (P8-G1).
+
+        Deep-copy data fields; keep ``_REFERENCE_FIELDS`` (live runtime
+        objects) by reference. ``tools``/``frontend_tools`` LIST CONTAINERS are
+        copied fresh (so mutating a snapshot's list does not touch the
+        original) while their member tool instances are shared by identity.
+        ``memory_store`` is shared as-is. Registered in ``memo`` first so cyclic
+        ``subagents`` graphs terminate.
+        """
+        clone = self.__class__.__new__(self.__class__)
+        memo[id(self)] = clone
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if f.name in _REFERENCE_FIELDS:
+                # Fresh list container, shared members; non-list (memory_store)
+                # shared by reference.
+                snapshot = list(value) if isinstance(value, list) else value
+            else:
+                snapshot = copy.deepcopy(value, memo)
+            setattr(clone, f.name, snapshot)
+        return clone
 
 
 @dataclass
@@ -330,6 +383,23 @@ Args:
         # the root settlement reflect the whole subtree.
         if parent_agent is not None:
             child._parent_usage_forward = parent_agent
+
+        # GF-P7G1 (ratified D2): the parent's ``on_usage_report`` subscribers
+        # are propagated onto the child AT BUILD TIME via the PUBLIC
+        # registration path, so every child turn's ``TurnSettlement`` reaches
+        # the same in-process billing subscribers the consumer registered on
+        # the root. Recursive by construction: the child's list now contains
+        # the propagated callbacks, so the child's own SubAgentTool propagates
+        # them again to grandchildren at THEIR spawn. Timing contract:
+        # propagation happens at child build — subscribers registered on the
+        # parent AFTER a child was already built do NOT retro-attach to that
+        # child (the next spawn picks them up). No SettlementAggregator here
+        # (that stays AMENDMENTS-I9 future work).
+        if parent_agent is not None:
+            for callback in list(
+                getattr(parent_agent, "_usage_report_callbacks", None) or []
+            ):
+                child.on_usage_report(callback)
 
         try:
             if not child._initialized:

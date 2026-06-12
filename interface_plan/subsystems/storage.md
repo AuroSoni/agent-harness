@@ -411,7 +411,7 @@ Executable DDL for the **3 library tables only**, version-stamped, idempotent. D
 ```python
 # agent_base/storage/pg/schema.py
 
-LIBRARY_SCHEMA_VERSION: int = 3      # DDL/migration axis ONLY (R12) — NOT the entity-wire version
+LIBRARY_SCHEMA_VERSION: int = 4      # DDL/migration axis ONLY (R12) — NOT the entity-wire version
 
 class PgSchema:
     """Owns CREATE TABLE + migrations for agent_config / conversation_history / agent_runs."""
@@ -444,8 +444,11 @@ class Migration:
 LIBRARY_MIGRATIONS: list[Migration] = [
     Migration(1, 2, ["ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS extras JSONB NOT NULL DEFAULT '{}'"]),
     Migration(2, 3, ["ALTER TABLE conversation_history ADD COLUMN IF NOT EXISTS cost JSONB"]),
+    Migration(3, 4, ["ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS active_profile TEXT"]),   # GF-SCHEMA4
 ]
 ```
+
+> **GF-SCHEMA4 (live-found heal gap).** `active_profile` joined the `agent_config` CREATE column set (CM-G3e) but `LIBRARY_SCHEMA_VERSION` stayed `3` and no migration was added. Because `CREATE TABLE IF NOT EXISTS` no-ops on an existing table, any DB already stamped `v3` silently lacked the column and `ensure_schema()` could never heal it (it bit a real staging DB, hand-patched). The bump to `4` + the idempotent `3→4` `ADD COLUMN IF NOT EXISTS` ALTER is the fix: fresh-create stamps `4`, a `v3` DB applies the ALTER, and a hand-patched DB no-ops cleanly. **Rule for adding a CREATE column to a library table: always bump `LIBRARY_SCHEMA_VERSION` and add the matching idempotent ALTER migration in the same cut.**
 
 ```python
 # adapters expose it directly (so a consumer never reads schemas.md again):
@@ -516,6 +519,19 @@ class AnalyticsTotals:
     total_cost: float; input_tokens: int; output_tokens: int
     cache_read_tokens: int; thinking_tokens: int
 
+# GF-P7G2: per-AGENT rollup row (one per agent_uuid). Mirrors the fields the
+# consumer dashboard used to reconstruct in Python by draining runs_matching.
+@dataclass(frozen=True)
+class AgentTotals:
+    agent_uuid: str; title: str | None; model: str | None
+    principal: SessionPrincipal; is_subagent: bool
+    runs: int; error_runs: int
+    total_cost: float; input_tokens: int; output_tokens: int
+    cache_read_tokens: int; thinking_tokens: int
+    first_run: datetime | None; last_run: datetime | None
+    @property
+    def error_rate(self) -> float: ...   # error_runs / runs (0.0 when no runs)
+
 @dataclass(frozen=True)
 class ToolUsageStat:
     tool_name: str; calls: int; errors: int; p95_ms: float | None
@@ -535,6 +551,12 @@ class AnalyticsReader(ABC):
     async def list_runs(self, f: RunFilter) -> tuple[list[RunSummary], int]: ...
     @abstractmethod
     async def usage_totals(self, f: RunFilter) -> AnalyticsTotals: ...
+    # GF-P7G2: per-AGENT aggregate — one row per agent_uuid (GROUP BY agent_uuid,
+    # HAVING for agent-level cost_at_least/errors_only) + a total agent-count for
+    # pagination (the list_runs return convention). Composed over the SAME WHERE
+    # builder as every accessor, so principal scoping/filters apply identically.
+    @abstractmethod
+    async def agent_totals(self, f: RunFilter, *, limit: int = 50, offset: int = 0) -> tuple[list[AgentTotals], int]: ...
     @abstractmethod
     async def volume_timeseries(self, f: RunFilter, *, bucket: Literal["hour","day"]="hour") -> list[TimeBucket]: ...
     @abstractmethod
@@ -666,6 +688,7 @@ f = RunFilter(
     limit=page_size, offset=(page-1)*page_size,
 )
 runs, total   = await reader.list_runs(f)         # list[RunSummary] — typed, .is_error, .latency_s
+agents, n     = await reader.agent_totals(f)      # list[AgentTotals] — one row per agent (GF-P7G2)
 totals        = await reader.usage_totals(f)      # AnalyticsTotals
 latency        = await reader.latency(f)           # LatencyStats (p50/p95/p99)
 tools          = await reader.tool_usage(f)        # list[ToolUsageStat] — no JSONB walk in consumer

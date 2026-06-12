@@ -345,6 +345,44 @@ class SessionManager:
 > `principal_policy` ctor arg (§I1), `status()`/`SessionStatus` (with `open_awaits` per §I8 and a
 > derived `in_flight` property per §O15d), `OpenAwait`, `detach()`, and the `on_session_start`
 > firing inside `get_or_create`. **Removed:** `new_session_id()` (§O15a — consumer mints the id).
+>
+> **AMENDED (2026-06-12, GF-P6G1):** the §2.5 create-vs-resume probe is now REAL —
+> `AgentRuntime.has_persisted_state() -> bool` is IMPLEMENTED (probes the bound config adapter
+> for the row; `False` with no adapter / no uuid yet / no row), and a ctor-supplied
+> `agent_uuid` with NO persisted row is a **CREATE under that exact uuid** (the concrete
+> `AnthropicAgent.initialize()` previously raised — the create path existed only for
+> `agent_uuid=None`, breaking the `root_session_id == agent_uuid` invariant for
+> consumer-minted ids and forcing Nova's factory pre-seed). The create branch persists the
+> fresh row at initialize (the minted id is addressable immediately; `has_persisted_state()`
+> flips True) and shares `_reconcile_identity()` with the load branch (GF-P8G2 — owner columns
+> stamp on create too). A consumer-minted `uuid4()` now flows through `get_or_create` with
+> ZERO pre-seeding: probe → cold → initialize-create → `on_session_start(source="create",
+> is_cold_load=True)`. `set_principal` raising `PrincipalConflict` in the build path
+> (post-initialize, pre-hook) propagates to the `get_or_create` caller untouched.
+>
+> **AMENDED (2026-06-12, GF-P6G3):** queued turns are PUBLICLY drivable — the actor is no
+> longer a private seam:
+>
+> - **Auto-kick:** `agent.submit(UserMessage)` (accepted) and `agent.submit(Steer)` call
+>   `ensure_actor()` after the enqueue — runnable work never parks undriven. Auto-kick is keyed
+>   on a concrete `run()` override (the base `AgentRuntime.run` raises by design, so a bare
+>   base runtime parks without spawning a doomed task).
+> - **`ensure_actor() -> asyncio.Task`** is the public, IDEMPOTENT explicit handle: a live
+>   actor task is returned as-is (never double-driven; `_actor_loop`'s `_actor_running`
+>   reentrancy guard stays as the belt for foreign-driven loops). The single-writer
+>   `_actor_loop` drain itself is LIFTED into `AgentRuntime` (the concrete override is gone).
+> - **Containment:** the actor task never dies with an unretrieved exception — a failed turn
+>   logs + emits `ErrorReport` then `RunCompleted(stop_reason="error")` (GF-P6G4) and the task
+>   returns `None`.
+> - **Teardown:** `evict()`/`shutdown()` reap the driver tasks via the runtime's
+>   `_shutdown_actor()` (cancels a spawned-but-not-started actor task and any cold-resume
+>   continuation) — eviction never leaks tasks. Order: abort → actor reap → end-hook →
+>   checkpoint → unregister + `drop_tree`. Queued-but-undrained messages are dropped by the
+>   abort step (defined: bare abort drops queued messages).
+> - **Completion handle:** `await agent.wait_idle()` (GF-P6G4, specced in core.md §2.6a) is
+>   the blessed way to await "the actor reached IDLE with an empty mailbox" — e.g. after a
+>   RESOLVED `submit(ToolReply)`. Kills Nova's `stream_glue.spawn_turn_driver` /
+>   `spawn_done_watcher` over `agent._actor_loop()` + private task handles.
 
 ---
 
@@ -483,6 +521,18 @@ Notes for the reconciler:
 - `set_principal`, `has_persisted_state`, `_make_session_context`, `_run_hook` are
   **produced by sibling subsystems** (tenancy, lifecycle-hooks). This doc *consumes* them
   and pins **where** they fire (build path, pre-publish). See §5/§6.
+- **AMENDED (2026-06-12, GF-P8G2):** `agent.set_principal(principal)` is now IMPLEMENTED on
+  `AgentRuntime` — the duck-call above stops silently no-op'ing (the gap that left every
+  resident agent ANONYMOUS: settlements unbillable, checkpoints unstamped). Runtime-side
+  semantics (no-op on `None`/anonymous — a missing claimant never unscopes; adopt + adapter
+  re-bind + owner-column stamp on named-over-anonymous; `PrincipalConflict` on a different
+  named scope; open awaits keep their stamped owner) are pinned in tenancy-principal.md §B.4.
+  This manager-side contract text is unchanged — the firing point and ordering
+  (initialize → set_principal → on_session_start → publish) were always the contract.
+- **AMENDED (2026-06-12, GF-P6G1):** `agent.has_persisted_state()` is now IMPLEMENTED on
+  `AgentRuntime` (the duck-probe above stops silently defaulting to cold), and
+  `initialize()` CREATES under a ctor-supplied uuid with no persisted row — the sketch
+  above is literal for consumer-minted ids with zero pre-seeding.
 - `on_session_end` (catalog: `SessionContext(reason)`) fires in `evict()` after abort,
   before checkpoint, so an end-hook can `emit` a final `MetaBody`.
 

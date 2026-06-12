@@ -405,7 +405,10 @@ class SessionManager:
     async def detach(self, root_session_id: str) -> bool:
         """Caller (e.g. an SSE generator) is leaving. Disconnect ≠ cancel (A8):
         the turn keeps running on the resident agent; only the reader detaches.
-        No-op on the actor."""
+        No-op on the actor AND on the stream — a reader that wants the
+        runtime's read point released calls ``agent.detach_stream()`` itself
+        (GF-P6G2; the manager never guesses whether the leaving caller is
+        still the live reader)."""
         return root_session_id in self._sessions
 
     def _is_evictable(self, agent: "AgentRuntime") -> bool:
@@ -428,9 +431,16 @@ class SessionManager:
         return getattr(agent, "agent_uuid", None)
 
     async def evict(self, root_session_id: str) -> bool:
-        """Clean teardown of one session: abort → end-hook → checkpoint →
-        unregister + ``drop_tree`` (await table). Refuses while a turn is in
-        flight or an await is parked (``_is_evictable``)."""
+        """Clean teardown of one session: abort → actor-task reap → end-hook →
+        checkpoint → unregister + ``drop_tree`` (await table). Refuses while a
+        turn is in flight or an await is parked (``_is_evictable``).
+
+        GF-P6G3 teardown contract: eviction never leaks driver tasks — the
+        runtime's ``_shutdown_actor`` reaps the ``ensure_actor`` task and any
+        cold-resume continuation (a spawned-but-not-yet-started task is
+        cancelled; an actually in-flight turn was already refused above).
+        Queued-but-undrained mailbox messages are dropped by the abort step —
+        defined behavior (abort drops queued messages)."""
         entry = self._sessions.get(root_session_id)
         if entry is None:
             return False
@@ -446,6 +456,15 @@ class SessionManager:
         except Exception:  # pragma: no cover - cleanup best-effort
             logger.warning(
                 "SessionManager: abort during evict failed for %s", root_session_id
+            )
+        try:
+            reap_actor = getattr(agent, "_shutdown_actor", None)
+            if callable(reap_actor):
+                await reap_actor()
+        except Exception:  # pragma: no cover - cleanup best-effort
+            logger.warning(
+                "SessionManager: actor teardown during evict failed for %s",
+                root_session_id,
             )
         await self._fire_session_end(agent, entry, reason="evict")
         try:
