@@ -1,14 +1,24 @@
-"""Find files matching glob-style patterns."""
+"""Find files matching glob-style patterns.
+
+Migrated to the template-method ``run()`` authoring style (tools.md §2.2);
+output budgeting goes through ``ctx.emit_capped`` (I5/O11(a)) — the
+``tool_result_storage`` fork is deleted (F6, G0).
+"""
 from __future__ import annotations
 
 import shlex
 from collections import Counter
-from typing import Any, Callable, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List
 
 from agent_base.tools import ConfigurableToolBase
+from agent_base.tools.context import ToolContext
+from agent_base.tools.tool_types import ToolSchema
 
-from .utils.filesystem_path_helpers import format_agent_path, resolve_agent_path
-from .utils.tool_result_storage import save_tool_result, truncation_reference
+from .utils.filesystem_path_helpers import (
+    format_agent_path,
+    normalize_allowed_roots,
+    resolve_agent_path,
+)
 
 
 def _normalize_pattern(glob_pattern: str) -> str:
@@ -73,55 +83,68 @@ Returns:
         self,
         max_results: int = 50,
         summary_max_ext_groups: int = 3,
+        allowed_base_dirs: list[str] | None = None,
         docstring_template: str | None = None,
-        schema_override: dict | None = None,
+        schema_override: ToolSchema | None = None,
     ):
-        super().__init__(docstring_template=docstring_template, schema_override=schema_override)
+        super().__init__(
+            docstring_template=docstring_template,
+            schema_override=schema_override,
+            name="glob_file_search",
+        )
         self.max_results = max_results
         self.summary_max_ext_groups = summary_max_ext_groups
+        self.allowed_base_dirs = normalize_allowed_roots(allowed_base_dirs)
 
     def _get_template_context(self) -> Dict[str, Any]:
         return {"max_results": self.max_results}
 
-    def get_tool(self) -> Callable:
-        instance = self
+    async def run(
+        self,
+        glob_pattern: str,
+        target_directory: str | None = None,
+        ctx: ToolContext | None = None,
+    ) -> str:
+        resolved = resolve_agent_path(
+            target_directory or ".", allowed_roots=self.allowed_base_dirs
+        )
+        sandbox_path = resolved.sandbox_path
 
-        async def glob_file_search(glob_pattern: str, target_directory: str | None = None) -> str:
-            """Placeholder docstring - replaced by template."""
-            resolved = resolve_agent_path(target_directory or ".")
-            sandbox_path = resolved.sandbox_path
+        try:
+            await self._sandbox.list_dir(sandbox_path)
+        except FileNotFoundError:
+            return (
+                f"Path does not exist: {target_directory or '.'}. "
+                "Use list_dir_tree to explore available directories first."
+            )
+        except NotADirectoryError:
+            return (
+                f"Path is not a directory: {target_directory or '.'}. "
+                "Remove the file name and search in its parent directory."
+            )
 
-            try:
-                await instance._sandbox.list_dir(sandbox_path)
-            except FileNotFoundError:
-                return f"Path does not exist: {target_directory or '.'}. Use list_dir_tree to explore available directories first."
-            except NotADirectoryError:
-                return f"Path is not a directory: {target_directory or '.'}. Remove the file name and search in its parent directory."
+        command = _build_find_command(_normalize_pattern(glob_pattern), sandbox_path)
+        result = await self._sandbox.exec(command, timeout=15.0, cwd=".")
+        raw_paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        display_paths = [format_agent_path(path) for path in raw_paths]
 
-            command = _build_find_command(_normalize_pattern(glob_pattern), sandbox_path)
-            result = await instance._sandbox.exec(command, timeout=15.0, cwd=".")
-            raw_paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-            display_paths = [format_agent_path(path) for path in raw_paths]
+        if not display_paths:
+            return f"No matches found for pattern '{glob_pattern}'."
 
-            if not display_paths:
-                return f"No matches found for pattern '{glob_pattern}'."
-
-            full_output = "\n".join(display_paths)
-            result_path = await save_tool_result(instance._sandbox, "glob_file_search", full_output)
-
-            shown = display_paths[: instance.max_results]
-            remainder = display_paths[instance.max_results :]
-            output_lines: List[str] = list(shown)
-            if remainder:
-                summary = _summarize_file_exts(remainder, instance.summary_max_ext_groups)
-                if summary:
-                    output_lines.append(f"[{summary}]")
-                output = "\n".join(output_lines)
-                output += truncation_reference(result_path)
-                output += "\n[Hint: Use read_file on the saved result to inspect every match.]"
-                return output
+        shown = display_paths[: self.max_results]
+        remainder = display_paths[self.max_results :]
+        output_lines: List[str] = list(shown)
+        if not remainder:
             return "\n".join(output_lines)
 
-        func = self._apply_schema(glob_file_search)
-        func.__tool_instance__ = instance
-        return func
+        summary = _summarize_file_exts(remainder, self.summary_max_ext_groups)
+        if summary:
+            output_lines.append(f"[{summary}]")
+        output = "\n".join(output_lines)
+        if ctx is not None:
+            # F6: persist the FULL list via the canonical ctx budgeting seam;
+            # max_chars=0 yields just the appended reference line.
+            full_output = "\n".join(display_paths)
+            output += await ctx.emit_capped(full_output, max_chars=0)
+            output += "\n[Hint: Use read_file on the saved result to inspect every match.]"
+        return output

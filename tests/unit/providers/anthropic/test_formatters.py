@@ -290,9 +290,11 @@ class TestBlockToWire:
         assert result == {"type": "text", "text": "Hello world"}
 
     def test_text_content_empty(self, fmt: AnthropicMessageFormatter):
+        # The Anthropic API rejects empty text blocks, so the formatter drops
+        # them on round-trip (returns None) — see _block_to_wire.
         block = TextContent(text="")
         result = fmt._block_to_wire(block)
-        assert result == {"type": "text", "text": ""}
+        assert result is None
 
     def test_text_content_with_citations(self, fmt: AnthropicMessageFormatter):
         citations = [{"type": "char_location", "cited_text": "hi", "document_index": 0,

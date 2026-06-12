@@ -16,6 +16,11 @@ For request tracing:
     >>> bind_context(request_id="req-123")
     >>> # ... all logs will include request_id
     >>> clear_context()
+
+For scope-safe correlation binding (runtime/loop):
+    >>> from agent_base.logging import correlation_scope
+    >>> with correlation_scope(run_id=r, agent_id=a, principal=p):
+    >>>     ...   # every log line stamped; prior context restored on exit
 """
 import structlog
 
@@ -28,6 +33,17 @@ from .config import (
     is_configured,
 )
 from .context import bind_context, clear_context, get_context, unbind_context
+from .correlation import (
+    AGENT_ID,
+    EVENT_ID,
+    PARENT_AGENT_ID,
+    RUN_ID,
+    SEQ,
+    SUBJECT,
+    TENANT,
+    correlation_scope,
+    principal_fields,
+)
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
@@ -67,4 +83,15 @@ __all__ = [
     "unbind_context",
     "clear_context",
     "get_context",
+    # Correlation binding (scope-safe; replaces leaky clear-in-finally)
+    "correlation_scope",
+    "principal_fields",
+    # Re-exported core.identity correlation constants (O5: no LogField wrapper)
+    "RUN_ID",
+    "AGENT_ID",
+    "PARENT_AGENT_ID",
+    "SEQ",
+    "EVENT_ID",
+    "TENANT",
+    "SUBJECT",
 ]

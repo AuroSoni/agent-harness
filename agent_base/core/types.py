@@ -130,6 +130,75 @@ class ContentBlock(ABC):
             case _:
                 raise ValueError(f"Unknown content block type: {block_type!r}")
 
+    @classmethod
+    def from_api_dict(cls, data: Dict[str, Any]) -> "ContentBlock":
+        """Decode a provider api-dict (the wire ``content`` block shape) into a
+        canonical ContentBlock.
+
+        Distinct from :meth:`from_dict`, which round-trips our own ``to_dict``
+        output. This consumes the Anthropic-style api shape used by inbound tool
+        results (see ``agent_base/streaming/wire.py``):
+
+        - ``{"type": "text", "text": ...}`` → :class:`TextContent`
+        - ``{"type": "image"|"document", "source": {type, media_type, data}}``
+          → :class:`ImageContent` / :class:`DocumentContent`
+          (``source.type`` maps to ``source_type``)
+        - ``{"type": "attachment", "source": {...}, "filename": ...}``
+          → :class:`AttachmentContent` (preserves ``filename``)
+        """
+        api_type = data.get("type")
+
+        def _source_payload(source: Dict[str, Any]) -> str:
+            # The api source carries its payload under a type-specific key:
+            # base64/text -> "data", url -> "url", file/file_id -> "file_id".
+            # Canonically all three live on the block's `data` field.
+            return (
+                source.get("data")
+                or source.get("url")
+                or source.get("file_id")
+                or ""
+            )
+
+        match api_type:
+            case ContentBlockType.TEXT.value:
+                return TextContent(text=data.get("text", ""))
+            case ContentBlockType.IMAGE.value:
+                source = data.get("source") or {}
+                return ImageContent(
+                    media_type=source.get("media_type", ""),
+                    source_type=source.get("type", ""),
+                    data=_source_payload(source),
+                    filename=data.get("filename"),
+                )
+            case ContentBlockType.DOCUMENT.value:
+                source = data.get("source") or {}
+                # Block-level document options ride in kwargs under the same
+                # keys the provider formatter reads on encode.
+                kwargs: Dict[str, Any] = {}
+                if data.get("title"):
+                    kwargs["title"] = data["title"]
+                if data.get("context"):
+                    kwargs["context"] = data["context"]
+                if data.get("citations"):
+                    kwargs["citations_config"] = data["citations"]
+                return DocumentContent(
+                    media_type=source.get("media_type", ""),
+                    source_type=source.get("type", ""),
+                    data=_source_payload(source),
+                    filename=data.get("filename"),
+                    kwargs=kwargs,
+                )
+            case ContentBlockType.ATTACHMENT.value:
+                source = data.get("source") or {}
+                return AttachmentContent(
+                    media_type=source.get("media_type", ""),
+                    source_type=source.get("type", ""),
+                    data=_source_payload(source),
+                    filename=data.get("filename") or "",
+                )
+            case _:
+                raise ValueError(f"Unknown api content block type: {api_type!r}")
+
 # --- Simple Content Blocks ---
 
 @dataclass

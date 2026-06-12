@@ -7,7 +7,7 @@ their respective modules to avoid circular imports:
 
 - ``agent_base.core.config``: AgentConfig, Conversation, LLMConfig, etc.
 - ``agent_base.core.result``: AgentResult, AgentRunLog, LogEntry
-- ``agent_base.core.agent_base``: Agent
+- ``agent_base.core.runtime``: AgentRuntime (the ONE agent class -- Fork P-A)
 - ``agent_base.core.provider``: Provider
 """
 
@@ -39,6 +39,22 @@ from .end_turn_hook import (
 )
 from .messages import Message, Usage, MessageFormatter
 from .provider import Provider
+from .serializable import (
+    CORE_SCHEMA_VERSION,
+    SCHEMA_VERSION_KEY,
+    schema_version_of,
+)
+from .errors import (
+    AgentError,
+    ContextOverflow,
+    ErrorCode,
+    ProviderOverloaded,
+    ProviderStatus,
+    RateLimited,
+    ToolFailed,
+    classify_provider_error,
+)
+from .compaction_types import CompactionConfig, CompactionStats, Compactor
 
 __all__ = [
     # Content model
@@ -72,4 +88,21 @@ __all__ = [
     "MessageFormatter",
     # Provider ABC
     "Provider",
+    # Canonical serialization convention (core.md §2.1)
+    "CORE_SCHEMA_VERSION",
+    "SCHEMA_VERSION_KEY",
+    "schema_version_of",
+    # Error taxonomy (core.md §2.4 — R8/O6)
+    "ErrorCode",
+    "AgentError",
+    "ProviderOverloaded",
+    "RateLimited",
+    "ContextOverflow",
+    "ToolFailed",
+    "ProviderStatus",
+    "classify_provider_error",
+    # Compaction core types (core.md §2.3)
+    "CompactionConfig",
+    "CompactionStats",
+    "Compactor",
 ]

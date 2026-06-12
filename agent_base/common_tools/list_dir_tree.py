@@ -4,10 +4,12 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import PurePosixPath
 from posixpath import normpath as _posix_normpath
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 from agent_base.sandbox.sandbox_types import SandboxPathEscapeError
 from agent_base.tools import ConfigurableToolBase
+from agent_base.tools.context import ToolContext
+from agent_base.tools.tool_types import ToolSchema
 
 from .utils.filesystem_path_helpers import (
     DEFAULT_WORKSPACE_ROOT,
@@ -17,7 +19,6 @@ from .utils.filesystem_path_helpers import (
     normalize_allowed_roots,
     resolve_agent_path,
 )
-from .utils.tool_result_storage import save_tool_result, truncation_reference
 
 if TYPE_CHECKING:
     from agent_base.sandbox.sandbox_types import FileEntry
@@ -146,9 +147,13 @@ Returns:
         base_dir: str = "workspace",
         allowed_base_dirs: list[str] | None = None,
         docstring_template: str | None = None,
-        schema_override: dict | None = None,
+        schema_override: ToolSchema | None = None,
     ):
-        super().__init__(docstring_template=docstring_template, schema_override=schema_override)
+        super().__init__(
+            docstring_template=docstring_template,
+            schema_override=schema_override,
+            name="list_dir_tree",
+        )
         self.max_depth: int = max_depth
         self.large_dir_threshold: int = large_dir_threshold
         self.large_dir_show_files: int = large_dir_show_files
@@ -169,281 +174,273 @@ Returns:
             "allowed_base_dirs_str": describe_allowed_roots(self.allowed_base_dirs),
         }
 
-    def get_tool(self) -> Callable[..., Awaitable[str]]:
-        """Return a @tool decorated async function for use with an agent."""
-        instance = self
+    async def run(
+        self,
+        target_directory: str = ".",
+        ignore_globs: List[str] | None = None,
+        ctx: ToolContext | None = None,
+    ) -> str:
+        default_root = self.base_dir or "."
+        resolved_target = resolve_agent_path(
+            target_directory,
+            default_root=default_root,
+            allowed_roots=self.allowed_base_dirs,
+        )
+        rel_path = resolved_target.canonical_path
+        sandbox_path = resolved_target.sandbox_path
 
-        async def list_dir_tree(target_directory: str = ".", ignore_globs: List[str] | None = None) -> str:
-            """Placeholder docstring - replaced by template."""
-            default_root = instance.base_dir or "."
-            resolved_target = resolve_agent_path(
-                target_directory,
-                default_root=default_root,
-                allowed_roots=instance.allowed_base_dirs,
+        if not is_allowed_sandbox_path(sandbox_path, self.allowed_base_dirs):
+            return build_access_denied_message(sandbox_path, self.allowed_base_dirs)
+
+        try:
+            await self._sandbox.list_dir(sandbox_path)
+        except SandboxPathEscapeError:
+            return (
+                f"Access denied: {target_directory} would escape the sandbox root. "
+                "Going outside the sandbox root is not allowed. Use '.' for workspace "
+                "root or '..' for sandbox root."
             )
-            rel_path = resolved_target.canonical_path
-            sandbox_path = resolved_target.sandbox_path
+        except FileNotFoundError:
+            return (
+                f"Path does not exist: {rel_path}. Try list_dir_tree on the parent "
+                "directory to see available paths. The path should be relative to the "
+                "workspace root."
+            )
+        except NotADirectoryError:
+            return f"Path is not a directory: {rel_path}. Use read_file to view the file contents instead."
 
-            if not is_allowed_sandbox_path(sandbox_path, instance.allowed_base_dirs):
-                return build_access_denied_message(sandbox_path, instance.allowed_base_dirs)
+        patterns = ignore_globs or []
+        dir_cache: Dict[str, List["FileEntry"]] = {}
 
-            try:
-                await instance._sandbox.list_dir(sandbox_path)
-            except SandboxPathEscapeError:
-                return (
-                    f"Access denied: {target_directory} would escape the sandbox root. "
-                    "Going outside the sandbox root is not allowed. Use '.' for workspace "
-                    "root or '..' for sandbox root."
-                )
-            except FileNotFoundError:
-                return (
-                    f"Path does not exist: {rel_path}. Try list_dir_tree on the parent "
-                    "directory to see available paths. The path should be relative to the "
-                    "workspace root."
-                )
-            except NotADirectoryError:
-                return f"Path is not a directory: {rel_path}. Use read_file to view the file contents instead."
+        async def cached_list_dir(dir_path: str):
+            if dir_path not in dir_cache:
+                dir_cache[dir_path] = await self._sandbox.list_dir(dir_path)
+            return dir_cache[dir_path]
 
-            patterns = ignore_globs or []
-            dir_cache: Dict[str, List["FileEntry"]] = {}
+        async def count_subtree(dir_path: str, rel_dir_path: str) -> Tuple[int, int, Dict[str, int]]:
+            files_count = 0
+            dirs_count = 0
+            ext_counts: Counter[str] = Counter()
 
-            async def cached_list_dir(dir_path: str):
-                if dir_path not in dir_cache:
-                    dir_cache[dir_path] = await instance._sandbox.list_dir(dir_path)
-                return dir_cache[dir_path]
+            stack: List[Tuple[str, str]] = [(dir_path, rel_dir_path)]
+            visited: set[str] = set()
 
-            async def count_subtree(dir_path: str, rel_dir_path: str) -> Tuple[int, int, Dict[str, int]]:
-                files_count = 0
-                dirs_count = 0
-                ext_counts: Counter[str] = Counter()
+            while stack:
+                current, current_rel = stack.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
 
-                stack: List[Tuple[str, str]] = [(dir_path, rel_dir_path)]
-                visited: set[str] = set()
-
-                while stack:
-                    current, current_rel = stack.pop()
-                    if current in visited:
-                        continue
-                    visited.add(current)
-
-                    try:
-                        entries = await cached_list_dir(current)
-                    except Exception:
-                        continue
-
-                    for entry in entries:
-                        child_path = f"{current}/{entry.name}" if current != "." else entry.name
-                        child_rel_path = (
-                            entry.name
-                            if current_rel == "."
-                            else f"{current_rel}/{entry.name}"
-                        )
-
-                        if _is_ignored(entry.name, child_rel_path, patterns):
-                            continue
-
-                        if entry.is_dir:
-                            dirs_count += 1
-                            stack.append((child_path, child_rel_path))
-                        else:
-                            files_count += 1
-                            ext_counts[ext_label(entry.name)] += 1
-
-                return files_count, dirs_count, dict(ext_counts)
-
-            def _partition_and_sort(
-                entries: List["FileEntry"],
-                dir_path: str,
-                rel_dir_path: str,
-            ) -> Tuple[List[Tuple[str, str, str]], List[str]]:
-                immediate_dirs: List[Tuple[str, str, str]] = []
-                immediate_files: List[str] = []
+                try:
+                    entries = await cached_list_dir(current)
+                except Exception:
+                    continue
 
                 for entry in entries:
-                    child_path = f"{dir_path}/{entry.name}" if dir_path != "." else entry.name
+                    child_path = f"{current}/{entry.name}" if current != "." else entry.name
                     child_rel_path = (
                         entry.name
-                        if rel_dir_path == "."
-                        else f"{rel_dir_path}/{entry.name}"
+                        if current_rel == "."
+                        else f"{current_rel}/{entry.name}"
                     )
+
                     if _is_ignored(entry.name, child_rel_path, patterns):
                         continue
+
                     if entry.is_dir:
-                        immediate_dirs.append((entry.name, child_path, child_rel_path))
+                        dirs_count += 1
+                        stack.append((child_path, child_rel_path))
                     else:
-                        immediate_files.append(entry.name)
+                        files_count += 1
+                        ext_counts[ext_label(entry.name)] += 1
 
-                immediate_dirs.sort(key=lambda t: t[0].casefold())
-                immediate_files.sort(key=str.casefold)
-                return immediate_dirs, immediate_files
+            return files_count, dirs_count, dict(ext_counts)
 
-            async def render_unlimited(
-                dir_path: str,
-                rel_dir_path: str,
-                dir_name: str,
-                depth: int,
-                prefix: str,
-                out: List[str],
-            ) -> None:
-                if depth == 0:
-                    out.append(f"{dir_name}/")
+        def _partition_and_sort(
+            entries: List["FileEntry"],
+            dir_path: str,
+            rel_dir_path: str,
+        ) -> Tuple[List[Tuple[str, str, str]], List[str]]:
+            immediate_dirs: List[Tuple[str, str, str]] = []
+            immediate_files: List[str] = []
 
-                try:
-                    entries = await cached_list_dir(dir_path)
-                except Exception as exc:
-                    out.append(format_bracket_line(str(exc), prefix, LAST))
-                    return
-
-                immediate_dirs, immediate_files = _partition_and_sort(entries, dir_path, rel_dir_path)
-
-                all_entries: List[Tuple[str, ...]] = []
-                for name, path, child_rel_path in immediate_dirs:
-                    all_entries.append(("dir", name, path, child_rel_path))
-                for file_name in immediate_files:
-                    all_entries.append(("file", file_name))
-
-                for i, entry in enumerate(all_entries):
-                    is_last = i == len(all_entries) - 1
-                    connector = LAST if is_last else BRANCH
-                    child_prefix = prefix + (SPACE if is_last else VERT)
-
-                    if entry[0] == "dir":
-                        _, name, path, child_rel_path = entry
-                        out.append(format_dir_line(name, prefix, connector))
-                        await render_unlimited(
-                            path,
-                            child_rel_path,
-                            name,
-                            depth + 1,
-                            child_prefix,
-                            out,
-                        )
-                    elif entry[0] == "file":
-                        _, name = entry
-                        out.append(format_file_line(name, prefix, connector))
-
-            was_truncated = False
-
-            async def render_truncated(
-                dir_path: str,
-                rel_dir_path: str,
-                dir_name: str,
-                depth: int,
-                prefix: str,
-                out: List[str],
-            ) -> None:
-                nonlocal was_truncated
-
-                if depth == 0:
-                    out.append(f"{dir_name}/")
-
-                if depth >= instance.max_depth:
-                    files_total, dirs_total, ext_counts = await count_subtree(dir_path, rel_dir_path)
-                    if files_total == 0 and dirs_total == 0:
-                        return
-                    groups = sorted(ext_counts.items(), key=lambda kv: (-kv[1], kv[0]))
-                    if groups:
-                        shown = groups[:SUMMARY_MAX_EXT_GROUPS]
-                        rest_count = sum(n for _, n in groups[SUMMARY_MAX_EXT_GROUPS:])
-                        files_part = ", ".join(f"{ext}: {n}" for ext, n in shown)
-                        if rest_count:
-                            files_part = f"{files_part}, other: {rest_count}"
-                        summary = f"depth limit reached; {files_total} files ({files_part}), {dirs_total} subdirectories"
-                    else:
-                        summary = f"depth limit reached; {files_total} files, {dirs_total} subdirectories"
-                    out.append(format_bracket_line(summary, prefix, LAST))
-                    was_truncated = True
-                    return
-
-                try:
-                    entries = await cached_list_dir(dir_path)
-                except Exception as exc:
-                    out.append(format_bracket_line(str(exc), prefix, LAST))
-                    return
-
-                immediate_dirs, immediate_files = _partition_and_sort(entries, dir_path, rel_dir_path)
-                total_entries = len(immediate_dirs) + len(immediate_files)
-                is_large = total_entries > instance.large_dir_threshold
-
-                if is_large:
-                    shown_dirs = immediate_dirs[: instance.large_dir_show_dirs]
-                    remaining_dir_count = len(immediate_dirs) - instance.large_dir_show_dirs
-                    shown_files = immediate_files[: instance.large_dir_show_files]
-                    remaining_files = immediate_files[instance.large_dir_show_files :]
-                    was_truncated = True
+            for entry in entries:
+                child_path = f"{dir_path}/{entry.name}" if dir_path != "." else entry.name
+                child_rel_path = (
+                    entry.name
+                    if rel_dir_path == "."
+                    else f"{rel_dir_path}/{entry.name}"
+                )
+                if _is_ignored(entry.name, child_rel_path, patterns):
+                    continue
+                if entry.is_dir:
+                    immediate_dirs.append((entry.name, child_path, child_rel_path))
                 else:
-                    shown_dirs = immediate_dirs
-                    remaining_dir_count = 0
-                    shown_files = immediate_files
-                    remaining_files = []
+                    immediate_files.append(entry.name)
 
-                visual_entries: List[Tuple[str, ...]] = []
+            immediate_dirs.sort(key=lambda t: t[0].casefold())
+            immediate_files.sort(key=str.casefold)
+            return immediate_dirs, immediate_files
 
-                for name, path, child_rel_path in shown_dirs:
-                    visual_entries.append(("dir", name, path, child_rel_path))
+        async def render_unlimited(
+            dir_path: str,
+            rel_dir_path: str,
+            dir_name: str,
+            depth: int,
+            prefix: str,
+            out: List[str],
+        ) -> None:
+            if depth == 0:
+                out.append(f"{dir_name}/")
 
-                if remaining_dir_count > 0:
-                    visual_entries.append(("bracket", f"{remaining_dir_count} more subdirectories"))
+            try:
+                entries = await cached_list_dir(dir_path)
+            except Exception as exc:
+                out.append(format_bracket_line(str(exc), prefix, LAST))
+                return
 
-                for file_name in shown_files:
-                    visual_entries.append(("file", file_name))
+            immediate_dirs, immediate_files = _partition_and_sort(entries, dir_path, rel_dir_path)
 
-                if remaining_files:
-                    counts = summarize_extension_groups(remaining_files)
-                    text = format_ext_groups(counts)
-                    if text:
-                        visual_entries.append(("bracket", text))
-                    else:
-                        visual_entries.append(("bracket", f"{len(remaining_files)} more files"))
+            all_entries: List[Tuple[str, ...]] = []
+            for name, path, child_rel_path in immediate_dirs:
+                all_entries.append(("dir", name, path, child_rel_path))
+            for file_name in immediate_files:
+                all_entries.append(("file", file_name))
 
-                for i, entry in enumerate(visual_entries):
-                    is_last = i == len(visual_entries) - 1
-                    connector = LAST if is_last else BRANCH
-                    child_prefix = prefix + (SPACE if is_last else VERT)
+            for i, entry in enumerate(all_entries):
+                is_last = i == len(all_entries) - 1
+                connector = LAST if is_last else BRANCH
+                child_prefix = prefix + (SPACE if is_last else VERT)
 
-                    if entry[0] == "dir":
-                        _, name, path, child_rel_path = entry
-                        out.append(format_dir_line(name, prefix, connector))
-                        await render_truncated(
-                            path,
-                            child_rel_path,
-                            name,
-                            depth + 1,
-                            child_prefix,
-                            out,
-                        )
-                    elif entry[0] == "file":
-                        _, name = entry
-                        out.append(format_file_line(name, prefix, connector))
-                    elif entry[0] == "bracket":
-                        _, text = entry
-                        out.append(format_bracket_line(text, prefix, connector))
+                if entry[0] == "dir":
+                    _, name, path, child_rel_path = entry
+                    out.append(format_dir_line(name, prefix, connector))
+                    await render_unlimited(
+                        path,
+                        child_rel_path,
+                        name,
+                        depth + 1,
+                        child_prefix,
+                        out,
+                    )
+                elif entry[0] == "file":
+                    _, name = entry
+                    out.append(format_file_line(name, prefix, connector))
 
-            dir_name = rel_path
+        was_truncated = False
 
-            full_lines: List[str] = []
-            await render_unlimited(sandbox_path, ".", dir_name, 0, "", full_lines)
+        async def render_truncated(
+            dir_path: str,
+            rel_dir_path: str,
+            dir_name: str,
+            depth: int,
+            prefix: str,
+            out: List[str],
+        ) -> None:
+            nonlocal was_truncated
 
-            truncated_lines: List[str] = []
-            await render_truncated(sandbox_path, ".", dir_name, 0, "", truncated_lines)
+            if depth == 0:
+                out.append(f"{dir_name}/")
 
-            result_path = await save_tool_result(
-                instance._sandbox,
-                "list_dir_tree",
-                "\n".join(full_lines),
+            if depth >= self.max_depth:
+                files_total, dirs_total, ext_counts = await count_subtree(dir_path, rel_dir_path)
+                if files_total == 0 and dirs_total == 0:
+                    return
+                groups = sorted(ext_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                if groups:
+                    shown = groups[:SUMMARY_MAX_EXT_GROUPS]
+                    rest_count = sum(n for _, n in groups[SUMMARY_MAX_EXT_GROUPS:])
+                    files_part = ", ".join(f"{ext}: {n}" for ext, n in shown)
+                    if rest_count:
+                        files_part = f"{files_part}, other: {rest_count}"
+                    summary = f"depth limit reached; {files_total} files ({files_part}), {dirs_total} subdirectories"
+                else:
+                    summary = f"depth limit reached; {files_total} files, {dirs_total} subdirectories"
+                out.append(format_bracket_line(summary, prefix, LAST))
+                was_truncated = True
+                return
+
+            try:
+                entries = await cached_list_dir(dir_path)
+            except Exception as exc:
+                out.append(format_bracket_line(str(exc), prefix, LAST))
+                return
+
+            immediate_dirs, immediate_files = _partition_and_sort(entries, dir_path, rel_dir_path)
+            total_entries = len(immediate_dirs) + len(immediate_files)
+            is_large = total_entries > self.large_dir_threshold
+
+            if is_large:
+                shown_dirs = immediate_dirs[: self.large_dir_show_dirs]
+                remaining_dir_count = len(immediate_dirs) - self.large_dir_show_dirs
+                shown_files = immediate_files[: self.large_dir_show_files]
+                remaining_files = immediate_files[self.large_dir_show_files :]
+                was_truncated = True
+            else:
+                shown_dirs = immediate_dirs
+                remaining_dir_count = 0
+                shown_files = immediate_files
+                remaining_files = []
+
+            visual_entries: List[Tuple[str, ...]] = []
+
+            for name, path, child_rel_path in shown_dirs:
+                visual_entries.append(("dir", name, path, child_rel_path))
+
+            if remaining_dir_count > 0:
+                visual_entries.append(("bracket", f"{remaining_dir_count} more subdirectories"))
+
+            for file_name in shown_files:
+                visual_entries.append(("file", file_name))
+
+            if remaining_files:
+                counts = summarize_extension_groups(remaining_files)
+                text = format_ext_groups(counts)
+                if text:
+                    visual_entries.append(("bracket", text))
+                else:
+                    visual_entries.append(("bracket", f"{len(remaining_files)} more files"))
+
+            for i, entry in enumerate(visual_entries):
+                is_last = i == len(visual_entries) - 1
+                connector = LAST if is_last else BRANCH
+                child_prefix = prefix + (SPACE if is_last else VERT)
+
+                if entry[0] == "dir":
+                    _, name, path, child_rel_path = entry
+                    out.append(format_dir_line(name, prefix, connector))
+                    await render_truncated(
+                        path,
+                        child_rel_path,
+                        name,
+                        depth + 1,
+                        child_prefix,
+                        out,
+                    )
+                elif entry[0] == "file":
+                    _, name = entry
+                    out.append(format_file_line(name, prefix, connector))
+                elif entry[0] == "bracket":
+                    _, text = entry
+                    out.append(format_bracket_line(text, prefix, connector))
+
+        dir_name = rel_path
+
+        full_lines: List[str] = []
+        await render_unlimited(sandbox_path, ".", dir_name, 0, "", full_lines)
+
+        truncated_lines: List[str] = []
+        await render_truncated(sandbox_path, ".", dir_name, 0, "", truncated_lines)
+
+        output = "\n".join(truncated_lines)
+
+        if was_truncated and ctx is not None:
+            # F6: persist the FULL tree via the canonical ctx budgeting seam;
+            # max_chars=0 yields just the appended reference line.
+            output += await ctx.emit_capped("\n".join(full_lines), max_chars=0)
+            output += (
+                "\n[Hint: Use read_file or grep_search on the full result file to "
+                "investigate specific paths.]"
             )
 
-            output = "\n".join(truncated_lines)
-
-            if was_truncated:
-                output += truncation_reference(result_path)
-                output += (
-                    "\n[Hint: Use read_file or grep_search on the full result file to "
-                    "investigate specific paths.]"
-                )
-
-            return output
-
-        func = self._apply_schema(list_dir_tree)
-        func.__tool_instance__ = instance
-        return func
+        return output

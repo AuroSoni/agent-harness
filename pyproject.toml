@@ -35,6 +35,9 @@ packages = ["agent_base"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# tests/interface is the TDD red suite for the interface_plan redesign; it is
+# collected only when targeted explicitly (see tests/interface/README.md).
+testpaths = ["tests/unit", "tests/integration"]
 addopts = "-m 'not integration'"
 markers = [
     "integration: marks tests as integration tests (deselected by default)",

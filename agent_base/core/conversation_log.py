@@ -5,6 +5,14 @@ The conversation log is distinct from ``context_messages``:
 - ``context_messages`` are the compact provider-facing transcript used for LLM
   continuation and resume.
 - ``ConversationLog`` is the rich persisted history used for UI replay.
+
+Schema ownership (core.md §2.1.4 / R27): **core owns the conversation_log
+entry schema + its version** — ``to_dict()`` stamps the library-wide
+``CORE_SCHEMA_VERSION`` under ``_v`` on the log AND on every entry; readers
+branch on ``schema_version_of(entry)``. Additive entry fields are
+``_v``-tolerant (old readers ignore unknown keys). Storage/analytics owns only
+the ``stop_reason`` taxonomy and *tracks* this version; streaming carries the
+same ``stop_reason`` strings but does not own them.
 """
 from __future__ import annotations
 
@@ -13,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent_base.core.messages import Message, Usage
+from agent_base.core.serializable import _stamp
 from agent_base.core.types import Attachment, ContentBlock, Contribution, Role
 
 
@@ -161,7 +170,7 @@ class MessageLogEntry:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return _stamp({
             "entry_type": self.entry_type,
             "agent_uuid": self.agent_uuid,
             "role": self.role.value,
@@ -173,7 +182,7 @@ class MessageLogEntry:
             "provider": self.provider,
             "model": self.model,
             "timestamp": self.timestamp,
-        }
+        })
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MessageLogEntry":
@@ -206,12 +215,12 @@ class ToolResultLogEntry:
     timestamp: str = field(default_factory=_now_iso)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return _stamp({
             "entry_type": self.entry_type,
             "agent_uuid": self.agent_uuid,
             "tool": self.tool.to_dict(),
             "timestamp": self.timestamp,
-        }
+        })
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ToolResultLogEntry":
@@ -233,7 +242,7 @@ class RollbackLogEntry:
     timestamp: str = field(default_factory=_now_iso)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return _stamp({
             "entry_type": self.entry_type,
             "agent_uuid": self.agent_uuid,
             "message": self.message,
@@ -241,7 +250,7 @@ class RollbackLogEntry:
             "details": _serialize_value(self.details),
             "targets_previous_assistant_message": self.targets_previous_assistant_message,
             "timestamp": self.timestamp,
-        }
+        })
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RollbackLogEntry":
@@ -266,13 +275,13 @@ class StreamEventLogEntry:
     timestamp: str = field(default_factory=_now_iso)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return _stamp({
             "entry_type": self.entry_type,
             "agent_uuid": self.agent_uuid,
             "stream_type": self.stream_type,
             "payload": _serialize_value(self.payload),
             "timestamp": self.timestamp,
-        }
+        })
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StreamEventLogEntry":
@@ -418,13 +427,15 @@ class ConversationLog:
         return entry
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        # Canonical, versioned (R27): every entry via its own to_dict (no
+        # asdict); the log and each entry carry the `_v` stamp.
+        return _stamp({
             "agents": {
                 agent_uuid: descriptor.to_dict()
                 for agent_uuid, descriptor in self.agents.items()
             },
             "entries": [entry.to_dict() for entry in self.entries],
-        }
+        })
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "ConversationLog":

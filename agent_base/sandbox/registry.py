@@ -55,12 +55,3 @@ def sandbox_from_config(config: SandboxConfig) -> Sandbox:
         else config_class.from_dict(config.to_dict())
     )
     return sandbox_class.from_config(typed_config)
-
-
-from .local import LocalSandbox, LocalSandboxConfig
-
-register_sandbox_type(
-    sandbox_type=LocalSandboxConfig.sandbox_type,
-    config_class=LocalSandboxConfig,
-    sandbox_class=LocalSandbox,
-)

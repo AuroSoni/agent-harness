@@ -73,9 +73,19 @@ def client() -> anthropic.AsyncAnthropic:
     return anthropic.AsyncAnthropic()
 
 
+class _MessageReturningProvider(AnthropicProvider):
+    """Test adapter (2026-06-10, P-A lift): ``generate`` now returns a
+    ``ProviderTurn`` (providers.md §2.1); these round-trip tests assert on the
+    canonical ``Message``, so unwrap it once here."""
+
+    async def generate(self, **kwargs):  # type: ignore[override]
+        turn = await super().generate(**kwargs)
+        return turn.message
+
+
 @pytest.fixture()
 def provider(client: anthropic.AsyncAnthropic) -> AnthropicProvider:
-    return AnthropicProvider(client=client)
+    return _MessageReturningProvider(client=client)
 
 
 @pytest.fixture()

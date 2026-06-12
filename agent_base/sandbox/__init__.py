@@ -1,15 +1,28 @@
 from .sandbox_types import (
+    DEFAULT_ZONE_LAYOUT,
     ExecResult,
     ExportedFileMetadata,
     FileEntry,
     MAX_READ_LINES,
     READ_CHUNK_SIZE,
+    ResolvedAgentPath,
     Sandbox,
+    SandboxAccessDeniedError,
     SandboxConfig,
     SandboxNotATextFileError,
     SandboxPathEscapeError,
+    StagedEntry,
+    StageResult,
     TEXT_EXTENSIONS,
     TOKEN_COUNTING_SIZE_THRESHOLD,
+    Zone,
+    ZoneLayout,
+)
+from .config_driven import ConfigDrivenSandbox, register_sandbox
+from .namespacing import (
+    SandboxNamespaceError,
+    namespaced_base_dir,
+    validate_segment,
 )
 from .local import LocalSandbox, LocalSandboxConfig
 from .registry import (
@@ -19,6 +32,8 @@ from .registry import (
 )
 
 __all__ = [
+    "ConfigDrivenSandbox",
+    "DEFAULT_ZONE_LAYOUT",
     "ExecResult",
     "ExportedFileMetadata",
     "FileEntry",
@@ -26,13 +41,23 @@ __all__ = [
     "LocalSandboxConfig",
     "MAX_READ_LINES",
     "READ_CHUNK_SIZE",
-    "deserialize_sandbox_config",
-    "register_sandbox_type",
+    "ResolvedAgentPath",
     "Sandbox",
+    "SandboxAccessDeniedError",
     "SandboxConfig",
+    "SandboxNamespaceError",
     "SandboxNotATextFileError",
     "SandboxPathEscapeError",
-    "sandbox_from_config",
+    "StageResult",
+    "StagedEntry",
     "TEXT_EXTENSIONS",
     "TOKEN_COUNTING_SIZE_THRESHOLD",
+    "Zone",
+    "ZoneLayout",
+    "deserialize_sandbox_config",
+    "namespaced_base_dir",
+    "register_sandbox",
+    "register_sandbox_type",
+    "sandbox_from_config",
+    "validate_segment",
 ]

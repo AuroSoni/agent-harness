@@ -1,7 +1,14 @@
+"""End-turn hook: rollback persistence + control-channel emission.
+
+UPDATED (2026-06-10, P-A lift): the legacy ``get_formatter``/queue pipeline is
+DELETED (streaming-and-meta.md §6 / G0); the hook path emits typed MetaBodies
+into a ``DeltaSink`` — ``Custom(name="meta_end_turn_validation")`` frames plus
+the ``Rollback`` MetaBody (AMENDMENTS O3: ``RollbackDelta`` is deleted; rollback
+rides the control channel).
+"""
 from __future__ import annotations
 
-import asyncio
-import json
+from typing import Any
 
 import pytest
 
@@ -13,7 +20,21 @@ from agent_base.core.conversation_log import (
 from agent_base.core.end_turn_hook import EndTurnHookEvent, EndTurnHookResult
 from agent_base.core.messages import Message
 from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
-from agent_base.streaming import get_formatter
+from agent_base.streaming.meta import Custom, Rollback
+
+
+class RecorderSink:
+    """Minimal DeltaSink (R30) recording emitted control bodies."""
+
+    def __init__(self) -> None:
+        self.deltas: list[Any] = []
+        self.metas: list[Any] = []
+
+    def emit(self, delta: Any) -> None:
+        self.deltas.append(delta)
+
+    def emit_meta(self, body: Any, **kwargs: Any) -> None:
+        self.metas.append(body)
 
 
 def test_rollback_log_entry_round_trip() -> None:
@@ -51,7 +72,7 @@ def test_stream_event_log_entry_round_trip() -> None:
 
 
 @pytest.mark.asyncio
-async def test_end_turn_hook_retry_streams_and_persists_rollback(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_end_turn_hook_retry_emits_and_persists_rollback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("anthropic.AsyncAnthropic", lambda: object())
 
     async def hook(_ctx) -> EndTurnHookResult:
@@ -74,14 +95,12 @@ async def test_end_turn_hook_retry_streams_and_persists_rollback(monkeypatch: py
     response = Message.assistant("draft")
     agent._append_message_variants(response)
 
-    queue: asyncio.Queue[str] = asyncio.Queue()
-    formatter = get_formatter("json")
+    sink = RecorderSink()
 
     should_retry = await agent._run_end_turn_hook(
         response,
         stop_reason="end_turn",
-        queue=queue,
-        stream_formatter=formatter,
+        sink=sink,
     )
 
     assert should_retry is True
@@ -99,19 +118,19 @@ async def test_end_turn_hook_retry_streams_and_persists_rollback(monkeypatch: py
     assert rollback_entries[0].message == "Return valid JSON."
     assert rollback_entries[0].code == "invalid_json"
 
-    chunks: list[dict[str, object]] = []
-    while not queue.empty():
-        chunks.append(json.loads(queue.get_nowait()))
-
-    assert chunks[0]["type"] == "meta_end_turn_validation"
-    assert chunks[1]["type"] == "rollback"
-    assert chunks[2]["type"] == "meta_end_turn_validation"
-    assert json.loads(chunks[1]["delta"])["message"] == "Return valid JSON."
-    assert json.loads(chunks[2]["delta"])["result"] == "retry"
+    # Control-channel emission: validation start → Rollback → validation end.
+    assert isinstance(sink.metas[0], Custom)
+    assert sink.metas[0].name == "meta_end_turn_validation"
+    assert sink.metas[0].data["status"] == "start"
+    assert isinstance(sink.metas[1], Rollback)
+    assert sink.metas[1].message == "Return valid JSON."
+    assert isinstance(sink.metas[2], Custom)
+    assert sink.metas[2].name == "meta_end_turn_validation"
+    assert sink.metas[2].data["result"] == "retry"
 
 
 @pytest.mark.asyncio
-async def test_end_turn_hook_pass_streams_validation_only(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_end_turn_hook_pass_emits_validation_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("anthropic.AsyncAnthropic", lambda: object())
 
     def hook(_ctx) -> EndTurnHookResult:
@@ -139,14 +158,12 @@ async def test_end_turn_hook_pass_streams_validation_only(monkeypatch: pytest.Mo
     response = Message.assistant("final")
     agent._append_message_variants(response)
 
-    queue: asyncio.Queue[str] = asyncio.Queue()
-    formatter = get_formatter("json")
+    sink = RecorderSink()
 
     should_retry = await agent._run_end_turn_hook(
         response,
         stop_reason="end_turn",
-        queue=queue,
-        stream_formatter=formatter,
+        sink=sink,
     )
 
     assert should_retry is False
@@ -163,14 +180,11 @@ async def test_end_turn_hook_pass_streams_validation_only(monkeypatch: pytest.Mo
     assert stream_entries[0].stream_type == "meta_todo"
     assert stream_entries[0].payload["operation"] == "reset"
 
-    chunks: list[dict[str, object]] = []
-    while not queue.empty():
-        chunks.append(json.loads(queue.get_nowait()))
-
-    assert [chunk["type"] for chunk in chunks] == [
+    assert [type(body) for body in sink.metas] == [Custom, Custom, Custom]
+    assert [body.name for body in sink.metas] == [
         "meta_end_turn_validation",
         "meta_todo",
         "meta_end_turn_validation",
     ]
-    assert json.loads(chunks[1]["delta"])["operation"] == "reset"
-    assert json.loads(chunks[2]["delta"])["result"] == "pass"
+    assert sink.metas[1].data["operation"] == "reset"
+    assert sink.metas[2].data["result"] == "pass"

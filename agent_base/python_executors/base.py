@@ -1,6 +1,8 @@
 import math # For base python tools
+from dataclasses import dataclass, field
 from types import ModuleType, FunctionType, MethodType, BuiltinFunctionType
 from functools import wraps
+from collections.abc import Callable, Mapping
 from typing import Any
 
 # Non-exhaustive list of dangerous modules that should not be imported
@@ -156,6 +158,61 @@ class FinalAnswerException(Exception):
 DEFAULT_MAX_LEN_OUTPUT = 50000  # Maintains the print output length during one agent run
 MAX_OPERATIONS = 10000000  # Maintains the number of operations during one agent run
 MAX_WHILE_ITERATIONS = 1000000  # Maintains the number of while iterations during one agent run
+
+
+@dataclass(frozen=True)
+class ExecutorPolicy:
+    """Declarative sandbox/resource/allow-list config for a Python executor.
+
+    Folds the four knobs that were previously scattered across positional args
+    (``additional_authorized_imports``), an untyped ``additional_functions``
+    bag, a ``max_print_output_length`` arg, and the module-level
+    ``MAX_OPERATIONS`` / ``MAX_WHILE_ITERATIONS`` constants into one frozen
+    config object.
+
+    Amended (O14(a)): EXACTLY 6 fields. ``base_imports``, ``unblock_functions``,
+    ``block_extra_functions`` and ``block_extra_modules`` are DROPPED — the base
+    module set is a library constant the policy layers ON TOP of, and
+    dangerous-fn unblocking / extra blocking had no live consumer. ``evolve()``
+    is also DROPPED (O14(b)) — callers construct a new ``ExecutorPolicy`` or use
+    the ``file_io_policy()`` preset.
+    """
+
+    # --- imports allow-list -------------------------------------------------
+    authorized_imports: tuple[str, ...] = ()      # ADDED on top of the library base modules
+    allow_all_imports: bool = False               # == today's ["*"]; use with care
+
+    # --- builtins ergonomics ------------------------------------------------
+    extra_builtins: Mapping[str, Callable] = field(default_factory=dict)
+    #   name -> callable, merged OVER BASE_PYTHON_TOOLS (this is where `open` goes,
+    #   instead of the untyped `additional_functions` bag).
+
+    # --- output budget (single source of truth; kills the F6 re-truncate) ---
+    max_output_chars: int = DEFAULT_MAX_LEN_OUTPUT     # 50_000
+
+    # --- resource limits (was module globals — U2) --------------------------
+    max_operations: int = MAX_OPERATIONS               # 10_000_000
+    max_while_iterations: int = MAX_WHILE_ITERATIONS   # 1_000_000
+
+    @property
+    def effective_imports(self) -> tuple[str, ...]:
+        """The full authorized-imports tuple threaded into the evaluator.
+
+        Wildcard (``allow_all_imports``) collapses to the single ``("*",)``
+        entry; otherwise the library base module set comes first (in declared
+        order) with ``authorized_imports`` layered on top and de-duplicated.
+        """
+        if self.allow_all_imports:
+            return ("*",)
+        return tuple(dict.fromkeys((*BASE_BUILTIN_MODULES, *self.authorized_imports)))
+
+    def build_builtins(self) -> dict[str, Callable]:
+        """``BASE_PYTHON_TOOLS`` with ``extra_builtins`` merged over it.
+
+        (O14(a): no unblock/block knobs — extension is additive via
+        ``extra_builtins``.) The base tools dict is never mutated.
+        """
+        return {**BASE_PYTHON_TOOLS, **self.extra_builtins}
 
 def truncate_content(content: str, max_length: int | None = DEFAULT_MAX_LEN_OUTPUT) -> str:
     if max_length is None:

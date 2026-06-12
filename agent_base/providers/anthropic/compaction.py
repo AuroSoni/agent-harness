@@ -15,12 +15,12 @@ from typing import Any, TYPE_CHECKING
 from agent_base.core.messages import Message
 from agent_base.core.types import Role, ThinkingContent, ToolResultBase
 from agent_base.logging import get_logger
-from agent_base.streaming.types import MetaDelta
+from agent_base.streaming.meta import Custom
 
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from agent_base.streaming.base import StreamFormatter
+    from agent_base.streaming.wire import DeltaSink
 
     from .provider import AnthropicProvider
     from .token_estimation import AnthropicTokenEstimator
@@ -72,14 +72,12 @@ class CompactionController:
         config: CompactionConfig,
         provider: AnthropicProvider,
         token_estimator: AnthropicTokenEstimator,
-        max_retries: int,
-        base_delay: float,
     ) -> None:
+        # O12(c): no max_retries/base_delay -- the provider reads its own
+        # self.retry_policy when it does the backoff.
         self.config = config
         self.provider = provider
         self.token_estimator = token_estimator
-        self.max_retries = max_retries
-        self.base_delay = base_delay
         self.last_compaction_meta: dict[str, Any] | None = None
 
     def should_compact(
@@ -157,8 +155,7 @@ class CompactionController:
         context_messages: list[Message],
         model: str,
         agent_uuid: str,
-        queue: asyncio.Queue | None = None,
-        stream_formatter: StreamFormatter | None = None,
+        sink: "DeltaSink | None" = None,
         reason: str = "threshold",
     ) -> list[Message]:
         """Compact the older portion of the context into a summary message."""
@@ -194,40 +191,33 @@ class CompactionController:
         summary_model = self.config.model or model
         summary_config = self._build_summary_config()
 
-        if queue is not None and stream_formatter is not None:
-            await self._emit_meta(
-                queue=queue,
-                stream_formatter=stream_formatter,
-                agent_uuid=agent_uuid,
+        if sink is not None:
+            self._emit_meta(
+                sink=sink,
                 event_type="compaction_start",
                 payload={"reason": reason},
             )
-            stream_result = await self.provider.generate_stream(
+            turn = await self.provider.generate_stream(
                 system_prompt=None,
                 messages=summary_chain,
                 tool_schemas=[],
                 llm_config=summary_config,
                 model=summary_model,
-                max_retries=self.max_retries,
-                base_delay=self.base_delay,
-                queue=queue,
-                stream_formatter=stream_formatter,
+                sink=sink,
                 stream_tool_results=False,
                 agent_uuid=agent_uuid,
             )
-            summary_text = self._extract_text(stream_result.message)
+            summary_text = self._extract_text(turn.message)
         else:
-            response_message = await self.provider.generate(
+            turn = await self.provider.generate(
                 system_prompt=None,
                 messages=summary_chain,
                 tool_schemas=[],
                 llm_config=summary_config,
                 model=summary_model,
-                max_retries=self.max_retries,
-                base_delay=self.base_delay,
                 agent_uuid=agent_uuid,
             )
-            summary_text = self._extract_text(response_message)
+            summary_text = self._extract_text(turn.message)
 
         summary_text = summary_text.strip()
         if not summary_text:
@@ -253,11 +243,9 @@ class CompactionController:
             "summary_tokens": summary_tokens,
         }
 
-        if queue is not None and stream_formatter is not None:
-            await self._emit_meta(
-                queue=queue,
-                stream_formatter=stream_formatter,
-                agent_uuid=agent_uuid,
+        if sink is not None:
+            self._emit_meta(
+                sink=sink,
                 event_type="compaction_end",
                 payload={
                     "reason": reason,
@@ -287,25 +275,16 @@ class CompactionController:
     @staticmethod
     def _build_summary_config() -> Any:
         """Build a minimal Anthropic config for summarization calls."""
-        from .anthropic_agent import AnthropicLLMConfig
+        from .config import AnthropicLLMConfig
 
         return AnthropicLLMConfig(thinking_tokens=None)
 
     @staticmethod
-    async def _emit_meta(
-        queue: asyncio.Queue,
-        stream_formatter: StreamFormatter,
-        agent_uuid: str,
+    def _emit_meta(
+        sink: "DeltaSink",
         event_type: str,
         payload: dict[str, Any],
     ) -> None:
-        """Emit a meta streaming envelope around compaction activity."""
-        await stream_formatter.format_delta(
-            MetaDelta(
-                agent_uuid=agent_uuid,
-                type=event_type,
-                payload=payload,
-                is_final=True,
-            ),
-            queue,
-        )
+        """Emit a compaction Custom control event (streaming-and-meta SS3 --
+        meta events are MetaEnvelope bodies; legacy MetaDelta deleted O3/G0)."""
+        sink.emit_meta(Custom(name=event_type, data=dict(payload)))
