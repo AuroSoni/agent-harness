@@ -114,7 +114,10 @@ if TYPE_CHECKING:
         AgentConfigAdapter,
         ConversationAdapter,
         AgentRunAdapter,
+        CheckpointAdapter,
     )
+    from agent_base.blob_store.base import KeyedBlobStore
+    from agent_base.core.checkpoint import CheckpointRef
     from agent_base.streaming.wire import DeltaSink
 
 MAX_PARALLEL_TOOL_CALLS = 5
@@ -215,6 +218,11 @@ class AnthropicAgent(AgentRuntime):
         config_adapter: "AgentConfigAdapter | None" = None,
         conversation_adapter: "ConversationAdapter | None" = None,
         run_adapter: "AgentRunAdapter | None" = None,
+        # fork-reset (opt-in): a CheckpointAdapter turns capture ON; a
+        # KeyedBlobStore content-addresses the transcript segments + sandbox
+        # snapshot. With no adapter wired the feature is off (no capture).
+        checkpoint_adapter: "CheckpointAdapter | None" = None,
+        blob_store: "KeyedBlobStore | None" = None,
         media_backend: "MediaBackend | None" = None,
         fallback_api_keys: list[str] | None = None,
         # Fork P-A: the provider VALUE (Style-3 factory subclasses pre-bind it).
@@ -244,10 +252,16 @@ class AnthropicAgent(AgentRuntime):
         self.config_adapter = config_adapter or MemoryAgentConfigAdapter()
         self.conversation_adapter = conversation_adapter or MemoryConversationAdapter()
         self.run_adapter = run_adapter or MemoryAgentRunAdapter()
+        # fork-reset: opt-in — NO Memory default (D1: capture is off unless a
+        # consumer wires an adapter). ``_blobs`` is the content-addressed store
+        # for transcript segments + the sandbox snapshot.
+        self.checkpoint_adapter = checkpoint_adapter
+        self._blobs = blob_store
         # GF-P8G2: the concrete ctor replaces the base-bound adapters with the
         # defaulted ones above — re-bind them to a NAMED ctor principal via the
         # ONE for_principal seam (O2) so AnthropicAgent(principal=...) scopes
-        # storage exactly like the base runtime does.
+        # storage exactly like the base runtime does. _rebind_adapters also
+        # binds the checkpoint adapter (getattr-guarded) now that it is set.
         if self.principal is not None and not self.principal.is_anonymous():
             self._rebind_adapters(self.principal)
 
@@ -2642,6 +2656,81 @@ class AnthropicAgent(AgentRuntime):
                 self._run_id,
                 self._run_logs,
             )
+
+        # fork-reset: capture a checkpoint at the quiescent turn boundary. Auto
+        # (SPEC §D1) — a single insertion point that covers both the live
+        # finalize path and the scripted record_turn path (both reach here via
+        # _persist_state). No-op unless a CheckpointAdapter is wired.
+        await self.capture_checkpoint(created_at=now)
+
+    async def _capture_turn_checkpoint(self, conversation: "Conversation") -> None:
+        """Scripted-turn capture seam (overrides the base no-op): record_turn
+        persists a LOCAL Conversation (not ``self.conversation``), so it hands
+        that row here for fork-reset capture."""
+        await self.capture_checkpoint(conversation)
+
+    async def capture_checkpoint(
+        self,
+        conversation: "Conversation | None" = None,
+        *,
+        created_at: str | None = None,
+    ) -> "CheckpointRef | None":
+        """Capture a fork/reset checkpoint of the agent + sandbox at this turn
+        boundary. Core runtime behavior gated on adapter presence (SPEC §D1) —
+        NOT a lifecycle hook. Captures the codec-split ``AgentConfig`` and the
+        sandbox snapshot as ONE row (SPEC §F2). Returns the ref, or ``None`` when
+        the feature is off (no adapter), there is no turn to capture, or the
+        agent is paused mid-turn (``pending_relay`` set — NOT a quiescent
+        boundary). ``conversation`` defaults to the live ``self.conversation``;
+        the scripted path passes its per-run row explicitly.
+        """
+        conversation = conversation if conversation is not None else self.conversation
+        if self.checkpoint_adapter is None or conversation is None:
+            return None
+        # Turn-boundary only: never checkpoint a paused (mid-relay) state.
+        if self.agent_config.pending_relay is not None:
+            return None
+
+        from agent_base.core.checkpoint import Checkpoint, CheckpointRef
+        from agent_base.sandbox.snapshot import SandboxSnapshotter
+        from agent_base.storage.checkpoint_codec import split_config_for_checkpoint
+
+        tenant = self.agent_config.owner_tenant or "_"
+        base, transcript_segments, log_segments, codec_v = (
+            await split_config_for_checkpoint(
+                self.agent_config, self._blobs, tenant=tenant
+            )
+        )
+
+        manifest_ref: str | None = None
+        fidelity = "full"
+        if self._sandbox is not None:
+            if self._blobs is not None:
+                _manifest, manifest_ref = await SandboxSnapshotter(
+                    self._sandbox, self._blobs, tenant=tenant
+                ).capture()
+                fidelity = _manifest.fidelity
+            else:
+                # a workspace exists but no CAS is wired to snapshot it
+                fidelity = "degraded"
+
+        checkpoint = Checkpoint(
+            ref=CheckpointRef(
+                agent_uuid=self.agent_config.agent_uuid,
+                sequence_number=conversation.sequence_number or 0,
+                run_id=conversation.run_id or self._run_id or "",
+                created_at=created_at or datetime.now(timezone.utc).isoformat(),
+                fidelity=fidelity,
+            ),
+            config_base=base,
+            transcript_segments=transcript_segments,
+            log_segments=log_segments,
+            transcript_codec_v=codec_v,
+            sandbox_manifest_ref=manifest_ref,
+            consumer_payload={},   # the consumer reconciles its refs post-hoc
+        )
+        await self.checkpoint_adapter.save(checkpoint)
+        return checkpoint.ref
 
     def _warn_orphaned_tool_uses(self, messages: list[Message]) -> None:
         """Log a warning if any tool_use block lacks a matching tool_result."""

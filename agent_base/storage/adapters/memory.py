@@ -12,6 +12,9 @@ from ..base import (
     Conversation,
     ConversationAdapter,
     AgentRunAdapter,
+    Checkpoint,
+    CheckpointAdapter,
+    CheckpointRef,
     LogEntry,
 )
 from ...logging import get_logger
@@ -161,16 +164,20 @@ class MemoryConversationAdapter(ConversationAdapter):
                 backend="memory"
             )
         else:
-            # New conversation — assign next sequence number.
-            last_seq = self._sequences.get(agent_uuid, 0)
-            next_seq = last_seq + 1
-            self._sequences[agent_uuid] = next_seq
-            conversation.sequence_number = next_seq
+            # New conversation — auto-assign the next sequence number, but
+            # PRESERVE an explicitly-set one (parity with the Pg adapter; fork
+            # copies history with stable sequence numbers).
+            if conversation.sequence_number is None:
+                last_seq = self._sequences.get(agent_uuid, 0)
+                conversation.sequence_number = last_seq + 1
+            self._sequences[agent_uuid] = max(
+                self._sequences.get(agent_uuid, 0), conversation.sequence_number
+            )
             self._data[agent_uuid].append(deepcopy(conversation))
             logger.debug(
                 "Saved conversation",
                 agent_uuid=agent_uuid,
-                sequence_number=next_seq,
+                sequence_number=conversation.sequence_number,
                 backend="memory"
             )
 
@@ -192,8 +199,14 @@ class MemoryConversationAdapter(ConversationAdapter):
         limit: int = 20,
         offset: int = 0
     ) -> list[Conversation]:
-        """Load paginated conversation history (newest first)."""
-        conversations = self._data.get(agent_uuid, [])
+        """Load paginated conversation history (newest first).
+
+        Archived (post-reset) runs are hidden so a reset truncates history.
+        """
+        conversations = [
+            c for c in self._data.get(agent_uuid, [])
+            if not getattr(c, "archived", False)
+        ]
 
         # Sort by sequence_number descending
         sorted_convs = sorted(
@@ -220,7 +233,10 @@ class MemoryConversationAdapter(ConversationAdapter):
         limit: int = 20
     ) -> tuple[list[Conversation], bool]:
         """Load conversations with cursor-based pagination."""
-        conversations = self._data.get(agent_uuid, [])
+        conversations = [
+            c for c in self._data.get(agent_uuid, [])
+            if not getattr(c, "archived", False)
+        ]
 
         # Sort by sequence_number descending
         sorted_convs = sorted(
@@ -249,6 +265,24 @@ class MemoryConversationAdapter(ConversationAdapter):
             backend="memory"
         )
         return [deepcopy(c) for c in result], has_more
+
+    async def archive_after(
+        self, agent_uuid: str, sequence_number: int
+    ) -> int:
+        """Flip archived=True for every run after sequence_number (never delete)."""
+        count = 0
+        for c in self._data.get(agent_uuid, []):
+            if (c.sequence_number or 0) > sequence_number and not c.archived:
+                c.archived = True
+                count += 1
+        logger.debug(
+            "Archived conversations",
+            agent_uuid=agent_uuid,
+            after=sequence_number,
+            count=count,
+            backend="memory",
+        )
+        return count
 
     def clear(self) -> None:
         """Clear all stored conversations (useful for test cleanup)."""
@@ -305,4 +339,98 @@ class MemoryAgentRunAdapter(AgentRunAdapter):
 
     def clear(self) -> None:
         """Clear all stored logs (useful for test cleanup)."""
+        self._data.clear()
+
+
+class MemoryCheckpointAdapter(CheckpointAdapter):
+    """In-memory adapter for fork/reset checkpoints.
+
+    Stores checkpoints in a nested dict for testing. Honors the archive flag
+    (reset never deletes) and is principal-agnostic (memory backends carry the
+    bound principal but do not scope rows).
+    """
+
+    def __init__(self):
+        """Initialize in-memory checkpoint adapter."""
+        # {agent_uuid: {sequence_number: Checkpoint}}
+        self._data: dict[str, dict[int, Checkpoint]] = {}
+
+    async def save(self, checkpoint: Checkpoint) -> None:
+        """Save (upsert by (agent_uuid, sequence_number)) a checkpoint."""
+        agent_uuid = checkpoint.ref.agent_uuid
+        seq = checkpoint.ref.sequence_number
+        self._data.setdefault(agent_uuid, {})[seq] = deepcopy(checkpoint)
+        logger.debug(
+            "Saved checkpoint",
+            agent_uuid=agent_uuid,
+            sequence_number=seq,
+            backend="memory",
+        )
+
+    async def load(
+        self, agent_uuid: str, sequence_number: int
+    ) -> Checkpoint | None:
+        """Load a checkpoint by its turn boundary."""
+        checkpoint = self._data.get(agent_uuid, {}).get(sequence_number)
+        return deepcopy(checkpoint) if checkpoint is not None else None
+
+    async def load_latest(self, agent_uuid: str) -> Checkpoint | None:
+        """Load the most recent non-archived checkpoint."""
+        rows = [
+            cp for cp in self._data.get(agent_uuid, {}).values()
+            if not cp.archived
+        ]
+        if not rows:
+            return None
+        latest = max(rows, key=lambda cp: cp.ref.sequence_number)
+        return deepcopy(latest)
+
+    async def list_refs(
+        self,
+        agent_uuid: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        include_archived: bool = False,
+    ) -> tuple[list[CheckpointRef], int]:
+        """List checkpoint pointers newest-first, filtering archived by default."""
+        rows = [
+            cp for cp in self._data.get(agent_uuid, {}).values()
+            if include_archived or not cp.archived
+        ]
+        rows.sort(key=lambda cp: cp.ref.sequence_number, reverse=True)
+        total = len(rows)
+        page = rows[offset:offset + limit]
+        return [deepcopy(cp.ref) for cp in page], total
+
+    async def update_consumer_payload(
+        self, agent_uuid: str, sequence_number: int, payload: dict
+    ) -> bool:
+        """Replace the opaque consumer_payload for one checkpoint."""
+        checkpoint = self._data.get(agent_uuid, {}).get(sequence_number)
+        if checkpoint is None:
+            return False
+        checkpoint.consumer_payload = deepcopy(payload)
+        return True
+
+    async def archive_after(
+        self, agent_uuid: str, sequence_number: int
+    ) -> int:
+        """Flip archived=True for every checkpoint after sequence_number."""
+        count = 0
+        for seq, checkpoint in self._data.get(agent_uuid, {}).items():
+            if seq > sequence_number and not checkpoint.archived:
+                checkpoint.archived = True
+                count += 1
+        logger.debug(
+            "Archived checkpoints",
+            agent_uuid=agent_uuid,
+            after=sequence_number,
+            count=count,
+            backend="memory",
+        )
+        return count
+
+    def clear(self) -> None:
+        """Clear all stored checkpoints (useful for test cleanup)."""
         self._data.clear()

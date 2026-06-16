@@ -338,6 +338,12 @@ class Conversation:
     owner_tenant: str | None = None
     owner_subject: str | None = None
 
+    # --- Reset archive flag (fork-reset) — storage-plane, NOT in to_dict() ---
+    # Flipped TRUE by ``ConversationAdapter.archive_after`` when a reset rolls the
+    # session back past this run; history listings hide archived rows. NEVER a
+    # delete, so an "undo the reset" is a re-point. Immutable on upsert.
+    archived: bool = False
+
     # --- Pagination ---
     sequence_number: int | None = None
 

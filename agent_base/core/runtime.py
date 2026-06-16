@@ -457,13 +457,18 @@ class AgentRuntime:
         await self.checkpoint()
 
     def _rebind_adapters(self, principal: "SessionPrincipal") -> None:
-        """Re-bind ALL THREE adapters to ``principal`` via the ONE public
-        seam ``for_principal`` (O2) — keeping the bound views."""
+        """Re-bind ALL adapters to ``principal`` via the ONE public seam
+        ``for_principal`` (O2) — keeping the bound views."""
         self.config_adapter = self._bind_adapter(self.config_adapter, principal)
         self.conversation_adapter = self._bind_adapter(
             self.conversation_adapter, principal
         )
         self.run_adapter = self._bind_adapter(self.run_adapter, principal)
+        # fork-reset: the optional checkpoint adapter (getattr-guarded so base
+        # runtimes without one are unaffected) scopes the same way.
+        checkpoint_adapter = getattr(self, "checkpoint_adapter", None)
+        if checkpoint_adapter is not None:
+            self.checkpoint_adapter = self._bind_adapter(checkpoint_adapter, principal)
 
     def _reconcile_identity(self) -> None:
         """The I12(d) bidirectional principal reconciliation against the LIVE
@@ -699,6 +704,12 @@ class AgentRuntime:
         # turn boundary — a scripted turn is a first-class turn.
         await self.checkpoint()
 
+        # fork-reset: capture the agent+sandbox checkpoint for THIS scripted
+        # turn. The base is a no-op; a provider runtime with a CheckpointAdapter
+        # wired captures (SPEC §D1). record_turn persists a local Conversation
+        # (not self.conversation), so the row is handed in explicitly.
+        await self._capture_turn_checkpoint(conversation)
+
         # (c) RunCompleted after persistence — dropped silently with no reader.
         self._emit_run_frame_if_attached(
             self._build_run_completed(stop_reason, self._turn_count)
@@ -768,6 +779,13 @@ class AgentRuntime:
         save = getattr(self.conversation_adapter, "save", None)
         if callable(save):
             await save(conversation)
+
+    async def _capture_turn_checkpoint(self, conversation: "Conversation") -> None:
+        """Fork-reset checkpoint-capture seam for the scripted turn path
+        (AMENDMENTS — fork-reset). No-op on the base runtime; a provider runtime
+        (e.g. AnthropicAgent) overrides it to capture the agent+sandbox
+        checkpoint when a ``CheckpointAdapter`` is wired (SPEC §D1)."""
+        return None
 
     def _build_run_started(self, user_message: Message) -> "MetaBody":
         """Build the ``RunStarted`` meta body for a turn (GF-P5LG1).

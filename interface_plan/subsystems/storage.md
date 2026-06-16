@@ -57,7 +57,17 @@ class StorageHandles:                          # agent_base/storage/handles.py
     conversation: ConversationAdapter
     run: AgentRunAdapter
     analytics: AnalyticsReader | None = None   # §2.7; None when backend can't query cross-agent
+    checkpoint: CheckpointAdapter | None = None  # fork-reset (FR); None = feature off
+    blobs: KeyedBlobStore | None = None          # CAS for transcript segments + sandbox manifest
 ```
+
+> **Fork-reset (FR).** A 4th adapter `CheckpointAdapter` + a 4th library table `agent_checkpoints`
+> back fork/reset-to-checkpoint, and `conversation_history` gains an `archived` flag (a reset archives
+> the tail, never deletes — `ConversationAdapter.archive_after`, with `load_history`/`load_cursor`
+> filtering archived out and `load_by_run_id` as the archived-read path). The transcript is
+> content-addressed into the CAS to keep checkpoint storage sub-quadratic. Full surface:
+> `subsystems/fork-reset.md` and `AMENDMENTS.md` (FR). Schema cut: `LIBRARY_SCHEMA_VERSION` 4 -> 5 with
+> an idempotent `Migration(4, 5)` whose CREATE TABLE matches the registry's fresh-create DDL.
 
 > **Identity model (Fork A = A+B composition, DECIDED; binding seam per O2).** `SessionPrincipal` is imported from its canonical home `agent_base/core/identity.py` (R1). This doc threads **ambient `SessionPrincipal`** as the behavioral scoping surface and persists **typed `owner_*` columns** as the storage projection — but per **tenancy O2** there is exactly **ONE public binding seam: `adapter.for_principal(principal)`**. The owner columns are what the bound library adapter does *internally*; `Scope`, `set_scope()`, and `Scoped*Adapter.wrap` are **deleted** from the public surface (see tenancy-principal §A.2). The bound adapter reads `principal.tenant`/`.subject` by convention and ignores claims by not reading them. A-alone loses isolation on a direct cold-load resume; B-alone re-introduces per-entity reads; the composition makes them "one system from two ends" behind the single `for_principal` seam. The *storage extensibility* surface (§2.2) is the **A1 `ColumnSpec` engine + `principal_columns()` ONLY** in v1 (O1); A2 annotated-model sugar is deferred to §7. §2.4 shows how the bound adapter's `_scoped_where` folds in the principal filter columns (get-from-principal for the ambient half, get-from-entity for the persisted column half) — both are the *internals* of the one bound adapter.
 

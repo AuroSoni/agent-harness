@@ -359,6 +359,14 @@ class SessionManager:
 > `principal_policy` ctor arg (§I1), `status()`/`SessionStatus` (with `open_awaits` per §I8 and a
 > derived `in_flight` property per §O15d), `OpenAwait`, `detach()`, and the `on_session_start`
 > firing inside `get_or_create`. **Removed:** `new_session_id()` (§O15a — consumer mints the id).
+
+> **Fork-reset (FR) — reset reuses the evict guard.** The cold `reset_session` verb
+> (`core/fork_reset.py`, see `subsystems/fork-reset.md`) evicts a resident session BEFORE rewriting
+> its persisted state, and `_is_evictable` is exactly the interlock: a turn in flight or an open await
+> makes `evict()` return `False`, which the verb surfaces as `SessionBusy`. After eviction the verb
+> archives the tail, restores the config + sandbox, and the next `get_or_create` cold-loads the
+> restored row (with `ensure_chain_validity` sanitizing the transcript). The reset of agent + sandbox
+> is unconditional; workbook divergence is decided by the backend around the verb (not in the library).
 >
 > **AMENDED (2026-06-12, GF-P6G1):** the §2.5 create-vs-resume probe is now REAL —
 > `AgentRuntime.has_persisted_state() -> bool` is IMPLEMENTED (probes the bound config adapter

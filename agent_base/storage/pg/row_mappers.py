@@ -25,6 +25,7 @@ from agent_base.core.config import (
     LLMConfig,
     SubAgentSchema,
 )
+from agent_base.core.checkpoint import Checkpoint, CheckpointRef
 from agent_base.core.conversation_log import ConversationLog
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import LogEntry
@@ -194,6 +195,9 @@ _CONVERSATION_COLUMNS: list[tuple[str, str, Callable[[Conversation], Any]]] = [
      lambda c: to_jsonb(c.cost.to_dict() if c.cost else None)),
     ("created_at", "TIMESTAMPTZ", lambda c: to_datetime(c.created_at)),
     ("extras", "JSONB", lambda c: to_jsonb(c.extras)),
+    # fork-reset: appended last so fresh-create column order matches the
+    # v4->v5 ALTER ... ADD COLUMN (which always appends).
+    ("archived", "BOOLEAN NOT NULL DEFAULT FALSE", lambda c: c.archived),
 ]
 
 # agent_runs rows carry run identity alongside the entry fields, so the row
@@ -208,6 +212,29 @@ _RUN_LOG_COLUMNS: list[tuple[str, str]] = [
     ("duration_ms", "DOUBLE PRECISION"),
     ("usage", "JSONB"),
     ("extras", "JSONB"),
+]
+
+# fork-reset: the checkpoint row. Getters read the nested ``ref`` for the
+# identity/fidelity fields and the Checkpoint body for the rest. The migration
+# CREATE TABLE (schema.py) MUST stay byte-equivalent with these (name sql_type)
+# pairs — the v4->v5 parity test asserts fresh-create DDL == migrated DDL.
+_CHECKPOINT_COLUMNS: list[tuple[str, str, Callable[[Checkpoint], Any]]] = [
+    ("agent_uuid", "TEXT NOT NULL", lambda c: c.ref.agent_uuid),
+    ("sequence_number", "INTEGER NOT NULL", lambda c: c.ref.sequence_number),
+    ("run_id", "TEXT NOT NULL", lambda c: c.ref.run_id),
+    ("config_snapshot", "JSONB NOT NULL", lambda c: to_jsonb(c.config_base)),
+    ("transcript_segments", "TEXT[] NOT NULL DEFAULT '{}'",
+     lambda c: list(c.transcript_segments)),
+    ("log_segments", "TEXT[] NOT NULL DEFAULT '{}'",
+     lambda c: list(c.log_segments)),
+    ("transcript_codec_v", "INTEGER NOT NULL DEFAULT 1",
+     lambda c: c.transcript_codec_v),
+    ("sandbox_manifest_ref", "TEXT", lambda c: c.sandbox_manifest_ref),
+    ("consumer_payload", "JSONB NOT NULL DEFAULT '{}'",
+     lambda c: to_jsonb(c.consumer_payload)),
+    ("fidelity", "TEXT NOT NULL DEFAULT 'full'", lambda c: c.ref.fidelity),
+    ("archived", "BOOLEAN NOT NULL DEFAULT FALSE", lambda c: c.archived),
+    ("created_at", "TIMESTAMPTZ", lambda c: to_datetime(c.ref.created_at)),
 ]
 
 
@@ -305,6 +332,33 @@ def row_to_conversation(row: Mapping[str, Any]) -> Conversation:
         sequence_number=_val(row, "sequence_number"),
         created_at=iso(_val(row, "created_at")),
         extras=from_jsonb(_val(row, "extras")) or {},
+        archived=bool(_val(row, "archived", False)),
+    )
+
+
+def checkpoint_to_row(checkpoint: Checkpoint) -> dict[str, Any]:
+    """Checkpoint -> column-name -> value mapping."""
+    return {name: get(checkpoint) for name, _sql_type, get in _CHECKPOINT_COLUMNS}
+
+
+def row_to_checkpoint(row: Mapping[str, Any]) -> Checkpoint:
+    """Database row -> Checkpoint (fork-reset)."""
+    ref = CheckpointRef(
+        agent_uuid=str(_val(row, "agent_uuid", "")),
+        sequence_number=_val(row, "sequence_number", 0),
+        run_id=str(_val(row, "run_id", "")),
+        created_at=iso(_val(row, "created_at")) or "",
+        fidelity=_val(row, "fidelity", "full"),
+    )
+    return Checkpoint(
+        ref=ref,
+        config_base=from_jsonb(_val(row, "config_snapshot")) or {},
+        transcript_segments=list(_val(row, "transcript_segments") or []),
+        log_segments=list(_val(row, "log_segments") or []),
+        transcript_codec_v=_val(row, "transcript_codec_v", 1),
+        sandbox_manifest_ref=_val(row, "sandbox_manifest_ref"),
+        consumer_payload=from_jsonb(_val(row, "consumer_payload")) or {},
+        archived=bool(_val(row, "archived", False)),
     )
 
 
@@ -348,6 +402,8 @@ __all__ = [
     "row_to_config",
     "conversation_to_row",
     "row_to_conversation",
+    "checkpoint_to_row",
+    "row_to_checkpoint",
     "log_entry_to_row",
     "row_to_log_entry",
 ]
