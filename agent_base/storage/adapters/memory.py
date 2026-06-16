@@ -5,6 +5,7 @@ They are useful for unit testing without requiring actual storage backends.
 """
 
 from copy import deepcopy
+from dataclasses import replace
 
 from ..base import (
     AgentConfig,
@@ -356,10 +357,29 @@ class MemoryCheckpointAdapter(CheckpointAdapter):
         self._data: dict[str, dict[int, Checkpoint]] = {}
 
     async def save(self, checkpoint: Checkpoint) -> None:
-        """Save (upsert by (agent_uuid, sequence_number)) a checkpoint."""
+        """Save (upsert by (agent_uuid, sequence_number)) a checkpoint.
+
+        The structural snapshot (config / transcript / sandbox) is (re)written,
+        but on an upsert of an EXISTING row three fields are owned by dedicated
+        methods and preserved, NOT overwritten — mirroring the pg adapter's
+        ``immutable_on_conflict`` columns:
+          - ``consumer_payload`` — owned by ``update_consumer_payload`` (the
+            consumer's out-of-band reconciliation); ``capture_checkpoint``
+            re-saves with ``{}`` on many paths, which must not clobber it.
+          - ``archived`` — owned by ``archive_after`` (a re-save must not
+            un-archive a row).
+          - ``ref.created_at`` — set once, at the first insert.
+        """
         agent_uuid = checkpoint.ref.agent_uuid
         seq = checkpoint.ref.sequence_number
-        self._data.setdefault(agent_uuid, {})[seq] = deepcopy(checkpoint)
+        bucket = self._data.setdefault(agent_uuid, {})
+        stored = deepcopy(checkpoint)
+        existing = bucket.get(seq)
+        if existing is not None:
+            stored.consumer_payload = deepcopy(existing.consumer_payload)
+            stored.archived = existing.archived
+            stored.ref = replace(stored.ref, created_at=existing.ref.created_at)
+        bucket[seq] = stored
         logger.debug(
             "Saved checkpoint",
             agent_uuid=agent_uuid,

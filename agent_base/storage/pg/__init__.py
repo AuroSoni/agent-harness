@@ -115,13 +115,21 @@ _AGENT_RUNS_BASE_COLUMNS: list[ColumnSpec] = [
     for name, sql_type in _RUN_LOG_COLUMNS
 ]
 
-# fork-reset: agent_checkpoints. Conflict key is (agent_uuid, sequence_number);
-# ``archived`` is managed by ``archive_after`` only, so it is immutable on upsert.
+# fork-reset: agent_checkpoints. Conflict key is (agent_uuid, sequence_number).
+# Three columns are managed by dedicated methods, NOT the row upsert, so a
+# re-``save()`` of an existing checkpoint must never overwrite them:
+#   - ``archived``          -> managed by ``archive_after`` (must not un-archive).
+#   - ``consumer_payload``  -> managed by ``update_consumer_payload`` (the
+#     consumer's out-of-band reconciliation, e.g. Nova's workbook capture).
+#     ``capture_checkpoint`` always re-saves with ``consumer_payload={}``, and
+#     ``_persist_state`` fires on many paths (finalize/relay/abort/retry), so
+#     without this a re-save races and clobbers the consumer's reconciled refs.
+#   - ``created_at``        -> set once at first insert.
 _CHECKPOINT_BASE_COLUMNS: list[ColumnSpec] = [
     _base_spec(
         name, sql_type, get,
         conflict_key=("agent_uuid", "sequence_number"),
-        immutable=frozenset({"created_at", "archived"}),
+        immutable=frozenset({"created_at", "archived", "consumer_payload"}),
     )
     for name, sql_type, get in _CHECKPOINT_COLUMNS
 ]

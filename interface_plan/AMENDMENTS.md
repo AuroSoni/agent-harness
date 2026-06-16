@@ -663,6 +663,19 @@ same change (storage rule).
   (parity test). `AnthropicAgent` gains `checkpoint_adapter=`/`blob_store=` ctor kwargs (opt-in, no
   Memory default). Blob deletion/GC is deferred to V2 (must be refcount/mark-sweep-safe across all
   checkpoints AND forks — SPEC §D3).
+- **FR-8 — the checkpoint's `consumer_payload` is IMMUTABLE on upsert** (2026-06-17, found by live
+  fork/reset workbook testing). The opaque consumer slot is owned by `update_consumer_payload`
+  (out-of-band reconciliation, e.g. Nova's restore-grade workbook ref), NOT the structural row
+  upsert. Because the library auto-captures via `_persist_state` on many paths (finalize / relay /
+  abort / retry) — each re-`save()`-ing the SAME `(agent_uuid, sequence)` with `consumer_payload={}`
+  — a mutable upsert raced and clobbered the consumer's reconciled refs (so a reconciled workbook
+  non-deterministically reverted to `{}`). Fix: `consumer_payload` joins `created_at` + `archived` in
+  the checkpoint columns' `immutable_on_conflict` set (`storage/pg`), and the reference
+  `MemoryCheckpointAdapter.save` preserves an existing row's `consumer_payload` (+ `archived` +
+  `created_at`) on re-save. This is the SAME immutable-on-upsert discipline FR-7 already applied to
+  `conversation_history.archived`. No schema / DB-column change, no migration. Specs:
+  `test_fork_reset_checkpoint_adapter.py::test_save_does_not_clobber_reconciled_consumer_payload` and
+  `::test_save_does_not_un_archive_an_archived_checkpoint`.
 - Subsystem docs: `subsystems/fork-reset.md` (new), `storage.md` (the 4th adapter + table),
   `session-control.md` (reset evict-then-restore note). Specs: `tests/interface/fork_reset/` (31):
   `test_fork_reset_checkpoint_adapter.py`, `test_fork_reset_codec.py`,

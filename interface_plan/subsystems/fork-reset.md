@@ -22,6 +22,7 @@ await). The library never parses the workbook.
 
 ```python
 async def save(cp: Checkpoint) -> None                          # INSERT/upsert by (agent_uuid, seq)
+#   on upsert of an EXISTING row, consumer_payload + archived + created_at are NOT overwritten (FR-8)
 async def load(agent_uuid, sequence_number) -> Checkpoint | None
 async def load_latest(agent_uuid) -> Checkpoint | None          # highest non-archived
 async def list_refs(agent_uuid, *, limit=50, offset=0,
@@ -41,6 +42,15 @@ extras), `created_at`. `LIBRARY_SCHEMA_VERSION` **4 -> 5** + an idempotent `Migr
 same cut, built on the real `ColumnRegistry`/`principal_columns()` engine. The migration's CREATE
 TABLE is kept structurally identical to the registry's fresh-create DDL (parity test, criterion #8).
 `StorageHandles` gains `checkpoint` + `blobs` slots (both default `None` = feature off).
+
+**Upsert immutability (FR-8).** Three columns are owned by dedicated methods, NOT the structural row
+`save` upsert, so a re-`save()` of an existing `(agent_uuid, sequence_number)` must NOT overwrite
+them: `consumer_payload` (owned by `update_consumer_payload` — the consumer's out-of-band
+reconciliation, e.g. Nova's restore-grade workbook ref), `archived` (owned by `archive_after`), and
+`created_at` (set once). The library auto-captures via `_persist_state` on many paths (finalize /
+relay / abort / retry), each re-saving the turn's checkpoint with `consumer_payload={}`; without this
+immutability a mutable upsert races and clobbers the consumer's reconciled refs. Enforced by
+`immutable_on_conflict` in the checkpoint column registry (mirrors `conversation_history.archived`).
 
 ## 2. Transcript codec — `storage/checkpoint_codec.py` (defeats O(n^2))
 

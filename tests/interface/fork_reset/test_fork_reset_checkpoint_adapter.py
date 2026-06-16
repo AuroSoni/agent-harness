@@ -110,3 +110,34 @@ async def test_update_consumer_payload_replaces_opaque_slot():
 async def test_update_consumer_payload_missing_row_returns_false():
     a = MemoryCheckpointAdapter()
     assert await a.update_consumer_payload("u1", 99, {"x": 1}) is False
+
+
+async def test_save_does_not_clobber_reconciled_consumer_payload():
+    """The opaque consumer slot is owned by ``update_consumer_payload``, NOT the
+    structural row upsert. ``capture_checkpoint`` re-saves a checkpoint with
+    ``consumer_payload={}`` on many paths (finalize / relay / abort / retry), so
+    a re-``save`` must NOT wipe a payload the consumer reconciled out-of-band
+    (e.g. Nova's restore-grade workbook ref). Structural fields still update.
+    (AMENDMENTS FR-8.)
+    """
+    a = MemoryCheckpointAdapter()
+    await a.save(_cp("u1", 1))                                  # first insert: payload {}
+    assert await a.update_consumer_payload("u1", 1, {"workbook": {"blob_ref": "x"}})
+    # A later structural re-save carries the default empty payload...
+    await a.save(_cp("u1", 1, payload={}))
+    got = await a.load("u1", 1)
+    # ...but the reconciled slot survives (owned by update_consumer_payload).
+    assert got.consumer_payload == {"workbook": {"blob_ref": "x"}}
+
+
+async def test_save_does_not_un_archive_an_archived_checkpoint():
+    """``archived`` is owned by ``archive_after``; a structural re-``save`` must
+    not flip it back (the same immutable-on-upsert class as ``consumer_payload``).
+    """
+    a = MemoryCheckpointAdapter()
+    await a.save(_cp("u1", 1))
+    await a.save(_cp("u1", 2))
+    await a.archive_after("u1", 1)                              # archive seq 2
+    await a.save(_cp("u1", 2))                                  # re-save the archived row
+    refs, total = await a.list_refs("u1")
+    assert total == 1 and [r.sequence_number for r in refs] == [1]  # still archived
