@@ -14,3 +14,5 @@ agent-media/
 test_data/
 sandbox_data/
 .playwright-mcp/
+# graphify knowledge-graph output
+graphify-out/
