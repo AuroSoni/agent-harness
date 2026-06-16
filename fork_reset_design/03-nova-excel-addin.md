@@ -1,116 +1,129 @@
-# Repo 3 — `nova_excel_addin` — Pseudo-code Interface
+# Repo 3 — `nova_excel_addin` — Interface
 
-> The add-in implements the **actual workbook capture and restore** (Office.js), evaluates the
-> **feature gate**, and **orchestrates** the fork/reset UX by calling the backend.
+> The add-in implements the **actual workbook capture and restore** (Office.js), the **feature
+> gate**, and the fork/reset **UX orchestration**. See `SPEC.md` for the decision ledger.
 >
-> Grounded on the benchmark outcome (`…/Temp/restore-benchmark-handoff-2026-06-14.md`):
-> **capture = `getFileAsync(Compressed)`**, **restore = `insertWorksheetsFromBase64` (ExcelApi
-> 1.13)**, restore-into-new-workbook is the validated path. Builds on the existing
-> `src/lib/benchmark/` capture/restore modules and `workbook-file.ts` helpers
-> (`bytesToBase64`, `restoreWorksheetsFromBase64`, `isInsertWorksheetsApiAvailable`) and the
-> telemetry snapshot pipeline (`src/lib/telemetry/workbook-snapshot.ts`).
+> **Grounded on real code (verified 2026-06-16):** the capture/restore transport already exists on
+> branch **`AuroSoni/benchmark-excel-reset`** at `src/lib/excel/workbook-file.ts` — `readCompressed
+> Workbook`, `restoreWorksheetsFromBase64`, `bytesToBase64`, `isInsertWorksheetsApiAvailable`. The
+> lifecycle snapshot pipeline is `src/lib/telemetry/{workbook-snapshot,run-session,snapshot-queue}.ts`,
+> driven from `src/hooks/use-conversation.ts` + `src/lib/agent-stream.ts`. The ExcelApi gate is
+> `isApiSupported` (`src/lib/excel/excel-service.ts:27`). NOTE: this transport is **not yet in the
+> product branch** — lifting it from `AuroSoni/benchmark-excel-reset` is the first add-in task.
 
 ---
+
+## 0. What changed from the original draft (read first)
+
+The first draft invented `getFileAsyncCompressed()` / inline `insertWorksheetsFromBase64` /
+`concat(slices)`. The **real, benchmarked API** (on `AuroSoni/benchmark-excel-reset`) is:
+
+| Draft pseudo-name | Real API in `workbook-file.ts` |
+|---|---|
+| `getFileAsyncCompressed()` | `readCompressedWorkbook({sliceSize}) -> WorkbookFileResult` (sequential 4 MB slices; normalizes `slice.data` across hosts; closes the File handle in `finally`; ≤2 open handles) |
+| inline `insertWorksheetsFromBase64` | `restoreWorksheetsFromBase64(base64, {sheetNamesToInsert, positionType, relativeTo})` — **inserts, never replaces**; caller deletes same-named sheets first |
+| (none) | `bytesToBase64(bytes)` — chunked at 32 KB (avoids stack overflow at XL) |
+| `Office.context.requirements.isSetSupported(...)` | `isInsertWorksheetsApiAvailable()` = `isApiSupported('ExcelApi','1.13')` |
 
 ## 1. Feature gate (capture-time, client-side)
 
 ```typescript
-const MIN_API: ExcelApiVersion = "1.13";        // restore floor (insertWorksheetsFromBase64)
+const MIN_API = "1.13";              // restore floor (insertWorksheetsFromBase64)
 const MAX_USED_CELLS = 1_200_000;
 const MAX_BYTES = 40 * 2 ** 20;
 
 async function workbookFeatureSupported(): Promise<{ok: boolean; meta: WorkbookMeta}> {
-  const meta = await measureWorkbook();          // used-range cells across sheets, sheet count
+  const meta = await measureWorkbook();              // used-range cells across sheets, sheet count
   const ok =
-    isInsertWorksheetsApiAvailable() &&          // ExcelApi 1.13 — gates BOTH capture+restore use
-    Office.context.requirements.isSetSupported("ExcelApi", MIN_API) &&
-    meta.usedCells <= MAX_USED_CELLS;            // bytes re-checked after getFileAsync
+    isInsertWorksheetsApiAvailable() &&              // ExcelApi 1.13 gate (excel-service.ts:27)
+    meta.usedCells <= MAX_USED_CELLS;                // bytes re-checked after the read
   return { ok, meta };
 }
 ```
 
-If `!ok`, the add-in does not capture; checkpoints for that turn are workbook-less, and the
-fork/reset UI offers **chat-only** for them.
+If `!ok`, the add-in does not capture; those checkpoints are workbook-less and the picker badges
+them **chat-only**.
 
-## 2. Capture — at each turn-end lifecycle trigger
+## 2. Capture — on the existing agent-run lifecycle (hardened per SPEC §D4)
 
-The lifecycle hook points already exist (the telemetry pipeline fires on prompt / complete /
-steer / abort). Capture is **mutation-gated** then **hash-gated** before the expensive byte grab.
+The lifecycle snapshot pipeline already exists for telemetry. It fires on four events through
+`TelemetryRunSession → enqueueSnapshot → snapshot-queue → workbook-snapshot`:
+
+| Event | Source | Reset role | Coverage (D4) |
+|---|---|---|---|
+| `prompt` | `submitPrompt()` | pre-turn baseline | best-effort |
+| `complete` | `emitCompleted()` | **the turn a user resets to** | **guaranteed** (never dropped) |
+| `failed` | `emitFailed()` | failed-turn restore point | **add (new)** — today emits no snapshot |
+| `abort` / `steer` | `emitAborted()` / `emitSteered()` | interruption boundaries | best-effort (may drop under saturation) |
+
+**The two D4 changes** to the telemetry pipeline for restore-grade use:
+1. **Guarantee `complete`** lands (never shed under `MAX_QUEUE_DEPTH` saturation) and **add a
+   `failed`-turn snapshot** (`emitFailed` currently enqueues nothing).
+2. Keep best-effort dropping only for the noisy soft triggers (`steer`/`abort`).
 
 ```typescript
-async function captureWorkbookSnapshot(agentUuid: string, runId: string,
-                                       sequenceNumber: number): Promise<CaptureOutcome> {
-  // (a) mutation gate — did this turn mutate the workbook? (from the agent's tool journal)
+async function captureWorkbookSnapshot(agentUuid, runId, sequenceNumber, trigger): Promise<CaptureOutcome> {
+  // (a) mutation gate — skip read-only turns (from the agent's tool journal).
   if (!turnMutatedWorkbook(runId)) return { status: "skipped", reason: "read-only-turn" };
 
-  // (b) feature gate
+  // (b) feature gate.
   const { ok, meta } = await workbookFeatureSupported();
   if (!ok) return { status: "unsupported", meta };
 
-  // (c) hash gate — logical hash over values+formulas+structure (≈ free per benchmark).
-  const logicalHash = await computeLogicalHash();          // serialize + SHA-256
+  // (c) hash gate — logical hash over values+formulas+structure (~free per benchmark).
+  const logicalHash = await computeLogicalHash();
   if (logicalHash === lastUploadedHash(agentUuid)) return { status: "skipped", reason: "unchanged" };
 
-  // (d) THE capture — compressed, restore-grade .xlsx via 4 MB slices (benchmark winner).
-  const xlsx = await getFileAsyncCompressed();             // ~280 ms/MB on the client
-  if (xlsx.byteLength > MAX_BYTES) return { status: "unsupported", meta };
+  // (d) THE capture — compressed, restore-grade .xlsx (benchmark winner, ~280 ms/MB on the client).
+  const { bytes } = await readCompressedWorkbook();           // workbook-file.ts (sequential 4 MB slices)
+  if (bytes.byteLength > MAX_BYTES) return { status: "unsupported", meta };
 
   // (e) upload out-of-band; backend reconciles into the checkpoint consumer slot.
   await api.uploadCapture(agentUuid, runId, sequenceNumber, {
-    logicalHash, usedCells: meta.usedCells, bytes: xlsx.byteLength,
+    logicalHash, usedCells: meta.usedCells, bytes: bytes.byteLength,
     captureApi: "getFileAsync", restoreApi: "insertWorksheetsFromBase64@1.13",
-  }, xlsx);
+  }, bytes);
   rememberUploadedHash(agentUuid, logicalHash);
   return { status: "ready" };
-}
-
-// getFileAsync reads the IN-MEMORY document → works for local AND shared-drive/cloud books
-// (no Graph dependency). Reassemble from slices:
-async function getFileAsyncCompressed(): Promise<Uint8Array> {
-  const file = await officeGetFile(Office.FileType.Compressed, { sliceSize: 4 * 2**20 });
-  const slices = await Promise.all(range(file.sliceCount).map(i => file.getSliceAsync(i)));
-  await file.closeAsync();
-  return concat(slices.map(s => s.data));
 }
 ```
 
 ## 3. Restore — the validated path (into a NEW / blank workbook)
 
-Used by **fork** and by **non-destructive reset** (`open_copy`). This is exactly what the
-benchmark measured (S1 into a blank workbook).
+Used by **fork** and by **non-destructive reset** (`open_copy`). Exactly what the benchmark measured
+(S1 into a blank book).
 
 ```typescript
 async function openSnapshotAsWorkbook(blobUrl: string): Promise<void> {
   const xlsx = await downloadBlob(blobUrl);
-  const base64 = bytesToBase64(xlsx);
-  // ExcelApi 1.13: rebuild sheets inside Excel's process (one bulk transfer — flattest scaler).
-  await Excel.run(async (ctx) => {
-    ctx.workbook.insertWorksheetsFromBase64(base64, {
-      position: Excel.WorksheetPositionType.beginning,
-    });
-    await ctx.sync();
-  });
-  await dropPlaceholderSheets();    // remove the blank book's default sheet
+  const base64 = bytesToBase64(xlsx);                          // chunked 32 KB encode
+  await restoreWorksheetsFromBase64(base64, { positionType: "Beginning" });   // ExcelApi 1.13
+  await dropPlaceholderSheets();                               // remove the blank book's default sheet
 }
 ```
+
+## 4. Restore in place — V1, properly tested (SPEC §F5, §6)
+
+In-place revert of the **current** workbook. NOT what the blank-book benchmark measured, so it ships
+**gated on the rich-data fidelity re-run** and a divergence-aware confirm so it never silently
+discards manual edits made since the last captured boundary.
 
 ```typescript
-// v2 only — destructive in-place replace. NOT benchmarked (S1 was measured into a blank book).
-// Gate behind explicit user confirmation; validate fidelity on rich data before shipping.
 async function replaceWorkbookInPlace(blobUrl: string): Promise<void> {
-  await confirmDestructive();                         // "This overwrites the current workbook"
+  await confirmDestructive();                                  // "This reverts the current workbook"
   const base64 = bytesToBase64(await downloadBlob(blobUrl));
   await Excel.run(async (ctx) => {
-    ctx.workbook.insertWorksheetsFromBase64(base64);  // insert snapshot sheets (suffixed)
+    // insert-then-delete: restoreWorksheetsFromBase64 INSERTS; delete the pre-reset sheets after.
+    ctx.workbook.insertWorksheetsFromBase64(base64);
     await ctx.sync();
-    await deleteOriginalSheets(ctx);                  // then drop the pre-reset sheets
-    await reconcileNamesAndActiveSheet(ctx);          // edge cases: named ranges, active sheet
+    await deleteOriginalSheets(ctx);
+    await reconcileNamesAndActiveSheet(ctx);                   // named ranges, active sheet
     await ctx.sync();
   });
 }
 ```
 
-## 4. Orchestration
+## 5. Orchestration
 
 ```typescript
 async function forkChat(agentUuid: string, atSequence: number): Promise<void> {
@@ -120,54 +133,55 @@ async function forkChat(agentUuid: string, atSequence: number): Promise<void> {
 }
 
 async function resetChat(agentUuid: string, toSequence: number): Promise<void> {
-  const currentHash = await computeLogicalHash();          // pre-flight divergence signal
+  const currentHash = await computeLogicalHash();              // pre-flight divergence signal
   const { workbookAction, workbookBlobUrl } =
         await api.reset(agentUuid, { toSequence, currentWorkbookHash: currentHash });
 
   switch (workbookAction) {
-    case "open_copy":  await openSnapshotAsWorkbook(workbookBlobUrl); break;   // v1 default (diverged)
-    case "in_place_replace": await replaceWorkbookInPlace(workbookBlobUrl); break; // v2 + confirm
-    case "chat_only":  /* agent+sandbox reset already done server-side; leave the book alone */ break;
+    case "in_place_replace": await replaceWorkbookInPlace(workbookBlobUrl); break;  // V1 + confirm
+    case "open_copy":        await openSnapshotAsWorkbook(workbookBlobUrl); break;  // diverged
+    case "chat_only":        /* agent+sandbox reset already done server-side; leave the book */ break;
   }
-  await reloadChatHistory(agentUuid);                       // tail archived server-side
+  await reloadChatHistory(agentUuid);                          // tail archived server-side
 }
 ```
 
-## 5. Checkpoint picker (UI)
+## 6. Checkpoint picker (UI)
 
 ```typescript
 async function loadCheckpointPicker(agentUuid: string) {
   const { items } = await api.listCheckpoints(agentUuid);
-  // Each item: {sequence_number, run_id, created_at, fidelity, workbook_supported}
-  // Render a per-turn row; badge fidelity:
-  //   full      → "restores chat + workspace + workbook"
-  //   degraded  → "large files skipped"   none → "chat only"
-  // Actions per row: [Fork from here] [Reset to here]
+  // each: {sequence_number, run_id, created_at, fidelity, workbook_supported}
+  //   full     -> "restores chat + workspace + workbook"
+  //   degraded -> "large files skipped"
+  //   none     -> "chat only"
+  // Per-row actions: [Fork from here] [Reset to here]
 }
 ```
 
-## 6. Capture decision flow
+## 7. Capture decision flow
 
 ```mermaid
 flowchart TD
-    T["turn ends"] --> M{"mutated<br/>workbook?"}
+    T["turn ends (complete/failed/abort/steer)"] --> M{"mutated workbook?"}
     M -- no --> SKIP["skip (inherit prior checkpoint)"]
-    M -- yes --> G{"feature<br/>gate ok?<br/>(API 1.13, cells, bytes)"}
-    G -- no --> UNS["mark unsupported → chat-only checkpoint"]
-    G -- yes --> H{"logical hash<br/>changed?"}
+    M -- yes --> G{"feature gate ok? (API 1.13, cells, bytes)"}
+    G -- no --> UNS["unsupported -> chat-only checkpoint"]
+    G -- yes --> H{"logical hash changed?"}
     H -- no --> SKIP
-    H -- yes --> CAP["getFileAsync(Compressed)"]
-    CAP --> UP["upload to backend → reconcile consumer slot"]
+    H -- yes --> CAP["readCompressedWorkbook()"]
+    CAP --> UP["upload -> backend reconciles consumer slot"]
 ```
 
-## 7. Constraints carried from the benchmark
+## 8. Constraints carried from the benchmark
 
-- **Capture cost** ≈ 280 ms/MB on the client, paid only on **mutating + changed** turns
-  (negligible for typical models; a few seconds at XL — acceptable for a turn boundary, not a hot path).
-- **Restore** = `insertWorksheetsFromBase64` only; the diff strategies (S3/S4) are **not** shipped
-  (benchmark: not worth it; full insert is the XL-only survivor and has no fallback cliff).
-- **Min API 1.13** gates the whole feature — capture works on older hosts but restore does not, so
+- **Capture cost** ~280 ms/MB on the client, paid only on mutating + changed turns. Negligible for
+  typical models; a few seconds at XL (acceptable at a turn boundary, not a hot path).
+- **Restore = `insertWorksheetsFromBase64` only** (S1). Diff (S3/S4) is **not** shipped (benchmark:
+  not worth it; full insert is the XL-only survivor with no fallback cliff).
+- **Min API 1.13** gates the whole feature; capture works on older hosts but restore does not, so
   the gate keys on the restore API.
-- **Open item before GA:** re-run the restore benchmark on **rich** data (charts/pivots/styling) to
-  convert the fidelity verdict from timing-proven to fully proven — and to validate the v2
-  in-place-replace choreography, which the blank-workbook benchmark never exercised.
+- **GA gate (in flight):** re-run the restore benchmark on **rich** data (charts/pivots/styling) to
+  convert the fidelity verdict from timing-proven to fully proven and to validate the in-place
+  delete-then-insert choreography (§4). The benchmark harness lives on `AuroSoni/benchmark-excel-reset`
+  (`src/lib/benchmark/restore/`).
