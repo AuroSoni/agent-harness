@@ -611,3 +611,73 @@ wire surface (sandbox server + live API).
   api_test.ipynb's "Steer a Running Agent" cell (STEERED_OK text never reached the
   stream). Subsystem docs: session-control.md steer note; FRONTEND-WIRE-CHANGES.md §5/§6.
   Specs: `tests/interface/streaming_and_meta/test_streaming_and_meta_steer_marker.py` (+4).
+
+## Fork / Reset-to-Checkpoint (FR) — 2026-06-16
+
+Lets a user **fork** a new session from any past completed turn, or **reset** a session back to one,
+restoring **agent state** (provider transcript + rich log + identity) and the **sandbox workspace**.
+The full decision record is `fork_reset_design/SPEC.md`; subsystem doc: `subsystems/fork-reset.md`.
+Workbook restore is a Nova-only concern carried on the opaque `consumer_payload` — the library never
+parses `.xlsx`. Schema cut: `LIBRARY_SCHEMA_VERSION` **4 -> 5** + idempotent `Migration(4, 5)` in the
+same change (storage rule).
+
+- **FR-1 — checkpoint model = hybrid (content-address the transcript).** A literal full
+  `serialize_config()` per turn is O(n^2): `context_messages` + `conversation_log.entries` grow
+  append-per-step and the codec re-emits the whole list as JSONB each save. The `agent_checkpoints`
+  row stores `serialize_config()` MINUS those two fields; they are sliced into immutable per-segment
+  blobs in the content-addressed `blob_store` (keyed `<tenant>/<blake3-hex>`), and the row carries
+  ordered segment-key arrays. Unchanged prefix segments dedupe to **0 bytes**; fork is a pointer copy.
+  Falls back to full-inline (`transcript_codec_v=0`) when no blob store is wired. New modules:
+  `core/checkpoint.py` (`Checkpoint`/`CheckpointRef`), `storage/checkpoint_codec.py`
+  (`split_config_for_checkpoint`/`assemble_config_from_checkpoint`).
+- **FR-2 — capture agent config + sandbox as a UNIT** at the same boundary. The only unrecoverable
+  runtime state beyond `AgentConfig` is the sandbox filesystem (the context externalizer rewrites
+  oversized blocks into `.context/` references whose bytes live only in the sandbox). Everything else
+  rebuilds from config on cold-load or is empty at a quiescent boundary.
+- **FR-3 — sandbox reset = CAS content-manifest.** `SandboxManifest` of `relpath -> {content_hash,
+  size, status}` + per-file blobs. New `sandbox/snapshot.py` (`SandboxSnapshotter.capture/materialize`)
+  on the real primitives. ONE additive ABC primitive: **`Sandbox.walk(path='.') -> list[FileEntry]`**
+  (recursive; `list_dir` is single-level), with a concrete base impl; `FileEntry` gains `relpath`.
+  `materialize` deletes the in-scope zones, re-runs `setup()`, then atomic + hash-verified rewrites
+  from CAS via `extract_archive(members=, verify=, atomic=True)`. Caps -> `skipped` -> `degraded`.
+- **FR-4 — NO new lifecycle hooks** (catalog LOCKED — `on_checkpoint` stays dropped). The consumer
+  customizes via a **custom `CheckpointAdapter`** threaded through `StorageHandles` (mirrors
+  `NovaConfigAdapter`), the opaque **`consumer_payload`** column, and plain backend orchestration. The
+  library's reset of agent + sandbox is **unconditional**; divergence is purely a workbook (Nova)
+  concern decided in the backend around the verb.
+- **FR-5 — library auto-captures (D1).** When `checkpoint_adapter` is wired the runtime calls
+  `capture_checkpoint()` in turn-finalize itself (live `_persist_state` AND the scripted `record_turn`
+  via the `_capture_turn_checkpoint` seam) — core behavior gated on adapter presence, **not a hook**.
+  Capture is skipped mid-pause (`pending_relay` set — not a quiescent boundary).
+- **FR-6 — the verbs** (`core/fork_reset.py`, module-level over `StorageHandles`, working cold):
+  `fork_session` (re-stamps identity, copies `conversation_history <= seq` with usage/cost zeroed,
+  pointer-copies the CAS refs forward) and `reset_session` (evicts a resident session first via the
+  existing guard -> `SessionBusy`; **archives** the conversation + checkpoint tail — `archived=TRUE`,
+  NEVER deletes, so "undo the reset" is a re-point; restores config; materializes the sandbox).
+- **FR-7 — additive storage surface.** `StorageHandles` gains `checkpoint` + `blobs` slots (both
+  default `None` = feature off). `ConversationAdapter` gains a concrete-default `archive_after`
+  (Pg/Memory override) + an `archived` column on `conversation_history` (immutable on upsert;
+  `load_history`/`load_cursor` filter it out; `load_by_run_id` is the archived-read path). The 4th
+  Pg table `agent_checkpoints` rides the same `ColumnRegistry`/`principal_columns()` engine; the
+  `Migration(4, 5)` CREATE TABLE is kept structurally identical to the registry's fresh-create DDL
+  (parity test). `AnthropicAgent` gains `checkpoint_adapter=`/`blob_store=` ctor kwargs (opt-in, no
+  Memory default). Blob deletion/GC is deferred to V2 (must be refcount/mark-sweep-safe across all
+  checkpoints AND forks — SPEC §D3).
+- **FR-8 — the checkpoint's `consumer_payload` is IMMUTABLE on upsert** (2026-06-17, found by live
+  fork/reset workbook testing). The opaque consumer slot is owned by `update_consumer_payload`
+  (out-of-band reconciliation, e.g. Nova's restore-grade workbook ref), NOT the structural row
+  upsert. Because the library auto-captures via `_persist_state` on many paths (finalize / relay /
+  abort / retry) — each re-`save()`-ing the SAME `(agent_uuid, sequence)` with `consumer_payload={}`
+  — a mutable upsert raced and clobbered the consumer's reconciled refs (so a reconciled workbook
+  non-deterministically reverted to `{}`). Fix: `consumer_payload` joins `created_at` + `archived` in
+  the checkpoint columns' `immutable_on_conflict` set (`storage/pg`), and the reference
+  `MemoryCheckpointAdapter.save` preserves an existing row's `consumer_payload` (+ `archived` +
+  `created_at`) on re-save. This is the SAME immutable-on-upsert discipline FR-7 already applied to
+  `conversation_history.archived`. No schema / DB-column change, no migration. Specs:
+  `test_fork_reset_checkpoint_adapter.py::test_save_does_not_clobber_reconciled_consumer_payload` and
+  `::test_save_does_not_un_archive_an_archived_checkpoint`.
+- Subsystem docs: `subsystems/fork-reset.md` (new), `storage.md` (the 4th adapter + table),
+  `session-control.md` (reset evict-then-restore note). Specs: `tests/interface/fork_reset/` (31):
+  `test_fork_reset_checkpoint_adapter.py`, `test_fork_reset_codec.py`,
+  `test_fork_reset_sandbox_snapshot.py`, `test_fork_reset_verbs.py`, `test_fork_reset_schema.py`;
+  plus `tests/interface/storage/test_storage_handles.py` (+2 for the new slots).

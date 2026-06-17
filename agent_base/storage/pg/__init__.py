@@ -22,23 +22,32 @@ import dataclasses
 from typing import Any, Mapping, Self, Sequence, TYPE_CHECKING
 
 from agent_base.core.config import AgentConfig, Conversation
+from agent_base.core.checkpoint import Checkpoint, CheckpointRef
 from agent_base.core.identity import SessionPrincipal
 from agent_base.core.result import LogEntry
 
-from ..base import AgentConfigAdapter, AgentRunAdapter, ConversationAdapter
+from ..base import (
+    AgentConfigAdapter,
+    AgentRunAdapter,
+    CheckpointAdapter,
+    ConversationAdapter,
+)
 from . import pool as _pool_module
 from .columns import ColumnRegistry, ColumnScope, ColumnSpec, principal_columns
 from .pool import PgConnectConfig, PgPool, create_pool
 from .row_mappers import (
+    _CHECKPOINT_COLUMNS,
     _CONFIG_COLUMNS,
     _CONVERSATION_COLUMNS,
     _RUN_LOG_COLUMNS,
     _media_from_dict,
+    checkpoint_to_row,
     config_to_row,
     conversation_to_row,
     from_jsonb,
     iso,
     log_entry_to_row,
+    row_to_checkpoint,
     row_to_config,
     row_to_conversation,
     row_to_log_entry,
@@ -92,7 +101,9 @@ _CONVERSATION_BASE_COLUMNS: list[ColumnSpec] = [
     _base_spec(
         name, sql_type, get,
         conflict_key=("agent_uuid", "run_id", "sequence_number"),
-        immutable=frozenset({"created_at"}),
+        # ``archived`` is managed solely by ``archive_after`` (a direct UPDATE),
+        # so a normal upsert of an archived run must NOT un-archive it.
+        immutable=frozenset({"created_at", "archived"}),
     )
     for name, sql_type, get in _CONVERSATION_COLUMNS
 ]
@@ -102,6 +113,25 @@ _CONVERSATION_BASE_COLUMNS: list[ColumnSpec] = [
 _AGENT_RUNS_BASE_COLUMNS: list[ColumnSpec] = [
     ColumnSpec(name=name, sql_type=sql_type, get=lambda e: None)
     for name, sql_type in _RUN_LOG_COLUMNS
+]
+
+# fork-reset: agent_checkpoints. Conflict key is (agent_uuid, sequence_number).
+# Three columns are managed by dedicated methods, NOT the row upsert, so a
+# re-``save()`` of an existing checkpoint must never overwrite them:
+#   - ``archived``          -> managed by ``archive_after`` (must not un-archive).
+#   - ``consumer_payload``  -> managed by ``update_consumer_payload`` (the
+#     consumer's out-of-band reconciliation, e.g. Nova's workbook capture).
+#     ``capture_checkpoint`` always re-saves with ``consumer_payload={}``, and
+#     ``_persist_state`` fires on many paths (finalize/relay/abort/retry), so
+#     without this a re-save races and clobbers the consumer's reconciled refs.
+#   - ``created_at``        -> set once at first insert.
+_CHECKPOINT_BASE_COLUMNS: list[ColumnSpec] = [
+    _base_spec(
+        name, sql_type, get,
+        conflict_key=("agent_uuid", "sequence_number"),
+        immutable=frozenset({"created_at", "archived", "consumer_payload"}),
+    )
+    for name, sql_type, get in _CHECKPOINT_COLUMNS
 ]
 
 
@@ -422,7 +452,12 @@ class PgConversationAdapterBase(_PgAdapterBase, ConversationAdapter):
     async def load_history(
         self, agent_uuid: str, limit: int = 20, offset: int = 0
     ) -> list[Conversation]:
-        where, args = self._scoped_where({"agent_uuid": agent_uuid})
+        # ``archived = FALSE``: a reset archives the tail, so history listings
+        # truncate at the reset point (fork-reset). load_by_run_id stays
+        # unfiltered as the archived-read path.
+        where, args = self._scoped_where(
+            {"agent_uuid": agent_uuid, "archived": False}
+        )
         sql = (
             f"SELECT {', '.join(self._registry.select_columns())} "
             f"FROM {self.table} WHERE {where} "
@@ -452,7 +487,7 @@ class PgConversationAdapterBase(_PgAdapterBase, ConversationAdapter):
     async def load_cursor(
         self, agent_uuid: str, before: int | None = None, limit: int = 20
     ) -> tuple[list[Conversation], bool]:
-        eq: dict[str, Any] = {"agent_uuid": agent_uuid}
+        eq: dict[str, Any] = {"agent_uuid": agent_uuid, "archived": False}
         where, args = self._scoped_where(eq)
         if before is not None:
             args.append(before)
@@ -471,6 +506,25 @@ class PgConversationAdapterBase(_PgAdapterBase, ConversationAdapter):
         conversation = row_to_conversation(row)
         self._registry.hydrate(conversation, row)
         return conversation
+
+    # ----- fork-reset: archive the tail (one scoped UPDATE, never a delete) --------
+
+    async def archive_after(
+        self, agent_uuid: str, sequence_number: int
+    ) -> int:
+        """Flip ``archived=TRUE`` for runs after ``sequence_number`` (reset's
+        tail). Overrides the ABC load+save default (``archived`` is immutable on
+        upsert here, so it must be set by a direct UPDATE)."""
+        where, args = self._scoped_where({"agent_uuid": agent_uuid})
+        args.append(sequence_number)
+        sql = (
+            f"UPDATE {self.table} SET archived = TRUE "
+            f"WHERE {where} AND sequence_number > ${len(args)} "
+            f"AND archived = FALSE RETURNING sequence_number"
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *args)
+        return len(rows)
 
     # ----- §2.5 the LATERAL query the library now owns (fixes E5) ------------------
 
@@ -546,6 +600,139 @@ class PgRunAdapterBase(_PgAdapterBase, AgentRunAdapter):
 
 
 # =============================================================================
+# agent_checkpoints (fork-reset)
+# =============================================================================
+
+
+class PgCheckpointAdapterBase(_PgAdapterBase, CheckpointAdapter):
+    """Template Postgres adapter for ``agent_checkpoints`` (fork-reset).
+
+    Parallels ``PgConversationAdapterBase``: composes its SQL from the same
+    ``ColumnRegistry`` engine, principal-scoped through ``for_principal``. Reset
+    archives the tail via ``archive_after`` (a flag, never a delete)."""
+
+    table = "agent_checkpoints"
+    id_column = "agent_uuid"
+    conflict_key = ("agent_uuid", "sequence_number")
+    _registry_slot = "checkpoint"
+
+    def _base_columns(self) -> list[ColumnSpec]:
+        return _CHECKPOINT_BASE_COLUMNS
+
+    async def save(self, checkpoint: Checkpoint) -> None:
+        cols = self._registry.insert_columns()
+        sql = (
+            f"INSERT INTO {self.table} ({', '.join(cols)}) "
+            f"VALUES ({self._registry.placeholders()}) "
+            f"ON CONFLICT ({', '.join(self.conflict_key)}) DO UPDATE SET "
+            f"{self._registry.upsert_set()}"
+        )
+        values = self._registry.values_for(checkpoint)   # includes principal cols
+        async with self._pool.acquire() as conn:
+            await conn.execute(sql, *values)
+
+    async def load(
+        self, agent_uuid: str, sequence_number: int
+    ) -> Checkpoint | None:
+        where, args = self._scoped_where(
+            {"agent_uuid": agent_uuid, "sequence_number": sequence_number}
+        )
+        sql = (
+            f"SELECT {', '.join(self._registry.select_columns())} "
+            f"FROM {self.table} WHERE {where}"
+        )
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, *args)
+        if row is None:
+            return None
+        return self._hydrated(row)
+
+    async def load_latest(self, agent_uuid: str) -> Checkpoint | None:
+        where, args = self._scoped_where(
+            {"agent_uuid": agent_uuid, "archived": False}
+        )
+        sql = (
+            f"SELECT {', '.join(self._registry.select_columns())} "
+            f"FROM {self.table} WHERE {where} "
+            f"ORDER BY sequence_number DESC LIMIT 1"
+        )
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, *args)
+        if row is None:
+            return None
+        return self._hydrated(row)
+
+    async def list_refs(
+        self,
+        agent_uuid: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        include_archived: bool = False,
+    ) -> tuple[list[CheckpointRef], int]:
+        eq: dict[str, Any] = {"agent_uuid": agent_uuid}
+        if not include_archived:
+            eq["archived"] = False
+        where, args = self._scoped_where(eq)
+        count_sql = f"SELECT COUNT(*) FROM {self.table} WHERE {where}"
+        # Lean ref projection — never materializes config_snapshot / segments.
+        page_sql = (
+            f"SELECT agent_uuid, sequence_number, run_id, created_at, fidelity "
+            f"FROM {self.table} WHERE {where} "
+            f"ORDER BY sequence_number DESC "
+            f"LIMIT ${len(args) + 1} OFFSET ${len(args) + 2}"
+        )
+        async with self._pool.acquire() as conn:
+            total = await conn.fetchval(count_sql, *args)
+            rows = await conn.fetch(page_sql, *args, limit, offset)
+        refs = [
+            CheckpointRef(
+                agent_uuid=str(row["agent_uuid"]),
+                sequence_number=row["sequence_number"],
+                run_id=str(row["run_id"]),
+                created_at=iso(row["created_at"]) or "",
+                fidelity=row["fidelity"] or "full",
+            )
+            for row in rows
+        ]
+        return refs, int(total or 0)
+
+    async def update_consumer_payload(
+        self, agent_uuid: str, sequence_number: int, payload: dict
+    ) -> bool:
+        where, args = self._scoped_where(
+            {"agent_uuid": agent_uuid, "sequence_number": sequence_number}
+        )
+        args.append(to_jsonb(payload))
+        sql = (
+            f"UPDATE {self.table} SET consumer_payload = ${len(args)} "
+            f"WHERE {where} RETURNING sequence_number"
+        )
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, *args)
+        return row is not None
+
+    async def archive_after(
+        self, agent_uuid: str, sequence_number: int
+    ) -> int:
+        where, args = self._scoped_where({"agent_uuid": agent_uuid})
+        args.append(sequence_number)
+        sql = (
+            f"UPDATE {self.table} SET archived = TRUE "
+            f"WHERE {where} AND sequence_number > ${len(args)} "
+            f"AND archived = FALSE RETURNING sequence_number"
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *args)
+        return len(rows)
+
+    def _hydrated(self, row: Mapping[str, Any]) -> Checkpoint:
+        checkpoint = row_to_checkpoint(row)
+        self._registry.hydrate(checkpoint, row)
+        return checkpoint
+
+
+# =============================================================================
 # Factories + one-shot schema helper (storage.md §2.3 / §2.6)
 # =============================================================================
 
@@ -590,6 +777,7 @@ __all__ = [
     "PgConfigAdapterBase",
     "PgConversationAdapterBase",
     "PgRunAdapterBase",
+    "PgCheckpointAdapterBase",
     # Column engine (re-exported for convenience)
     "ColumnRegistry",
     "ColumnScope",

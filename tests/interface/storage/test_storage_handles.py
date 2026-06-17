@@ -6,8 +6,9 @@ Covers:
 - DESIGN_CONTRACT.md §1.2 (hook context carries config/conversation/run adapters).
 
 StorageHandles is a frozen dataclass with fields
-``config, conversation, run, analytics`` where ``analytics`` defaults to None
-(backends that cannot query cross-agent leave it unset).
+``config, conversation, run, analytics, checkpoint, blobs`` where ``analytics``,
+``checkpoint`` and ``blobs`` default to None (backends that cannot query
+cross-agent, or have not wired the fork-reset checkpoint store, leave them unset).
 """
 from __future__ import annotations
 
@@ -24,13 +25,22 @@ class _StubAdapter:
 
 def test_storage_handles_field_names_and_order():
     names = tuple(f.name for f in dataclasses.fields(StorageHandles))
-    assert names == ("config", "conversation", "run", "analytics")
+    assert names == (
+        "config", "conversation", "run", "analytics", "checkpoint", "blobs",
+    )
 
 
 def test_storage_handles_analytics_defaults_to_none():
     config, conversation, run = _StubAdapter(), _StubAdapter(), _StubAdapter()
     handles = StorageHandles(config, conversation, run)
     assert handles.analytics is None
+
+
+def test_storage_handles_checkpoint_and_blobs_default_to_none():
+    # fork-reset: the checkpoint adapter + CAS blob store are opt-in.
+    handles = StorageHandles(_StubAdapter(), _StubAdapter(), _StubAdapter())
+    assert handles.checkpoint is None
+    assert handles.blobs is None
 
 
 def test_storage_handles_holds_adapter_collaborators():

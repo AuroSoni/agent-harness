@@ -129,6 +129,10 @@ class FileEntry:
     """Estimated LLM token count (size_bytes // 3). None for directories,
     binary files, or files exceeding TOKEN_COUNTING_SIZE_THRESHOLD."""
 
+    relpath: str = ""
+    """Path relative to the walk root (posix), set by ``Sandbox.walk()``.
+    Empty from ``list_dir()`` (which returns bare ``name`` only)."""
+
 
 @dataclass
 class ExportedFileMetadata:
@@ -913,6 +917,32 @@ class Sandbox(ABC):
             SandboxPathEscapeError: If path resolves outside the sandbox.
         """
         ...
+
+    # Concrete DEFAULT: recursive walk composed from the single-level
+    # ``list_dir`` (fork-reset). Remote backends (Docker/E2B) may override with
+    # native recursion. Emits FILES only (directories are descended, not
+    # returned); each FileEntry carries ``relpath`` (sandbox-root-relative,
+    # posix) so callers can address it via the file primitives.
+    async def walk(self, path: str = ".") -> list[FileEntry]:
+        base = "" if path in (".", "", "/") else path.strip("/")
+        out: list[FileEntry] = []
+        stack: list[str] = [base]
+        while stack:
+            current = stack.pop()
+            listing_path = current if current else "."
+            try:
+                entries = await self.list_dir(listing_path)
+            except FileNotFoundError:
+                continue
+            for entry in entries:
+                rel = posixpath.join(current, entry.name) if current else entry.name
+                if entry.is_dir:
+                    stack.append(rel)
+                else:
+                    entry.relpath = rel
+                    out.append(entry)
+        out.sort(key=lambda e: e.relpath)
+        return out
 
     # ─── File Coordination ────────────────────────────────────────────
 

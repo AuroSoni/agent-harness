@@ -38,6 +38,7 @@ from .end_turn_hook import (
     EndTurnHookResult,
 )
 from .messages import Message, Usage, MessageFormatter
+from .checkpoint import Checkpoint, CheckpointRef
 from .provider import Provider
 from .serializable import (
     CORE_SCHEMA_VERSION,
@@ -86,6 +87,9 @@ __all__ = [
     "Message",
     "Usage",
     "MessageFormatter",
+    # Checkpoint entities (fork/reset)
+    "Checkpoint",
+    "CheckpointRef",
     # Provider ABC
     "Provider",
     # Canonical serialization convention (core.md §2.1)

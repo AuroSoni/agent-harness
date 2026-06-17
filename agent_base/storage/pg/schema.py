@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .pool import PgPool
 
 #: DDL/migration axis ONLY (R12) — NOT the entity-wire version.
-LIBRARY_SCHEMA_VERSION: int = 4
+LIBRARY_SCHEMA_VERSION: int = 5
 
 #: Single-row bookkeeping table ensure_schema() records the version in.
 VERSION_TABLE = "_agent_base_schema_version"
@@ -63,6 +63,34 @@ LIBRARY_MIGRATIONS: list[Migration] = [
     Migration(3, 4, [
         "ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS active_profile TEXT",
     ]),
+    # GF-FORKRESET: the fork/reset checkpoint store. CREATE TABLE here carries
+    # the LIBRARY BASE columns only (consumer owner_* extras are the consumer's
+    # own upgrade concern). It MUST stay structurally identical to what the
+    # checkpoint ColumnRegistry generates on fresh-create — the v4->v5 parity
+    # test asserts fresh-create DDL == migrated DDL. Plus the conversation
+    # archive flag (reset archives the tail; it is never a delete).
+    Migration(4, 5, [
+        "CREATE TABLE IF NOT EXISTS agent_checkpoints (\n"
+        "    agent_uuid TEXT NOT NULL,\n"
+        "    sequence_number INTEGER NOT NULL,\n"
+        "    run_id TEXT NOT NULL,\n"
+        "    config_snapshot JSONB NOT NULL,\n"
+        "    transcript_segments TEXT[] NOT NULL DEFAULT '{}',\n"
+        "    log_segments TEXT[] NOT NULL DEFAULT '{}',\n"
+        "    transcript_codec_v INTEGER NOT NULL DEFAULT 1,\n"
+        "    sandbox_manifest_ref TEXT,\n"
+        "    consumer_payload JSONB NOT NULL DEFAULT '{}',\n"
+        "    fidelity TEXT NOT NULL DEFAULT 'full',\n"
+        "    archived BOOLEAN NOT NULL DEFAULT FALSE,\n"
+        "    created_at TIMESTAMPTZ\n"
+        ")",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_checkpoints_agent_seq "
+        "ON agent_checkpoints (agent_uuid, sequence_number)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_checkpoints_agent_run "
+        "ON agent_checkpoints (agent_uuid, run_id)",
+        "ALTER TABLE conversation_history "
+        "ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE",
+    ]),
 ]
 
 
@@ -78,6 +106,7 @@ class SchemaRegistries:
     config: ColumnRegistry | None = None          # -> agent_config
     conversation: ColumnRegistry | None = None    # -> conversation_history
     run: ColumnRegistry | None = None             # -> agent_runs
+    checkpoint: ColumnRegistry | None = None      # -> agent_checkpoints (fork-reset)
 
 
 #: Extra per-table DDL the registry cannot express (composite uniques).
@@ -89,6 +118,16 @@ _TABLE_CONSTRAINTS: dict[str, list[str]] = {
     "agent_runs": [
         "CREATE INDEX IF NOT EXISTS idx_agent_runs_agent_run "
         "ON agent_runs (agent_uuid, run_id)",
+    ],
+    # fork-reset: the unique index backs ON CONFLICT (agent_uuid,
+    # sequence_number); the agent_run index powers consumer reconciliation
+    # (update_consumer_payload keyed by run). Kept byte-identical with the
+    # v4->v5 migration statements (parity test).
+    "agent_checkpoints": [
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_checkpoints_agent_seq "
+        "ON agent_checkpoints (agent_uuid, sequence_number)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_checkpoints_agent_run "
+        "ON agent_checkpoints (agent_uuid, run_id)",
     ],
 }
 
@@ -136,6 +175,7 @@ class PgSchema:
             ("agent_config", self._registries.config),
             ("conversation_history", self._registries.conversation),
             ("agent_runs", self._registries.run),
+            ("agent_checkpoints", self._registries.checkpoint),
         ]
         return [(table, registry) for table, registry in pairs if registry is not None]
 

@@ -7,6 +7,11 @@ subsystem imports it from this canonical home.
 ``analytics`` defaults to ``None`` — backends that cannot query cross-agent
 leave it unset. Including it lets ``before_compact``/``on_turn_end`` hooks
 read cross-run cost without a side channel.
+
+``checkpoint`` + ``blobs`` (fork-reset) default to ``None``: a deployment that
+has not wired a ``CheckpointAdapter`` + content-addressed ``KeyedBlobStore`` has
+the feature off (capture early-returns). The cold fork/reset verbs read both off
+this bundle so they work without a live runtime.
 """
 from __future__ import annotations
 
@@ -14,10 +19,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from agent_base.blob_store.base import KeyedBlobStore
     from agent_base.storage.analytics import AnalyticsReader
     from agent_base.storage.base import (
         AgentConfigAdapter,
         AgentRunAdapter,
+        CheckpointAdapter,
         ConversationAdapter,
     )
 
@@ -30,6 +37,8 @@ class StorageHandles:
     conversation: "ConversationAdapter"
     run: "AgentRunAdapter"
     analytics: "AnalyticsReader | None" = None   # §2.7; None when backend can't query cross-agent
+    checkpoint: "CheckpointAdapter | None" = None  # fork-reset; None = feature off
+    blobs: "KeyedBlobStore | None" = None          # CAS for transcript segments + sandbox manifest
 
 
 __all__ = ["StorageHandles"]

@@ -18,6 +18,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, Self
 
 from agent_base.core.config import AgentConfig, Conversation
+from agent_base.core.checkpoint import Checkpoint, CheckpointRef
 from agent_base.core.result import AgentRunLog, LogEntry
 
 if TYPE_CHECKING:
@@ -278,6 +279,39 @@ class ConversationAdapter(StorageAdapter[Conversation]):
                 return None
             offset += len(page)
 
+    # Concrete DEFAULT (R26): correct-but-unoptimized; the Postgres base
+    # overrides with a single UPDATE. Used by fork-reset (the reset verb).
+    async def archive_after(
+        self, agent_uuid: str, sequence_number: int
+    ) -> int:
+        """Archive (flip ``archived=True``) every conversation run AFTER
+        ``sequence_number`` — the reset's tail. NEVER deletes (reversible).
+        Returns the number of rows archived. Default: load + re-save (works on
+        backends whose ``save`` persists ``archived``); Pg overrides with one
+        scoped UPDATE (its ``archived`` column is immutable-on-conflict)."""
+        # Collect first, THEN mutate — archiving shrinks the (archived-filtered)
+        # history, so paginate read-only before flipping to avoid skipping rows.
+        to_archive: list[Conversation] = []
+        page_size = 100
+        offset = 0
+        while True:
+            page = await self.load_history(
+                agent_uuid, limit=page_size, offset=offset
+            )
+            if not page:
+                break
+            for conversation in page:
+                if (conversation.sequence_number or 0) > sequence_number \
+                        and not getattr(conversation, "archived", False):
+                    to_archive.append(conversation)
+            if len(page) < page_size:
+                break
+            offset += len(page)
+        for conversation in to_archive:
+            conversation.archived = True
+            await self.save(conversation)
+        return len(to_archive)
+
 
 class AgentRunAdapter(StorageAdapter[AgentRunLog]):
     """Abstract adapter for agent run logs storage.
@@ -321,3 +355,119 @@ class AgentRunAdapter(StorageAdapter[AgentRunLog]):
             List of LogEntry instances in chronological order
         """
         ...
+
+
+class CheckpointAdapter(StorageAdapter[Checkpoint]):
+    """Abstract adapter for fork/reset checkpoint storage (the 4th adapter).
+
+    Parallels ``ConversationAdapter``: append-only at the same turn boundary,
+    principal-scoped via ``for_principal``. Reset does NOT delete — it flips an
+    ``archived`` flag on the tail (``archive_after``), so "undo the reset" is a
+    re-point, not a recovery. The opaque ``consumer_payload`` slot is writable
+    post-hoc (``update_consumer_payload``) for the consumer's async reconciliation
+    (e.g. Nova's out-of-band workbook capture).
+    """
+
+    @abstractmethod
+    async def save(self, checkpoint: Checkpoint) -> None:
+        """Insert (or upsert by ``(agent_uuid, sequence_number)``) a checkpoint row.
+
+        Args:
+            checkpoint: Checkpoint instance to persist (immutable restore point).
+        """
+        ...
+
+    @abstractmethod
+    async def load(
+        self, agent_uuid: str, sequence_number: int
+    ) -> Checkpoint | None:
+        """Load a checkpoint by its turn boundary.
+
+        Args:
+            agent_uuid: Agent session UUID
+            sequence_number: The turn boundary to restore
+
+        Returns:
+            The Checkpoint, or None if not found.
+        """
+        ...
+
+    @abstractmethod
+    async def load_latest(self, agent_uuid: str) -> Checkpoint | None:
+        """Load the most recent non-archived checkpoint for an agent.
+
+        Args:
+            agent_uuid: Agent session UUID
+
+        Returns:
+            The highest-``sequence_number`` non-archived Checkpoint, or None.
+        """
+        ...
+
+    @abstractmethod
+    async def list_refs(
+        self,
+        agent_uuid: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        include_archived: bool = False,
+    ) -> tuple[list[CheckpointRef], int]:
+        """List checkpoint pointers for the picker (newest first).
+
+        Args:
+            agent_uuid: Agent session UUID
+            limit: Maximum refs to return
+            offset: Number of refs to skip
+            include_archived: When False (default), hide archived (post-reset) refs
+
+        Returns:
+            Tuple of (refs newest->oldest, total count matching the filter).
+        """
+        ...
+
+    @abstractmethod
+    async def update_consumer_payload(
+        self, agent_uuid: str, sequence_number: int, payload: dict
+    ) -> bool:
+        """Replace the opaque ``consumer_payload`` for one checkpoint.
+
+        Used by a consumer to reconcile an out-of-band capture (e.g. the
+        workbook ref) into an already-written checkpoint row.
+
+        Args:
+            agent_uuid: Agent session UUID
+            sequence_number: The checkpoint to update
+            payload: The new opaque payload (replaces the existing one)
+
+        Returns:
+            True if a row was updated, False if not found.
+        """
+        ...
+
+    @abstractmethod
+    async def archive_after(
+        self, agent_uuid: str, sequence_number: int
+    ) -> int:
+        """Archive every checkpoint AFTER ``sequence_number`` (reset's tail).
+
+        Flips ``archived=TRUE`` for rows with ``sequence_number > sequence_number``;
+        NEVER deletes (so the reset is reversible).
+
+        Args:
+            agent_uuid: Agent session UUID
+            sequence_number: The boundary reset to (rows strictly after are archived)
+
+        Returns:
+            The number of rows archived.
+        """
+        ...
+
+    async def is_owned(
+        self, id: str, principal: "SessionPrincipal | None" = None
+    ) -> bool:
+        """Ownership probe via ``list_refs`` (the base default calls a 1-arg
+        ``load``, which our 2-arg ``load`` signature does not support)."""
+        target = self if principal is None else self.for_principal(principal)
+        refs, _ = await target.list_refs(id, limit=1, include_archived=True)
+        return bool(refs)
