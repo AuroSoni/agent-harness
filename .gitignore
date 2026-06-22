@@ -6,6 +6,7 @@ __pycache__/
 data/
 agent-files/
 temp/
+tmp/
 *.egg-info/
 temp_logs/
 agent_data/
