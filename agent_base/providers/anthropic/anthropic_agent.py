@@ -998,8 +998,15 @@ class AnthropicAgent(AgentRuntime):
         run_id = self._run_id or ""
         store = self._once_store
 
+        principal = self.principal
+
         def factory(tc):
-            return ToolContext(run_id=run_id, tool_call_id=tc.tool_id, _once_store=store)
+            return ToolContext(
+                run_id=run_id,
+                tool_call_id=tc.tool_id,
+                principal=principal,
+                _once_store=store,
+            )
 
         return factory
 
