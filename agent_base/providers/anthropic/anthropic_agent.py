@@ -119,6 +119,8 @@ if TYPE_CHECKING:
     from agent_base.blob_store.base import KeyedBlobStore
     from agent_base.core.checkpoint import CheckpointRef
     from agent_base.streaming.wire import DeltaSink
+    from agent_base.mcp.client import MCPConnectionManager
+    from agent_base.mcp.spec import MCPServerSpec
 
 MAX_PARALLEL_TOOL_CALLS = 5
 DEFAULT_MAX_STEPS = 50
@@ -199,6 +201,10 @@ class AnthropicAgent(AgentRuntime):
         stream_meta_history_and_tool_results: bool = False,
         tools: list[Callable[..., Any]] | None = None,
         frontend_tools: list[Callable[..., Any]] | None = None,
+        # Client-side MCP bridge: each spec's tools are connected and registered
+        # as ordinary in-loop backend tools during initialize() (opt-in; omit for
+        # today's behavior). Specs are construction inputs, never persisted.
+        mcp_servers: "list[MCPServerSpec] | None" = None,
         subagents: dict[str, "AnthropicAgent"] | None = None,
         max_parallel_tool_calls: int = MAX_PARALLEL_TOOL_CALLS,
         max_tool_result_tokens: int = DEFAULT_MAX_TOOL_RESULT_TOKENS,
@@ -301,6 +307,11 @@ class AnthropicAgent(AgentRuntime):
             self.tool_registry.register_tools(tools)
         if frontend_tools:
             self.tool_registry.register_tools(frontend_tools)
+
+        # Client-side MCP bridge: specs are construction inputs; the connection
+        # manager is created and its tools registered in initialize() (fail-open).
+        self._mcp_specs: "list[MCPServerSpec]" = list(mcp_servers) if mcp_servers else []
+        self._mcp_manager: "MCPConnectionManager | None" = None
 
         # Subagent tool (single dispatcher wrapping multiple child agents).
         self._sub_agent_tool: Any | None = None
@@ -434,6 +445,53 @@ class AnthropicAgent(AgentRuntime):
         self.media_backend.attach_sandbox(sandbox)
         self._inject_agent_uuid_to_tools()
         self._configure_context_externalizer()
+        await self._initialize_mcp()
+
+    async def _initialize_mcp(self) -> None:
+        """Connect configured MCP servers (fail-open) and register their tools.
+
+        Each spec's ``tools/list`` is bridged into one ``ToolBundle`` of in-loop
+        backend tools (named ``mcp__<server>__<tool>``). A non-required server
+        that fails or times out is skipped so the agent still boots; a
+        ``required`` server propagates the error. Bridged tools inherit the full
+        before/after_tool governance because they run in-loop like any backend
+        tool. No-op when no MCP servers are configured.
+        """
+        if not self._mcp_specs:
+            return
+        from agent_base.mcp import MCPConnectionManager
+
+        self._mcp_manager = MCPConnectionManager(self._mcp_specs)
+        bundles = await self._mcp_manager.connect_all()
+        for bundle in bundles:
+            self.tool_registry.register_tools([bundle])
+
+    async def _close_mcp(self) -> None:
+        """Close all MCP server connections. Idempotent and best-effort."""
+        manager, self._mcp_manager = self._mcp_manager, None
+        if manager is None:
+            return
+        try:
+            await manager.aclose_all()
+        except Exception:  # pragma: no cover - teardown is best-effort
+            logger.warning("mcp_teardown_failed", agent_uuid=self._agent_uuid)
+
+    async def _shutdown_actor(self) -> None:
+        """Reap the actor task (base) AND close MCP connections.
+
+        ``SessionManager.evict``/``shutdown`` call this; closing MCP here means
+        a resident agent's server connections are released on eviction.
+        """
+        await super()._shutdown_actor()
+        await self._close_mcp()
+
+    async def aclose(self) -> None:
+        """Public teardown for ``SessionManager``'s build-failure discard paths.
+
+        Routes through ``_shutdown_actor`` so a half-built agent that already
+        opened MCP connections in ``initialize()`` gets them closed too.
+        """
+        await self._shutdown_actor()
 
     # ── initialize / per-run setup ─────────────────────────────────────────
 

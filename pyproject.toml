@@ -23,6 +23,13 @@ dependencies = [
     "structlog>=25.5.0",
 ]
 
+[project.optional-dependencies]
+# Client-side MCP bridge (agent_base.mcp). Required only for live connections;
+# the pure helpers (MCPServerSpec, naming, schema, result mapping) import without it.
+mcp = [
+    "mcp>=1.9.0",
+]
+
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",

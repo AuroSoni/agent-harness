@@ -5,6 +5,7 @@ import asyncio
 import copy
 import functools
 import inspect
+import json
 import time
 from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Dict, TYPE_CHECKING
@@ -409,13 +410,47 @@ class ToolRegistry:
 
     # ─── Internals ─────────────────────────────────────────────────
 
+    # Key under which a dict return's structured payload is carried on the
+    # envelope's ``details``. Kept in lockstep with
+    # ``agent_base.mcp.result.STRUCTURED_DETAILS_KEY`` — duplicated as a literal
+    # rather than imported so core tooling never depends on the optional ``mcp``
+    # bridge package. The MCP server projection reads this key to populate a
+    # ``CallToolResult.structuredContent``.
+    _STRUCTURED_DETAILS_KEY = "structuredContent"
+
     @staticmethod
     def _wrap_result(result: Any, tool_name: str, tool_id: str) -> ToolResultEnvelope:
-        """Auto-wrap a tool's raw return value into a ToolResultEnvelope."""
+        """Auto-wrap a tool's raw return value into a ToolResultEnvelope.
+
+        - ``ToolResultEnvelope`` → returned as-is (names backfilled).
+        - ``str`` → ``GenericTextEnvelope``.
+        - ``dict`` → a structured envelope: pretty JSON for the context window
+          (so the model sees JSON, not a Python ``repr``) plus the raw dict on
+          ``details['structuredContent']`` (so an MCP server projection can
+          surface it losslessly). Falls back to ``str()`` if the dict is not
+          JSON-serializable.
+        - anything else → ``str()`` via ``GenericTextEnvelope``.
+        """
         if isinstance(result, ToolResultEnvelope):
             result.tool_name = result.tool_name or tool_name
             result.tool_id = result.tool_id or tool_id
             return result
+
+        if isinstance(result, dict):
+            from agent_base.core.types import TextContent
+
+            try:
+                rendered = json.dumps(result, indent=2, default=str)
+            except Exception:
+                rendered = None
+            if rendered is not None:
+                return ToolResultEnvelope.from_blocks(
+                    context_blocks=[TextContent(text=rendered)],
+                    log_summary=rendered[:200],
+                    details={ToolRegistry._STRUCTURED_DETAILS_KEY: result},
+                    tool_name=tool_name,
+                    tool_id=tool_id,
+                )
 
         text = result if isinstance(result, str) else str(result)
         return GenericTextEnvelope(tool_name=tool_name, tool_id=tool_id, text=text)
