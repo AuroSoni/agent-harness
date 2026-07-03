@@ -18,3 +18,4 @@ sandbox_data/
 *.log
 # graphify knowledge-graph output
 graphify-out/
+.gstack/
