@@ -23,6 +23,13 @@ dependencies = [
     "structlog>=25.5.0",
 ]
 
+[project.optional-dependencies]
+# External MCP servers (agent_base/mcp/) — interface_plan/subsystems/mcp.md,
+# MC-D7: optional extra, lazy import, actionable ctor ImportError.
+mcp = [
+    "mcp>=1.28,<2",
+]
+
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",

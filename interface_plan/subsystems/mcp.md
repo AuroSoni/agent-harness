@@ -1,8 +1,9 @@
 # Subsystem: External MCP servers (`mcp`)
 
-> Ledger: `AMENDMENTS.md` "External MCP servers (MC)" — lands with the implementation cut; on
-> conflict, AMENDMENTS wins. Specs: `tests/interface/mcp/` (same cut). Design discussion decisions
-> (2026-07-03) are recorded in §10.
+> Ledger: `AMENDMENTS.md` "External MCP servers (MC)" — LANDED with the implementation cut
+> (2026-07-03, MC-D1..D14); on conflict, AMENDMENTS wins. Specs: `tests/interface/mcp/` (72, same
+> cut). Design discussion decisions (2026-07-03) are recorded in §10. Status: **IMPLEMENTED**
+> (`agent_base/mcp/`, `agent-base[mcp]` extra).
 
 Lets an agent consume tools from **external MCP servers** — local subprocesses (stdio) and remote
 services (Streamable HTTP / SSE) — as first-class registry tools. agent-base plays the role the
@@ -193,8 +194,10 @@ Built-ins shipped in v1:
   browser-OAuth token sets: serves the bearer from the consumer's `TokenStore`, proactively
   refreshing when expired; on 401 runs the refresh-token grant and persists the new `TokenSet` via
   `store.set_tokens()`; when no refresh is possible → `needs_auth`, and the consumer re-runs the
-  interactive leg (below). Implemented by wrapping the mcp SDK's `OAuthClientProvider` with no
-  interactive handlers (spike-verified — see the oauth.py paragraph).
+  interactive leg (below). Implemented by composing this module's `refresh()` directly (the
+  earlier wrap-`OAuthClientProvider(handlers=None)` sketch was superseded by the `refresh_lock`
+  requirement — the SDK provider offers no serialization hook around its internal
+  read→grant→persist leg; see the spec-review deltas).
 
 The **401 contract** (uniform across connect-time and call-time): unauthorized → invoke
 `on_unauthorized()` → `True` = retry the operation exactly once with fresh headers → still
@@ -260,10 +263,10 @@ pydantic models (`OAuthToken`, `OAuthMetadata`, `ProtectedResourceMetadata`,
 `PKCEParameters.generate()` covers PKCE — `oauth.py` is composition, not reimplementation. The
 SDK's `OAuthClientProvider` models the *interactive* leg as inline redirect/callback callables
 (`redirect_handler(url)` then `await callback_handler()` — a coroutine parked across the whole
-browser dance; wrong shape for out-of-band web flows), but the handlers are **optional**: absent
-handlers raise a typed `OAuthFlowError` when interaction would be needed, so `OAuthTokenAuth`
-wraps `OAuthClientProvider(handlers=None)` for the non-interactive legs (per-request bearer,
-expiry-aware refresh, retry) and the escape to `needs_auth` is a typed-exception classification.
+browser dance; wrong shape for out-of-band web flows). `OAuthTokenAuth` therefore implements the
+provider contract directly on top of this module's `refresh()` — required so the `refresh_lock`
+can wrap the whole read→grant→persist leg (the SDK provider has no such hook) — and the escape to
+`needs_auth` is the typed `McpAuthRequiredError`/`McpOAuthError` classification.
 
 ```python
 async def discover(url_or_challenge) -> AuthServerInfo   # RFC 9728 resource metadata -> RFC 8414 AS metadata
@@ -662,12 +665,13 @@ No DB columns, no `LIBRARY_SCHEMA_VERSION` bump, no migration.
 nova_backend consumes via the editable source — its suite runs in the same cut (Living-Spec
 Discipline); the new ctor kwarg is additive, so no breaking surface for existing consumers.
 
-**Spec-review checks (rev 2025-11-25, see §4 deltas):** does mcp 1.28.1 implement CIMD
-(URL client_ids)? does the SDK re-initialize on a 404'd `Mcp-Session-Id` itself, or must the
-handle supervisor classify it as a reconnect trigger? Specs to add: 403 `insufficient_scope` →
-challenge-with-scope → `needs_auth`; `build_authorize_url` refusal when
-`code_challenge_methods_supported` is absent; `refresh_lock` re-read-after-acquire skip (two
-fake agents, one fake AS with rotating refresh tokens — exactly one grant issued).
+**Spec-review checks (rev 2025-11-25 — RESOLVED at implementation, 2026-07-03):** mcp 1.28.1
+ships CIMD natively (`mcp.client.auth.utils.should_use_client_metadata_url` /
+`create_client_info_from_metadata_url`; `client_metadata_url` ctor param) — `register_client`
+composes it. A 404'd `Mcp-Session-Id` tears the transport down like any other death — the runner
+supervisor's reconnect classification covers it with no special case. The listed specs landed in
+`tests/interface/mcp/` (403 `insufficient_scope` challenge, PKCE refusal, `refresh_lock`
+one-grant collapse).
 
 ## 12. Application-layer pattern (consumer cookbook)
 

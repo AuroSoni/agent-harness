@@ -681,3 +681,82 @@ same change (storage rule).
   `test_fork_reset_checkpoint_adapter.py`, `test_fork_reset_codec.py`,
   `test_fork_reset_sandbox_snapshot.py`, `test_fork_reset_verbs.py`, `test_fork_reset_schema.py`;
   plus `tests/interface/storage/test_storage_handles.py` (+2 for the new slots).
+
+## External MCP servers (MC) — 2026-07-03
+
+Design: `subsystems/mcp.md` (E1–E15, §12 consumer cookbook). Specs: `tests/interface/mcp/` (72:
+`test_mcp_spec_auth.py`, `test_mcp_connect_compile.py`, `test_mcp_lifecycle_401.py`,
+`test_mcp_dynamic_reconcile.py`, `test_mcp_oauth.py`, `test_mcp_agent_integration.py` + one
+integration-marked stdio spawn/kill test). Package: `agent_base/mcp/`
+(`spec`/`auth`/`oauth`/`source`/`convert`), optional extra `agent-base[mcp]` (`mcp>=1.28,<2`).
+Verified against MCP spec rev 2025-11-25 (a backend-resident host is the spec's supported model).
+
+- **MC-D1 — Connect timing: eager**, in `initialize()`, concurrent, failure-isolated; `required=`
+  fails `initialize()` and is init-time-only (ignored by `add_server`). Lazy connect rejected:
+  schemas must exist at first render.
+- **MC-D2 — Naming: `mcp__{server_key}__{remote_name}`**; keys `^[a-zA-Z0-9_-]+$`, no `__`
+  (ValueError at construction); hostile remote names sanitized (`[^a-zA-Z0-9_-]` → `_`, 64-char
+  truncate, `_N` de-collision) with the ORIGINAL remote name kept on the wire.
+- **MC-D3 — Dedicated `mcp_servers=` ctor kwarg** (not a `Toolish` spelling): MCP discovery is
+  async; an async-bundle notion would change the tools contract for one consumer.
+- **MC-D4 — `listChanged` deferred.** `refresh(name)` + reconnect-time re-discovery cover drift;
+  diffs apply only at turn boundaries.
+- **MC-D5 — Connect/reconnect/auth are first-class v1**: §3 state machine (pending/connected/
+  reconnecting/failed/needs_auth/disabled), backoff w/ full jitter (`McpReconnectPolicy`),
+  single-flight refresh, 401-refresh-retry-once, `needs_auth` quiescence, E7 (a dead server
+  degrades the CALL — error envelope — never the turn).
+- **MC-D6 — superseded by MC-D9** (recorded for history: browser OAuth was consumer-side).
+- **MC-D7 — Optional dependency**: `agent-base[mcp]` extra; `spec`/`auth` import SDK-free; SDK
+  modules lazy via PEP 562; `mcp_servers=` without the extra raises an actionable ImportError at
+  construction.
+- **MC-D8 — Dynamic `add_server`/`remove_server` on a live agent** (E14): connect I/O out-of-band;
+  registry mutation immediate-when-idle else queued to the next turn boundary; 401-on-add parks
+  `needs_auth` with the challenge while the registration SUCCEEDS; duplicate key → ValueError.
+- **MC-D9 — OAuth protocol mechanics in the library** (`mcp/oauth.py`, amends MC-D6): split-phase
+  `discover`/`register_client`/`build_authorize_url`/`exchange_code`/`refresh` +
+  `TokenSet`/`TokenStore` (4-method, SDK `TokenStorage`-aligned) + `OAuthTokenAuth`; consumer keeps
+  redirect UX, callback endpoint, encrypted persistence; `PendingAuth` serializable across the
+  redirect. Spec-rev 2025-11-25 deltas: CIMD URL-client_ids ahead of DCR (DCR = compat fallback;
+  mcp 1.28.1 ships CIMD natively — verified), 403 `insufficient_scope` classifies as an auth
+  challenge (`McpAuthChallenge.scope`), `build_authorize_url` REFUSES without S256 PKCE support.
+  Implementation note (refines the design doc's wrap-the-SDK-provider sketch): `OAuthTokenAuth`
+  implements the provider contract directly composing `refresh()` — the ratified `refresh_lock`
+  (async CM serializing read→grant→persist with a re-read-after-acquire skip, for stores shared
+  across live agents under mandatory refresh rotation) has no hook inside `OAuthClientProvider`.
+- **MC-D10 — `probe()` ships v1**: agent-free validate/preview/auth-detect, one bounded call,
+  registers and persists nothing.
+- **MC-D11 — Cookie/header-session auth via `SessionHeadersAuth`** (callback-based; persistence
+  inside the consumer callback; unauthorized = HTTP 401 only; the transport cookie jar is out of
+  contract — the handle clears it via a response hook, provider headers are authoritative).
+- **MC-D12 — Registry reconciliation = whole-registry swap** through ONE canonical
+  `_recompose_registry` owned by the agent and shared by profile switches and MCP diffs;
+  `ToolRegistry` stays append-only; compiled callables carry `__mcp_server__` markers so
+  composition filters deterministically; a profile rebuild can never drop the MCP surface (E10).
+- **MC-D13 — Model-visible surface changes, always on, no flags**: (a) every applied `McpToolDiff`
+  renders a system-note spliced into the next model-bound user content as a render-time
+  contribution (never persisted, never a standalone message; none on boot); (b) the `mcp_status`
+  native tool (no `mcp__` prefix, executor backend, credential-free output) auto-registered
+  whenever a source exists, answering from `statuses()`.
+- **MC-D14 — `reconcile(desired)` ships v1**: declarative diff-to-set composed from
+  add/remove; keys are the identity (unchanged-key spec changes are no-ops); a no-op diff emits
+  nothing; supports request-declared attachment consumers (nova's `/run` field).
+- **Two-layer 401 contract (E5/§4)**: primary = the handle bridges `McpAuthProvider` into
+  `httpx.Auth` (fresh headers per request; catch 401; single-flight `on_unauthorized`; re-issue
+  once INSIDE httpx — no teardown); fallback = an escaped 401 kills the transport by SDK design
+  (`ExceptionGroup[httpx.HTTPStatusError]`), classified by the runner supervisor into `needs_auth`
+  with `WWW-Authenticate`/RFC 9728 pointer/scope captured.
+- **E6/E9/E11 mechanics**: connection contexts live inside ONE runner task (anyio scopes are
+  task-bound), torn down by event; `SessionManager.evict` calls a getattr-guarded `agent.aclose()`;
+  `SubAgentSpec.mcp_source` joins `_REFERENCE_FIELDS` (children share the source, never own it —
+  no re-baseline, no notice drain, no teardown); nothing MCP is ever persisted (no columns, no
+  `LIBRARY_SCHEMA_VERSION` bump, no migration; secrets never reach the config row).
+
+### Canonical homes (MC additions)
+
+| Symbol | Home |
+|---|---|
+| `McpServerSpec`, transport specs, `McpReconnectPolicy`, `validate_server_key` | `agent_base/mcp/spec.py` |
+| `McpAuthProvider`, `StaticHeadersAuth`, `BearerTokenAuth`, `SessionHeadersAuth`, `ClientCredentialsOAuth` | `agent_base/mcp/auth.py` |
+| oauth helpers, `TokenSet`, `TokenStore`, `ClientCreds`, `AuthServerInfo`, `PendingAuth`, `OAuthTokenAuth` | `agent_base/mcp/oauth.py` |
+| `McpToolSource`, `McpServerHandle`, `McpServerStatus`, `McpAuthChallenge`, `McpProbeResult`, `McpToolDiff`, `probe`, `render_change_notice` | `agent_base/mcp/source.py` |
+| `result_to_envelope` | `agent_base/mcp/convert.py` |

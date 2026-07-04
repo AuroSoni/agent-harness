@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 # ``retry_policy``, nested ``subagents``) and keeps deepcopy snapshot semantics —
 # nested ``subagents`` recurse through THIS ``__deepcopy__`` so their own tool
 # instances stay shared too.
-_REFERENCE_FIELDS = frozenset({"tools", "frontend_tools", "memory_store"})
+_REFERENCE_FIELDS = frozenset({"tools", "frontend_tools", "memory_store", "mcp_source"})
 
 
 @dataclass
@@ -75,6 +75,10 @@ class SubAgentSpec:
     max_parallel_tool_calls: int = 5
     max_tool_result_tokens: int = 25_000
     memory_store: "MemoryStore | None" = None
+    # mcp.md E9: the parent's McpToolSource, shared BY REFERENCE — children
+    # see dynamically added servers; they never re-baseline, drain notices,
+    # or close it (ownership stays with the parent).
+    mcp_source: Any = None
 
     @classmethod
     def from_template_agent(
@@ -113,6 +117,7 @@ class SubAgentSpec:
             max_parallel_tool_calls=agent.max_parallel_tool_calls,
             max_tool_result_tokens=agent.max_tool_result_tokens,
             memory_store=agent.memory_store,
+            mcp_source=getattr(agent, "mcp_source", None),
         )
 
     def __deepcopy__(self, memo: dict) -> "SubAgentSpec":
@@ -318,6 +323,12 @@ Args:
             media_backend=parent_context.media_backend,
         )
         child._parent_agent_uuid = parent_context.parent_agent_uuid or "unknown"
+        # mcp.md E9: share the parent's source by reference — the child
+        # compiles the current surface at its initialize(); ownership
+        # (callbacks, notices, teardown) stays with the parent, so no
+        # _wire_mcp_source and _mcp_owned stays False.
+        if spec.mcp_source is not None:
+            child._mcp = spec.mcp_source
         return child
 
     async def run(

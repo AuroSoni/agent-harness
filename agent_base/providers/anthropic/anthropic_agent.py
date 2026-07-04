@@ -107,6 +107,8 @@ if TYPE_CHECKING:
     from agent_base.core.cost import TurnSettlement
     from agent_base.core.identity import SessionPrincipal
     from agent_base.core.provider import Provider
+    from agent_base.mcp.source import McpServerStatus, McpToolDiff, McpToolSource
+    from agent_base.mcp.spec import McpServerSpec
     from agent_base.media_backend.media_types import MediaBackend, MediaMetadata
     from agent_base.memory.base import MemoryStore
     from agent_base.sandbox.sandbox_types import Sandbox
@@ -228,6 +230,11 @@ class AnthropicAgent(AgentRuntime):
         # Fork P-A: the provider VALUE (Style-3 factory subclasses pre-bind it).
         provider_value: "Provider | None" = None,
         pricing_policy: Any | None = None,
+        # External MCP servers (mcp.md §2, MC-D3): key -> McpServerSpec.
+        # Requires the agent-base[mcp] extra (MC-D7 — ImportError at
+        # construction, not first call). Pure object construction here; the
+        # eager connect happens in initialize() (MC-D1).
+        mcp_servers: "dict[str, McpServerSpec] | None" = None,
     ) -> None:
         # ── AgentRuntime base: hooks engine, mailbox/audit (submit planes),
         #    profiles, principal, stream state (Fork P-A derivation).
@@ -356,6 +363,25 @@ class AnthropicAgent(AgentRuntime):
         # Optional upstream forward for cumulative usage/cost so inline-await
         # children fold their per-step tokens and $ into the root's sinks.
         self._parent_usage_forward: "AnthropicAgent | None" = None
+
+        # External MCP servers (mcp.md): runtime resource — NEVER persisted,
+        # checkpointed, or logged (E8/E11); shared by reference with
+        # sub-agents (E9). Keys validate here (ValueError immediately, §1).
+        self._mcp: "McpToolSource | None" = None
+        # Ownership (E9): a sub-agent sharing the parent's source by
+        # reference must not re-wire callbacks, re-baseline diffs, drain the
+        # owner's notices, or close the source on its own teardown.
+        self._mcp_owned = False
+        self._mcp_surface_dirty = False
+        if mcp_servers:
+            from agent_base.mcp import require_mcp_sdk
+
+            require_mcp_sdk()
+            from agent_base.mcp.source import McpToolSource
+
+            self._mcp = McpToolSource(mcp_servers)
+            self._mcp_owned = True
+            self._wire_mcp_source()
 
         ####################################################################
         # The agent's persistable state.
@@ -506,6 +532,8 @@ class AnthropicAgent(AgentRuntime):
 
             await self._initialize_sandbox(self._agent_uuid)
 
+            await self._initialize_mcp()
+
             self._initialized = True
             return self.agent_config, self.conversation
 
@@ -535,6 +563,8 @@ class AnthropicAgent(AgentRuntime):
         self._configure_compaction_controller()
 
         await self._initialize_sandbox(agent_uuid)
+
+        await self._initialize_mcp()
 
         self._initialized = True
         # GF-P6G1: persist the fresh row at create (parity with the base
@@ -726,6 +756,21 @@ class AnthropicAgent(AgentRuntime):
                         position=ContributionPosition.BEFORE.value,
                     )
                 )
+        # MC-D13: the MCP boundary change notice rides the next model-bound
+        # user content as a render-time contribution — never a standalone
+        # transcript message (provider alternation rules), never persisted.
+        # Only the source's OWNER consumes notices (E9).
+        if self._mcp is not None and self._mcp_owned:
+            notice = self._mcp.consume_pending_notice()
+            if notice:
+                runtime.append(
+                    Contribution(
+                        slot="system_note",
+                        content=notice,
+                        source="agent",
+                        position=ContributionPosition.BEFORE.value,
+                    )
+                )
         return runtime
 
     def _apply_profile_resources(self, profile: Any) -> None:
@@ -745,6 +790,94 @@ class AnthropicAgent(AgentRuntime):
             self.agent_config.system_prompt = (
                 profile.system_prompt or self.system_prompt
             )
+
+    # ── external MCP servers (mcp.md §2/§3/§7 — MC-D1/D8/D13/D14) ─────────
+
+    def _wire_mcp_source(self) -> None:
+        """Attach the agent-side callbacks: meta-frame emission (dropped with
+        no stream reader, by design) + the §5 boundary discipline."""
+        assert self._mcp is not None
+        self._mcp.on_event = lambda body: self._hook_emit(body)
+        self._mcp.on_surface_changed = self._on_mcp_surface_changed
+
+    async def _initialize_mcp(self) -> None:
+        """Eager concurrent connect + boot registration (MC-D1). The boot
+        surface is the diff baseline — no change notice (MC-D13). A failed
+        ``required=True`` server raises out of ``initialize()`` (§2)."""
+        if self._mcp is None:
+            return
+        await self._mcp.start()  # idempotent for a shared (E9) source
+        self.tool_registry.register_tools(self._mcp.compile_tools())
+        self.tool_registry.register_tools([self._mcp.make_status_tool()])
+        if self._mcp_owned:
+            self._mcp.commit_applied()
+
+    def _on_mcp_surface_changed(self) -> None:
+        """§5 boundary discipline: apply immediately when no run is active,
+        queue to the next turn boundary otherwise (never mid-turn)."""
+        run_task = self._run_task
+        if run_task is None or run_task.done():
+            self._apply_mcp_surface()
+        else:
+            self._mcp_surface_dirty = True
+
+    def _apply_mcp_surface(self) -> None:
+        self._mcp_surface_dirty = False
+        if self._mcp is None or not self._initialized:
+            return
+        self._recompose_registry(None, None)
+
+    def _require_mcp(self) -> "McpToolSource":
+        """The source, created lazily for dynamic registration on an agent
+        booted without ``mcp_servers=`` (E14)."""
+        if self._mcp is None:
+            from agent_base.mcp import require_mcp_sdk
+
+            require_mcp_sdk()
+            from agent_base.mcp.source import McpToolSource
+
+            self._mcp = McpToolSource()
+            self._mcp_owned = True
+            self._wire_mcp_source()
+        return self._mcp
+
+    @property
+    def mcp_source(self) -> "McpToolSource | None":
+        """Runtime resource — shared BY REFERENCE with sub-agents (E9)."""
+        return self._mcp
+
+    def mcp_statuses(self) -> "list[McpServerStatus]":
+        return [] if self._mcp is None else self._mcp.statuses()
+
+    async def mcp_reconnect(self, name: str) -> "McpServerStatus":
+        return await self._require_mcp().reconnect(name)
+
+    async def mcp_set_enabled(self, name: str, enabled: bool) -> None:
+        await self._require_mcp().set_enabled(name, enabled)
+
+    async def mcp_refresh(self, name: str) -> "McpToolDiff":
+        return await self._require_mcp().refresh(name)
+
+    async def add_mcp_server(self, name: str, spec: "McpServerSpec") -> "McpServerStatus":
+        """Dynamic registration on a live agent (MC-D8): connects out-of-band;
+        a 401 parks the handle needs_auth but the registration succeeds."""
+        return await self._require_mcp().add_server(name, spec)
+
+    async def remove_mcp_server(self, name: str) -> None:
+        await self._require_mcp().remove_server(name)
+
+    async def reconcile_mcp_servers(
+        self, desired: "dict[str, McpServerSpec]"
+    ) -> "list[McpServerStatus]":
+        """Declarative diff-to-set (MC-D14): keys are the identity."""
+        return await self._require_mcp().reconcile(desired)
+
+    async def aclose(self) -> None:
+        """Teardown runtime resources: MCP client sessions, reconnect tasks,
+        stdio children — no leaked subprocesses past the session actor (E6).
+        A sub-agent sharing the parent's source (E9) closes nothing."""
+        if self._mcp is not None and self._mcp_owned:
+            await self._mcp.aclose()
 
     def _build_render_view(self, messages: list[Message]) -> list[Message]:
         """Render every message for the LLM wire, applying runtime contributions
@@ -790,6 +923,12 @@ class AnthropicAgent(AgentRuntime):
     ) -> AgentResult:
         if not self._initialized:
             await self.initialize()
+
+        # §5 boundary discipline: a surface change queued while the previous
+        # run was active applies HERE — the turn boundary — so this turn's
+        # schemas and change notice are consistent.
+        if self._mcp is not None and self._mcp_surface_dirty:
+            self._apply_mcp_surface()
 
         self._reset_cancellation_state(cancellation_event)
 
@@ -2159,35 +2298,68 @@ class AnthropicAgent(AgentRuntime):
     ) -> None:
         """Swap tools and/or system prompt mid-run."""
         if tools is not None or frontend_tools is not None:
-            old_registry = self.tool_registry
-            new_registry = ToolRegistry()
-
-            if tools is not None:
-                new_registry.register_tools(tools)
-            else:
-                for rt in old_registry._tools.values():
-                    if rt.executor == "backend":
-                        new_registry.register(rt.name, rt.func, rt.schema)
-
-            if frontend_tools is not None:
-                new_registry.register_tools(frontend_tools)
-            else:
-                for rt in old_registry._tools.values():
-                    if rt.executor == "frontend" or rt.needs_confirmation:
-                        new_registry.register(rt.name, rt.func, rt.schema)
-
-            self.tool_registry = new_registry
-            if self._sandbox is not None:
-                self.tool_registry.attach_sandbox(self._sandbox)
-            self._inject_agent_uuid_to_tools()
-            self.agent_config.tool_schemas = self.tool_registry.get_schemas()
-            self.agent_config.tool_names = [
-                s.name for s in self.agent_config.tool_schemas
-            ]
+            self._recompose_registry(tools, frontend_tools)
 
         if system_prompt is not None:
             self.system_prompt = system_prompt
             self.agent_config.system_prompt = system_prompt
+
+    def _recompose_registry(
+        self,
+        tools: list[Callable] | None,
+        frontend_tools: list[Callable] | None,
+    ) -> None:
+        """THE canonical recompose (mcp.md MC-D12): build a fresh registry
+        from the declared sources — explicit tool lists or the old registry's
+        non-MCP entries — then re-add the CURRENT MCP surface + ``mcp_status``,
+        swap, re-attach the sandbox, re-inject uuids, refresh the persisted
+        schemas. Profile switches and MCP reconciliation share this one
+        function, so a profile rebuild can never silently drop the MCP
+        surface (E10). Compiled MCP callables carry ``__mcp_server__`` so
+        composition filters deterministically — never copy-from-old
+        heuristics for MCP entries."""
+        old_registry = self.tool_registry
+        new_registry = ToolRegistry()
+
+        def _is_mcp_component(rt: Any) -> bool:
+            return (
+                getattr(rt.func, "__mcp_server__", None) is not None
+                or rt.name == "mcp_status"
+            )
+
+        if tools is not None:
+            new_registry.register_tools(tools)
+        else:
+            for rt in old_registry._tools.values():
+                if rt.executor == "backend" and not _is_mcp_component(rt):
+                    new_registry.register(rt.name, rt.func, rt.schema)
+
+        if frontend_tools is not None:
+            new_registry.register_tools(frontend_tools)
+        else:
+            for rt in old_registry._tools.values():
+                if (
+                    rt.executor == "frontend" or rt.needs_confirmation
+                ) and not _is_mcp_component(rt):
+                    new_registry.register(rt.name, rt.func, rt.schema)
+
+        if self._mcp is not None:
+            new_registry.register_tools(self._mcp.compile_tools())
+            new_registry.register_tools([self._mcp.make_status_tool()])
+
+        self.tool_registry = new_registry
+        if self._sandbox is not None:
+            self.tool_registry.attach_sandbox(self._sandbox)
+        self._inject_agent_uuid_to_tools()
+        if self.agent_config is not None:
+            self.agent_config.tool_schemas = self.tool_registry.get_schemas()
+            self.agent_config.tool_names = [
+                s.name for s in self.agent_config.tool_schemas
+            ]
+        if self._mcp is not None and self._mcp_owned:
+            # Record the applied surface; a non-empty diff queues the MC-D13
+            # change notice for the next model-bound turn.
+            self._mcp.commit_applied()
 
     async def _on_tool_results(
         self,
