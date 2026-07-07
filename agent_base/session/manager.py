@@ -532,6 +532,17 @@ class SessionManager:
             logger.warning(
                 "SessionManager: checkpoint during evict failed for %s", root_session_id
             )
+        # mcp.md E6: close runtime resources (MCP client sessions, stdio
+        # children) — no leaked subprocesses past the session actor.
+        try:
+            aclose = getattr(agent, "aclose", None)
+            if callable(aclose):
+                await aclose()
+        except Exception:  # pragma: no cover - cleanup best-effort
+            logger.warning(
+                "SessionManager: resource close during evict failed for %s",
+                root_session_id,
+            )
         get_await_table().drop_tree(root_session_id)
         return True
 
