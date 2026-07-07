@@ -40,6 +40,28 @@ from .base import (
     AgentConfigAdapter,
     ConversationAdapter,
     AgentRunAdapter,
+    CheckpointAdapter,
+)
+
+# Checkpoint entities (fork/reset) — canonical home is core.checkpoint
+from ..core.checkpoint import Checkpoint, CheckpointRef
+
+# The bundle the runtime threads onto HookContext.storage (storage.md §2.0)
+from .handles import StorageHandles
+
+# Typed cross-agent analytics read-API (storage.md §2.7)
+from .analytics import (
+    TERMINAL_STOP_REASONS,
+    AgentTotals,
+    AnalyticsReader,
+    AnalyticsTotals,
+    LatencyStats,
+    PgAnalyticsReader,
+    RunFilter,
+    RunSummary,
+    TimeBucket,
+    ToolUsageStat,
+    is_error_stop,
 )
 
 # Serialization helpers
@@ -50,6 +72,12 @@ from .serialization import (
     deserialize_conversation,
     serialize_log_entry,
     deserialize_log_entry,
+)
+
+# Checkpoint transcript codec (fork-reset) — the hybrid CAS split/assemble
+from .checkpoint_codec import (
+    assemble_config_from_checkpoint,
+    split_config_for_checkpoint,
 )
 
 # Exceptions
@@ -77,6 +105,7 @@ from .adapters import (
     MemoryAgentConfigAdapter,
     MemoryConversationAdapter,
     MemoryAgentRunAdapter,
+    MemoryCheckpointAdapter,
     # Filesystem
     FilesystemAgentConfigAdapter,
     FilesystemConversationAdapter,
@@ -93,6 +122,23 @@ __all__ = [
     "AgentConfigAdapter",
     "ConversationAdapter",
     "AgentRunAdapter",
+    "CheckpointAdapter",
+    # Checkpoint entities
+    "Checkpoint",
+    "CheckpointRef",
+    # Handles bundle
+    "StorageHandles",
+    # Analytics
+    "TERMINAL_STOP_REASONS",
+    "AnalyticsReader",
+    "AnalyticsTotals",
+    "LatencyStats",
+    "PgAnalyticsReader",
+    "RunFilter",
+    "RunSummary",
+    "TimeBucket",
+    "ToolUsageStat",
+    "is_error_stop",
     # Serialization
     "serialize_config",
     "deserialize_config",
@@ -100,6 +146,9 @@ __all__ = [
     "deserialize_conversation",
     "serialize_log_entry",
     "deserialize_log_entry",
+    # Checkpoint codec (fork-reset)
+    "split_config_for_checkpoint",
+    "assemble_config_from_checkpoint",
     # Exceptions
     "StorageError",
     "StorageConnectionError",
@@ -117,6 +166,7 @@ __all__ = [
     "MemoryAgentConfigAdapter",
     "MemoryConversationAdapter",
     "MemoryAgentRunAdapter",
+    "MemoryCheckpointAdapter",
     # Filesystem adapters
     "FilesystemAgentConfigAdapter",
     "FilesystemConversationAdapter",

@@ -20,7 +20,7 @@ except ImportError:
     repo_root = Path(__file__).parent.parent.parent
     sys.path.insert(0, str(repo_root))
 
-from agent_router import router as agent_router
+from agent_router import router as agent_router, session_manager
 from db import db
 from storage import config_adapter, conversation_adapter, run_adapter
 
@@ -34,8 +34,9 @@ async def lifespan(app: FastAPI):
     await run_adapter.connect()
     
     yield
-    
-    # Shutdown: close storage adapters and database connection pool
+
+    # Shutdown: evict (checkpoint) resident sessions, then close adapters
+    await session_manager.shutdown()
     await config_adapter.close()
     await conversation_adapter.close()
     await run_adapter.close()

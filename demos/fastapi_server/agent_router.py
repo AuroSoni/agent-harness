@@ -1,4 +1,12 @@
-"""Agent endpoint for streaming responses via SSE."""
+"""Agent endpoint for streaming responses via SSE.
+
+Reference-consumer wiring (GF-P6G1..G4): every endpoint runs on the PUBLIC
+surface only — ``get_or_create`` → ``attach_stream()`` → ``submit`` → SSE.
+No private seams: the per-request read point is ``agent.attach_stream()``
+(never a queue swap), turns are driven by the submit auto-kick (never a
+hand-spawned driver task), and the continuation's end is the guaranteed
+``RunCompleted`` frame (never a private task-handle watcher).
+"""
 import asyncio
 import base64
 import json
@@ -22,9 +30,23 @@ from agent_base.common_tools import (
 )
 from agent_base.tools import tool
 from agent_base.core.types import ToolResultContent, TextContent
+from agent_base.core.messages import Message
+from agent_base.core.commands import Abort, Steer, SteerMode, ToolReply, UserMessage
+from agent_base.session import SessionManager
+from agent_base.streaming.wire import SseCodec
 from storage import config_adapter, conversation_adapter, run_adapter
 
 logger = logging.getLogger(__name__)
+
+# The ONE wire codec (streaming-and-meta.md §2.5): typed StreamItems → SSE
+# frames. Replaces the deleted get_formatter/JSON-string queue pipeline (G0).
+_SSE_CODEC = SseCodec()
+
+#: Frame kinds that close a request's SSE response. ``run_completed`` is
+#: GUARANTEED at every completed/errored turn end (GF-P6G4); ``await_input``
+#: pauses the turn (the continuation streams from /tool_results); the
+#: ``aborted`` Custom frame is the abort-path terminal.
+_TERMINAL_KINDS = frozenset({"run_completed", "await_input"})
 
 
 ########################################################
@@ -250,9 +272,15 @@ class FrontendToolResult(BaseModel):
 
 
 class ToolResultsRequest(BaseModel):
-    """Request to submit frontend tool results and resume agent execution."""
+    """Request to submit frontend tool results and resume agent execution.
+
+    ``cid`` is the echo token from the ``AwaitInput`` envelope
+    (``correlation_id``); older clients may omit it and the server falls back
+    to the session's persisted ``pending_relay.cid``.
+    """
     agent_uuid: str
     tool_results: list[FrontendToolResult]
+    cid: Optional[str] = None
     agent_type: Optional[AgentType] = None  # Original agent type for correct config (defaults to agent_frontend_tools)
 
 
@@ -323,6 +351,20 @@ def _create_agent(cfg: AgentConfig, agent_uuid: str | None = None) -> AnthropicA
     )
 
 
+def _build_session_agent(root_session_id: str) -> AnthropicAgent:
+    """Factory for the SessionManager: build a resident agent keyed by its uuid.
+
+    ``root_session_id == agent_uuid`` (ratified). The default config is a
+    template; ``initialize()`` cold-loads the real config for an existing uuid.
+    """
+    return _create_agent(AGENT_CONFIGS["agent_all_json"], agent_uuid=root_session_id)
+
+
+# Resident in-process sessions (replaces per-request cold-load). Idle sessions
+# are evicted (checkpointed) by the SessionManager; shutdown evicts all (main.py).
+session_manager = SessionManager(_build_session_agent)
+
+
 ########################################################
 # AGENT CONFIGURATIONS
 ########################################################
@@ -332,12 +374,12 @@ WORKSPACE_PATH = os.getenv("WORKSPACE_PATH", "./workspace")
 
 # Common tools (sandbox-based I/O — sandbox is attached by AnthropicAgent.initialize())
 COMMON_TOOL_FUNCTIONS = [
-    ReadFileTool().get_tool(),
-    GlobFileSearchTool().get_tool(),
-    GrepSearchTool().get_tool(),
-    ListDirTreeTool().get_tool(),
-    ApplyPatchTool().get_tool(),
-    CodeExecutionTool().get_tool(),
+    ReadFileTool().as_tool(),
+    GlobFileSearchTool().as_tool(),
+    GrepSearchTool().as_tool(),
+    ListDirTreeTool().as_tool(),
+    ApplyPatchTool().as_tool(),
+    CodeExecutionTool().as_tool(),
 ]
 
 # --- 1. Plain chat (no tools) ---
@@ -497,12 +539,67 @@ AGENT_CONFIGS: dict[AgentType, AgentConfig] = {
     "agent_subagents": agent_subagents,
 }
 
+def _to_user_message(user_prompt: str | list[dict] | dict | Message) -> Message:
+    """Wrap the request prompt as the ``UserMessage`` payload (the same loose
+    block handling the old direct ``run()`` path applied)."""
+    if isinstance(user_prompt, Message):
+        return user_prompt
+    if isinstance(user_prompt, str):
+        return Message.user(user_prompt)
+    blocks = user_prompt if isinstance(user_prompt, list) else [user_prompt]
+    return Message.user(blocks)
+
+
+def _is_terminal(item: Any) -> bool:
+    """True when ``item`` closes this request's SSE response."""
+    kind = getattr(item, "kind", None)
+    if kind in _TERMINAL_KINDS:
+        return True
+    return kind == "custom" and getattr(
+        getattr(item, "body", None), "name", None
+    ) == "aborted"
+
+
+async def _sse_frames_until_terminal(
+    agent: AnthropicAgent, stream: AsyncGenerator[Any, None]
+) -> AsyncGenerator[str, None]:
+    """Encode StreamItems as SSE frames until the turn completes or pauses.
+
+    Closing at ``await_input`` leaves the actor PARKED in RAM on the cid
+    (relay-await §2.3) — the continuation streams from /tool_results, whose
+    ``attach_stream()`` takes over the live read point (GF-P6G2/D3). A dropped
+    SSE connection lands in the ``except``: ``detach_stream()`` releases the
+    read point (frames drop while detached) but the resident turn keeps
+    running to its checkpoint — disconnect ≠ cancel (A8).
+    """
+    try:
+        async for item in stream:
+            for frame in _SSE_CODEC.encode(item):
+                yield _SSE_CODEC.render(frame)
+            if _is_terminal(item):
+                break
+    except asyncio.CancelledError:
+        # 5c: a dropped SSE connection must NOT kill the resident turn —
+        # release only the reader; teardown stays /abort or idle-TTL eviction.
+        agent.detach_stream()
+        raise
+    # Send final SSE marker to close the response.
+    yield _SSE_CODEC.render(_SSE_CODEC.encode_terminal())
+
+
 async def stream_agent_response(
     user_prompt: str | list[dict] | dict,
     agent_uuid: Optional[str] = None,
     agent_type: Optional[AgentType] = None,
 ) -> AsyncGenerator[str, None]:
     """Generate SSE-formatted stream of agent responses.
+
+    The reference consumer flow (GF-P6G2/G3): get_or_create →
+    ``attach_stream()`` (the public per-request read point — a second request
+    steals the live stream, the prior reader ends cleanly) →
+    ``submit(UserMessage)`` (the auto-kicked actor drives the turn; no
+    hand-spawned driver task) → frames until ``RunCompleted`` /
+    ``AwaitInput`` / aborted.
 
     Args:
         user_prompt: The user's question or task (str, list, or dict)
@@ -513,42 +610,24 @@ async def stream_agent_response(
         SSE-formatted strings containing raw agent output chunks
     """
     try:
-        # Get config from registry (default to agent_all_json)
-        config = AGENT_CONFIGS[agent_type or "agent_all_json"]
+        # Resolve a RESIDENT agent (keyed by agent_uuid) instead of cold-loading.
+        # The CONSUMER mints the id for new sessions (O15a) so the run is
+        # addressable by /abort and /steer; a fresh minted id initializes with
+        # ZERO pre-seeding (GF-P6G1).
+        import uuid as _uuid
+        session_id = agent_uuid or f"agent_{_uuid.uuid4().hex}"
+        agent = await session_manager.get_or_create(session_id)
 
-        # Create the agent with config
-        agent = _create_agent(config, agent_uuid=agent_uuid)
+        # Attach BEFORE submit so the turn's first frames land on this reader.
+        stream = agent.attach_stream()
 
-        # Create queue for streaming
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        ack = await agent.submit(UserMessage(message=_to_user_message(user_prompt)))
+        if ack.disposition.value != "accepted":
+            yield f"data: {json.dumps({'error': 'NotAccepted', 'disposition': ack.disposition.value, 'detail': ack.detail})}\n\n"
+            return
 
-        # Run the agent in background (this will populate the queue)
-        async def run_agent_and_signal():
-            try:
-                result = await agent.run_stream(user_prompt, queue)
-                return result
-            finally:
-                await queue.put(None)  # Always signal completion
-
-        agent_task = asyncio.create_task(run_agent_and_signal())
-
-        # Yield raw chunks as they arrive from the queue
-        try:
-            while True:
-                chunk = await queue.get()
-                if chunk is None:
-                    break
-                yield f"data: {chunk}\n\n"
-                queue.task_done()
-        except asyncio.CancelledError:
-            agent_task.cancel()
-            raise
-
-        # Wait for agent to complete (re-raises if agent.run() failed)
-        await agent_task
-
-        # Send final SSE marker to close stream
-        yield "data: [DONE]\n\n"
+        async for frame in _sse_frames_until_terminal(agent, stream):
+            yield frame
 
     except Exception as e:
         tb = traceback.format_exception(type(e), e, e.__traceback__)
@@ -566,25 +645,37 @@ async def stream_tool_results_response(
 ) -> AsyncGenerator[str, None]:
     """Generate SSE-formatted stream after frontend tools complete.
 
-    Re-hydrates the agent from the database using agent_uuid, submits
-    the frontend tool results, and continues streaming the response.
+    The ONE resume contract (relay-await §2.4 / §6): ``submit(ToolReply(cid))``
+    through the SessionManager. Hot (resident, parked) sessions wake in place;
+    evicted sessions rehydrate-then-resolve on the SAME cid — there is no
+    separate cold endpoint, and ``resume_with_relay_results`` is deleted (G0).
+
+    The completion handle (GF-P6G4): the continuation ALWAYS ends with a
+    ``RunCompleted`` frame on the attached stream (unconditional at turn end),
+    so this response closes on it — no private task-handle watcher. A
+    non-streaming caller would use ``await agent.wait_idle()`` instead.
 
     Args:
-        request: Tool results request containing agent_uuid and results
+        request: Tool results request containing agent_uuid, cid and results
 
     Yields:
         SSE-formatted strings containing agent output chunks
     """
     try:
-        # Re-hydrate agent from DB (state is loaded automatically via agent_uuid)
-        # Use the specified agent_type config, defaulting to agent_frontend_tools
-        agent_type = request.agent_type or "agent_frontend_tools"
-        config = AGENT_CONFIGS.get(agent_type, AGENT_CONFIGS["agent_frontend_tools"])
+        # Resolve the RESIDENT session (cold-loads persisted state if evicted)
+        # and take over the live read point for this request (GF-P6G2/D3:
+        # attach BEFORE the reply so the continuation's first frames land
+        # here; the /run reader — if still attached — ends cleanly).
+        agent = await session_manager.get_or_create(request.agent_uuid)
+        stream = agent.attach_stream()
 
-        agent = _create_agent(config, agent_uuid=request.agent_uuid)
-
-        # Create queue for streaming
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        # The cid is the FE's echo token; fall back to the persisted pause for
+        # clients that predate the cid echo.
+        pending = agent.agent_config.pending_relay if agent.agent_config else None
+        cid = request.cid or (pending.cid if pending else None)
+        if cid is None:
+            yield f"data: {json.dumps({'error': 'NoOpenAwait', 'message': 'No pending frontend-tool pause for this session.'})}\n\n"
+            return
 
         # Build relay result content blocks from frontend tool results
         relay_blocks = []
@@ -596,36 +687,18 @@ async def stream_tool_results_response(
                 is_error=r.is_error,
             ))
 
-        # Continue the agent with frontend tool results
-        async def run_continuation():
-            try:
-                result = await agent.resume_with_relay_results(
-                    relay_results=relay_blocks,
-                    queue=queue,
-                )
-                return result
-            finally:
-                await queue.put(None)  # Always signal completion
+        ack = await session_manager.submit(
+            request.agent_uuid, ToolReply(cid=cid, results=relay_blocks)
+        )
+        if ack.disposition.value not in ("resolved", "accepted"):
+            yield f"data: {json.dumps({'error': 'ReplyNotAccepted', 'disposition': ack.disposition.value})}\n\n"
+            return
 
-        agent_task = asyncio.create_task(run_continuation())
-
-        # Yield chunks as they arrive
-        try:
-            while True:
-                chunk = await queue.get()
-                if chunk is None:
-                    break
-                yield f"data: {chunk}\n\n"
-                queue.task_done()
-        except asyncio.CancelledError:
-            agent_task.cancel()
-            raise
-
-        # Wait for agent to complete (re-raises if continuation failed)
-        await agent_task
-
-        # Send final SSE marker
-        yield "data: [DONE]\n\n"
+        # Stream the continuation (the resumed turn runs on the resident
+        # agent's own task — submit() never blocks on it, CQRS) until the
+        # guaranteed RunCompleted, a chained AwaitInput, or an abort.
+        async for frame in _sse_frames_until_terminal(agent, stream):
+            yield frame
 
     except Exception as e:
         tb = traceback.format_exception(type(e), e, e.__traceback__)
@@ -877,6 +950,32 @@ async def submit_tool_results(request: ToolResultsRequest) -> StreamingResponse:
             "X-Accel-Buffering": "no",  # Disable buffering in nginx
         },
     )
+
+
+class SteerRequest(BaseModel):
+    instruction: str
+    mode: Literal["forceful", "cooperative"] = "forceful"
+
+
+@router.post("/{agent_uuid}/abort")
+async def abort_agent(agent_uuid: str) -> dict[str, Any]:
+    """Abort a resident agent's current turn (control plane).
+
+    Resolves the same resident agent the run is using and submits an ``Abort``,
+    whose shared cancellation event the in-flight turn observes cooperatively.
+    """
+    agent = await session_manager.get_or_create(agent_uuid)
+    ack = await agent.submit(Abort())
+    return {"disposition": ack.disposition.value, "seq": ack.seq, "detail": ack.detail}
+
+
+@router.post("/{agent_uuid}/steer")
+async def steer_agent(agent_uuid: str, request: SteerRequest) -> dict[str, Any]:
+    """Steer a resident agent (forceful = preempt now; cooperative = next boundary)."""
+    agent = await session_manager.get_or_create(agent_uuid)
+    mode = SteerMode.FORCEFUL if request.mode == "forceful" else SteerMode.COOPERATIVE
+    ack = await agent.submit(Steer(instruction=Message.user(request.instruction), mode=mode))
+    return {"disposition": ack.disposition.value, "seq": ack.seq, "detail": ack.detail}
 
 
 @router.post("/upload")

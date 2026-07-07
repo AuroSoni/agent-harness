@@ -15,26 +15,64 @@ if TYPE_CHECKING:
 class Usage:
     """Token usage metrics for a single API call. Purely numeric — source
     identity (provider/model) and billing context (usage_kwargs) live on
-    Message where they are unambiguous when summing across steps."""
+    Message where they are unambiguous when summing across steps.
+
+    Follows the ``Serializable`` convention (core.md §2.1, O15(c)):
+    ``to_dict()`` stamps the library-wide ``CORE_SCHEMA_VERSION`` under ``_v``;
+    ``from_dict()`` tolerates the stamp, unknown keys, and missing keys.
+    """
     input_tokens: int = 0
     output_tokens: int = 0
     cache_write_tokens: int | None = None
     cache_read_tokens: int | None = None
     thinking_tokens: int | None = None
-    raw_usage: Dict[str, Any] = field(default_factory=dict)
+    # ``None`` after ``__add__`` (O5: raw_usage is dropped on add — summing
+    # provider-opaque payloads is meaningless).
+    raw_usage: Dict[str, Any] | None = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        from agent_base.core.serializable import _stamp
+
+        return _stamp({
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cache_write_tokens": self.cache_write_tokens,
             "cache_read_tokens": self.cache_read_tokens,
             "thinking_tokens": self.thinking_tokens,
             "raw_usage": self.raw_usage,
-        }
+        })
+
+    def totals_dict(self) -> Dict[str, Any]:
+        """``to_dict()`` MINUS ``raw_usage`` (O5) — the stable numeric keys,
+        ``None`` cache/thinking fields coalesced to 0, ``_v`` stamped."""
+        from agent_base.core.serializable import _stamp
+
+        return _stamp({
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_write_tokens": self.cache_write_tokens or 0,
+            "cache_read_tokens": self.cache_read_tokens or 0,
+            "thinking_tokens": self.thinking_tokens or 0,
+        })
+
+    def __add__(self, other: "Usage") -> "Usage":
+        """Field-wise sum (O5). ``None`` cache/thinking fields coalesce to 0;
+        ``raw_usage`` is dropped (set to ``None``). Pure — neither operand is
+        mutated."""
+        if not isinstance(other, Usage):
+            return NotImplemented
+        return Usage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            cache_write_tokens=(self.cache_write_tokens or 0) + (other.cache_write_tokens or 0),
+            cache_read_tokens=(self.cache_read_tokens or 0) + (other.cache_read_tokens or 0),
+            thinking_tokens=(self.thinking_tokens or 0) + (other.thinking_tokens or 0),
+            raw_usage=None,
+        )
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Usage":
+        # Tolerates the `_v` stamp and unknown keys; missing keys take defaults.
         return cls(
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),

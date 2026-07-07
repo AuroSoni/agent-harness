@@ -23,6 +23,13 @@ dependencies = [
     "structlog>=25.5.0",
 ]
 
+[project.optional-dependencies]
+# External MCP servers (agent_base/mcp/) — interface_plan/subsystems/mcp.md,
+# MC-D7: optional extra, lazy import, actionable ctor ImportError.
+mcp = [
+    "mcp>=1.28,<2",
+]
+
 [dependency-groups]
 dev = [
     "ipykernel>=7.1.0",
@@ -35,6 +42,9 @@ packages = ["agent_base"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# tests/interface is the TDD red suite for the interface_plan redesign; it is
+# collected only when targeted explicitly (see tests/interface/README.md).
+testpaths = ["tests/unit", "tests/integration"]
 addopts = "-m 'not integration'"
 markers = [
     "integration: marks tests as integration tests (deselected by default)",

@@ -1,12 +1,15 @@
-"""ReadTodosTool for reading the current todo list."""
+"""ReadTodosTool for reading the current todo list.
+
+Migrated to the template-method ``run()`` authoring style (tools.md §2.2).
+"""
 from __future__ import annotations
 
 from collections import Counter
-from typing import Awaitable, Callable
 
 import yaml
 
 from agent_base.tools import ConfigurableToolBase
+from agent_base.tools.tool_types import ToolSchema
 
 from .todo_write import TODO_FILENAME, _todo_lock
 
@@ -45,76 +48,68 @@ Returns:
     def __init__(
         self,
         docstring_template: str | None = None,
-        schema_override: dict | None = None,
+        schema_override: ToolSchema | None = None,
     ):
         super().__init__(
             docstring_template=docstring_template,
             schema_override=schema_override,
+            name="read_todos",
         )
 
-    def get_tool(self) -> Callable[..., Awaitable[str]]:
-        """Return a @tool decorated async function for use with an agent."""
-        instance = self
+    async def run(self) -> str:
+        async with _todo_lock:
+            exists_result = await self._sandbox.file_exists(TODO_FILENAME)
+            if isinstance(exists_result, tuple):
+                exists = exists_result[0]
+            else:
+                exists = exists_result
 
-        async def read_todos() -> str:
-            """Placeholder docstring - replaced by template."""
-            async with _todo_lock:
-                exists_result = await instance._sandbox.file_exists(TODO_FILENAME)
-                if isinstance(exists_result, tuple):
-                    exists = exists_result[0]
-                else:
-                    exists = exists_result
-
-                if not exists:
-                    return "No todos found."
-
-                try:
-                    chunks: list[bytes] = []
-                    async for chunk in instance._sandbox.read_file_bytes(TODO_FILENAME):
-                        chunks.append(chunk)
-                    raw_bytes = b"".join(chunks)
-                except Exception:
-                    return "No todos found."
-
-                try:
-                    data = yaml.safe_load(raw_bytes.decode("utf-8"))
-                except Exception:
-                    return "No todos found."
-
-            if not data or not isinstance(data, dict):
+            if not exists:
                 return "No todos found."
 
-            todos = data.get("todos")
-            if not todos or not isinstance(todos, list):
+            try:
+                chunks: list[bytes] = []
+                async for chunk in self._sandbox.read_file_bytes(TODO_FILENAME):
+                    chunks.append(chunk)
+                raw_bytes = b"".join(chunks)
+            except Exception:
                 return "No todos found."
 
-            lines: list[str] = []
-            status_counts: Counter[str] = Counter()
-
-            for todo in todos:
-                if not isinstance(todo, dict):
-                    continue
-                todo_id = todo.get("id", "?")
-                content = todo.get("content", "")
-                status = todo.get("status", "not_started")
-                icon = STATUS_ICONS.get(status, "[ ]")
-                lines.append(f"{icon} {todo_id}: {content} ({status})")
-                status_counts[status] += 1
-
-            if not lines:
+            try:
+                data = yaml.safe_load(raw_bytes.decode("utf-8"))
+            except Exception:
                 return "No todos found."
 
-            summary_parts = [
-                f"{status_counts.get('completed', 0)} completed",
-                f"{status_counts.get('in_progress', 0)} in_progress",
-                f"{status_counts.get('not_started', 0)} not_started",
-                f"{status_counts.get('canceled', 0)} canceled",
-                f"{status_counts.get('failed', 0)} failed",
-            ]
-            lines.append(f"[Summary: {', '.join(summary_parts)}]")
+        if not data or not isinstance(data, dict):
+            return "No todos found."
 
-            return "\n".join(lines)
+        todos = data.get("todos")
+        if not todos or not isinstance(todos, list):
+            return "No todos found."
 
-        func = self._apply_schema(read_todos)
-        func.__tool_instance__ = instance
-        return func
+        lines: list[str] = []
+        status_counts: Counter[str] = Counter()
+
+        for todo in todos:
+            if not isinstance(todo, dict):
+                continue
+            todo_id = todo.get("id", "?")
+            content = todo.get("content", "")
+            status = todo.get("status", "not_started")
+            icon = STATUS_ICONS.get(status, "[ ]")
+            lines.append(f"{icon} {todo_id}: {content} ({status})")
+            status_counts[status] += 1
+
+        if not lines:
+            return "No todos found."
+
+        summary_parts = [
+            f"{status_counts.get('completed', 0)} completed",
+            f"{status_counts.get('in_progress', 0)} in_progress",
+            f"{status_counts.get('not_started', 0)} not_started",
+            f"{status_counts.get('canceled', 0)} canceled",
+            f"{status_counts.get('failed', 0)} failed",
+        ]
+        lines.append(f"[Summary: {', '.join(summary_parts)}]")
+
+        return "\n".join(lines)

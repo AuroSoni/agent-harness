@@ -9,7 +9,8 @@ from typing import Any
 
 import aiofiles
 
-from .media_types import MEDIA_READ_CHUNK_SIZE, MediaBackend, MediaMetadata
+from .media_types import MEDIA_READ_CHUNK_SIZE, MediaBackend, MediaMetadata, MediaScope
+from agent_base.blob_store.hashing import derive_namespace
 
 class LocalMediaBackend(MediaBackend):
     """Filesystem-backed media storage.
@@ -28,6 +29,8 @@ class LocalMediaBackend(MediaBackend):
         self,
         base_path: str | Path = "./agent-media",
         url_prefix: str | None = None,
+        *,
+        blob_store: Any = None,
     ) -> None:
         """Initialize local media backend.
 
@@ -36,7 +39,9 @@ class LocalMediaBackend(MediaBackend):
             url_prefix: Optional URL prefix for to_url(). When set,
                 to_url() returns "{url_prefix}/{agent_uuid}/{media_id}".
                 When None, returns a file:// URI.
+            blob_store: Optional content-addressed object store (§2.4).
         """
+        super().__init__(blob_store=blob_store)
         self.base_path = Path(base_path)
         self.url_prefix = url_prefix.rstrip("/") if url_prefix else None
 
@@ -236,6 +241,34 @@ class LocalMediaBackend(MediaBackend):
         existing = await self._load_extras(agent_uuid, media_id)
         existing.update(extras)
         await self._save_extras(agent_uuid, media_id, existing)
+
+    async def find_by_content_hash(
+        self,
+        content_hash: str,
+        agent_uuid: str,
+        *,
+        scope: MediaScope | None = None,
+    ) -> MediaMetadata | None:
+        # I13(a): scope-derived namespace, default scope-filtered.
+        namespace = derive_namespace(agent_uuid, scope)
+        agent_dir = self.base_path / namespace
+        if not agent_dir.exists():
+            return None
+        for path in agent_dir.glob("*"):
+            if path.suffix == ".json" and path.name.endswith(".meta.json"):
+                continue
+            name = path.name
+            media_id = name.split("_", 1)[0]
+            extras = await self._load_extras(namespace, media_id)
+            if (
+                extras.get("content_hash") == content_hash
+                or extras.get("blake3_hash") == content_hash
+            ):
+                meta = await self.get_metadata(media_id, namespace)
+                if meta is not None:
+                    meta.content_hash = content_hash
+                    return meta
+        return None
 
     # ─── Resolution ───────────────────────────────────────────────────
 

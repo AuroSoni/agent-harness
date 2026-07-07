@@ -51,6 +51,7 @@ def get_extensions(preset: Union[str, Set[str]]) -> set[str]:
 
 
 from .apply_patch import ApplyPatchTool
+from .bundles import code_exec_bundle, file_ops_bundle
 from .code_execution_tool import CodeExecutionTool
 from .glob_file_search import GlobFileSearchTool
 from .grep_search import GrepSearchTool
@@ -75,4 +76,6 @@ __all__ = [
     "SubAgentEnvelope",
     "SubAgentSpec",
     "SubAgentTool",
+    "file_ops_bundle",
+    "code_exec_bundle",
 ]

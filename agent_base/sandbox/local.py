@@ -4,6 +4,7 @@ import asyncio
 import os
 import shutil
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator
@@ -21,18 +22,20 @@ except ImportError:  # pragma: no cover - exercised only when optional dep is mi
 
     blake3 = _Blake3Compat()
 
+from .config_driven import ConfigDrivenSandbox, register_sandbox
 from .sandbox_types import (
+    DEFAULT_ZONE_LAYOUT,
     ExecResult,
     ExportedFileMetadata,
     FileEntry,
     MAX_READ_LINES,
     READ_CHUNK_SIZE,
-    Sandbox,
     SandboxConfig,
     SandboxNotATextFileError,
     SandboxPathEscapeError,
     TEXT_EXTENSIONS,
     TOKEN_COUNTING_SIZE_THRESHOLD,
+    ZoneLayout,
 )
 
 
@@ -44,9 +47,12 @@ class LocalSandboxConfig(SandboxConfig):
     sandbox_id: str = ""
     base_dir: str = ""
     default_timeout: float = 30.0
+    extra_zones: tuple[str, ...] = ()
+    """X11: zone names appended to DEFAULT_ZONE_LAYOUT."""
 
 
-class LocalSandbox(Sandbox):
+@register_sandbox("local")
+class LocalSandbox(ConfigDrivenSandbox):
     """Path-restricted sandbox on the local filesystem.
 
     Each agent session gets its own directory tree::
@@ -68,11 +74,15 @@ class LocalSandbox(Sandbox):
     system. Use DockerSandbox for real process isolation.
     """
 
+    config_class = LocalSandboxConfig
+
     def __init__(
         self,
         sandbox_id: str,
         base_dir: str | Path,
         default_timeout: float = 30.0,
+        extra_zones: tuple[str, ...] = (),
+        layout: ZoneLayout | None = None,
     ) -> None:
         if not sandbox_id:
             raise ValueError("sandbox_id must not be empty")
@@ -80,29 +90,24 @@ class LocalSandbox(Sandbox):
             raise ValueError("sandbox_id must not contain path separators")
 
         self.sandbox_id: str = sandbox_id
+        self.base_dir: str = str(base_dir)
         self.root: Path = Path(base_dir).resolve() / sandbox_id
         self.workspace: Path = self.root / "workspace"
         self.default_timeout: float = default_timeout
+        self.extra_zones: tuple[str, ...] = tuple(extra_zones)
+        self._layout: ZoneLayout = (layout or DEFAULT_ZONE_LAYOUT).with_extra_zones(
+            *self.extra_zones
+        )
         self._cwd: Path = self.workspace
 
     # ─── Configuration ─────────────────────────────────────────────────
 
-    @property
-    def config(self) -> LocalSandboxConfig:
-        return LocalSandboxConfig(
-            sandbox_id=self.sandbox_id,
-            base_dir=str(self.root.parent),
-            default_timeout=self.default_timeout,
-        )
+    # config()/from_config() are inherited from ConfigDrivenSandbox (F9):
+    # auto-derived from LocalSandboxConfig — no per-field copying.
 
-    @classmethod
-    def from_config(cls, config: LocalSandboxConfig) -> LocalSandbox:
-        """Create a LocalSandbox from a serialized config."""
-        return cls(
-            sandbox_id=config.sandbox_id,
-            base_dir=config.base_dir,
-            default_timeout=config.default_timeout,
-        )
+    @property
+    def layout(self) -> ZoneLayout:
+        return self._layout
 
     # ─── Path containment ────────────────────────────────────────────
 
@@ -142,15 +147,8 @@ class LocalSandbox(Sandbox):
 
     async def setup(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        for zone in (
-            "workspace",
-            "workspace/.imported",
-            ".exports",
-            ".plans",
-            ".context",
-            ".tool_results",
-        ):
-            (self.root / zone).mkdir(exist_ok=True)
+        for zone in self._layout.zones:  # X11: iterate the layout, not a literal tuple
+            (self.root / zone.name).mkdir(parents=True, exist_ok=True)
         self._cwd = self.workspace
 
     async def teardown(self) -> None:
@@ -186,8 +184,16 @@ class LocalSandbox(Sandbox):
     async def write_file(self, path: str, content: str) -> None:
         resolved = self._resolve(path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(resolved, "w", encoding="utf-8") as f:
-            await f.write(content)
+        # I12(d)/A4: stage-to-temp + atomic rename so a crash leaves the old or the new
+        # state, never a half-written file.
+        tmp = resolved.parent / f".{resolved.name}.{uuid.uuid4().hex}.tmp"
+        try:
+            async with aiofiles.open(tmp, "w", encoding="utf-8") as f:
+                await f.write(content)
+            os.replace(tmp, resolved)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
     async def read_file_bytes(self, path: str) -> AsyncIterator[bytes]:
         resolved = self._resolve(path)
@@ -203,9 +209,16 @@ class LocalSandbox(Sandbox):
     ) -> None:
         resolved = self._resolve(path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(resolved, "wb") as f:
-            async for chunk in data:
-                await f.write(chunk)
+        # I12(d)/A4: stage-to-temp + atomic rename.
+        tmp = resolved.parent / f".{resolved.name}.{uuid.uuid4().hex}.tmp"
+        try:
+            async with aiofiles.open(tmp, "wb") as f:
+                async for chunk in data:
+                    await f.write(chunk)
+            os.replace(tmp, resolved)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
     async def list_dir(self, path: str = ".") -> list[FileEntry]:
         resolved = self._resolve(path)

@@ -15,8 +15,6 @@ from .filesystem_path_helpers import (
     resolve_agent_path,
     unique_preserving_order,
 )
-from .tool_result_storage import TOOL_RESULTS_DIR, save_tool_result, truncation_reference
-
 __all__ = [
     "DEFAULT_EXPLICIT_ROOTS",
     "DEFAULT_WORKSPACE_ROOT",
@@ -31,7 +29,4 @@ __all__ = [
     "normalize_posix_path",
     "resolve_agent_path",
     "unique_preserving_order",
-    "TOOL_RESULTS_DIR",
-    "save_tool_result",
-    "truncation_reference",
 ]

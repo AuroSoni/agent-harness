@@ -1,0 +1,9 @@
+{
+  "shell": "pwsh",
+  "symlinkFromSource": [".env"],
+  "copyFromSource": [],
+  "junctionFromSource": ["tmp"],
+  "setup": [
+    "uv sync"
+  ]
+}

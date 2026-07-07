@@ -1,91 +1,138 @@
 """Streaming module for agent_base.
 
-Provider-agnostic stream delta types, formatters, and chunk/emit utilities.
+Three layers, strictly separated (streaming-and-meta.md §2 / contract §1.4):
+
+  Layer A — typed objects:  ``StreamDelta`` (content) + ``MetaEnvelope`` /
+            ``MetaBody`` (control, homed at ``agent_base.streaming.meta``)
+  Layer B — read surface:   ``AsyncIterator[StreamItem]``
+            (``StreamItem = StreamDelta | MetaEnvelope``)
+  Layer C — wire adapter:   ``WireCodec`` / ``SseCodec`` (encode → SSE
+            frames) paired with the shipped reference decoder
+            (``StreamDecoder`` / ``decode_sse_text`` / ``decode_sse_lines``)
+
+The SSE transport factory ``sse_response`` lives in
+``agent_base.streaming.transport`` (FastAPI optional extra — import it from
+there, not from this package root).
+
+The legacy formatter/queue surface (``MetaDelta``, ``RollbackDelta``,
+``StreamFormatter``, ``JsonStreamFormatter``, ``get_formatter``,
+``build_envelope``, ``chunk_and_emit``, ``emit_stream_delta``) is DELETED
+(streaming-and-meta.md §6 / AMENDMENTS O3 / G0) — ``DeltaSink`` is the only
+producer write path and ``WireCodec`` the only framing owner.
 
 Usage::
 
-    from agent_base.streaming import (
-        TextDelta, ThinkingDelta, ToolCallDelta,
-        JsonStreamFormatter, get_formatter,
-    )
+    from agent_base.streaming import StreamItem, decode_sse_lines
+    from agent_base.streaming.meta import Custom, MetaEnvelope
+    from agent_base.streaming.wire import SseCodec
 
-    # Create a formatter
-    formatter = JsonStreamFormatter()
-    formatter = get_formatter("json")
-
-    # Emit a delta
-    delta = TextDelta(agent_uuid="abc", text="Hello", is_final=False)
-    await formatter.format_delta(delta, queue)
+    run = decode_sse_lines(response.iter_lines())   # → DecodedRun (typed)
+    run.run_completed.stop_reason
+    run.pending_frontend_tools                      # list[FrontendCallView]
 """
-from typing import Any
+from typing import Union
 
 from .types import (
+    WIRE_PROTOCOL_VERSION,
     StreamDelta,
     TextDelta,
     ThinkingDelta,
     ToolCallDelta,
     ToolResultDelta,
     CitationDelta,
-    MetaDelta,
-    RollbackDelta,
     ErrorDelta,
 )
-from .base import StreamFormatter, StreamFormatterType
-from .formatters import JsonStreamFormatter
-from .utils import (
-    MAX_SSE_CHUNK_BYTES,
-    build_envelope,
-    chunk_and_emit,
-    emit_stream_delta,
+from .meta import (
+    META_BODY_REGISTRY,
+    AwaitInput,
+    Custom,
+    ErrorReport,
+    FilesUpdated,
+    FrontendCallView,
+    MetaBody,
+    MetaEnvelope,
+    ProfileChanged,
+    Rollback,
+    RunCompleted,
+    RunStarted,
+    UsageReport,
+    register_meta_body,
+)
+from .wire import (
+    CODECS,
+    TERMINAL,
+    DeltaSink,
+    SseCodec,
+    WireCodec,
+    WireFrame,
+    WireToolResult,
+    get_codec,
+)
+from .decode import (
+    DecodedRun,
+    SseStreamDecoder,
+    StreamDecoder,
+    decode_sse_lines,
+    decode_sse_text,
 )
 
-# Registry mapping string names to formatter classes.
-FORMATTERS: dict[str, type[StreamFormatter]] = {
-    "json": JsonStreamFormatter,
-}
+#: §2.4 — the union a consumer reads; the wire is a downstream concern.
+StreamItem = Union[StreamDelta, MetaEnvelope]
 
 
-def get_formatter(name: StreamFormatterType, **kwargs: Any) -> StreamFormatter:
-    """Get a stream formatter instance by name.
+def __getattr__(name: str):
+    # Lazy re-export (R8 ergonomics): defined in core.errors, re-exported
+    # here.  Lazy to avoid a hard import cycle while core.errors itself
+    # imports streaming.meta/types for its projections.
+    if name == "classify_provider_error":
+        from agent_base.core.errors import classify_provider_error
 
-    Args:
-        name: Formatter name (currently only ``"json"``).
-        **kwargs: Arguments passed to the formatter constructor.
-
-    Returns:
-        An instance of the requested formatter.
-
-    Raises:
-        ValueError: If the formatter name is not recognized.
-    """
-    if name not in FORMATTERS:
-        available = ", ".join(FORMATTERS.keys())
-        raise ValueError(f"Unknown formatter '{name}'. Available: {available}")
-    return FORMATTERS[name](**kwargs)
+        return classify_provider_error
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
-    # Delta types
+    # Layer A — content delta types
     "StreamDelta",
     "TextDelta",
     "ThinkingDelta",
     "ToolCallDelta",
     "ToolResultDelta",
     "CitationDelta",
-    "MetaDelta",
-    "RollbackDelta",
     "ErrorDelta",
-    # ABC / types
-    "StreamFormatter",
-    "StreamFormatterType",
-    # Implementations
-    "JsonStreamFormatter",
-    # Utilities
-    "MAX_SSE_CHUNK_BYTES",
-    "build_envelope",
-    "chunk_and_emit",
-    "emit_stream_delta",
-    # Factory
-    "FORMATTERS",
-    "get_formatter",
+    "WIRE_PROTOCOL_VERSION",
+    # Layer A — control channel (meta union)
+    "MetaBody",
+    "MetaEnvelope",
+    "META_BODY_REGISTRY",
+    "register_meta_body",
+    "AwaitInput",
+    "FrontendCallView",
+    "ProfileChanged",
+    "UsageReport",
+    "ErrorReport",
+    "Rollback",
+    "RunStarted",
+    "RunCompleted",
+    "FilesUpdated",
+    "Custom",
+    # Layer B — read surface union
+    "StreamItem",
+    # Layer C — wire adapter + producer seam + inbound results
+    "WireCodec",
+    "SseCodec",
+    "WireFrame",
+    "TERMINAL",
+    "CODECS",
+    "get_codec",
+    "DeltaSink",
+    "WireToolResult",
+    # Shipped reference decoder
+    "StreamDecoder",
+    "SseStreamDecoder",
+    "DecodedRun",
+    "decode_sse_text",
+    "decode_sse_lines",
+    # Re-exported from core.errors (R8)
+    "classify_provider_error",
 ]

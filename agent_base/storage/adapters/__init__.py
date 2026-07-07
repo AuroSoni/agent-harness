@@ -10,6 +10,7 @@ from .memory import (
     MemoryAgentConfigAdapter,
     MemoryConversationAdapter,
     MemoryAgentRunAdapter,
+    MemoryCheckpointAdapter,
 )
 from .filesystem import (
     FilesystemAgentConfigAdapter,
@@ -27,6 +28,7 @@ __all__ = [
     "MemoryAgentConfigAdapter",
     "MemoryConversationAdapter",
     "MemoryAgentRunAdapter",
+    "MemoryCheckpointAdapter",
     # Filesystem
     "FilesystemAgentConfigAdapter",
     "FilesystemConversationAdapter",
