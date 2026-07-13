@@ -92,7 +92,7 @@ from agent_base.streaming.meta import (
     RunStarted,
     UsageReport,
 )
-from agent_base.streaming.types import ToolResultDelta
+from agent_base.streaming.types import TextDelta, ToolResultDelta
 from agent_base.tools.registry import ToolRegistry
 from agent_base.tools.tool_types import ToolResultEnvelope
 
@@ -1103,6 +1103,8 @@ class AnthropicAgent(AgentRuntime):
                 return await self.call_frontend_tool(name, input, ctx=ctx)
 
             ctx.call_frontend_tool = _call_frontend
+            # WT-4: user-facing display line — live TextDelta + replay log entry.
+            ctx.emit_text = self._emit_display_text
             return ctx
 
         return factory
@@ -2006,6 +2008,38 @@ class AnthropicAgent(AgentRuntime):
                 timestamp=timestamp,
             )
 
+    # ─── WT-4: display-only emission (live stream + replay log, NEVER context) ───
+
+    def _emit_display_text(self, text: str) -> None:
+        """Stream a user-facing text line AND persist it for history replay.
+
+        WT-4 wired implementation behind ``ctx.emit_text``. Live half: one
+        ``TextDelta`` (``is_final=True``, line rendered as its own paragraph)
+        on the run's stream — lossy-by-policy when no consumer is attached,
+        like every content delta. Replay half: a DISPLAY-ONLY assistant
+        message entry appended to both conversation logs. Neither half
+        touches ``context_messages`` — the model never sees these lines.
+        """
+        if not text:
+            return
+        delta_text = text if text.endswith("\n") else text + "\n\n"
+        self._emit_stream_item(
+            TextDelta(agent_uuid=self.agent_uuid or "", text=delta_text, is_final=True)
+        )
+        self._append_display_message_to_logs(text)
+
+    def _append_display_message_to_logs(self, text: str) -> None:
+        """Append a display-only assistant message to BOTH conversation logs.
+
+        WT-4 replay carrier: deliberately NEVER paired with a
+        ``context_messages`` append (unlike every `_append_message_to_logs`
+        loop call site) — the entry exists only so history replay shows the
+        same conversation the live stream did.
+        """
+        self._append_message_to_logs(
+            Message(role=Role.ASSISTANT, content=[TextContent(text=text)])
+        )
+
     def _append_tool_results_to_logs(
         self,
         envelopes: list[ToolResultEnvelope],
@@ -2055,6 +2089,18 @@ class AnthropicAgent(AgentRuntime):
                     agent_uuid=effective_agent_uuid,
                     timestamp=timestamp,
                 )
+
+    def log_tool_result_for_replay(self, envelope: ToolResultEnvelope) -> None:
+        """WT-4 public seam: persist a tool result to the conversation logs.
+
+        For workflow-tool bodies that execute tools or sub-agents
+        PROGRAMMATICALLY — outside the model loop, where the loop's own log
+        append never fires. A sub-agent envelope's ``nested_conversation``
+        rides along intact (its ``tool_name`` drives how replay renders it).
+        Touches ONLY the conversation logs (both), never ``context_messages``;
+        persistence rides the normal checkpoint + Conversation-row path.
+        """
+        self._append_tool_results_to_logs([envelope])
 
     def _append_rollback_to_logs(
         self,

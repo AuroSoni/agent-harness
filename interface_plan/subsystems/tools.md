@@ -308,6 +308,15 @@ A bare-constructed `ToolContext` keeps the LOUD unwired raises (B8 unchanged). C
 tool authors: a relay-calling tool must be `async def` (sync tools run via `asyncio.to_thread`,
 off the loop), and programmatic pauses serialize per runtime — see relay-await §2.6 (WT-3).
 
+**Display-line + replay seam (WT-4, 2026-07-13 — SHIPPED).** `ctx.emit_text(text)` streams one
+user-facing line: a live `TextDelta` on the run's stream AND a DISPLAY-ONLY assistant
+`MessageLogEntry` appended to the conversation logs — never to `context_messages` (the model
+never sees display lines). Bare ctx raises (B8). For programmatically-executed tools/sub-agents
+(whose results never pass through the loop), the provider exposes
+`log_tool_result_for_replay(envelope)` — persists the envelope's conversation-log projection
+(nested conversation intact) to both logs only. See AMENDMENTS §WT-4 for the carrier rationale
+and the `spawn_subagent` tool-name contract.
+
 ---
 
 ### 2.3 `ToolRegistry` — accept INSTANCES, expose the executor (kills F5 half + F2 plumbing)

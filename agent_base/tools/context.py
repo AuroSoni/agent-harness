@@ -123,6 +123,23 @@ class ToolContext:
         """
         raise RuntimeError("ctx.emit not available in this execution context")
 
+    # ─── emit_text (WT-4): user-facing display line, live + replay ──────────
+
+    def emit_text(self, text: str) -> None:
+        """Stream a short user-facing text line to the live UI AND persist it
+        for history replay (WT-4).
+
+        The wired implementation (a) emits a ``TextDelta`` on the run's
+        stream and (b) appends a DISPLAY-ONLY assistant message entry to the
+        conversation logs — it NEVER touches the model context chain, so the
+        model never sees these lines and they cost no context tokens.
+        Milestone cadence (not interval spam) is the caller's responsibility.
+
+        The unwired default RAISES; the runtime swaps in a wired
+        implementation at call-time.
+        """
+        raise RuntimeError("ctx.emit_text not available in this execution context")
+
     # ─── Budgeting on ctx (I5/O11(a)) — replaces ConfigurableToolBase.emit_capped* ───
 
     async def emit_capped(self, text: str, *, max_chars: int = DEFAULT_EMIT_MAX_CHARS) -> str:

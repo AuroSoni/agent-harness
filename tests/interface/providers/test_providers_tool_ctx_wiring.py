@@ -15,6 +15,11 @@ interface_plan/subsystems/tools.md §2.2 ("Wired at call-time"):
   typed ``TOOL_FAILED`` into the tool body.
 - Sequential same-name calls mint DISTINCT runtime-owned ``toolu_`` ids and each
   record pops cleanly before the next opens (WT-3 sequential-reuse guarantee).
+- WT-4: ``ctx.emit_text`` streams a live ``TextDelta`` AND appends a
+  DISPLAY-ONLY assistant message entry to the conversation log — never to the
+  model context chain; ``log_tool_result_for_replay`` persists a
+  programmatically-executed tool/sub-agent result (nested conversation intact)
+  to the logs only.
 
 The factory is provider-owned, so these specs construct a real
 ``AnthropicAgent``; the pause round-trips run against a REAL ``AwaitTable``
@@ -29,12 +34,14 @@ from types import SimpleNamespace
 import pytest
 
 from agent_base.await_table.table import AwaitTable, set_await_table
+from agent_base.core.conversation_log import ConversationLog, MessageLogEntry
 from agent_base.core.errors import AgentError
 from agent_base.core.hooks import HookOutcome
 from agent_base.core.identity import SessionPrincipal
-from agent_base.core.types import ToolResultContent
+from agent_base.core.types import Role, ToolResultContent
 from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
 from agent_base.streaming.meta import AwaitInput, Custom, MetaEnvelope
+from agent_base.streaming.types import TextDelta
 from agent_base.tools.context import ToolContext
 
 
@@ -252,6 +259,99 @@ async def test_sequential_same_name_calls_mint_distinct_ids_and_pop_cleanly():
         set_await_table(AwaitTable())
 
 
+# ── WT-4: emit_text — live TextDelta + display-only replay entry ──────────
+
+
+async def test_factory_ctx_emit_text_streams_and_logs_but_never_enters_context():
+    # WT-4: one call → (a) a TextDelta on the live stream (agent-stamped,
+    # is_final, rendered as its own paragraph) and (b) a DISPLAY-ONLY
+    # assistant message entry in the conversation log — while the model
+    # context chain (context_messages) is untouched.
+    agent = AnthropicAgent(system_prompt="t")
+    await agent.initialize()
+    agent.stream()
+    ctx = _make_ctx(agent)
+
+    context_before = len(agent.agent_config.context_messages)
+    log_before = len(agent.agent_config.conversation_log.entries)
+
+    ctx.emit_text("Downloading the FY2025 annual report (2 of 3)…")
+
+    item = agent._stream_queue.get_nowait()
+    assert isinstance(item, TextDelta)
+    assert item.agent_uuid == agent.agent_uuid
+    assert item.is_final is True
+    assert item.text.startswith("Downloading the FY2025 annual report")
+    assert item.text.endswith("\n")   # own-paragraph framing
+
+    entries = agent.agent_config.conversation_log.entries
+    assert len(entries) == log_before + 1
+    entry = entries[-1]
+    assert isinstance(entry, MessageLogEntry)
+    assert entry.role is Role.ASSISTANT
+    assert [b.text for b in entry.content] == [
+        "Downloading the FY2025 annual report (2 of 3)…"
+    ]
+    # The load-bearing WT-4 invariant: the model never sees display lines.
+    assert len(agent.agent_config.context_messages) == context_before
+
+
+async def test_emit_text_empty_string_is_a_no_op():
+    agent = AnthropicAgent(system_prompt="t")
+    await agent.initialize()
+    agent.stream()
+    ctx = _make_ctx(agent)
+    log_before = len(agent.agent_config.conversation_log.entries)
+
+    ctx.emit_text("")
+
+    assert agent._stream_queue.empty()
+    assert len(agent.agent_config.conversation_log.entries) == log_before
+
+
+# ── WT-4: log_tool_result_for_replay — public replay-persistence seam ─────
+
+
+async def test_log_tool_result_for_replay_appends_nested_conversation_intact():
+    # A programmatically-run sub-agent's envelope persists to the
+    # conversation log as a tool_result entry with tool_name
+    # "spawn_subagent" and the nested conversation intact — and never
+    # touches context_messages.
+    from agent_base.common_tools.sub_agent_tool import SubAgentEnvelope
+    from agent_base.core.conversation_log import ToolResultLogEntry
+
+    agent = AnthropicAgent(system_prompt="t")
+    await agent.initialize()
+
+    nested = ConversationLog()
+    nested.ensure_agent(
+        agent_uuid="child_1",
+        parent_agent_uuid=agent.agent_uuid,
+        name="Reading the FY2025 annual report",
+        description="Extracts the requested statements",
+    )
+    envelope = SubAgentEnvelope(
+        tool_name="spawn_subagent",
+        tool_id="toolu_wf_1",
+        agent_name="statement_reader",
+        child_agent_uuid="child_1",
+        final_answer='{"period": "FY2025"}',
+        nested_conversation=nested,
+    )
+
+    context_before = len(agent.agent_config.context_messages)
+    agent.log_tool_result_for_replay(envelope)
+
+    entry = agent.agent_config.conversation_log.entries[-1]
+    assert isinstance(entry, ToolResultLogEntry)
+    assert entry.tool.tool_name == "spawn_subagent"
+    assert entry.tool.nested_conversation is not None
+    assert "child_1" in entry.tool.nested_conversation.agents
+    # Child descriptor registered on the outer log for rail reconstruction.
+    assert "child_1" in agent.agent_config.conversation_log.agents
+    assert len(agent.agent_config.context_messages) == context_before
+
+
 # ── B8 unchanged: bare-constructed ToolContext keeps the LOUD raises ──────
 
 
@@ -261,3 +361,5 @@ async def test_bare_tool_context_still_raises_unwired():
         ctx.emit(Custom(name="x"))
     with pytest.raises(RuntimeError):
         await ctx.call_frontend_tool("any_tool", {})
+    with pytest.raises(RuntimeError):
+        ctx.emit_text("line")

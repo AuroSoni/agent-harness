@@ -787,3 +787,26 @@ Verified against MCP spec rev 2025-11-25 (a backend-resident host is the spec's 
   `ctx.call_frontend_tools([...])` mapping to ONE multi-element `await_external` pause (the
   add-in renders multiple `ask_user_question`s in one pause as a carousel) — mechanical when
   needed, doubles spec surface today.
+
+## Workflow-tool emit/replay seam (WT-4) — 2026-07-13
+
+- **WT-4a — `ctx.emit_text(text)`**: a tool body streams a short USER-FACING display line. The
+  wired implementation (bound per-instance in `_tool_ctx_factory`, same pattern as WT-1) does two
+  things: (a) LIVE — emits one `TextDelta(agent_uuid, text, is_final=True)` via
+  `_emit_stream_item` (line framed as its own paragraph; bare content deltas need no block
+  framing; lossy-by-policy when detached, R21); (b) REPLAY — appends a DISPLAY-ONLY assistant
+  `MessageLogEntry` (content `[TextContent]`) to BOTH conversation logs via
+  `_append_display_message_to_logs`. **Neither half touches `context_messages`** — the model
+  never sees display lines and they cost no context tokens. Empty text is a no-op. Bare
+  `ToolContext.emit_text` keeps the LOUD unwired raise (B8 pattern). Carrier rationale: the
+  consumer replay adapter renders `message` entries identically to live text but DROPS
+  `stream_event` entries (except its own todo kind) — so the display-only message entry is the
+  only zero-consumer-change carrier that survives history replay.
+- **WT-4b — `log_tool_result_for_replay(envelope)`**: public provider-level seam for workflow
+  bodies that execute tools/sub-agents PROGRAMMATICALLY (outside the model loop, where the loop's
+  own log append never fires). Delegates to `_append_tool_results_to_logs([envelope])` — the
+  envelope's `for_conversation_log()` projection (incl. a sub-agent's `nested_conversation` +
+  child descriptor registration) persists to both logs and rides the normal checkpoint +
+  Conversation-row dual persistence. Never touches `context_messages`. Caller contract: a
+  programmatically-built `SubAgentEnvelope` must carry `tool_name="spawn_subagent"` (+ a caller
+  tool_id) — the consumer replay adapter keys nested-rail reconstruction on that name.
