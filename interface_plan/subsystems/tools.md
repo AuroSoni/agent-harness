@@ -299,6 +299,15 @@ class ToolContext:
 
 These mirror the `HookContext` capabilities (contract §1.2) so a tool body and a hook see the same identity/sandbox/media/emit surface. `call_frontend_tool` is the public relay primitive (I4): relay-await owns the `AwaitTable`; the runtime mints the cid, wires the parked await, and hands the reply back to the tool body — it never splices. python-executors keeps `ctx` **optional** — it reads identity/idempotency only and never emits (R3).
 
+**Wired at call-time (WT-1, 2026-07-07 — SHIPPED).** The population point is the provider's
+per-call ctx factory (`AnthropicAgent._tool_ctx_factory`): capability fields
+(`sandbox`/`principal`/`media`) pass as constructor args; `emit` and `call_frontend_tool` bind as
+per-INSTANCE attribute assignments (`ctx.emit = runtime._hook_emit`; `ctx.call_frontend_tool` →
+`AgentRuntime.call_frontend_tool(name, input, ctx=ctx)` — the ctx itself is the emit carrier).
+A bare-constructed `ToolContext` keeps the LOUD unwired raises (B8 unchanged). Constraints for
+tool authors: a relay-calling tool must be `async def` (sync tools run via `asyncio.to_thread`,
+off the loop), and programmatic pauses serialize per runtime — see relay-await §2.6 (WT-3).
+
 ---
 
 ### 2.3 `ToolRegistry` — accept INSTANCES, expose the executor (kills F5 half + F2 plumbing)

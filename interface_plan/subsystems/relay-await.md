@@ -516,8 +516,26 @@ class AgentRuntime:
             outbound=[FrontendCallView(tool_use_id=tool_use_id, tool_name=name, input=prepared)],  # §B7
         )
         return outcome.results        # §B3: ResumeOutcome is a dataclass; [] on "aborted",
-                                      #       the spliced blocks on "resumed". No _last_relay_results.
+                                      #       the RECONCILED blocks on "resumed" (WT-2 — never
+                                      #       spliced on this path). No _last_relay_results.
 ```
+
+**WT-2 / WT-3 (2026-07-07 — SHIPPED, ratifies §I4).** Two mechanics refinements to the seam above:
+
+- **No splice, no checkpoint on scripted resumes (WT-2).** `await_external` skips
+  `_splice_relay_results` + `checkpoint()` when `reason == "scripted"` — the reconciled blocks go
+  back to the calling tool body ONLY (loop reasons keep the splice+checkpoint boundary). Mid-body
+  the chain holds the enclosing turn's dangling `tool_use` blocks, and a scripted pause is
+  RAM-only / not cold-re-armable, so there is nothing correct to persist at that point.
+- **Per-runtime serialization (WT-3).** The whole body (cid mint + `before_tool` + park) runs
+  under `AgentRuntime._scripted_pause_lock` (an `asyncio.Lock`): at most one scripted
+  `AwaitInput` is in flight per agent — the FE holds a single pending relay slot and the HTTP
+  transport stops streaming at the first `await_input`; concurrent callers queue. Abort drains
+  the queue via the shared cancellation event (each waiter parks, loses the race, returns `[]`).
+  Sequential same-name cid reuse (`relay_{run_id}_{name}`) is safe because the `finally`-pop
+  precedes the next `open`; the lock removes the concurrent same-name collision entirely.
+  Batched `ctx.call_frontend_tools([...])` (one multi-element pause) is DEFERRED — see
+  AMENDMENTS WT-3.
 
 ### 2.7 `AwaitInput` / `FrontendCallView` (from streaming/contract §3 — referenced, not redefined)
 

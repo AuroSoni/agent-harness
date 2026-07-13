@@ -1071,7 +1071,16 @@ class AnthropicAgent(AgentRuntime):
         self.agent_config.pending_relay = None
 
     def _tool_ctx_factory(self):
-        """Build a per-call ``ToolContext`` factory for the current run."""
+        """Build a per-call ``ToolContext`` factory for the current run.
+
+        WT-1: the factory is the call-time population point tools.md §2.2
+        promises — capability fields (``sandbox``/``principal``/``media``)
+        come from the agent by constructor arg, ``emit`` binds to the wired
+        ``_hook_emit`` (exact B8 signature), and ``call_frontend_tool`` binds
+        to the runtime relay primitive (§2.6/I4) with the ctx itself as the
+        emit carrier. The binds are per-INSTANCE attribute assignments —
+        a bare-constructed ``ToolContext`` keeps the loud unwired raises.
+        """
         from agent_base.tools.context import ToolContext, OnceStore
 
         if getattr(self, "_once_store", None) is None:
@@ -1080,7 +1089,21 @@ class AnthropicAgent(AgentRuntime):
         store = self._once_store
 
         def factory(tc):
-            return ToolContext(run_id=run_id, tool_call_id=tc.tool_id, _once_store=store)
+            ctx = ToolContext(
+                run_id=run_id,
+                tool_call_id=tc.tool_id,
+                sandbox=self._sandbox,
+                principal=self.principal,
+                media=self.media_backend,
+                _once_store=store,
+            )
+            ctx.emit = self._hook_emit
+
+            async def _call_frontend(name: str, input: dict) -> list:
+                return await self.call_frontend_tool(name, input, ctx=ctx)
+
+            ctx.call_frontend_tool = _call_frontend
+            return ctx
 
         return factory
 
