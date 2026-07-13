@@ -17,6 +17,13 @@ Covers interface_plan/subsystems/relay-await.md:
     ``ctx.call_frontend_tool``).
   - §2.4 / AMENDMENTS §B4 ``_rearm_pending_await(*, reply=None)`` calling
     convention (conditional re-emit split).
+  - AMENDMENTS WT-2 — a ``scripted`` resume returns the RECONCILED blocks to
+    the caller and neither splices them into context nor checkpoints; loop
+    reasons keep the splice+checkpoint boundary.
+  - AMENDMENTS WT-3 — programmatic pauses (``call_frontend_tool``) serialize
+    on the per-runtime ``_scripted_pause_lock``: at most one scripted
+    ``AwaitInput`` in flight per agent; concurrent callers queue; abort
+    drains the queue (each waiter returns ``[]``).
 
 The AgentRuntime constructor is deliberately unspecified by the docs, so the
 algorithmic specs below drive the documented methods through plain ``self``
@@ -38,6 +45,7 @@ import pytest
 from agent_base.await_table.table import AwaitTable, set_await_table
 from agent_base.await_table.types import (
     AWAIT_REASON_FRONTEND_TOOL,
+    AWAIT_REASON_SCRIPTED,
     Join,
     ResumeOutcome,
 )
@@ -523,5 +531,131 @@ async def test_await_external_abort_maps_to_aborted_outcome():
         assert "splice" not in stub.calls
         assert "checkpoint" not in stub.calls
         assert table.owner_of("relay_run_42_7") is None   # finally: pop
+    finally:
+        set_await_table(AwaitTable())
+
+
+async def test_await_external_scripted_resume_returns_without_splice_or_checkpoint():
+    # WT-2 (ratifies §I4): reason == "scripted" (the call_frontend_tool path)
+    # — the RECONCILED blocks return to the calling tool body; the runtime
+    # NEVER splices them into context and NEVER checkpoints (mid-body the
+    # chain holds the enclosing turn's dangling tool_use blocks). Reconcile
+    # rules 1–4 still run.
+    table = AwaitTable()
+    set_await_table(table)
+    try:
+        ctx = _RecordingCtx()
+        stub = _AwaitSelf()
+        task = _start(stub, ctx, reason=AWAIT_REASON_SCRIPTED)
+        await _until(lambda: ctx.emits)
+
+        await table.resolve(
+            "relay_run_42_7", [_tr("toolu_a"), _tr("toolu_stale")])
+        outcome = await task
+
+        assert outcome.status == "resumed"
+        ids = [getattr(b, "tool_id", None) for b in outcome.results]
+        assert "toolu_a" in ids
+        assert "toolu_stale" not in ids           # reconciled, not raw
+        assert stub.calls == ["reconcile"]        # no splice, no checkpoint
+        assert stub.spliced == []
+        assert table.owner_of("relay_run_42_7") is None   # finally: pop
+    finally:
+        set_await_table(AwaitTable())
+
+
+# ── call_frontend_tool serialization (WT-3 — driven on a REAL runtime) ────
+
+
+def _drain_await_inputs(agent) -> list:
+    """Collect AwaitInput envelopes currently queued on the agent stream."""
+    from agent_base.streaming.meta import MetaEnvelope
+
+    out = []
+    queue = agent._stream_queue
+    while queue is not None and not queue.empty():
+        item = queue.get_nowait()
+        if isinstance(item, MetaEnvelope) and isinstance(item.body, AwaitInput):
+            out.append(item)
+    return out
+
+
+async def test_call_frontend_tool_serializes_concurrent_programmatic_pauses():
+    # WT-3: two backend tools in one batch may both call the primitive — the
+    # per-runtime lock queues the second: at most ONE scripted AwaitInput is
+    # in flight per agent (the FE holds a single pending relay slot). The
+    # second pause emits only after the first resolves; both callers get
+    # their own replies.
+    table = AwaitTable()
+    set_await_table(table)
+    try:
+        agent = AgentRuntime()
+        agent.stream()
+        agent._run_id = "run_ser"
+        ctx = agent.scripted_ctx()
+
+        t1 = asyncio.create_task(
+            agent.call_frontend_tool("tool_one", {"a": 1}, ctx=ctx))
+        t2 = asyncio.create_task(
+            agent.call_frontend_tool("tool_two", {"b": 2}, ctx=ctx))
+
+        seen: list = []
+        await _until(
+            lambda: (seen.extend(_drain_await_inputs(agent)) or len(seen) >= 1))
+        for _ in range(20):        # give the queued caller every chance to
+            await asyncio.sleep(0)  # (incorrectly) emit a second pause
+        seen.extend(_drain_await_inputs(agent))
+        assert len(seen) == 1                     # exactly one pause in flight
+        first = seen[0]
+        assert first.correlation_id == "relay_run_ser_tool_one"
+        (call_one,) = first.body.tools
+
+        await table.resolve(first.correlation_id, [_tr(call_one.tool_use_id)])
+        results_one = await t1
+        assert [getattr(b, "tool_id", None) for b in results_one] == [
+            call_one.tool_use_id]
+
+        await _until(
+            lambda: (seen.extend(_drain_await_inputs(agent)) or len(seen) >= 2))
+        second = seen[1]
+        assert second.correlation_id == "relay_run_ser_tool_two"
+        (call_two,) = second.body.tools
+        assert call_two.tool_use_id != call_one.tool_use_id
+
+        await table.resolve(second.correlation_id, [_tr(call_two.tool_use_id)])
+        results_two = await t2
+        assert [getattr(b, "tool_id", None) for b in results_two] == [
+            call_two.tool_use_id]
+    finally:
+        set_await_table(AwaitTable())
+
+
+async def test_call_frontend_tool_abort_drains_queued_waiters():
+    # WT-3 abort: cancellation while one caller is parked and another is
+    # queued behind the lock — the parked pause aborts, the queued waiter
+    # then parks, immediately loses the race to the already-set event, and
+    # BOTH return [] (never hang, never raise).
+    table = AwaitTable()
+    set_await_table(table)
+    try:
+        agent = AgentRuntime()
+        agent.stream()
+        agent._run_id = "run_ab"
+        event = asyncio.Event()
+        agent._cancellation_event = event
+        ctx = agent.scripted_ctx()
+
+        t1 = asyncio.create_task(
+            agent.call_frontend_tool("tool_one", {}, ctx=ctx))
+        t2 = asyncio.create_task(
+            agent.call_frontend_tool("tool_two", {}, ctx=ctx))
+        await _until(
+            lambda: table.owner_of("relay_run_ab_tool_one") is not None)
+
+        event.set()
+        assert await t1 == []
+        assert await t2 == []
+        assert table.owner_of("relay_run_ab_tool_one") is None
+        assert table.owner_of("relay_run_ab_tool_two") is None
     finally:
         set_await_table(AwaitTable())

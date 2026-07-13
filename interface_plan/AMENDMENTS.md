@@ -760,3 +760,30 @@ Verified against MCP spec rev 2025-11-25 (a backend-resident host is the spec's 
 | oauth helpers, `TokenSet`, `TokenStore`, `ClientCreds`, `AuthServerInfo`, `PendingAuth`, `OAuthTokenAuth` | `agent_base/mcp/oauth.py` |
 | `McpToolSource`, `McpServerHandle`, `McpServerStatus`, `McpAuthChallenge`, `McpProbeResult`, `McpToolDiff`, `probe`, `render_change_notice` | `agent_base/mcp/source.py` |
 | `result_to_envelope` | `agent_base/mcp/convert.py` |
+
+## Workflow-tool ctx wiring (WT) — 2026-07-07
+
+- **WT-1 — factory-wired `ToolContext`**: `AnthropicAgent._tool_ctx_factory` is the call-time
+  population point R3/B8/I4 promised. Capability fields bind by constructor arg (`sandbox` from
+  the agent's sandbox, `principal`, `media` from `media_backend`); `ctx.emit` binds to the
+  runtime's wired `_hook_emit` (exact B8 signature); `ctx.call_frontend_tool` binds to
+  `AgentRuntime.call_frontend_tool` with the ctx itself as the emit carrier. Binds are
+  per-INSTANCE attribute assignments — a bare-constructed `ToolContext` keeps the LOUD unwired
+  raises (B8 unchanged). Tools that call the relay primitive must be `async def` (sync tools run
+  in a worker thread; the primitive is loop-bound).
+- **WT-2 — scripted resumes never splice nor checkpoint**: ratifies I4's "NEVER splices" as
+  `await_external` mechanics — `reason == "scripted"` skips `_splice_relay_results` and
+  `checkpoint()`; reconcile (rules 1–4) still runs and the reconciled blocks return to the
+  calling tool body. Fixes the latent scripted-path crash (`AnthropicAgent._splice_relay_results`
+  raises without a `pending_relay`, which the scripted path never sets) and the base-runtime
+  stray splice. Loop reasons (`frontend_tool`/`confirmation`) keep the splice+checkpoint boundary.
+- **WT-3 — programmatic relay pauses serialize per runtime**: `asyncio.Lock` inside
+  `AgentRuntime.call_frontend_tool` (mint + `before_tool` + park under the lock). At most one
+  scripted `AwaitInput` in flight per agent — the FE holds a single pending relay slot and the
+  HTTP transport stops streaming at the first `await_input`; concurrent callers queue. Abort
+  drains the queue (each waiter parks, loses the cancel race, returns `[]`). Also removes the
+  concurrent same-name cid collision (`relay_{run_id}_{name}`); sequential same-name reuse stands
+  (the `finally`-pop precedes the next open). DEFERRED future sugar: batched
+  `ctx.call_frontend_tools([...])` mapping to ONE multi-element `await_external` pause (the
+  add-in renders multiple `ask_user_question`s in one pause as a carousel) — mechanical when
+  needed, doubles spec surface today.

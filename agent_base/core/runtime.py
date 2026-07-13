@@ -319,6 +319,11 @@ class AgentRuntime:
         self._cancellation_event: asyncio.Event | None = None
         self._run_id: str | None = None
         self._root_session_id_value: str | None = None
+        # WT-3: programmatic relay pauses (``call_frontend_tool``) serialize
+        # per runtime — the FE holds ONE pending relay slot per agent and the
+        # HTTP transport stops streaming at the first ``await_input``, so
+        # concurrent callers queue here instead of racing that single slot.
+        self._scripted_pause_lock = asyncio.Lock()
         self._rearmed_join: Join | None = None
         # Strong ref to the cold-resume continuation task (§2.4) so it is
         # not garbage-collected mid-turn.
@@ -882,11 +887,16 @@ class AgentRuntime:
         primitive (runtime-internal, §I4; every pause reason goes through
         here, no ``_relay_mode`` fork).
 
-        Returns ``ResumeOutcome(status="resumed", results=<spliced blocks>)``
+        Returns ``ResumeOutcome(status="resumed", results=<reconciled blocks>)``
         (caller continues the loop) or ``ResumeOutcome(status="aborted",
         results=[])`` (cancelled while waiting; caller returns upward). Never
         raises ``CancelledError`` past the ``finally`` — disconnect/abort are
         normal exits.
+
+        WT-2: loop reasons splice the reconciled results into context and
+        checkpoint at the boundary; the ``scripted`` reason
+        (``call_frontend_tool``) does NEITHER — the blocks go back to the
+        calling tool body only (§I4).
         """
         from agent_base.streaming.meta import AwaitInput
 
@@ -916,8 +926,15 @@ class AgentRuntime:
         # ── Library-owned resume-boundary chain integrity (B1/C5/X13, R18b). ──
         results = await self._reconcile_relay_reply(cid, join.tool_use_ids, results)
 
-        await self._splice_relay_results(cid, results, ctx)   # after_tool per result (§2.1)
-        await self.checkpoint()               # persist at the suspend/resume boundary
+        # WT-2: a scripted pause (``call_frontend_tool``) returns the
+        # reconciled blocks to the calling tool body — it NEVER splices them
+        # into context nor checkpoints (§I4). Mid-body the chain holds the
+        # enclosing turn's dangling ``tool_use`` blocks, and a scripted pause
+        # is RAM-only / non-re-armable; the enclosing turn checkpoints
+        # normally. Loop reasons keep the splice+checkpoint boundary.
+        if reason != AWAIT_REASON_SCRIPTED:
+            await self._splice_relay_results(cid, results, ctx)   # after_tool per result (§2.1)
+            await self.checkpoint()           # persist at the suspend/resume boundary
         return ResumeOutcome(status="resumed", results=results)
 
     async def _race_join_against_cancel(self, join: Join) -> "list[ContentBlock]":
@@ -1202,23 +1219,33 @@ class AgentRuntime:
         applies), emits ``AwaitInput``, suspends, reconciles + returns the
         results (``[]`` on abort — §B3). Same wire, same auth, same chain
         repair as the loop. No relay_uuid spoof, no registry future.
+
+        WT-2/WT-3: the reply is returned WITHOUT being spliced into context
+        (scripted resumes never splice nor checkpoint — §I4), and calls
+        serialize on ``_scripted_pause_lock`` — at most one scripted
+        ``AwaitInput`` is in flight per agent; concurrent callers queue.
+        Abort drains the queue: each waiter parks, immediately loses the
+        cancel race, and returns ``[]``.
         """
         from agent_base.streaming.meta import FrontendCallView
 
-        cid = f"relay_{self._run_id or uuid.uuid4().hex}_{name}"
-        tool_use_id = f"toolu_{uuid.uuid4().hex}"
-        prepared = await self._run_before_tool(
-            name, tool_input, tool_use_id=tool_use_id, executor="frontend"
-        )
-        outcome = await self.await_external(
-            cid=cid,
-            tool_use_ids=[tool_use_id],
-            outbound=[
-                FrontendCallView(tool_use_id=tool_use_id, tool_name=name, input=prepared)
-            ],
-            reason=AWAIT_REASON_SCRIPTED,
-            ctx=ctx,
-        )
+        async with self._scripted_pause_lock:
+            cid = f"relay_{self._run_id or uuid.uuid4().hex}_{name}"
+            tool_use_id = f"toolu_{uuid.uuid4().hex}"
+            prepared = await self._run_before_tool(
+                name, tool_input, tool_use_id=tool_use_id, executor="frontend"
+            )
+            outcome = await self.await_external(
+                cid=cid,
+                tool_use_ids=[tool_use_id],
+                outbound=[
+                    FrontendCallView(
+                        tool_use_id=tool_use_id, tool_name=name, input=prepared
+                    )
+                ],
+                reason=AWAIT_REASON_SCRIPTED,
+                ctx=ctx,
+            )
         return outcome.results
 
     async def _before_tool_chain(
