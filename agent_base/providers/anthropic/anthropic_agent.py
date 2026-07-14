@@ -404,6 +404,16 @@ class AnthropicAgent(AgentRuntime):
         self._cumulative_cost: CostBreakdown = CostBreakdown()
         # The turn's provider steps — settle_turn input (pricing-cost §2.4).
         self._turn_steps: list[Message] = []
+        # Settlement watermark: index into _turn_steps below which steps are
+        # already billed. INVARIANT: reset to 0 wherever _turn_steps is reset
+        # (initialize_run + _resume_rearmed) — the two always move together.
+        # _settle_delta() bills _turn_steps[_settled_upto:] and advances this,
+        # so an abort→finalize double-fire settles the tail exactly once.
+        self._settled_upto: int = 0
+        # A pre-pause settlement restored on cold resume (leak-2 fix): the
+        # priced-but-unbilled fact for the leg(s) before a process boundary.
+        # Folded into the next _settle_delta() exactly once, then cleared.
+        self._restored_settlement: "TurnSettlement | None" = None
 
         # These are set during initialize().
         self.conversation: Conversation | None = None
@@ -594,7 +604,9 @@ class AnthropicAgent(AgentRuntime):
         self.agent_config.conversation_log = ConversationLog()
         self.agent_config.parent_agent_uuid = self._parent_agent_uuid
 
-        # Reset step counter.
+        # Reset step counter. This is the ONLY reset site by design —
+        # current_step is the billing-identity stamp (see core/config.py) and
+        # must stay monotonic across every mid-run path (pause, rearm, steer).
         self.agent_config.current_step = 0
 
         # Populate AgentConfig with constructor params. CM-G3b: the active
@@ -629,6 +641,8 @@ class AnthropicAgent(AgentRuntime):
         self._run_cumulative_usage = Usage()
         self._cumulative_cost = CostBreakdown()
         self._turn_steps = []
+        self._settled_upto = 0  # watermark moves with _turn_steps, always
+        self._restored_settlement = None
         self._ensure_registered_agent()
 
     def _reset_cancellation_state(
@@ -983,12 +997,32 @@ class AnthropicAgent(AgentRuntime):
         pending = self.agent_config.pending_relay if self.agent_config else None
         self._reset_cancellation_state(None)
 
-        # Per-run tracking state for the resumed run.
+        # Per-run tracking state for the resumed run. The pre-pause leg's
+        # steps died with the old process, but its FACTS survive on the pause
+        # record (leak-2 fix): restore them instead of zeroing, so the run's
+        # single settlement at finalize/abort bills both legs and the
+        # conversation row covers the whole run (incl. sub-agent folds).
+        from agent_base.core.cost import TurnSettlement
+
         self._run_id = (pending.run_id if pending else None) or str(uuid.uuid4())
         self._run_logs = []
-        self._run_cumulative_usage = Usage()
-        self._cumulative_cost = CostBreakdown()
+        self._run_cumulative_usage = (
+            Usage.from_dict(pending.pre_pause_run_usage)
+            if pending is not None and pending.pre_pause_run_usage
+            else Usage()
+        )
+        self._cumulative_cost = (
+            CostBreakdown.from_dict(pending.pre_pause_run_cost)
+            if pending is not None and pending.pre_pause_run_cost
+            else CostBreakdown()
+        )
         self._turn_steps = []
+        self._settled_upto = 0  # watermark moves with _turn_steps, always
+        self._restored_settlement = (
+            TurnSettlement.from_dict(pending.pre_pause_settlement)
+            if pending is not None and pending.pre_pause_settlement
+            else None
+        )
 
         from agent_base.await_table import get_await_table
         from agent_base.core.runtime import _AwaitCancelled
@@ -998,6 +1032,10 @@ class AnthropicAgent(AgentRuntime):
             results = await self._race_join_against_cancel(join)
         except _AwaitCancelled:
             await self._repair_self_chain()
+            # Bill the restored pre-pause leg of a cold-rearmed turn that was
+            # aborted before resuming (leak-1/leak-2 fix). _turn_steps is empty
+            # here, so only the restored settlement can carry spend.
+            await self._settle_and_emit_delta()
             return self._build_aborted_result()
         finally:
             table.pop(join.cid)
@@ -1299,6 +1337,8 @@ class AnthropicAgent(AgentRuntime):
                         self._phase = AgentPhase.IDLE
                         self._abort_completion.set()
                         await self._persist_state()
+                        # Bill the aborted turn's completed steps (leak-1 fix).
+                        await self._settle_and_emit_delta()
                         return self._build_aborted_result()
 
                 elif stop_reason in ("end_turn", "stop", None):
@@ -1680,17 +1720,29 @@ class AnthropicAgent(AgentRuntime):
         # parked in RAM; ``submit(ToolReply(cid))`` wakes it in place, and an
         # evicted session rehydrates through the SAME cid (§2.4).
         cid = self._allocate_relay_cid(classification)
+
+        # Leak-2 fix: stamp the pre-pause billing/analytics facts onto the
+        # pause record so a process death while parked cannot erase the leg's
+        # spend. Priced NOW (at generation, D13), billed at finalize — nothing
+        # is emitted here. _resume_rearmed restores these on the cold path; the
+        # hot path keeps _turn_steps in memory and never reads them back.
+        unbilled = (
+            self._price_unbilled_fact() if self._has_unsettled_spend() else None
+        )
         self.agent_config.pending_relay = PendingToolRelay(
             frontend_calls=frontend_calls,
             confirmation_calls=confirmation_calls,
             completed_results=completed_result_messages,
             run_id=self._run_id,
             cid=cid,
+            pre_pause_settlement=unbilled.to_dict() if unbilled else None,
+            pre_pause_run_usage=self._run_cumulative_usage.to_dict(),
+            pre_pause_run_cost=self._cumulative_cost.to_dict(),
         )
 
         # Suspend-side checkpoint: the pause must be on disk BEFORE parking so
         # an eviction/crash can cold-resume it (await_external checkpoints the
-        # resume side).
+        # resume side). The pre-pause facts ride the same single write.
         await self._persist_state()
 
         outcome = await self.await_external(
@@ -1707,6 +1759,10 @@ class AnthropicAgent(AgentRuntime):
             self._phase = AgentPhase.IDLE
             if self._abort_completion is not None:
                 self._abort_completion.set()
+            # Bill the pre-pause steps of the hot-aborted parked turn (leak-1
+            # fix). The persisted pre-pause record is never restored on this
+            # path (only _resume_rearmed loads it), so no double-bill.
+            await self._settle_and_emit_delta()
             return self._build_aborted_result()
         # Results spliced in; continue the loop for the next LLM call.
         return None
@@ -1835,6 +1891,10 @@ class AnthropicAgent(AgentRuntime):
                     # Paused (not running): fix up this agent's chain directly.
                     await self._abort_awaiting_relay()
 
+                # Bill anything still unsettled (leak-1 fix). When the loop's
+                # own abort return already settled, the watermark makes this a
+                # genuine no-op — nothing is emitted, no dedupe reliance.
+                await self._settle_and_emit_delta()
                 return self._build_aborted_result()
             finally:
                 self._mailbox.unfreeze()
@@ -1888,6 +1948,11 @@ class AnthropicAgent(AgentRuntime):
             self._abort_completion.set()
 
         await self._persist_state()
+        # Bill the aborted turn's completed steps (leak-1 fix). The cancelled
+        # PARTIAL is deliberately not billed: ``turn.was_cancelled`` returns
+        # before the ``current_step += 1`` / ``_turn_steps.append`` pair, so it
+        # never enters the billable list.
+        await self._settle_and_emit_delta()
         return self._build_aborted_result()
 
     async def _abort_awaiting_relay(self) -> None:
@@ -2686,9 +2751,10 @@ class AnthropicAgent(AgentRuntime):
 
     # ── settlement (pricing-cost.md §2.4 — the unified chokepoint) ─────────
 
-    def _settle_turn(self) -> "TurnSettlement":
-        """Compute the once-per-turn billing fact via pricing's
-        ``settle_turn(ctx, steps)`` (O14d module function)."""
+    def _settle_turn(self, steps: "list[Message] | None" = None) -> "TurnSettlement":
+        """Compute a billing fact for ``steps`` via pricing's
+        ``settle_turn(ctx, steps)`` (O14d module function). Defaults to the
+        whole ``_turn_steps`` list for back-compat callers."""
         ctx = SimpleNamespace(
             pricing_policy=self.pricing_policy,
             model=self.agent_config.model,
@@ -2697,11 +2763,78 @@ class AnthropicAgent(AgentRuntime):
             parent_agent_id=self._parent_agent_uuid,
             principal=self.principal,
         )
-        return settle_turn(ctx, list(self._turn_steps))
+        return settle_turn(ctx, list(self._turn_steps) if steps is None else steps)
+
+    def _settle_delta(self) -> "TurnSettlement":
+        """Settle the UNBILLED tail of ``_turn_steps`` and advance the watermark.
+
+        Two invariants live here (the leak fixes rest on both):
+
+        - **Bill the delta**: only ``_turn_steps[_settled_upto:]`` is priced, so a
+          step is billed at most once no matter how many settle points fire in one
+          run (abort→finalize double-fires, abort-then-steer, pause legs).
+        - **Stamp identity monotonically**: the emitted ``step_count`` is
+          ``agent_config.current_step`` (run-monotonic, persisted, NEVER reset by
+          ``_resume_rearmed``), not ``len(steps)`` (leg-local). The consumer's
+          dedupe key is ``run_id:agent_id:step_count``; a leg-local count made two
+          legs of equal length collide byte-identically and the second charge was
+          silently swallowed. A billable leg always advances ``current_step``, so
+          billable ⇒ distinct key. (Format unchanged — consumers need no change.)
+
+        Folds ``_restored_settlement`` (a pre-pause leg restored on cold resume)
+        into the result exactly once, then clears it.
+        """
+        settlement = self._price_unbilled_fact()
+        self._settled_upto = len(self._turn_steps)
+        self._restored_settlement = None  # fold-once
+        return settlement
+
+    def _price_unbilled_fact(self) -> "TurnSettlement":
+        """Price the run's unbilled spend — the ``_turn_steps`` tail plus any
+        restored pre-pause leg — WITHOUT mutating the watermark or the restored
+        record. Priced at generation (D13): the rate applied is the rate in
+        effect now; the fact never gets re-priced later. Shared by
+        ``_settle_delta`` (which commits the mutation) and the pre-park persist
+        (which must leave in-memory state untouched)."""
+        delta = self._turn_steps[self._settled_upto:]
+        settlement = self._settle_turn(delta)
+
+        restored = self._restored_settlement
+        if restored is not None:
+            settlement = dataclasses.replace(
+                settlement,
+                turn_usage=restored.turn_usage + settlement.turn_usage,
+                turn_cost=restored.turn_cost + settlement.turn_cost,
+            )
+
+        return dataclasses.replace(
+            settlement,
+            step_count=self.agent_config.current_step if self.agent_config else settlement.step_count,
+        )
+
+    def _has_unsettled_spend(self) -> bool:
+        """True when a settle point would bill something new."""
+        return (
+            self._settled_upto < len(self._turn_steps)
+            or self._restored_settlement is not None
+        )
+
+    async def _settle_and_emit_delta(self) -> "TurnSettlement | None":
+        """Settle + emit the unbilled delta; a no-op (``None``, nothing emitted)
+        when there is nothing new to bill. The abort-path settle: a double-fire
+        (loop return + ``_do_abort``) emits exactly once because the first call
+        advances the watermark and the second sees an empty delta."""
+        if not self._has_unsettled_spend():
+            return None
+        settlement = self._settle_delta()
+        await self._emit_usage_report(settlement)
+        return settlement
 
     async def _emit_usage_report(self, settlement: "TurnSettlement") -> None:
-        """Auto-emit ``UsageReport.of(settlement)`` exactly once per turn and
-        deliver to ``on_usage_report`` subscribers (Fork G / B1)."""
+        """Emit ``UsageReport.of(settlement)`` and deliver to ``on_usage_report``
+        subscribers (Fork G / B1). At most once per BILLABLE LEG of a run: the
+        happy path emits once at finalize; an aborted run emits once at the abort
+        (previously: never — aborted turns billed $0)."""
         self._hook_emit(UsageReport.of(settlement))
         for callback in list(self._usage_report_callbacks):
             try:
@@ -2812,9 +2945,13 @@ class AnthropicAgent(AgentRuntime):
         result = self._build_agent_result(response_message, stop_reason)
         result.generated_files = generated_files
 
-        # ── Settlement chokepoint (pricing-cost.md §2.4 / B6): settle once,
-        # attach to the result, auto-emit UsageReport exactly once per turn.
-        settlement = self._settle_turn()
+        # ── Settlement chokepoint (pricing-cost.md §2.4 / B6): settle the
+        # unbilled delta, attach to the result, emit UsageReport. Uses
+        # _settle_delta (NOT _settle_and_emit_delta) deliberately: finalize must
+        # produce a settlement even when the delta is empty — RunCompleted below
+        # reads settlement.turn_cost. A prior abort/steer settle point may have
+        # already billed part of this run; the watermark makes this the tail only.
+        settlement = self._settle_delta()
         result.settlement = settlement
         await self._emit_usage_report(settlement)
 

@@ -256,6 +256,10 @@ def _serialize_pending_relay(relay: PendingToolRelay | None) -> dict[str, Any] |
         "completed_results": [m.to_dict() for m in relay.completed_results],
         "run_id": relay.run_id,
         "cid": getattr(relay, "cid", None),
+        # Leak-2 fix: pre-pause billing/analytics facts (already plain dicts).
+        "pre_pause_settlement": getattr(relay, "pre_pause_settlement", None),
+        "pre_pause_run_usage": getattr(relay, "pre_pause_run_usage", None),
+        "pre_pause_run_cost": getattr(relay, "pre_pause_run_cost", None),
     }
 
 
@@ -279,6 +283,13 @@ def _deserialize_pending_relay(data: dict[str, Any] | None) -> PendingToolRelay 
         ],
         run_id=data.get("run_id"),
     )
-    if any(f.name == "cid" for f in dataclasses.fields(PendingToolRelay)):
-        kwargs["cid"] = data.get("cid")
+    field_names = {f.name for f in dataclasses.fields(PendingToolRelay)}
+    for optional in (
+        "cid",
+        "pre_pause_settlement",
+        "pre_pause_run_usage",
+        "pre_pause_run_cost",
+    ):
+        if optional in field_names:
+            kwargs[optional] = data.get(optional)
     return PendingToolRelay(**kwargs)

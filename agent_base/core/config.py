@@ -115,6 +115,22 @@ class PendingToolRelay:
     # for an evicted session rehydrates then re-arms THIS cid. Additive and
     # nullable for old rows; storage round-trips it.
     cid: str | None = None
+    # Leak-2 fix: the pre-pause billing/analytics facts, stamped just before
+    # the park so a process death cannot erase the leg's spend. All three are
+    # additive + nullable (old rows deserialize to None) and stored as plain
+    # to_dict() payloads so this module takes no cost/pricing import.
+    #   pre_pause_settlement — TurnSettlement.to_dict(): the run's priced,
+    #     UNBILLED spend so far (own steps only; priced at generation, D13).
+    #     Restored into the runtime on cold resume and folded into the run's
+    #     single settlement at finalize/abort. Never emitted at the park.
+    #   pre_pause_run_usage / pre_pause_run_cost — Usage.to_dict() /
+    #     CostBreakdown.to_dict() of the run's cumulative analytics
+    #     accumulators (these INCLUDE sub-agent folds, which _turn_steps does
+    #     not), so the conversation row written at finalize covers the whole
+    #     run instead of only the post-resume leg.
+    pre_pause_settlement: dict | None = None
+    pre_pause_run_usage: dict | None = None
+    pre_pause_run_cost: dict | None = None
 
 
 # ==============================================================================
@@ -235,6 +251,13 @@ class AgentConfig:
     pending_relay: PendingToolRelay | None = None
 
     # --- Run tracking ---
+    # LOAD-BEARING FOR BILLING IDENTITY: the runtime stamps the emitted
+    # ``TurnSettlement.step_count`` with this value, and consumers dedupe on
+    # ``run_id:agent_id:step_count``. It is run-monotonic BY DESIGN — reset
+    # only by ``initialize_run``, never by a resume/rearm/steer path. Resetting
+    # or rewinding it mid-run mints colliding dedupe keys and silently drops
+    # charges. (It also survives cold resume via persistence, which is what
+    # keeps a resumed run's key distinct from its pre-pause leg's.)
     current_step: int = 0
 
     # --- Profiles (contract §6 / agent-loop-hooks §2.7; CM-G3e) ---
