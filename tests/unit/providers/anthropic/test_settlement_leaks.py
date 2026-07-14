@@ -444,6 +444,91 @@ async def test_cold_resume_bills_both_legs_in_one_settlement(fresh_table):
     assert resumed.conversation.usage.output_tokens == 4 * STEP_USAGE.output_tokens
 
 
+async def test_child_fold_survives_a_cold_resume_to_the_conversation_row(fresh_table):
+    # The analytics kill-shot found in review: a parent that ingested a
+    # sub-agent's usage, then PARKED, then cold-resumed used to write a
+    # conversation row missing the child's fold (_resume_rearmed zeroed
+    # _run_cumulative_usage; _finalize_run overwrites, not accumulates). The
+    # root-only admin stats fix counts ONLY parent rows, so a wiped fold would
+    # turn a visible over-count into an invisible under-count. The pre-pause
+    # record's run_usage/run_cost fields (which INCLUDE child folds, unlike
+    # _turn_steps) must survive the boundary.
+    holder: dict[str, AnthropicAgent] = {}
+
+    @tool
+    def spawn_child(value: str = "") -> str:
+        """Simulate an inline sub-agent completing: fold its usage."""
+        holder["agent"]._ingest_child_usage(
+            Usage(input_tokens=500, output_tokens=50),
+            CostBreakdown(total_cost=0.05),
+        )
+        return "child done"
+
+    parker = _agent(
+        [
+            _tool_use("spawn_child", "t1"),
+            _tool_use("present_plan", "fe1", {"plan_id": "p"}),
+        ],
+        tools=[spawn_child],
+        frontend_tools=[present_plan],
+    )
+    holder["agent"] = parker
+
+    task = await _park(parker)
+    relay = parker.agent_config.pending_relay
+    cid = relay.cid
+    root_id = parker.agent_uuid
+    adapters = {
+        "config_adapter": parker.config_adapter,
+        "conversation_adapter": parker.conversation_adapter,
+        "run_adapter": parker.run_adapter,
+    }
+    # The stamped analytics accumulators must already include the child fold.
+    assert (
+        Usage.from_dict(relay.pre_pause_run_usage).output_tokens
+        == 2 * STEP_USAGE.output_tokens + 50
+    )
+
+    set_await_table(AwaitTable())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    def _factory(root_session_id: str, principal=None) -> AnthropicAgent:
+        return AnthropicAgent(
+            system_prompt="settlement-leak spec",
+            agent_uuid=root_session_id,
+            provider_value=ScriptedProvider([_end_turn("done")]),
+            tools=[spawn_child],
+            frontend_tools=[present_plan],
+            pricing_policy=FlatPolicy(),
+            **adapters,
+        )
+
+    manager = SessionManager(_factory)
+    await manager.submit(
+        root_id,
+        ToolReply(
+            cid=cid,
+            results=[
+                ToolResultContent(
+                    tool_id="fe1", tool_result="ok", tool_name="present_plan"
+                )
+            ],
+        ),
+    )
+    resumed = await manager.get_or_create(root_id)
+    await asyncio.wait_for(resumed.wait_idle(), timeout=5)
+
+    # Parent row = own steps (2 pre-pause + 1 post-resume) + the child fold.
+    assert resumed.conversation is not None
+    assert (
+        resumed.conversation.usage.output_tokens
+        == 3 * STEP_USAGE.output_tokens + 50
+    )
+    assert resumed.conversation.usage.input_tokens == 3 * STEP_USAGE.input_tokens + 500
+
+
 async def test_cold_rearm_aborted_before_resuming_still_bills_the_restored_leg(
     fresh_table,
 ):
