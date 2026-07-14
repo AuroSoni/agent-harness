@@ -18,7 +18,7 @@ Covers interface_plan/subsystems/pricing-cost.md §2.4 + tenancy-principal.md
     subscribers registered on the parent AFTER a child was built do NOT
     retro-attach to that child — the next spawn picks them up (the same
     semantics the consumer's ``_propagate_to_subagents`` workaround had).
-    No ``SettlementAggregator`` involvement (AMENDMENTS-I9 stays future work).
+    No ``SettlementAggregator`` involvement (I9 RESOLVED: deleted 2026-07-14).
 
 The provider generation step is stubbed (one ``end_turn`` assistant message);
 everything else — spawn, propagation, settle, emit — is the real path.

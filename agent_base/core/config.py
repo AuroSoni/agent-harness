@@ -252,12 +252,14 @@ class AgentConfig:
 
     # --- Run tracking ---
     # LOAD-BEARING FOR BILLING IDENTITY: the runtime stamps the emitted
-    # ``TurnSettlement.step_count`` with this value, and consumers dedupe on
-    # ``run_id:agent_id:step_count``. It is run-monotonic BY DESIGN — reset
-    # only by ``initialize_run``, never by a resume/rearm/steer path. Resetting
-    # or rewinding it mid-run mints colliding dedupe keys and silently drops
-    # charges. (It also survives cold resume via persistence, which is what
-    # keeps a resumed run's key distinct from its pre-pause leg's.)
+    # ``TurnSettlement.step_count`` with this value, and consumers key
+    # idempotent billing on the settlement's identity fields (run_id,
+    # agent_id, step_count). It is run-monotonic BY DESIGN — reset only by
+    # ``initialize_run``, never by a resume/rearm/steer path. Resetting or
+    # rewinding it mid-run makes distinct billable legs indistinguishable and
+    # silently drops charges. (It also survives cold resume via persistence,
+    # which is what keeps a resumed run's identity distinct from its
+    # pre-pause leg's.)
     current_step: int = 0
 
     # --- Profiles (contract §6 / agent-loop-hooks §2.7; CM-G3e) ---

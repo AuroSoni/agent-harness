@@ -75,6 +75,12 @@ switch capability). Library auto-emits minimal `ProfileChanged(profile)`.
 - **I9 — `SettlementAggregator`** (homed `agent_base/core/cost.py`, owned by pricing-cost):
   subscribes to the UsageReport channel; `total_by_root(root_session_id) -> CostBreakdown`,
   `totals_by_agent(root) -> dict[agent_id, CostBreakdown]`. Per-turn settlements stay un-rolled.
+  **RESOLVED 2026-07-14: DELETED, not wired.** It was never instantiated in production; its only
+  input seam (`subscribe(channel) → channel.add_subscriber`) had zero production implementors
+  (the real path is the per-agent `on_usage_report` callback list); and its state was two plain
+  in-memory dicts with no serialization — wiring it for billing would have regressed durability
+  from per-turn-durable consumer ledger rows to RAM-until-read. Cumulative-by-root roll-ups
+  belong to the consumer's durable cost-event ledger (spec tracked in the consumer repo).
 - **I10 — overflow routes through `before_compact(trigger="overflow")`.** block = veto (turn fails
   upward with typed error); proceed = compact+retry as today. `_Recompact` stays internal mechanics;
   the trigger value is the seam. `CompactionContext.trigger` gains `"overflow"`.

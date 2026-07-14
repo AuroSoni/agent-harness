@@ -404,8 +404,8 @@ Args:
         # them again to grandchildren at THEIR spawn. Timing contract:
         # propagation happens at child build — subscribers registered on the
         # parent AFTER a child was already built do NOT retro-attach to that
-        # child (the next spawn picks them up). No SettlementAggregator here
-        # (that stays AMENDMENTS-I9 future work).
+        # child (the next spawn picks them up). (The I9 SettlementAggregator
+        # this once deferred to was deleted 2026-07-14 — see core/cost.py.)
         if parent_agent is not None:
             for callback in list(
                 getattr(parent_agent, "_usage_report_callbacks", None) or []

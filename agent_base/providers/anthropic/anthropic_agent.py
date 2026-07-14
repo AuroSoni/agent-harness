@@ -2722,7 +2722,8 @@ class AnthropicAgent(AgentRuntime):
 
         pricing-cost.md §6 / B6 / G0: no ``cost`` / ``cumulative_usage`` —
         per-turn cost rides ``result.settlement`` (attached in
-        ``_finalize_run``); cumulative rides the ``SettlementAggregator``.
+        ``_finalize_run``); cumulative is a consumer-side fold over the
+        per-turn ``UsageReport`` stream.
         """
         final_answer = self._extract_text(response_message)
 
@@ -2775,11 +2776,12 @@ class AnthropicAgent(AgentRuntime):
           run (abort→finalize double-fires, abort-then-steer, pause legs).
         - **Stamp identity monotonically**: the emitted ``step_count`` is
           ``agent_config.current_step`` (run-monotonic, persisted, NEVER reset by
-          ``_resume_rearmed``), not ``len(steps)`` (leg-local). The consumer's
-          dedupe key is ``run_id:agent_id:step_count``; a leg-local count made two
-          legs of equal length collide byte-identically and the second charge was
-          silently swallowed. A billable leg always advances ``current_step``, so
-          billable ⇒ distinct key. (Format unchanged — consumers need no change.)
+          ``_resume_rearmed``), not ``len(steps)`` (leg-local). Consumers key
+          idempotent billing on (run_id, agent_id, step_count); a leg-local count
+          made two legs of equal length indistinguishable, and the second charge
+          was silently deduplicated away. A billable leg always advances
+          ``current_step``, so billable ⇒ distinct identity. (Field shapes are
+          unchanged — consumers need no change.)
 
         Folds ``_restored_settlement`` (a pre-pause leg restored on cold resume)
         into the result exactly once, then clears it.

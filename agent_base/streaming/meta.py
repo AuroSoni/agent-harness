@@ -124,7 +124,7 @@ class UsageReport(MetaBody):
 
     Pricing supplies the payload shape; streaming owns the union + wire codec.
     Per O14(d) the body is TURN-LEVEL only — ``{kind, usage, cost}``: there is
-    NO ``cumulative`` field (the ``SettlementAggregator`` sums per-turn reports).
+    NO ``cumulative`` field (consumers fold per-turn reports themselves).
     Per B2 identity rides the ``MetaEnvelope`` header (tenant/subject only, never
     claims) — the body carries no identity fields.
 

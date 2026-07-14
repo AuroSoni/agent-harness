@@ -1,8 +1,8 @@
 """Settlement leak fixes: abort billing + cold-resume pre-pause billing.
 
 Pins the two revenue leaks found in the 2026-07-14 cost-ledger review and the
-mechanism that fixes them without changing the consumer dedupe-key format
-(``run_id:agent_id:step_count``):
+mechanism that fixes them without changing the settlement identity fields
+consumers key idempotent billing on (run_id, agent_id, step_count):
 
 - **Watermark** (``_settled_upto``): every settle point bills only the
   unsettled tail of ``_turn_steps``, so abort→finalize double-fires and
@@ -240,7 +240,7 @@ async def test_steer_shaped_runs_bill_each_leg_once_with_distinct_keys():
     assert abort_leg.step_count == 2
     assert finalize_leg.step_count == 5  # run-monotonic, NOT len(leg) == 3
     assert finalize_leg.turn_cost.total_cost == pytest.approx(3 * STEP_COST)
-    # The consumer dedupe key (run_id:agent_id:step_count) differs by
+    # The settlement identity (run_id, agent_id, step_count) differs by
     # construction: a billable leg always advances current_step.
     assert abort_leg.step_count != finalize_leg.step_count
     assert abort_leg.run_id == finalize_leg.run_id

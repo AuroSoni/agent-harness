@@ -675,9 +675,9 @@ class AgentRuntime:
         self._emit_outcome_events(end_outcome)
 
         # pricing-cost.md §6 / B6 / G0: no `cost` / `cumulative_usage` on
-        # AgentResult — per-turn cost rides `settlement`, cumulative rides the
-        # SettlementAggregator. Settlement stays ABSENT here (B6): a scripted
-        # turn has no provider usage to settle.
+        # AgentResult — per-turn cost rides `settlement`; cumulative is a
+        # consumer-side fold over the UsageReport stream. Settlement stays
+        # ABSENT here (B6): a scripted turn has no provider usage to settle.
         result = AgentResult(
             final_message=assistant_message,
             final_answer=final_answer,
