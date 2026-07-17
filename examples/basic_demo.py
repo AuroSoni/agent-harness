@@ -75,7 +75,7 @@ async def main():
             "You are a helpful assistant that can perform mathematical "
             "calculations. Use the available tools to solve math problems."
         ),
-        model="claude-sonnet-4-5",
+        model="claude-sonnet-5",
         tools=MATH_TOOLS,
         config_adapter=config_adapter,
         conversation_adapter=conv_adapter,

@@ -42,7 +42,7 @@ logger = get_logger(__name__)
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BASE_DELAY = 1.0
 DEFAULT_MAX_TOKENS = 16384
-DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_MODEL = "claude-sonnet-5"
 
 # ---------------------------------------------------------------------------
 # Cache control (pure dict→dict utility)

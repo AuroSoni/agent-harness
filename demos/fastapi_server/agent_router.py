@@ -385,7 +385,7 @@ COMMON_TOOL_FUNCTIONS = [
 # --- 1. Plain chat (no tools) ---
 agent_no_tools = AgentConfig(
     system_prompt="You are a helpful assistant that should help the user with their questions.",
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-5",
     thinking_tokens=1024,
     max_tokens=64000,
     config_adapter=config_adapter,
@@ -397,7 +397,7 @@ agent_no_tools = AgentConfig(
 # --- 2. Calculator tools only ---
 agent_client_tools = AgentConfig(
     system_prompt="You are a helpful assistant that should help the user with their questions.",
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-5",
     thinking_tokens=1024,
     max_tokens=64000,
     tools=SAMPLE_TOOL_FUNCTIONS,
@@ -412,7 +412,7 @@ agent_frontend_tools = AgentConfig(
     system_prompt="""You are a helpful assistant that should help the user with their questions.
 When performing calculations that result in significant values (over 50), or when taking
 any action that could have consequences, ask for user confirmation using the user_confirm tool.""",
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-5",
     thinking_tokens=1024,
     max_tokens=64000,
     tools=SAMPLE_TOOL_FUNCTIONS + [read_image_raw],
@@ -426,7 +426,7 @@ any action that could have consequences, ask for user confirmation using the use
 # --- 4. All common tools + server tools ---
 agent_all_json = AgentConfig(
     system_prompt="You are a helpful assistant that should help the user with their questions.",
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-5",
     thinking_tokens=1024,
     max_tokens=64000,
     tools=COMMON_TOOL_FUNCTIONS + [read_image_raw],
@@ -460,7 +460,7 @@ agent_all_json = AgentConfig(
 _calculator_agent = AnthropicAgent(
     system_prompt="You are a calculator specialist. Use the provided math tools to perform calculations accurately.",
     description="Performs arithmetic calculations using add, subtract, multiply, and divide tools",
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-5",
     tools=SAMPLE_TOOL_FUNCTIONS,
     config_adapter=config_adapter,
     conversation_adapter=conversation_adapter,
@@ -470,7 +470,7 @@ _calculator_agent = AnthropicAgent(
 _researcher_agent = AnthropicAgent(
     system_prompt="You are a research specialist. Search the web for information and provide comprehensive answers.",
     description="Searches the web for information and provides summarised results",
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-5",
     config=AnthropicLLMConfig(
         server_tools=[
             {"type": "web_search_20250305", "name": "web_search", "max_uses": 50},
@@ -490,7 +490,7 @@ agent_subagents = AgentConfig(
         "- Use the 'researcher' subagent for any questions requiring web search or factual lookup.\n"
         "After receiving results from subagents, synthesise and present them to the user."
     ),
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-5",
     thinking_tokens=1024,
     max_tokens=64000,
     subagents={
@@ -506,7 +506,7 @@ agent_subagents = AgentConfig(
 # --- 6. Anthropic Agent Skills (code execution + document generation) ---
 agent_skills = AgentConfig(
     system_prompt="You are a helpful assistant that can generate documents and run code using Anthropic Skills.",
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-5",
     thinking_tokens=1024,
     max_tokens=64000,
     server_tools=[
