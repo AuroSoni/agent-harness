@@ -309,7 +309,23 @@ class AnthropicProvider(Provider):
         if processed_system:
             request_params["system"] = processed_system
 
-        if llm_config and llm_config.thinking_tokens and llm_config.thinking_tokens > 0:
+        # Extended thinking — two paradigms, chosen by which field the caller
+        # set (never by model name, keeping this provider model-agnostic):
+        #   • effort         → ADAPTIVE thinking, required by the latest models
+        #     (e.g. claude-opus-4-8, claude-sonnet-5), which 400 on the legacy
+        #     shape. Adaptive carries NO token budget — the server sizes the
+        #     reasoning from the effort level (output_config.effort).
+        #   • thinking_tokens → legacy "enabled" extended thinking for older
+        #     models that predate adaptive.
+        #   • both set        → effort wins (adaptive has no budget knob).
+        #   • neither         → no thinking.
+        effort = getattr(llm_config, "effort", None) if llm_config else None
+        if effort:
+            request_params["thinking"] = {"type": "adaptive"}
+            output_config = dict(request_params.get("output_config") or {})
+            output_config["effort"] = effort
+            request_params["output_config"] = output_config
+        elif llm_config and llm_config.thinking_tokens and llm_config.thinking_tokens > 0:
             request_params["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": llm_config.thinking_tokens,

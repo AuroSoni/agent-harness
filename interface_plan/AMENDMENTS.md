@@ -816,3 +816,24 @@ Verified against MCP spec rev 2025-11-25 (a backend-resident host is the spec's 
   Conversation-row dual persistence. Never touches `context_messages`. Caller contract: a
   programmatically-built `SubAgentEnvelope` must carry `tool_name="spawn_subagent"` (+ a caller
   tool_id) — the consumer replay adapter keys nested-rail reconstruction on that name.
+
+## Anthropic adaptive extended thinking (AT-1) — 2026-07-18
+
+- **`AnthropicLLMConfig` gains `effort`** (`Optional[str]`, one of
+  `low|medium|high|xhigh|max`) for ADAPTIVE extended thinking — required by the latest
+  models (`claude-opus-4-8`, `claude-sonnet-5`), which reject the legacy
+  `thinking.type=enabled` budget shape with a hard 400. `_build_request_params` picks the
+  paradigm by WHICH FIELD the caller set — never by model name, keeping the provider
+  model-agnostic: `effort` → `thinking={"type":"adaptive"}` + `output_config={"effort": …}`
+  (adaptive has NO token budget; the server sizes reasoning from the level);
+  `thinking_tokens` → legacy `{"type":"enabled","budget_tokens":N}`; both set → `effort`
+  wins; neither → no thinking. Additive + optional, so old persisted `llm_config` rows
+  deserialize to `effort=None` — llm_config is JSON inside `AgentConfig`, not a column, so
+  **no `LIBRARY_SCHEMA_VERSION` bump**. The request-thinking shape is provider-internal (no
+  red-suite pins it), so this ships a UNIT test
+  (`tests/unit/providers/anthropic/test_request_params.py`), not an interface spec.
+  Live-verified against `claude-opus-4-8` + `claude-sonnet-5`. FOLLOW-UP (not done): the
+  `effort` path needs an `anthropic` SDK carrying `output_config`/adaptive (nova pins
+  `0.111.0`); the pyproject floor `anthropic>=0.75.0` is deliberately NOT bumped here, so a
+  consumer resolving an older SDK + using `effort` fails at call time. (Sits beside the
+  still-open gap that `claude-opus-4-8` has no pricing-CSV row — cost settles silently wrong.)
