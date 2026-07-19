@@ -60,6 +60,7 @@ from .meta import (
 )
 from .wire import (
     CODECS,
+    KEEPALIVE,
     TERMINAL,
     DeltaSink,
     SseCodec,
@@ -123,6 +124,7 @@ __all__ = [
     "SseCodec",
     "WireFrame",
     "TERMINAL",
+    "KEEPALIVE",
     "CODECS",
     "get_codec",
     "DeltaSink",

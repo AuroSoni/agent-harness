@@ -837,3 +837,34 @@ Verified against MCP spec rev 2025-11-25 (a backend-resident host is the spec's 
   `0.111.0`); the pyproject floor `anthropic>=0.75.0` is deliberately NOT bumped here, so a
   consumer resolving an older SDK + using `effort` fails at call time. (Sits beside the
   still-open gap that `claude-opus-4-8` has no pricing-CSV row — cost settles silently wrong.)
+
+## SSE keepalive/heartbeat (SSE-1) — 2026-07-19
+
+Found live: nova's add-in aborts any SSE stream silent >120 s (`SSE_IDLE_TIMEOUT_MS`
+watchdog → `ERR_ABORTED`), so multi-minute silent backend tools (a ~4-min Datalab parse,
+an ~8-min builder generation) killed the client mid-turn while the resident actor ran on
+— the pane read dead for a turn that later completed.
+
+- **SSE-1a — idle keepalive frame in `sse_response`**: gains
+  `keepalive_interval: float | None = KEEPALIVE_INTERVAL_S` (15.0; `None` disables;
+  `<= 0` → `ValueError`). While the item iterator yields nothing for ≥ interval, the
+  transport emits `codec.render(codec.encode_keepalive())` (`data: [PING]`), repeatedly
+  until the next item. A `data:` frame, NOT an SSE `:` comment — comments never fire
+  client `onmessage`, so app-level idle watchdogs would still abort. Contract preserved:
+  real frames never delayed/reordered (a ping only lands BETWEEN items, never inside one
+  item's chunk batch); exactly one `[DONE]`, always last, never a ping after it; a source
+  exception still propagates with no trailing `[DONE]`; body cancellation still delivers
+  `CancelledError` into the source iterator at its await point (disconnect ≠ cancel
+  detach handlers unchanged), the pending read is never cancelled on a keepalive tick,
+  and the next read dispatches only after the current item's frames are yielded (zero
+  lookahead — no consume-and-drop on disconnect). Specs:
+  tests/interface/streaming_and_meta/test_streaming_and_meta_transport.py.
+- **SSE-1b — codec-owned ping**: `KEEPALIVE = WireFrame(data="[PING]")` beside
+  `TERMINAL` in wire.py + CONCRETE `WireCodec.encode_keepalive()` returning it (every
+  codec inherits the one ping; `render` stays the single place the transport string
+  lives — D4 upheld; exported from `agent_base.streaming`). Specs:
+  tests/interface/streaming_and_meta/test_streaming_and_meta_wire_codec.py.
+- **SSE-1c — decoder drops `[PING]`**: explicit skip beside the `[DONE]` branch in
+  `SseStreamDecoder.feed_line` (was already tolerated via the foreign-frame
+  `JSONDecodeError` path; now paired explicitly, X5). Specs:
+  tests/interface/streaming_and_meta/test_streaming_and_meta_decoder.py.

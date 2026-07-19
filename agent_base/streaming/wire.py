@@ -85,6 +85,12 @@ class WireFrame:
 #: The ONE defined terminal frame (D4), owned by ``sse_response`` (O11c).
 TERMINAL = WireFrame(data="[DONE]")
 
+#: The ONE defined keepalive frame (SSE-1), owned by ``sse_response``.  Emitted
+#: while the item iterator is idle so app-level client watchdogs see a data
+#: frame (an SSE ``:`` comment would not fire ``onmessage``); carries no
+#: ``StreamItem`` and the paired decoder drops it.
+KEEPALIVE = WireFrame(data="[PING]")
+
 
 class WireCodec(ABC):
     """Owns encode → frames and hands out the paired reference decoder."""
@@ -100,6 +106,12 @@ class WireCodec(ABC):
     def encode_terminal(self) -> WireFrame:
         """The terminal frame (``TERMINAL`` for SSE)."""
         ...
+
+    def encode_keepalive(self) -> WireFrame:
+        """The keepalive frame (SSE-1).  Concrete by design: every codec
+        inherits the one ``KEEPALIVE`` so the ping stays codec-rendered
+        (``render`` remains the single place the transport string lives)."""
+        return KEEPALIVE
 
     @abstractmethod
     def render(self, frame: WireFrame) -> str:

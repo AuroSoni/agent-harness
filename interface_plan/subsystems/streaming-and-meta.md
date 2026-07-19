@@ -389,6 +389,11 @@ class WireFrame:
     # §O11d (amended): the `event:` line field is DELETED — v1 SSE carries only `data:` frames.
 
 TERMINAL = WireFrame(data="[DONE]")    # the ONE defined terminal frame (D4), owned by sse_response (O11c)
+KEEPALIVE = WireFrame(data="[PING]")   # AMENDED (2026-07-19, SSE-1): the ONE keepalive frame, owned by
+                                       # sse_response. Transport-level — carries no StreamItem; the paired
+                                       # decoder (§2.6) drops it. A `data:` frame by design: SSE `:` comments
+                                       # never fire client `onmessage`, so app-level idle watchdogs would
+                                       # still abort a silent-but-alive stream.
 
 class WireCodec(ABC):
     version: str = WIRE_PROTOCOL_VERSION
@@ -399,6 +404,9 @@ class WireCodec(ABC):
     def encode_terminal(self) -> WireFrame: ...           # returns TERMINAL for SSE
     @abstractmethod
     def render(self, frame: WireFrame) -> str: ...        # frame → transport string
+    def encode_keepalive(self) -> WireFrame: ...          # concrete: returns KEEPALIVE (SSE-1 — every
+                                                          # codec inherits the one ping; render stays the
+                                                          # single place the transport string lives)
 
     # The paired decoder type for THIS codec version (the shipped reference, D1/D2):
     @abstractmethod
@@ -418,7 +426,7 @@ CODECS: dict[str, type[WireCodec]] = {"sse": SseCodec}
 def get_codec(name: str = "sse", **kw) -> WireCodec: ...
 ```
 
-**SSE transport factory (kills the verbatim header copy, D4):**
+**SSE transport factory (kills the verbatim header copy, D4). AMENDED (2026-07-19, SSE-1): idle keepalive.**
 
 ```python
 # agent_base/streaming/transport.py   (NEW) — FastAPI optional extra
@@ -428,21 +436,31 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+KEEPALIVE_INTERVAL_S = 15.0            # SSE-1 default: well under app-level client
+                                       # watchdogs (nova aborts at 120 s silent)
+
 def sse_response(item_iter: AsyncIterator[StreamItem],
-                 *, codec: WireCodec | None = None) -> "StreamingResponse":
+                 *, codec: WireCodec | None = None,
+                 keepalive_interval: float | None = KEEPALIVE_INTERVAL_S,
+                 ) -> "StreamingResponse":
     """Frame a StreamItem iterator as a ready-to-return StreamingResponse.
 
-    Owns: per-item encode → render, the terminal [DONE] frame, and the
-    canonical headers. The consumer returns this object and writes ZERO
-    framing code.
+    Owns: per-item encode → render, the terminal [DONE] frame, the idle
+    keepalive frame (SSE-1: `data: [PING]` whenever item_iter has yielded
+    nothing for keepalive_interval seconds; None disables; <= 0 ValueError),
+    and the canonical headers. The consumer returns this object and writes
+    ZERO framing code.
     """
-    codec = codec or SseCodec()
-    async def _gen():
-        async for item in item_iter:
-            for frame in codec.encode(item):
-                yield codec.render(frame)
-        yield codec.render(codec.encode_terminal())   # exactly one [DONE]
-    return StreamingResponse(_gen(), media_type="text/event-stream", headers=SSE_HEADERS)
+    # Heartbeat contract (SSE-1a): real frames never delayed or reordered — a
+    # ping appears only BETWEEN items, never inside one item's chunk batch;
+    # exactly one [DONE], always last, no ping after it; a source exception
+    # still propagates with NO trailing [DONE]; cancelling the response body
+    # still propagates CancelledError into item_iter at its await point
+    # (disconnect ≠ cancel consumers' detach handlers fire unchanged). The
+    # pending read is NEVER cancelled on a keepalive tick, and the next read
+    # is dispatched only after the current item's frames are yielded (zero
+    # lookahead — no item can be consumed-and-dropped on disconnect).
+    ...
 ```
 
 ### 2.6 The shipped reference decoder (resolves D1, D2 — deletes `stream_parser.py`)
