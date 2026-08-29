@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Dict, TYPE_CHECKING
 
 from agent_base.core.abort_types import TOOL_ABORT_TEXT
+from agent_base.observability import emit as observe
 
 from .base import ConfigurableToolBase
 from .bundle import ToolBundle
@@ -247,6 +248,14 @@ class ToolRegistry:
             envelope.raised_error = e
 
         envelope.duration_ms = (time.monotonic() - start) * 1000
+        observe(
+            "tool_call",
+            tool_name=tool_name,
+            tool_id=tool_id,
+            executor=registered.executor,
+            duration_ms=envelope.duration_ms,
+            is_error=bool(getattr(envelope, "is_error", False)),
+        )
         return envelope
 
     # ─── Parallel Tool Execution ───────────────────────────────────
@@ -285,15 +294,28 @@ class ToolRegistry:
         results: dict[str, ToolResultEnvelope] = {}  # tool_id → result
 
         async def _run_one(tc: ToolCallInfo) -> tuple[str, ToolResultEnvelope]:
-            async with semaphore:
+            wait_started = time.monotonic()
+            await semaphore.acquire()
+            observe(
+                "tool_semaphore_wait",
+                tool_name=tc.name,
+                tool_id=tc.tool_id,
+                wait_ms=(time.monotonic() - wait_started) * 1000,
+                max_parallel=max_parallel,
+            )
+            try:
                 ctx = ctx_factory(tc) if ctx_factory is not None else None
                 envelope = await self.execute(tc.name, tc.tool_id, tc.input, ctx=ctx)
                 return tc.tool_id, envelope
+            finally:
+                semaphore.release()
 
         # Create tasks and track full call info for each
         tasks: dict[asyncio.Task[tuple[str, ToolResultEnvelope]], ToolCallInfo] = {}
         for tc in tool_calls:
-            task = asyncio.create_task(_run_one(tc))
+            task = asyncio.create_task(
+                _run_one(tc), name=f"agent:tool:{tc.name}:{tc.tool_id}"
+            )
             tasks[task] = tc
 
         pending: set[asyncio.Task[Any]] = set(tasks.keys())
@@ -301,7 +323,9 @@ class ToolRegistry:
         # Create cancellation sentinel if event provided
         cancel_task: asyncio.Task[Any] | None = None
         if cancellation_event:
-            cancel_task = asyncio.create_task(cancellation_event.wait())
+            cancel_task = asyncio.create_task(
+                cancellation_event.wait(), name="agent:tools:cancellation"
+            )
             pending.add(cancel_task)
 
         try:

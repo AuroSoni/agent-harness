@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
@@ -34,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 import httpx
 
 from agent_base.logging import get_logger
+from agent_base.observability import current_context, emit as observe
 from agent_base.streaming.meta import Custom
 from agent_base.tools.tool_types import ToolResultEnvelope, ToolSchema
 
@@ -524,22 +526,40 @@ class McpServerHandle:
         """Idempotent: an already-connected handle is left alone (a sub-agent
         sharing the source by reference must never bounce live connections —
         E9); ``reconnect()`` is the force-fresh verb."""
-        if self.state == "disabled":
-            return False
-        if self.state == "connected" and self._runner is not None:
-            return True
-        return await self._ensure_connect_flight(timeout=timeout)
+        started = time.monotonic()
+        try:
+            if self.state == "disabled":
+                return False
+            if self.state == "connected" and self._runner is not None:
+                return True
+            return await self._ensure_connect_flight(timeout=timeout)
+        finally:
+            observe(
+                "mcp_connect",
+                server=self.name,
+                state=self.state,
+                duration_ms=(time.monotonic() - started) * 1000,
+            )
 
     async def reconnect(self, *, timeout: float = CONNECT_TIMEOUT_S) -> bool:
         """Any state → fresh connect + re-discovery (the consumer's
         "user re-authorized" signal). Resets the auth outage."""
-        if self._reconnect_task is not None:
-            self._reconnect_task.cancel()
-            self._reconnect_task = None
-        self._reset_outage()
-        self._connect_flight = None
-        self._set_state("pending")
-        return await self._ensure_connect_flight(timeout=timeout)
+        started = time.monotonic()
+        try:
+            if self._reconnect_task is not None:
+                self._reconnect_task.cancel()
+                self._reconnect_task = None
+            self._reset_outage()
+            self._connect_flight = None
+            self._set_state("pending")
+            return await self._ensure_connect_flight(timeout=timeout)
+        finally:
+            observe(
+                "mcp_reconnect",
+                server=self.name,
+                state=self.state,
+                duration_ms=(time.monotonic() - started) * 1000,
+            )
 
     async def set_enabled(self, enabled: bool) -> None:
         if enabled:
@@ -630,11 +650,27 @@ class McpServerHandle:
             return self._error_envelope(
                 registered_name, tool_id, f"MCP server '{self.name}' has no live session."
             )
+        call_started = time.monotonic()
         try:
+            observation_meta = current_context()
             result = await asyncio.wait_for(
-                runner.session.call_tool(remote_name, arguments), timeout=timeout
+                runner.session.call_tool(
+                    remote_name,
+                    arguments,
+                    meta={"nova_observer": observation_meta} if observation_meta else None,
+                ),
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
+            observe(
+                "mcp_call",
+                server=self.name,
+                tool_name=remote_name,
+                tool_id=tool_id,
+                duration_ms=(time.monotonic() - call_started) * 1000,
+                retried=retried,
+                outcome="timeout",
+            )
             envelope = self._error_envelope(
                 registered_name,
                 tool_id,
@@ -643,6 +679,16 @@ class McpServerHandle:
             )
             return envelope
         except Exception as exc:
+            observe(
+                "mcp_call",
+                server=self.name,
+                tool_name=remote_name,
+                tool_id=tool_id,
+                duration_ms=(time.monotonic() - call_started) * 1000,
+                retried=retried,
+                outcome="error",
+                error_type=type(exc).__name__,
+            )
             return await self._handle_call_failure(
                 exc,
                 remote_name,
@@ -652,9 +698,19 @@ class McpServerHandle:
                 ctx=ctx,
                 retried=retried,
             )
-        return await result_to_envelope(
+        envelope = await result_to_envelope(
             result, tool_name=registered_name, tool_id=tool_id, ctx=ctx
         )
+        observe(
+            "mcp_call",
+            server=self.name,
+            tool_name=remote_name,
+            tool_id=tool_id,
+            duration_ms=(time.monotonic() - call_started) * 1000,
+            retried=retried,
+            outcome="ok",
+        )
+        return envelope
 
     async def _handle_call_failure(
         self,

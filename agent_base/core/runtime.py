@@ -35,6 +35,7 @@ Surface shipped NOW (core.md + AMENDMENTS):
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timezone
@@ -53,6 +54,7 @@ from agent_base.await_table.types import (
 from agent_base.core.abort_types import AgentPhase
 from agent_base.core.ack import Ack, Disposition
 from agent_base.core.audit import CommandAuditRecord, InMemoryCommandAuditLog
+from agent_base.observability import emit as observe, is_enabled as observation_enabled
 from agent_base.core.commands import (
     Abort,
     AgentInput,
@@ -1521,7 +1523,9 @@ class AgentRuntime:
         task = self._actor_task
         if task is not None and not task.done():
             return task
-        task = asyncio.create_task(self._drive_actor())
+        task = asyncio.create_task(
+            self._drive_actor(), name=f"agent:{self._root_session_id()}:actor"
+        )
         self._actor_task = task
         return task
 
@@ -1554,8 +1558,22 @@ class AgentRuntime:
                 msg = self._mailbox.take()
                 if msg is None:
                     break
-                last_result = await self.run(msg.message)
-                await self.checkpoint()
+                turn_started = time.monotonic()
+                observe(
+                    "actor_turn_start",
+                    root_session_id=self._root_session_id(),
+                    mailbox_depth=len(self._mailbox),
+                )
+                try:
+                    last_result = await self.run(msg.message)
+                    await self.checkpoint()
+                finally:
+                    observe(
+                        "actor_turn_end",
+                        root_session_id=self._root_session_id(),
+                        duration_ms=(time.monotonic() - turn_started) * 1000,
+                        mailbox_depth=len(self._mailbox),
+                    )
         finally:
             self._actor_running = False
         return last_result
@@ -1642,6 +1660,7 @@ class AgentRuntime:
         Returns the provider's ``ProviderTurn``.
         """
         cfg = self.agent_config
+        provider_started = time.monotonic()
         # B1/C5/X13: chain integrity before EVERY call — provider-supplied
         # shape, loop-owned policy.
         cfg.context_messages[:] = self.provider.sanitize_chain(cfg.context_messages)
@@ -1690,6 +1709,14 @@ class AgentRuntime:
         # O12(d): a cooperative mid-stream failure keeps partials on
         # turn.message and sets turn.partial_error; the LOOP emits the typed
         # ErrorReport without discarding the partials.
+        observe(
+            "provider_call",
+            agent_uuid=cfg.agent_uuid,
+            model=cfg.model,
+            streaming=sink is not None,
+            duration_ms=(time.monotonic() - provider_started) * 1000,
+            partial_error=bool(getattr(turn, "partial_error", None)),
+        )
         return turn
 
     # ── the awaited entrypoint (Fork E — relocation sequenced last) ────────
@@ -1779,10 +1806,36 @@ class AgentRuntime:
     async def _stream_items(self, queue: "asyncio.Queue[Any]") -> AsyncIterator[Any]:
         """Reader bound to ITS attach-time queue — a steal ends exactly this
         iterator via the close sentinel, never the thief's."""
+        count = 0
         while True:
+            waiting_at = time.monotonic() if observation_enabled() else None
             item = await queue.get()
+            if waiting_at is not None:
+                observe(
+                    "stream_queue_get_wait",
+                    agent_uuid=self._root_session_id(),
+                    wait_ms=(time.monotonic() - waiting_at) * 1000,
+                    queue_depth=queue.qsize(),
+                )
             if item is _STREAM_CLOSED:
                 return
+            count += 1
+            if count == 1:
+                observe(
+                    "stream_first_frame",
+                    agent_uuid=self._root_session_id(),
+                    queue_depth=queue.qsize(),
+                )
+            if count % 20 == 0 and observation_enabled():
+                yielded_at = time.monotonic()
+                await asyncio.sleep(0)
+                observe(
+                    "stream_yield_delay",
+                    agent_uuid=self._root_session_id(),
+                    frame_ordinal=count,
+                    delay_ms=(time.monotonic() - yielded_at) * 1000,
+                    queue_depth=queue.qsize(),
+                )
             yield item
 
     def _emit_stream_item(self, item: Any) -> None:

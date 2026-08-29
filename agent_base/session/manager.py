@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Union
 from agent_base.await_table import get_await_table
 from agent_base.core.abort_types import AgentPhase
 from agent_base.core.ack import Ack, Disposition
+from agent_base.observability import emit as observe
 from agent_base.core.identity import (
     PrincipalPolicy,
     SessionPrincipal,
@@ -172,17 +173,26 @@ class SessionManager:
         """
         entry = self._sessions.get(root_session_id)
         if entry is not None:
+            observe("session_resident_hit", root_session_id=root_session_id)
             return self._attach(root_session_id, entry, principal)
 
         lock = self._build_locks.get(root_session_id)
         if lock is None:
             lock = asyncio.Lock()
             self._build_locks[root_session_id] = lock
+        lock_wait_started = time.monotonic()
         async with lock:
+            observe(
+                "session_build_lock_wait",
+                root_session_id=root_session_id,
+                wait_ms=(time.monotonic() - lock_wait_started) * 1000,
+            )
             entry = self._sessions.get(root_session_id)
             if entry is not None:
+                observe("session_build_joined", root_session_id=root_session_id)
                 return self._attach(root_session_id, entry, principal)
 
+            build_started = time.monotonic()
             agent = self._call_factory(root_session_id, principal)
             if inspect.isawaitable(agent):
                 agent = await agent
@@ -211,6 +221,12 @@ class SessionManager:
                 agent=agent, principal=principal, last_active=self._now()
             )
             await self._enforce_capacity()
+            observe(
+                "session_built",
+                root_session_id=root_session_id,
+                duration_ms=(time.monotonic() - build_started) * 1000,
+                cold=cold,
+            )
             return agent
 
     def _attach(
@@ -363,7 +379,16 @@ class SessionManager:
                     if callable(rearm):
                         await rearm(reply=command)
 
-        return await agent.submit(command)
+        submit_started = time.monotonic()
+        try:
+            return await agent.submit(command)
+        finally:
+            observe(
+                "session_submit",
+                root_session_id=root_session_id,
+                command=type(command).__name__,
+                duration_ms=(time.monotonic() - submit_started) * 1000,
+            )
 
     async def _probe_non_resident_control(
         self,
