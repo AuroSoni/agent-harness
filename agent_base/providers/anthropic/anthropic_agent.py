@@ -3025,17 +3025,22 @@ class AnthropicAgent(AgentRuntime):
             ],
         )
 
-        await self.config_adapter.save(self.agent_config)
+        from agent_base.observability import span as observation_span
+
+        with observation_span("persistence.config"):
+            await self.config_adapter.save(self.agent_config)
 
         if self.conversation:
-            await self.conversation_adapter.save(self.conversation)
+            with observation_span("persistence.conversation"):
+                await self.conversation_adapter.save(self.conversation)
 
         if self._run_logs:
-            await self.run_adapter.save_logs(
-                self.agent_config.agent_uuid,
-                self._run_id,
-                self._run_logs,
-            )
+            with observation_span("persistence.run_logs"):
+                await self.run_adapter.save_logs(
+                    self.agent_config.agent_uuid,
+                    self._run_id,
+                    self._run_logs,
+                )
 
         # fork-reset: capture a checkpoint at the quiescent turn boundary. Auto
         # (SPEC §D1) — a single insertion point that covers both the live
@@ -3076,19 +3081,23 @@ class AnthropicAgent(AgentRuntime):
         from agent_base.storage.checkpoint_codec import split_config_for_checkpoint
 
         tenant = self.agent_config.owner_tenant or "_"
-        base, transcript_segments, log_segments, codec_v = (
-            await split_config_for_checkpoint(
-                self.agent_config, self._blobs, tenant=tenant
+        from agent_base.observability import span as observation_span
+
+        with observation_span("checkpoint.transcript_codec"):
+            base, transcript_segments, log_segments, codec_v = (
+                await split_config_for_checkpoint(
+                    self.agent_config, self._blobs, tenant=tenant
+                )
             )
-        )
 
         manifest_ref: str | None = None
         fidelity = "full"
         if self._sandbox is not None:
             if self._blobs is not None:
-                _manifest, manifest_ref = await SandboxSnapshotter(
-                    self._sandbox, self._blobs, tenant=tenant
-                ).capture()
+                with observation_span("checkpoint.sandbox_snapshot"):
+                    _manifest, manifest_ref = await SandboxSnapshotter(
+                        self._sandbox, self._blobs, tenant=tenant
+                    ).capture()
                 fidelity = _manifest.fidelity
             else:
                 # a workspace exists but no CAS is wired to snapshot it
@@ -3109,7 +3118,8 @@ class AnthropicAgent(AgentRuntime):
             sandbox_manifest_ref=manifest_ref,
             consumer_payload={},   # the consumer reconciles its refs post-hoc
         )
-        await self.checkpoint_adapter.save(checkpoint)
+        with observation_span("checkpoint.row_save"):
+            await self.checkpoint_adapter.save(checkpoint)
         return checkpoint.ref
 
     def _warn_orphaned_tool_uses(self, messages: list[Message]) -> None:

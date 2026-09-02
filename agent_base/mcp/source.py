@@ -35,7 +35,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 import httpx
 
 from agent_base.logging import get_logger
-from agent_base.observability import current_context, emit as observe
+from agent_base.observability import (
+    current_context,
+    emit as observe,
+    span as observation_span,
+)
 from agent_base.streaming.meta import Custom
 from agent_base.tools.tool_types import ToolResultEnvelope, ToolSchema
 
@@ -653,14 +657,21 @@ class McpServerHandle:
         call_started = time.monotonic()
         try:
             observation_meta = current_context()
-            result = await asyncio.wait_for(
-                runner.session.call_tool(
-                    remote_name,
-                    arguments,
-                    meta={"nova_observer": observation_meta} if observation_meta else None,
-                ),
-                timeout=timeout,
-            )
+            with observation_span(
+                "tool.connector",
+                server=self.name,
+                tool_name=remote_name,
+                tool_id=tool_id,
+                retried=retried,
+            ):
+                result = await asyncio.wait_for(
+                    runner.session.call_tool(
+                        remote_name,
+                        arguments,
+                        meta={"nova_observer": observation_meta} if observation_meta else None,
+                    ),
+                    timeout=timeout,
+                )
         except asyncio.TimeoutError:
             observe(
                 "mcp_call",

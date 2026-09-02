@@ -54,7 +54,11 @@ from agent_base.await_table.types import (
 from agent_base.core.abort_types import AgentPhase
 from agent_base.core.ack import Ack, Disposition
 from agent_base.core.audit import CommandAuditRecord, InMemoryCommandAuditLog
-from agent_base.observability import emit as observe, is_enabled as observation_enabled
+from agent_base.observability import (
+    emit as observe,
+    is_enabled as observation_enabled,
+    span as observation_span,
+)
 from agent_base.core.commands import (
     Abort,
     AgentInput,
@@ -1231,23 +1235,24 @@ class AgentRuntime:
         """
         from agent_base.streaming.meta import FrontendCallView
 
-        async with self._scripted_pause_lock:
-            cid = f"relay_{self._run_id or uuid.uuid4().hex}_{name}"
-            tool_use_id = f"toolu_{uuid.uuid4().hex}"
-            prepared = await self._run_before_tool(
-                name, tool_input, tool_use_id=tool_use_id, executor="frontend"
-            )
-            outcome = await self.await_external(
-                cid=cid,
-                tool_use_ids=[tool_use_id],
-                outbound=[
-                    FrontendCallView(
-                        tool_use_id=tool_use_id, tool_name=name, input=prepared
-                    )
-                ],
-                reason=AWAIT_REASON_SCRIPTED,
-                ctx=ctx,
-            )
+        with observation_span("tool.frontend", tool_name=name, executor="frontend"):
+            async with self._scripted_pause_lock:
+                cid = f"relay_{self._run_id or uuid.uuid4().hex}_{name}"
+                tool_use_id = f"toolu_{uuid.uuid4().hex}"
+                prepared = await self._run_before_tool(
+                    name, tool_input, tool_use_id=tool_use_id, executor="frontend"
+                )
+                outcome = await self.await_external(
+                    cid=cid,
+                    tool_use_ids=[tool_use_id],
+                    outbound=[
+                        FrontendCallView(
+                            tool_use_id=tool_use_id, tool_name=name, input=prepared
+                        )
+                    ],
+                    reason=AWAIT_REASON_SCRIPTED,
+                    ctx=ctx,
+                )
         return outcome.results
 
     async def _before_tool_chain(
@@ -1565,8 +1570,11 @@ class AgentRuntime:
                     mailbox_depth=len(self._mailbox),
                 )
                 try:
-                    last_result = await self.run(msg.message)
-                    await self.checkpoint()
+                    with observation_span(
+                        "actor.turn", root_session_id=self._root_session_id()
+                    ):
+                        last_result = await self.run(msg.message)
+                        await self.checkpoint()
                 finally:
                     observe(
                         "actor_turn_end",
@@ -1666,9 +1674,9 @@ class AgentRuntime:
         cfg.context_messages[:] = self.provider.sanitize_chain(cfg.context_messages)
         # O12(c): no retry scalars threaded — the provider reads its own
         # self.retry_policy.
-        try:
+        async def invoke_provider() -> Any:
             if sink is not None:
-                turn = await self.provider.generate_stream(
+                return await self.provider.generate_stream(
                     system_prompt=cfg.system_prompt,
                     messages=render_view,
                     tool_schemas=cfg.tool_schemas,
@@ -1681,15 +1689,23 @@ class AgentRuntime:
                     agent_uuid=cfg.agent_uuid,
                     cancellation_event=self._cancellation_event,
                 )
-            else:
-                turn = await self.provider.generate(
-                    system_prompt=cfg.system_prompt,
-                    messages=render_view,
-                    tool_schemas=cfg.tool_schemas,
-                    llm_config=cfg.llm_config,
-                    model=cfg.model,
-                    agent_uuid=cfg.agent_uuid,
-                )
+            return await self.provider.generate(
+                system_prompt=cfg.system_prompt,
+                messages=render_view,
+                tool_schemas=cfg.tool_schemas,
+                llm_config=cfg.llm_config,
+                model=cfg.model,
+                agent_uuid=cfg.agent_uuid,
+            )
+
+        try:
+            with observation_span(
+                "provider.call",
+                agent_uuid=cfg.agent_uuid,
+                model=cfg.model,
+                streaming=sink is not None,
+            ):
+                turn = await invoke_provider()
         except Exception as exc:
             from agent_base.core.provider import ProviderError
 
@@ -1809,12 +1825,20 @@ class AgentRuntime:
         count = 0
         while True:
             waiting_at = time.monotonic() if observation_enabled() else None
+            queue_depth_before_wait = queue.qsize()
             item = await queue.get()
             if waiting_at is not None:
                 observe(
                     "stream_queue_get_wait",
                     agent_uuid=self._root_session_id(),
                     wait_ms=(time.monotonic() - waiting_at) * 1000,
+                    wait_category=(
+                        "producer_idle" if queue_depth_before_wait == 0 else "queue_backlog"
+                    ),
+                    queue_depth_before_wait=queue_depth_before_wait,
+                    queue_depth_after_get=queue.qsize(),
+                    producer_state=getattr(self._phase, "value", str(self._phase)),
+                    # Legacy alias retained for ABI-1 report compatibility.
                     queue_depth=queue.qsize(),
                 )
             if item is _STREAM_CLOSED:

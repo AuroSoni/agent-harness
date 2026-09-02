@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from agent_base.blob_store.hashing import compute_blake3
+from agent_base.observability import span as observation_span
 
 if TYPE_CHECKING:
     from agent_base.blob_store.base import KeyedBlobStore
@@ -126,20 +127,27 @@ class SandboxSnapshotter:
         total = 0
         fidelity = "full"
         for zone in self._zones:
-            for fe in await self._sandbox.walk(zone):
+            with observation_span("checkpoint.sandbox_walk", zone=zone):
+                files = await self._sandbox.walk(zone)
+            for fe in files:
                 size = fe.size_bytes
                 if size > self._per_file_cap or total + size > self._total_cap:
                     entries[fe.relpath] = ManifestEntry("", size, status="skipped")
                     fidelity = "degraded"
                     continue
                 # read_file_bytes is an async generator — iterate, don't await.
-                data = b"".join(
-                    [chunk async for chunk in self._sandbox.read_file_bytes(fe.relpath)]
-                )
-                digest = compute_blake3(data)
+                with observation_span("checkpoint.sandbox_read"):
+                    data = b"".join(
+                        [chunk async for chunk in self._sandbox.read_file_bytes(fe.relpath)]
+                    )
+                with observation_span("checkpoint.sandbox_hash"):
+                    digest = compute_blake3(data)
                 key = self._key(digest)
-                if await self._blobs.exists_key(key) is None:   # dedupe
-                    await self._blobs.put_at(key, data)
+                with observation_span("checkpoint.blob_exists"):
+                    missing = await self._blobs.exists_key(key) is None
+                if missing:   # dedupe
+                    with observation_span("checkpoint.blob_write"):
+                        await self._blobs.put_at(key, data)
                 entries[fe.relpath] = ManifestEntry(digest, len(data))
                 total += len(data)
 
@@ -148,8 +156,9 @@ class SandboxSnapshotter:
         )
         payload = _canonical(manifest.to_dict())
         manifest_ref = self._key(compute_blake3(payload))
-        if await self._blobs.exists_key(manifest_ref) is None:
-            await self._blobs.put_at(manifest_ref, payload, mime_type="application/json")
+        with observation_span("checkpoint.manifest_write"):
+            if await self._blobs.exists_key(manifest_ref) is None:
+                await self._blobs.put_at(manifest_ref, payload, mime_type="application/json")
         return manifest, manifest_ref
 
     async def materialize(self, manifest_ref: str) -> SandboxManifest:

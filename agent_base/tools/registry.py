@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Dict, TYPE_CHECKING
 
 from agent_base.core.abort_types import TOOL_ABORT_TEXT
-from agent_base.observability import emit as observe
+from agent_base.observability import emit as observe, span as observation_span
 
 from .base import ConfigurableToolBase
 from .bundle import ToolBundle
@@ -232,19 +232,22 @@ class ToolRegistry:
             call_kwargs[CTX_PARAM_NAME] = ctx
 
         try:
-            if inspect.iscoroutinefunction(registered.func):
-                result = await registered.func(**call_kwargs)
-            else:
-                result = await asyncio.to_thread(registered.func, **call_kwargs)
+            with observation_span(
+                "tool.execute",
+                tool_name=tool_name,
+                tool_id=tool_id,
+                executor=registered.executor,
+            ):
+                if inspect.iscoroutinefunction(registered.func):
+                    result = await registered.func(**call_kwargs)
+                else:
+                    result = await asyncio.to_thread(registered.func, **call_kwargs)
 
-            envelope = self._wrap_result(result, tool_name, tool_id)
+                envelope = self._wrap_result(result, tool_name, tool_id)
 
         except Exception as e:
             envelope = ToolResultEnvelope.error(tool_name, tool_id, str(e))
-            # CM-G4: keep the RAISED exception on the envelope so the loop's
-            # ``on_tool_error`` hook can distinguish a raise from a returned
-            # error and synthesize a recovery result. Runtime-only — never
-            # serialized (it is not a dataclass field of any projection).
+            # CM-G4: retain runtime-only raised exception for hooks.
             envelope.raised_error = e
 
         envelope.duration_ms = (time.monotonic() - start) * 1000
@@ -295,7 +298,10 @@ class ToolRegistry:
 
         async def _run_one(tc: ToolCallInfo) -> tuple[str, ToolResultEnvelope]:
             wait_started = time.monotonic()
-            await semaphore.acquire()
+            with observation_span(
+                "tool.semaphore_wait", tool_name=tc.name, tool_id=tc.tool_id
+            ):
+                await semaphore.acquire()
             observe(
                 "tool_semaphore_wait",
                 tool_name=tc.name,

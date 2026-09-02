@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from agent_base.blob_store.hashing import compute_blake3
 from agent_base.core.config import AgentConfig, LLMConfig
+from agent_base.observability import span as observation_span
 
 from .serialization import deserialize_config, serialize_config
 
@@ -67,8 +68,11 @@ async def _store_segment(blobs: "KeyedBlobStore", tenant: str, payload: dict) ->
     already-present key writes 0 bytes."""
     data = canonical_json(payload)
     key = blob_key(tenant, data)
-    if await blobs.exists_key(key) is None:
-        await blobs.put_at(key, data, mime_type="application/json")
+    with observation_span("checkpoint.blob_exists"):
+        missing = await blobs.exists_key(key) is None
+    if missing:
+        with observation_span("checkpoint.blob_write"):
+            await blobs.put_at(key, data, mime_type="application/json")
     return key
 
 
@@ -84,7 +88,8 @@ async def split_config_for_checkpoint(
     Returns ``(config_base, transcript_segments, log_segments, codec_v)``. With
     no blob store wired, returns the full inline base and ``codec_v = 0``.
     """
-    base = serialize_config(config)
+    with observation_span("checkpoint.config_persistence"):
+        base = serialize_config(config)
     if blobs is None:
         return base, [], [], CODEC_INLINE
 
