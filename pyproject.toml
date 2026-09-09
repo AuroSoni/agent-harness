@@ -29,6 +29,9 @@ dependencies = [
 mcp = [
     "mcp>=1.28,<2",
 ]
+e2b = [
+    "e2b>=2.37,<3",
+]
 
 [dependency-groups]
 dev = [

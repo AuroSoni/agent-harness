@@ -112,6 +112,8 @@ if TYPE_CHECKING:
     from agent_base.media_backend.media_types import MediaBackend, MediaMetadata
     from agent_base.memory.base import MemoryStore
     from agent_base.sandbox.sandbox_types import Sandbox
+    from agent_base.sandbox.coordinator import SandboxCoordinator
+    from agent_base.sandbox.snapshot import SnapshotPolicy
     from agent_base.storage.base import (
         AgentConfigAdapter,
         ConversationAdapter,
@@ -224,6 +226,8 @@ class AnthropicAgent(AgentRuntime):
         # KeyedBlobStore content-addresses the transcript segments + sandbox
         # snapshot. With no adapter wired the feature is off (no capture).
         checkpoint_adapter: "CheckpointAdapter | None" = None,
+        sandbox_coordinator: "SandboxCoordinator | None" = None,
+        snapshot_policy: "SnapshotPolicy | None" = None,
         blob_store: "KeyedBlobStore | None" = None,
         media_backend: "MediaBackend | None" = None,
         fallback_api_keys: list[str] | None = None,
@@ -280,6 +284,14 @@ class AnthropicAgent(AgentRuntime):
         # Sandbox configuration — created lazily in initialize() when UUID is known.
         self._sandbox = sandbox
         self._sandbox_factory = sandbox_factory
+        self._sandbox_coordinator = sandbox_coordinator
+        self._snapshot_policy = snapshot_policy
+        self._sandbox_recovery_pending = False
+        self.sandbox_warnings: list[dict[str, Any]] = []
+        # Remote-sandbox lifecycle state: the last captured workspace manifest
+        # (so the next capture reads only deltas) and the turn-end pause task.
+        self._last_sandbox_manifest = None
+        self._sandbox_pause_task = None
 
         # End-turn validation hook. Cannot be loaded from database.
         self.end_turn_hook = end_turn_hook
@@ -446,30 +458,198 @@ class AnthropicAgent(AgentRuntime):
         """Create the default LocalSandbox for an agent UUID."""
         return LocalSandbox(sandbox_id=agent_uuid, base_dir="./sandbox_data")
 
-    def _get_or_create_sandbox(self, agent_uuid: str) -> "Sandbox":
-        """Resolve the sandbox instance for this agent session."""
+    async def _get_or_create_sandbox(self, agent_uuid: str) -> "Sandbox":
+        """Resolve the sandbox instance for this agent session.
+
+        Precedence: a ctor-injected instance (sub-agents share the parent's)
+        > the persisted ``agent_config.sandbox_config`` (carries a remote id)
+        > the consumer factory (sync or awaitable) > the default local sandbox.
+        The config is stamped by ``_provision_sandbox`` AFTER setup so a
+        freshly minted remote id is what gets persisted.
+        """
+        import inspect as _inspect
+
         if self._sandbox is not None:
             sandbox = self._sandbox
         elif self.agent_config and self.agent_config.sandbox_config is not None:
             sandbox = sandbox_from_config(self.agent_config.sandbox_config)
         elif self._sandbox_factory is not None:
             sandbox = self._sandbox_factory(agent_uuid)
+            if _inspect.isawaitable(sandbox):
+                sandbox = await sandbox
         else:
             sandbox = self._default_sandbox_factory(agent_uuid)
 
         self._sandbox = sandbox
+        return sandbox
+
+    async def _provision_sandbox(self, sandbox: "Sandbox", agent_uuid: str) -> bool:
+        """``setup()`` the sandbox, surviving a vanished remote (``SandboxGone``
+        → forget the id and provision afresh), rehydrate a NEWLY created
+        remote sandbox from the latest checkpoint manifest, then stamp (and
+        for a new remote id, immediately persist) ``sandbox_config``.
+        Returns True when a new remote sandbox was created."""
+        from agent_base.observability import emit as _emit
+        from agent_base.sandbox.sandbox_types import SandboxGone
+
+        previous_config = self.agent_config.sandbox_config if self.agent_config else None
+        previous_remote = getattr(previous_config, "e2b_sandbox_id", None)
+        try:
+            await sandbox.setup()
+        except SandboxGone:
+            _emit("sandbox.gone_on_setup", agent_uuid=agent_uuid)
+            sandbox.forget_remote()
+            await sandbox.setup()
+        created = bool(sandbox.created_on_last_setup())
+        needs_restore = created or self._sandbox_recovery_pending or (
+            sandbox.is_remote and not getattr(self, "_parent_agent_uuid", None)
+            and previous_remote != getattr(sandbox, "e2b_sandbox_id", None)
+        )
+        if needs_restore:
+            self._sandbox_recovery_pending = True
+            await self._rehydrate_sandbox(sandbox, agent_uuid)
         if self.agent_config is not None:
             self.agent_config.sandbox_config = sandbox.config
-        return sandbox
+            if needs_restore and sandbox.is_remote:
+                try:
+                    await self.config_adapter.save(self.agent_config)
+                except BaseException:
+                    self.agent_config.sandbox_config = previous_config
+                    raise
+        self._sandbox_recovery_pending = False
+        return created
+
+    async def _rehydrate_sandbox(self, sandbox: "Sandbox", agent_uuid: str) -> None:
+        """Materialize the latest checkpoint's workspace into a fresh sandbox."""
+        if self.checkpoint_adapter is None or self._blobs is None:
+            return
+        checkpoint = await self.checkpoint_adapter.load_latest(agent_uuid)
+        if checkpoint is None or not checkpoint.sandbox_manifest_ref:
+            return
+        from agent_base.observability import span as observation_span
+        from agent_base.sandbox.snapshot import SandboxSnapshotter
+
+        tenant = (self.agent_config.owner_tenant if self.agent_config else None) or "_"
+        with observation_span(
+            "sandbox.rehydrate", agent_uuid=agent_uuid, manifest_ref=checkpoint.sandbox_manifest_ref
+        ):
+            self._last_sandbox_manifest = await SandboxSnapshotter(
+                sandbox, self._blobs, tenant=tenant, policy=self._snapshot_policy
+            ).materialize(checkpoint.sandbox_manifest_ref)
 
     async def _initialize_sandbox(self, agent_uuid: str) -> None:
         """Set up the sandbox and attach it to tools and media."""
-        sandbox = self._get_or_create_sandbox(agent_uuid)
-        await sandbox.setup()
+        if self._sandbox_coordinator is not None and not getattr(self, "_parent_agent_uuid", None):
+            sandbox = await self._sandbox_coordinator.ensure_ready(self)
+            self._sandbox = sandbox
+        else:
+            sandbox = await self._get_or_create_sandbox(agent_uuid)
+            await self._provision_sandbox(sandbox, agent_uuid)
         self.tool_registry.attach_sandbox(sandbox)
         self.media_backend.attach_sandbox(sandbox)
         self._inject_agent_uuid_to_tools()
         self._configure_context_externalizer()
+
+    # ── remote-sandbox lifecycle (no-ops for local backends) ───────────────
+
+    async def ensure_sandbox_running(self) -> None:
+        """Warm the sandbox before a turn: wait for an in-flight turn-end pause,
+        then connect/resume. A remote that vanished meanwhile is re-provisioned
+        and rehydrated from the latest checkpoint."""
+        if self._sandbox_coordinator is not None and not getattr(self, "_parent_agent_uuid", None):
+            await self._initialize_sandbox(self.agent_uuid)
+            return
+        sandbox = self._sandbox
+        if sandbox is None or not sandbox.is_remote:
+            return
+        if self._sandbox_recovery_pending:
+            await self._provision_sandbox(sandbox, self.agent_uuid)
+            return
+        task = self._sandbox_pause_task
+        if task is not None and not task.done():
+            await asyncio.gather(task, return_exceptions=True)
+        from agent_base.sandbox.sandbox_types import SandboxGone
+
+        try:
+            await sandbox.ensure_running()
+        except SandboxGone:
+            sandbox.forget_remote()
+            await self._provision_sandbox(sandbox, self.agent_uuid)
+
+    async def pause_sandbox(self) -> bool:
+        """Pause a remote sandbox now (eviction / explicit). Never raises."""
+        if self._sandbox_coordinator is not None:
+            return await self._sandbox_coordinator.pause(self)
+        sandbox = self._sandbox
+        if sandbox is None or not sandbox.is_remote:
+            return False
+        task = self._sandbox_pause_task
+        if task is not None and not task.done():
+            await asyncio.gather(task, return_exceptions=True)
+        try:
+            return bool(await sandbox.pause())
+        except Exception:  # noqa: BLE001
+            logger.warning("sandbox_pause_failed", agent_uuid=self.agent_uuid, exc_info=True)
+            from agent_base.observability import emit as _emit
+
+            _emit("sandbox.pause_failed", agent_uuid=self.agent_uuid)
+            return False
+
+    def _schedule_sandbox_pause(self) -> None:
+        """Turn-end hook (called by the actor loop after the mailbox drains):
+        pause the remote sandbox off the request path. Root agents only —
+        sub-agents share the parent's sandbox. The pause is epoch-guarded so
+        a turn that starts meanwhile turns it into a no-op."""
+        sandbox = self._sandbox
+        if sandbox is None or not sandbox.is_remote:
+            return
+        if getattr(self, "_parent_agent_uuid", None):
+            return
+        if len(self._mailbox) != 0 or self._phase != AgentPhase.IDLE:
+            return
+        try:
+            from agent_base.await_table import get_await_table
+
+            if get_await_table().walk(self._root_session_id()):
+                return  # parked on a frontend tool — keep running
+        except Exception:  # noqa: BLE001 — never block on introspection
+            pass
+        epoch = sandbox.pause_epoch
+
+        async def _pause() -> None:
+            try:
+                if self._sandbox_coordinator is not None:
+                    await self._sandbox_coordinator.pause(self, epoch=epoch)
+                else:
+                    await sandbox.pause(epoch=epoch)
+            except Exception:  # noqa: BLE001
+                logger.warning("sandbox_pause_failed", agent_uuid=self.agent_uuid, exc_info=True)
+                from agent_base.observability import emit as _emit
+
+                _emit("sandbox.pause_failed", agent_uuid=self.agent_uuid)
+
+        self._sandbox_pause_task = asyncio.create_task(_pause())
+
+    async def destroy_sandbox(self) -> None:
+        """Kill the backing sandbox and forget it in the persisted config.
+        Session DELETE semantics — eviction never calls this."""
+        if self._sandbox_coordinator is not None:
+            # The coordinator owns exclusive activity and authoritative unbinding.
+            # Its durable state can include candidates absent from this process.
+            await self._sandbox_coordinator.destroy(self)
+            return
+        sandbox = self._sandbox
+        if sandbox is None:
+            return
+        from agent_base.sandbox.sandbox_types import SandboxGone
+
+        try:
+            await sandbox.teardown()
+        except SandboxGone:
+            pass
+        if self.agent_config is not None:
+            self.agent_config.sandbox_config = None
+            await self.config_adapter.save(self.agent_config)
 
     # ── initialize / per-run setup ─────────────────────────────────────────
 
@@ -572,6 +752,10 @@ class AnthropicAgent(AgentRuntime):
         self.conversation = None  # Created per-run in initialize_run()
         self._configure_compaction_controller()
 
+        if self._sandbox_coordinator is not None:
+            # The coordinator's principal-scoped binding CAS needs an identity
+            # row first. Ordinary saves must preserve authoritative bindings.
+            await self.config_adapter.save(self.agent_config)
         await self._initialize_sandbox(agent_uuid)
 
         await self._initialize_mcp()
@@ -1193,6 +1377,9 @@ class AnthropicAgent(AgentRuntime):
         response_message: Message | None = None
         try:
             while self.agent_config.current_step < self.max_steps:
+                if getattr(self, "_sandbox_resume_warm_pending", False):
+                    self._sandbox_resume_warm_pending = False
+                    await self.ensure_sandbox_running()
                 self._phase = AgentPhase.STREAMING
 
                 # --- Proactive compaction check (before/after_compact fire,
@@ -1775,10 +1962,18 @@ class AnthropicAgent(AgentRuntime):
         return None
 
     async def checkpoint(self) -> None:
-        """Persist session state at a turn boundary (the write-through seam)."""
+        """Persist only while owning a current session state and sandbox lease."""
         if self.agent_config is None:
             return
-        await self._persist_state()
+        coordinator = self._sandbox_coordinator
+        if coordinator is None or getattr(self, "_parent_agent_uuid", None):
+            await self._persist_state()
+            return
+        async with coordinator.exclusive(self, reason="persist_idle"):
+            # Active turn owners may advance their own state. Idle residents
+            # must compare against storage before any persistence side effect.
+            await coordinator.validate_resident(self)
+            await self._persist_state()
 
     # ``_actor_loop`` is INHERITED from ``AgentRuntime`` (GF-P6G3 — the
     # single-writer drain was lifted into the base so ``ensure_actor()`` and
@@ -3094,13 +3289,21 @@ class AnthropicAgent(AgentRuntime):
         fidelity = "full"
         if self._sandbox is not None:
             if self._blobs is not None:
-                with observation_span("checkpoint.sandbox_snapshot"):
-                    _manifest, manifest_ref = await SandboxSnapshotter(
-                        self._sandbox, self._blobs, tenant=tenant
-                    ).capture()
-                fidelity = _manifest.fidelity
+                from agent_base.sandbox.coordinator import uncoordinated
+                guard = (
+                    self._sandbox_coordinator.exclusive(self, reason="checkpoint")
+                    if self._sandbox_coordinator is not None else uncoordinated()
+                )
+                async with guard:
+                    with observation_span("checkpoint.sandbox_snapshot"):
+                        _manifest, manifest_ref = await SandboxSnapshotter(
+                            self._sandbox, self._blobs, tenant=tenant, policy=self._snapshot_policy
+                        ).capture(previous=self._last_sandbox_manifest)
+                    self._last_sandbox_manifest = _manifest
+                    if self._sandbox_coordinator is not None:
+                        await self._sandbox_coordinator.record_checkpoint(self, _manifest)
+                    fidelity = _manifest.fidelity
             else:
-                # a workspace exists but no CAS is wired to snapshot it
                 fidelity = "degraded"
 
         checkpoint = Checkpoint(

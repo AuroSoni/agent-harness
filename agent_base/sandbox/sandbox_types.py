@@ -83,6 +83,25 @@ class SandboxAccessDeniedError(SandboxPathEscapeError):
         ValueError.__init__(self, message)
 
 
+class SandboxGone(RuntimeError):
+    """A REMOTE sandbox this instance remembers (by remote id) no longer exists.
+
+    Raised by ``ensure_running()``/``setup()`` on remote backends when the
+    provider reports the persisted remote id as unknown (killed by a janitor,
+    expired, or removed by hand). The runtime reacts by calling
+    ``forget_remote()`` and provisioning a fresh sandbox, then rehydrating it
+    from the latest checkpoint manifest. Never raised by local backends.
+    """
+
+    def __init__(self, sandbox_id: str, remote_id: str | None = None):
+        self.sandbox_id = sandbox_id
+        self.remote_id = remote_id
+        super().__init__(
+            f"Remote sandbox for session {sandbox_id!r} is gone"
+            + (f" (remote id {remote_id!r})" if remote_id else "")
+        )
+
+
 # ─── Data types ───────────────────────────────────────────────────────
 
 
@@ -107,6 +126,13 @@ class ExecResult:
 
     duration_ms: float = 0.0
     """Wall-clock milliseconds from command start to return."""
+
+    output_truncated: bool = False
+    """At least one stream exceeded the capture budget; captured text is its tail."""
+
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
+    """Cumulative UTF-8 byte counts before truncation, when streaming is supported."""
 
 
 @dataclass
@@ -538,6 +564,7 @@ class Sandbox(ABC):
         written_paths: list[str] = []
 
         async def _copy_all() -> None:
+            batch: list[tuple[str, bytes]] = []
             for item in sorted(source.rglob("*")):
                 if item.is_dir():
                     continue
@@ -548,8 +575,13 @@ class Sandbox(ABC):
                 if not self._bulk_path_is_contained(dest_prefix, sandbox_path):
                     raise SandboxPathEscapeError(sandbox_path)
                 data = item.read_bytes()
-                await self._bulk_write_bytes(sandbox_path, data)
-                written_paths.append(sandbox_path)
+                if atomic:
+                    batch.append((sandbox_path, data))
+                else:
+                    # Best-effort mode keeps every file written before a
+                    # failure, so write as we go.
+                    await self._bulk_write_bytes(sandbox_path, data)
+                    written_paths.append(sandbox_path)
                 written.append(
                     StagedEntry(
                         sandbox_path=sandbox_path,
@@ -557,6 +589,11 @@ class Sandbox(ABC):
                         blake3_hash=None,
                     )
                 )
+            if batch:
+                # Paths are recorded BEFORE the write so a failed batch is
+                # rolled back in full (delete tolerates unwritten paths).
+                written_paths.extend(path for path, _ in batch)
+                await self._bulk_write_many(batch)
 
         return await self._run_bulk_stage(
             dest_prefix=dest_prefix,
@@ -599,14 +636,18 @@ class Sandbox(ABC):
         written_paths: list[str] = []
 
         async def _write_all() -> None:
+            batch: list[tuple[str, bytes]] = []
             for name, content in member_bytes.items():
                 sandbox_path = posixpath.normpath(f"{dest_prefix}/{name}")
                 if not self._bulk_path_is_contained(dest_prefix, sandbox_path):
                     raise SandboxPathEscapeError(sandbox_path)
                 if verify is not None and name in verify:
                     self._verify_digest(content, verify[name])
-                await self._bulk_write_bytes(sandbox_path, content)
-                written_paths.append(sandbox_path)
+                if atomic:
+                    batch.append((sandbox_path, content))
+                else:
+                    await self._bulk_write_bytes(sandbox_path, content)
+                    written_paths.append(sandbox_path)
                 computed = (
                     self._blake3_hex(content)
                     if (verify is not None and name in verify)
@@ -619,6 +660,9 @@ class Sandbox(ABC):
                         blake3_hash=computed,
                     )
                 )
+            if batch:
+                written_paths.extend(path for path, _ in batch)
+                await self._bulk_write_many(batch)
 
         return await self._run_bulk_stage(
             dest_prefix=dest_prefix,
@@ -671,6 +715,123 @@ class Sandbox(ABC):
             yield data
 
         await self.write_file_bytes(sandbox_path, _gen())
+
+    async def _bulk_write_many(self, items: list[tuple[str, bytes]]) -> None:
+        """Write many ``(sandbox_path, bytes)`` pairs.
+
+        The default loops ``_bulk_write_bytes``; remote backends override with
+        a batched upload so a checkpoint restore is a handful of round trips
+        rather than one per file.
+        """
+        for sandbox_path, data in items:
+            await self._bulk_write_bytes(sandbox_path, data)
+
+    # ─── Convenience + remote-backend seams (concrete on the base) ─────
+
+    async def write_bytes(self, path: str, data: bytes) -> str:
+        """One-shot bytes write. Returns the sandbox path written.
+
+        Backends override with a single upload; the default wraps the
+        streaming primitive so every backend has it (``ToolContext``
+        probes for exactly this method before falling back to a stream).
+        """
+
+        async def _one() -> AsyncIterator[bytes]:
+            yield data
+
+        await self.write_file_bytes(path, _one())
+        return path
+
+    async def manifest(
+        self, zones: "tuple[str, ...] | list[str]", *, max_file_bytes: int | None = None
+    ) -> "dict[str, tuple[str | None, int]] | None":
+        """Content manifest of ``zones`` computed WITHOUT transferring bytes.
+
+        Returns ``{relpath: (blake3_hex | None, size_bytes)}`` — every regular
+        file under the zones, keyed by sandbox-root-relative posix path. A
+        ``None`` digest means the file was over ``max_file_bytes`` and was
+        sized but not hashed. Returns ``None`` when the backend cannot compute
+        it (the default): callers then fall back to reading every file.
+        """
+        return None
+
+    async def run_streaming(
+        self,
+        command: str,
+        *,
+        on_output: Callable[[str], Any],
+        timeout: float = 30.0,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        capture_limit_bytes: int = 2_000_000,
+    ) -> ExecResult:
+        """Run ``command``, deliver output lines to ``on_output`` as they
+        arrive (stdout + stderr merged), and return the final ``ExecResult``.
+
+        The default composes ``exec_stream`` (lines) and reports
+        ``exit_code=0`` because ``exec_stream`` cannot surface one. Real
+        backends override it (``LocalSandbox`` via a subprocess,
+        ``E2BSandbox`` via a background command handle) so ``exit_code`` and
+        ``timed_out`` are meaningful.
+        """
+        import time as _time
+
+        started = _time.monotonic()
+        from .output import Utf8Tail
+        collected = Utf8Tail(capture_limit_bytes)
+        async for line in self.exec_stream(command, timeout=timeout, cwd=cwd, env=env):
+            collected.append(line)
+            on_output(line)
+        return ExecResult(
+            exit_code=0,
+            stdout=collected.text(),
+            output_truncated=collected.truncated, stdout_bytes=collected.total_bytes,
+            stderr="",
+            timed_out=False,
+            duration_ms=(_time.monotonic() - started) * 1000,
+        )
+
+    # ─── Remote lifecycle (no-ops on local backends) ───────────────────
+
+    @property
+    def is_remote(self) -> bool:
+        """True for backends whose filesystem lives outside this process."""
+        return False
+
+    def created_on_last_setup(self) -> bool:
+        """True when the most recent ``setup()`` PROVISIONED a new remote
+        sandbox (as opposed to reconnecting to an existing one). The runtime
+        uses it to decide whether to rehydrate from the latest checkpoint.
+        Always False on local backends."""
+        return False
+
+    async def ensure_running(self) -> bool:
+        """Make the backing environment usable (connect / resume / create).
+
+        Returns True when a NEW remote sandbox was created. No-op on local
+        backends."""
+        return False
+
+    async def pause(self, *, epoch: int | None = None) -> bool:
+        """Suspend the backing environment to stop billing between turns.
+        Returns True when a pause happened. No-op on local backends."""
+        return False
+
+    @property
+    def pause_epoch(self) -> int:
+        """Monotonic activity counter used to make a scheduled pause a no-op
+        when the sandbox was touched after the pause was scheduled."""
+        return 0
+
+    def forget_remote(self) -> None:
+        """Drop the remembered remote id so the next ``setup()`` provisions a
+        fresh environment. No-op on local backends."""
+        return None
+
+    async def remote_info(self) -> "dict[str, Any] | None":
+        """Provider-side facts (remote id, template/build id, state, size).
+        ``None`` on local backends."""
+        return None
 
     async def _bulk_rollback(self, written_paths: list[str]) -> list[str]:
         """Remove every path written by a failed atomic stage; return what was removed."""

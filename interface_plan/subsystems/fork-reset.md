@@ -141,3 +141,30 @@ The `tests/interface/fork_reset/` package is the contract (see SPEC §4): round-
 sandbox), archive-not-delete, fork sharing CAS by reference with zeroed usage, **sub-quadratic**
 storage (0 new blobs on an unchanged prefix), `agent_phase` + provider `llm_config` survival, tenant
 isolation, `SessionBusy` on a busy reset, and fresh-create DDL == v4->v5-migrated DDL.
+
+
+## E2B lifecycle coordination amendment (2026-09-09)
+
+`fork_session` and `reset_session` accept optional `sandbox_coordinator` and
+`snapshot_policy`; `destroy_session_sandbox` accepts `sandbox_coordinator`.
+Fork holds exclusive destination activity while publishing its config and seed
+checkpoint. Reset holds exclusive session activity; for remote sandboxes it
+calls `coordinator.reset(context, manifest_ref=...)` before changing transcript
+or archiving history. The coordinator prepares a restored replacement and
+preserves the original VM and keeps the operation pending through transcript
+config saves and history/checkpoint archival. Only after all three persistence
+steps succeed does the harness call `coordinator.finish_reset(context)` to commit
+readiness and retire the original VM. A failed step leaves pending recovery for
+an explicit reset retry, rather than admitting turns against mixed session state.
+The finish context carries the restored config and candidate sandbox. Local
+materialization remains local under the same guard. The cold context supplies session/principal,
+scoped adapters, config, blob store, factory, and policy; no live actor is needed.
+Deletion delegates authoritative unbinding to the coordinator. Transcript/history
+adapter saves are not a cross-adapter database transaction.
+
+
+Reset invokes the scoped config adapter's optional `save_reset(config)` when
+provided, otherwise `save(config)`. This lets consumers replace checkpoint
+metadata during reset while merging concurrently updated metadata during ordinary
+saves. Fork continues to use ordinary save. Completion still follows all config
+and archive persistence steps.

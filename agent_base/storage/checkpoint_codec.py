@@ -90,6 +90,11 @@ async def split_config_for_checkpoint(
     """
     with observation_span("checkpoint.config_persistence"):
         base = serialize_config(config)
+        # Operational ownership belongs to the live binding, never a replayed
+        # checkpoint or a fork. Copy the dict before removing reserved data.
+        if isinstance(base.get("sandbox_config"), dict):
+            base["sandbox_config"] = dict(base["sandbox_config"])
+            base["sandbox_config"].pop("_nova_lifecycle", None)
     if blobs is None:
         return base, [], [], CODEC_INLINE
 

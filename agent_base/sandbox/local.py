@@ -386,6 +386,104 @@ class LocalSandbox(ConfigDrivenSandbox):
                 duration_ms=(time.monotonic() - start) * 1000,
             )
 
+    async def run_streaming(
+        self,
+        command: str,
+        *,
+        on_output,
+        timeout: float | None = 30.0,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        capture_limit_bytes: int = 2_000_000,
+    ) -> ExecResult:
+        """Stream merged stdout+stderr to ``on_output`` and return the real
+        exit code (the base default cannot). Kills the process on timeout."""
+        effective_timeout = timeout if timeout else self.default_timeout
+        if cwd is not None:
+            work_dir = self._resolve(cwd)
+            self._cwd = work_dir
+        else:
+            work_dir = self._cwd
+        effective_env = {**os.environ, **(env or {})}
+
+        start = time.monotonic()
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(work_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=effective_env,
+        )
+        from .output import Utf8Tail
+        collected = Utf8Tail(capture_limit_bytes)
+        import codecs
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+        async def _pump() -> None:
+            assert proc.stdout is not None
+            while raw := await proc.stdout.read(65536):
+                text = decoder.decode(raw)
+                collected.append(text)
+                on_output(text)
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                collected.append(tail)
+                on_output(tail)
+            await proc.wait()
+
+        try:
+            await asyncio.wait_for(_pump(), timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            if proc.returncode is None:
+                await self._kill_process_tree(proc)
+            await proc.wait()
+            return ExecResult(
+                exit_code=-1,
+                stdout=collected.text(),
+                output_truncated=collected.truncated, stdout_bytes=collected.total_bytes,
+                timed_out=True,
+                duration_ms=(time.monotonic() - start) * 1000,
+            )
+        except asyncio.CancelledError:
+            await self._kill_process_tree(proc)
+            await proc.wait()
+            raise
+        return ExecResult(
+            exit_code=proc.returncode if proc.returncode is not None else -1,
+            stdout=collected.text(),
+            output_truncated=collected.truncated, stdout_bytes=collected.total_bytes,
+            stderr="",
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
+
+    @staticmethod
+    async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+        """Kill the shell AND everything it spawned (the timeout path).
+
+        ``create_subprocess_shell`` runs the command under ``cmd.exe`` on
+        Windows, so the real command is a GRANDCHILD that inherits our stdout
+        pipe. ``proc.kill()`` only terminates ``cmd.exe``: the grandchild keeps
+        running, keeps the pipe open, and ``proc.wait()`` then blocks until it
+        exits on its own — a ``time.sleep(30)`` under a 2 s timeout still costs
+        the full 30 s. ``taskkill /T`` takes the whole tree down. POSIX ``sh -c``
+        execs a simple command in place, so ``kill()`` already reaches it.
+        """
+        if os.name == "nt":
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/F", "/T", "/PID", str(proc.pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await killer.wait()
+            except OSError:
+                pass
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+
     def _extract_cwd(self, stdout: str) -> str:
         """Parse the pwd probe from stdout, update self._cwd, and return clean output."""
         marker_pos = stdout.rfind(self._PWD_MARKER)

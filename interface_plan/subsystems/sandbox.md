@@ -808,3 +808,42 @@ library calls (`import_tree` + `extract_archive(members=)`, no `staging()` — O
 module (X12) is deleted in favor of `SessionPrincipal` + `namespaced_base_dir`; and the per-field config +
 module-bottom registration ceremony (F9) collapse to a decorator + a `config_class` attribute (with
 class-creation validation — I12(b)). Breaking changes are allowed (G0); Nova migrates in the same cut.
+
+
+## E2B reliability coordination and bounded capture (2026-09-09)
+
+Consumers may inject `SandboxCoordinator` and `SnapshotPolicy` into AnthropicAgent.
+The coordinator owns authoritative readiness, activity/turn/exclusive guards,
+checkpoint warnings, idle pause, and deletion. Actor and cold-resume turns hold
+the turn guard through parked frontend awaits and completion independently of SSE.
+Snapshot capture runs under the exclusive guard; coordinators release shared
+activity before requesting exclusivity and fence connection-loss epochs.
+Provisioning/restore/binding failures propagate and cannot imply readiness.
+
+`SnapshotPolicy` keeps library defaults (50 MiB/file, 500 MiB total); consumers
+can supply other bounds. Oversized/unreadable entries are recorded as skipped,
+never silently full; degraded restoration restores stored entries and propagates
+storage/corruption errors. Operational `_nova_lifecycle` data is excluded from
+checkpoint config copies.
+
+`run_streaming(..., capture_limit_bytes=2_000_000)` retains bounded UTF-8 tails
+and reports cumulative `stdout_bytes`, `stderr_bytes`, and `output_truncated` on
+ExecResult. The SDK's per-command accumulators are bounded by an isolated adapter,
+with no global patch. E2B `exec` uses an 8 MiB budget and raises
+SandboxOutputLimitExceeded on overflow so JSON helpers cannot consume truncation.
+E2B configuration round-trips layout, internet access, lifecycle, discovery and
+concurrency policies. Upload retries rewind their stream; uncertain create or
+command-start responses are not blindly replayed.
+
+Coordinated `checkpoint()` and normal eviction take exclusive activity and
+validate the resident before persistence. Eviction validates before abort and
+session-end hooks as well, since those hooks may write state. The coordinator
+recognizes an active turn owner whose state legitimately advances and otherwise
+rejects obsolete residents. Rejection preserves the resident for explicit safe
+invalidation; no stale state is written as a side effect of eviction.
+
+
+Public `AnthropicAgent.destroy_sandbox()` and cold deletion both delegate to an
+injected coordinator, including when no local handle exists. The coordinator
+owns exclusive deletion and authoritative unbinding of live/pending candidates.
+Without a coordinator, local teardown and config persistence remain unchanged.

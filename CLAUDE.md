@@ -72,7 +72,7 @@ agent_base/               # The library package
 │                         # analytics (AnalyticsReader, agent_totals)
 ├── blob_store/           # Content-addressed + keyed blob storage (local, S3)
 ├── media_backend/        # Media persistence + projection (local, S3)
-├── sandbox/              # Path-scoped sandboxes (LocalSandbox, registry, namespacing)
+├── sandbox/              # Sandboxes: LocalSandbox (host dir), E2BSandbox (remote micro-VM, extra `e2b`), registry, snapshot/restore
 ├── python_executors/     # Python code execution (AST evaluator, local executor)
 ├── memory/               # Cross-session memory stores
 ├── pricing/              # Cost calculator, settlement

@@ -25,6 +25,11 @@ from .namespacing import (
     validate_segment,
 )
 from .local import LocalSandbox, LocalSandboxConfig
+from .e2b import E2BSandbox, E2BSandboxConfig, E2BTransport, RemoteSummary, SdkE2BTransport
+from .sandbox_types import SandboxGone
+from .coordinator import SandboxCoordinator
+from .snapshot import SnapshotPolicy
+from .output import SandboxOutputLimitExceeded
 from .registry import (
     deserialize_sandbox_config,
     register_sandbox_type,
@@ -34,6 +39,9 @@ from .registry import (
 __all__ = [
     "ConfigDrivenSandbox",
     "DEFAULT_ZONE_LAYOUT",
+    "E2BSandbox",
+    "E2BSandboxConfig",
+    "E2BTransport",
     "ExecResult",
     "ExportedFileMetadata",
     "FileEntry",
@@ -45,9 +53,14 @@ __all__ = [
     "Sandbox",
     "SandboxAccessDeniedError",
     "SandboxConfig",
+    "SandboxGone",
+    "SandboxCoordinator",
+    "SnapshotPolicy",
+    "SandboxOutputLimitExceeded",
     "SandboxNamespaceError",
     "SandboxNotATextFileError",
     "SandboxPathEscapeError",
+    "SdkE2BTransport",
     "StageResult",
     "StagedEntry",
     "TEXT_EXTENSIONS",

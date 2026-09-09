@@ -548,15 +548,14 @@ class MediaBackend(ABC):
         Used by user_upload() to simultaneously feed the backend store
         and the sandbox import from a single source stream.
 
-        The sentinel ``None`` is put on the queue after the source is
-        exhausted (or on error) so the consumer knows to stop.
+        EOF is enqueued only on normal exhaustion. On errors, user_upload
+        cancels both consumers; trying to enqueue EOF during cancellation can
+        deadlock on a full queue after its reader has already stopped.
         """
-        try:
-            async for chunk in source:
-                await queue.put(chunk)
-                yield chunk
-        finally:
-            await queue.put(None)
+        async for chunk in source:
+            await queue.put(chunk)
+            yield chunk
+        await queue.put(None)
 
     # ─── Sandbox integration ───────────────────────────────────────
 
@@ -599,15 +598,36 @@ class MediaBackend(ABC):
                     break
                 yield chunk
 
+        tee = self._tee_stream(content, queue)
+        sandbox_content = _queue_to_iter()
         store_task = asyncio.create_task(
-            self.store(self._tee_stream(content, queue), filename, mime_type, agent_uuid)
+            self.store(tee, filename, mime_type, agent_uuid)
         )
         sandbox_task = asyncio.create_task(
-            self._sandbox.import_file(filename, _queue_to_iter())
+            self._sandbox.import_file(filename, sandbox_content)
         )
 
-        metadata, sandbox_path = await asyncio.gather(store_task, sandbox_task)
-        return metadata, sandbox_path
+        try:
+            metadata, sandbox_path = await asyncio.gather(store_task, sandbox_task)
+            return metadata, sandbox_path
+        except BaseException:
+            # gather propagates the first error without stopping siblings. Do
+            # not release callers' activity guards or input files while either
+            # consumer can still write or wait on the tee. Drain even if another
+            # cancellation arrives while consumer cleanup is in progress.
+            for task in (store_task, sandbox_task):
+                if not task.done():
+                    task.cancel()
+            joined = asyncio.gather(store_task, sandbox_task, return_exceptions=True)
+            while not joined.done():
+                try:
+                    await asyncio.shield(joined)
+                except asyncio.CancelledError:
+                    continue
+            raise
+        finally:
+            await tee.aclose()
+            await sandbox_content.aclose()
 
     async def materialize(self, media_id: str, agent_uuid: str) -> str:
         """Retrieve a file from storage and stream it into the sandbox.

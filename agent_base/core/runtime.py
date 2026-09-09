@@ -930,6 +930,19 @@ class AgentRuntime:
             table.pop(cid)
 
         # ── Library-owned resume-boundary chain integrity (B1/C5/X13, R18b). ──
+        # A reply is admitted without request-task sandbox warmup. Recover in
+        # the actor that owns the activity lease, before checkpointing resumed
+        # state. A scripted tool runs in a child task; defer its warmup to the
+        # next provider boundary instead of trying to borrow the actor's lease.
+        if getattr(self, "_sandbox_coordinator", None) is not None and not getattr(self, "_parent_agent_uuid", None):
+            task = asyncio.current_task()
+            drivers = (getattr(self, "_actor_task", None), getattr(self, "_run_task", None),
+                       getattr(self, "_rearmed_resume_task", None))
+            if task in drivers:
+                await self.ensure_sandbox_running()
+            else:
+                self._sandbox_resume_warm_pending = True
+
         results = await self._reconcile_relay_reply(cid, join.tool_use_ids, results)
 
         # WT-2: a scripted pause (``call_frontend_tool``) returns the
@@ -1174,8 +1187,22 @@ class AgentRuntime:
         if not callable(resume):
             return
         self._rearmed_resume_task = asyncio.create_task(
-            self._guard_continuation(resume())
+            self._guard_continuation(self._coordinated_resume(resume))
         )
+
+    def _sandbox_turn_guard(self):
+        from agent_base.sandbox.coordinator import uncoordinated
+        coordinator = getattr(self, "_sandbox_coordinator", None)
+        if coordinator is None or getattr(self, "_parent_agent_uuid", None):
+            return uncoordinated()
+        return coordinator.turn(self)
+
+    async def _coordinated_resume(self, resume):
+        async with self._sandbox_turn_guard():
+            warm = getattr(self, "ensure_sandbox_running", None)
+            if callable(warm):
+                await warm()
+            return await resume()
 
     async def _guard_continuation(self, coro: "Awaitable[Any]") -> Any:
         """Contain a driven-turn failure (actor drain or cold-resume
@@ -1558,11 +1585,13 @@ class AgentRuntime:
             return None  # already draining — never double-drive a session
         self._actor_running = True
         last_result = None
+        ran_turn = False
         try:
             while True:
                 msg = self._mailbox.take()
                 if msg is None:
                     break
+                ran_turn = True
                 turn_started = time.monotonic()
                 observe(
                     "actor_turn_start",
@@ -1570,11 +1599,17 @@ class AgentRuntime:
                     mailbox_depth=len(self._mailbox),
                 )
                 try:
-                    with observation_span(
-                        "actor.turn", root_session_id=self._root_session_id()
-                    ):
-                        last_result = await self.run(msg.message)
-                        await self.checkpoint()
+                    async with self._sandbox_turn_guard():
+                        with observation_span(
+                            "actor.turn", root_session_id=self._root_session_id()
+                        ):
+                            # Remote sandboxes: resume (or re-provision a vanished
+                            # one) BEFORE the turn touches files. No-op for local.
+                            warm = getattr(self, "ensure_sandbox_running", None)
+                            if callable(warm):
+                                await warm()
+                            last_result = await self.run(msg.message)
+                            await self.checkpoint()
                 finally:
                     observe(
                         "actor_turn_end",
@@ -1584,6 +1619,15 @@ class AgentRuntime:
                     )
         finally:
             self._actor_running = False
+            if ran_turn:
+                # Turn-end pause of a remote sandbox — scheduled, never awaited
+                # here, so RunCompleted is never delayed by the provider.
+                schedule = getattr(self, "_schedule_sandbox_pause", None)
+                if callable(schedule):
+                    try:
+                        schedule()
+                    except Exception:  # pragma: no cover - best-effort
+                        pass
         return last_result
 
     async def wait_idle(self) -> None:

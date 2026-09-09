@@ -868,3 +868,79 @@ an ~8-min builder generation) killed the client mid-turn while the resident acto
   `SseStreamDecoder.feed_line` (was already tolerated via the foreign-frame
   `JSONDecodeError` path; now paired explicitly, X5). Specs:
   tests/interface/streaming_and_meta/test_streaming_and_meta_decoder.py.
+
+
+## E2B reliability coordination and bounded capture (2026-09-09)
+
+Consumers may inject `SandboxCoordinator` and `SnapshotPolicy` into AnthropicAgent.
+The coordinator owns authoritative readiness, activity/turn/exclusive guards,
+checkpoint warnings, idle pause, and deletion. Actor and cold-resume turns hold
+the turn guard through parked frontend awaits and completion independently of SSE.
+Snapshot capture runs under the exclusive guard; coordinators release shared
+activity before requesting exclusivity and fence connection-loss epochs.
+Provisioning/restore/binding failures propagate and cannot imply readiness.
+
+`SnapshotPolicy` keeps library defaults (50 MiB/file, 500 MiB total); consumers
+can supply other bounds. Oversized/unreadable entries are recorded as skipped,
+never silently full; degraded restoration restores stored entries and propagates
+storage/corruption errors. Operational `_nova_lifecycle` data is excluded from
+checkpoint config copies.
+
+`run_streaming(..., capture_limit_bytes=2_000_000)` retains bounded UTF-8 tails
+and reports cumulative `stdout_bytes`, `stderr_bytes`, and `output_truncated` on
+ExecResult. The SDK's per-command accumulators are bounded by an isolated adapter,
+with no global patch. E2B `exec` uses an 8 MiB budget and raises
+SandboxOutputLimitExceeded on overflow so JSON helpers cannot consume truncation.
+E2B configuration round-trips layout, internet access, lifecycle, discovery and
+concurrency policies. Upload retries rewind their stream; uncertain create or
+command-start responses are not blindly replayed.
+
+
+### Stale resident invalidation and relay recovery (2026-09-09)
+
+`SessionManager.invalidate_idle(root_session_id, principal=None)` discards an
+idle resident under the normal principal policy without abort, session-end
+hooks, checkpoint, or sandbox pause. It refuses active/queued work. Resource
+cleanup stays under the build lock. This supports consumer detection of stale
+cached session state without overwriting another process's newer transcript.
+Consumers may implement `SandboxCoordinator.validate_resident(agent)` before
+admission and under turn ownership; the harness does not silently reload state.
+
+Hot relay replies are accepted without request-owned warmup. The owning root
+actor warms after the join resolves and before checkpoint/provider continuation.
+Scripted child-task replies defer warmup to the actor's next provider boundary;
+they do not borrow the actor's shared activity lease.
+
+Coordinated `checkpoint()` and normal eviction take exclusive activity and
+validate the resident before persistence. Eviction validates before abort and
+session-end hooks as well, since those hooks may write state. The coordinator
+recognizes an active turn owner whose state legitimately advances and otherwise
+rejects obsolete residents. Rejection preserves the resident for explicit safe
+invalidation; no stale state is written as a side effect of eviction.
+
+
+### Pending reset through transcript persistence (2026-09-09)
+
+Remote coordinated reset has two phases: `reset(context, manifest_ref=...)`
+restores and validates a pending replacement; `finish_reset(context)` commits
+readiness only after config save and conversation/checkpoint archival succeed.
+The latter receives the restored config and candidate sandbox. Any intervening
+error leaves the durable operation pending for an explicit retry. The finish
+hook is required only for coordinated remote reset; local reset is unchanged.
+
+
+### Upload consumer cancellation (2026-09-09)
+
+MediaBackend.user_upload cancels and drains its storage and sandbox tasks on any
+failure or cancellation before returning control. The tee cannot block cleanup
+on an EOF sentinel after the sandbox reader exits. The public signature and
+successful upload behavior remain unchanged.
+
+
+Public sandbox destruction uses the same injected coordinator as cold deletion.
+No resident handle is required: durable pending candidates must still be retired
+and their authoritative binding cleared under coordinator ownership.
+
+Cold reset supports an optional scoped config adapter `save_reset(config)`
+capability, with `save(config)` fallback. Only reset uses this replacement seam;
+fork and normal runtime saves retain their existing method.
