@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import signal
 import time
 import uuid
 from dataclasses import dataclass
@@ -352,6 +353,7 @@ class LocalSandbox(ConfigDrivenSandbox):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=effective_env,
+                start_new_session=os.name != "nt",
             )
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -359,13 +361,15 @@ class LocalSandbox(ConfigDrivenSandbox):
                     timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()  # drain pipes to prevent resource leak
+                await self._stop_process(proc)
                 return ExecResult(
                     exit_code=-1,
                     timed_out=True,
                     duration_ms=(time.monotonic() - start) * 1000,
                 )
+            except BaseException:
+                await self._stop_process(proc)
+                raise
 
             stdout_text = stdout_bytes.decode("utf-8", errors="replace")
             stderr_text = stderr_bytes.decode("utf-8", errors="replace")
@@ -413,6 +417,7 @@ class LocalSandbox(ConfigDrivenSandbox):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=effective_env,
+            start_new_session=os.name != "nt",
         )
         from .output import Utf8Tail
         collected = Utf8Tail(capture_limit_bytes)
@@ -434,9 +439,7 @@ class LocalSandbox(ConfigDrivenSandbox):
         try:
             await asyncio.wait_for(_pump(), timeout=effective_timeout)
         except asyncio.TimeoutError:
-            if proc.returncode is None:
-                await self._kill_process_tree(proc)
-            await proc.wait()
+            await self._stop_process(proc)
             return ExecResult(
                 exit_code=-1,
                 stdout=collected.text(),
@@ -444,9 +447,8 @@ class LocalSandbox(ConfigDrivenSandbox):
                 timed_out=True,
                 duration_ms=(time.monotonic() - start) * 1000,
             )
-        except asyncio.CancelledError:
-            await self._kill_process_tree(proc)
-            await proc.wait()
+        except BaseException:
+            await self._stop_process(proc)
             raise
         return ExecResult(
             exit_code=proc.returncode if proc.returncode is not None else -1,
@@ -456,17 +458,35 @@ class LocalSandbox(ConfigDrivenSandbox):
             duration_ms=(time.monotonic() - start) * 1000,
         )
 
+    async def _stop_process(self, proc: asyncio.subprocess.Process) -> None:
+        """Finish tree termination and pipe draining despite repeated cancellation."""
+        async def stop_and_drain() -> None:
+            await self._kill_process_tree(proc)
+            # A terminated process can still have a full asyncio pipe buffer.
+            # Drain it instead of waiting on process exit alone.
+            await proc.communicate()
+
+        cleanup = asyncio.create_task(stop_and_drain())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        try:
+            cleanup.result()
+        finally:
+            if cancelled:
+                raise asyncio.CancelledError
+
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-        """Kill the shell AND everything it spawned (the timeout path).
+        """Kill the owned shell process group, including surviving descendants.
 
-        ``create_subprocess_shell`` runs the command under ``cmd.exe`` on
-        Windows, so the real command is a GRANDCHILD that inherits our stdout
-        pipe. ``proc.kill()`` only terminates ``cmd.exe``: the grandchild keeps
-        running, keeps the pipe open, and ``proc.wait()`` then blocks until it
-        exits on its own — a ``time.sleep(30)`` under a 2 s timeout still costs
-        the full 30 s. ``taskkill /T`` takes the whole tree down. POSIX ``sh -c``
-        execs a simple command in place, so ``kill()`` already reaches it.
+        POSIX subprocesses start a new session, so their PID is also their
+        process-group ID. Kill that group even if the shell has already exited:
+        children can still be running and holding its output pipes open.
+        Windows retains taskkill /T for the equivalent process-tree cleanup.
         """
         if os.name == "nt":
             try:
@@ -477,6 +497,11 @@ class LocalSandbox(ConfigDrivenSandbox):
                 )
                 await killer.wait()
             except OSError:
+                pass
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
                 pass
         if proc.returncode is None:
             try:
@@ -528,15 +553,21 @@ class LocalSandbox(ConfigDrivenSandbox):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,  # merge stderr into stdout
             env=effective_env,
+            start_new_session=os.name != "nt",
         )
         try:
             assert proc.stdout is not None
             deadline = time.monotonic() + effective_timeout
-            async for line in proc.stdout:
-                yield line.decode("utf-8", errors="replace")
-                if time.monotonic() > deadline:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     break
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), remaining)
+                except asyncio.TimeoutError:
+                    break
+                if not line:
+                    break
+                yield line.decode("utf-8", errors="replace")
         finally:
-            if proc.returncode is None:
-                proc.kill()
-            await proc.wait()
+            await self._stop_process(proc)
