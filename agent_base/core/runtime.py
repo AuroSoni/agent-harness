@@ -1237,6 +1237,9 @@ class AgentRuntime:
             )
             config = getattr(self, "_agent_config", None)
             steps = int(getattr(config, "current_step", 0) or 0)
+            pending_abort = getattr(self, "_abort_pending", None)
+            if pending_abort is not None:
+                pending_abort.done = True  # the error RunCompleted is the terminal frame
             self._emit_run_frame_if_attached(
                 self._build_run_completed("error", steps)
             )

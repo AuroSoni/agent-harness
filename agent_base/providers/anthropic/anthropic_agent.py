@@ -371,6 +371,8 @@ class AnthropicAgent(AgentRuntime):
         # Abort/steer state — cooperative cancellation.
         self._abort_completion: asyncio.Event | None = None
         self._run_task: asyncio.Task | None = None
+        # The in-flight abort's terminal-marker decision (see _open_abort_record).
+        self._abort_pending: SimpleNamespace | None = None
 
         # Optional upstream forward for cumulative usage/cost so inline-await
         # children fold their per-step tokens and $ into the root's sinks.
@@ -607,6 +609,8 @@ class AnthropicAgent(AgentRuntime):
             return
         if len(self._mailbox) != 0 or self._phase != AgentPhase.IDLE:
             return
+        if getattr(self, "_steer_preempting", False):
+            return  # the steered turn follows at once — never pause just to resume
         try:
             from agent_base.await_table import get_await_table
 
@@ -836,6 +840,7 @@ class AnthropicAgent(AgentRuntime):
         """Start a fresh cooperative-cancellation scope for a new turn."""
         self._cancellation_event = cancellation_event or asyncio.Event()
         self._abort_completion = asyncio.Event()
+        self._abort_pending = None
 
     def _configure_compaction_controller(self) -> None:
         """Compose or clear the inline compaction controller from config state."""
@@ -1521,12 +1526,7 @@ class AnthropicAgent(AgentRuntime):
 
                     # Check if we were cancelled during tool execution (Scenario B).
                     if self._cancellation_event.is_set():
-                        self._phase = AgentPhase.IDLE
-                        self._abort_completion.set()
-                        await self._persist_state()
-                        # Bill the aborted turn's completed steps (leak-1 fix).
-                        await self._settle_and_emit_delta()
-                        return self._build_aborted_result()
+                        return await self._finish_loop_abort("executing_tools")
 
                 elif stop_reason in ("end_turn", "stop", None):
                     should_retry = await self._run_end_turn_hook(
@@ -1553,9 +1553,18 @@ class AnthropicAgent(AgentRuntime):
             # Max steps reached.
             last_message = response_message or Message.assistant("Max steps reached.")
             return await self._finalize_run(last_message, "max_steps", sink)
+        except asyncio.CancelledError:
+            if self._cancellation_event.is_set():
+                # Hard-cancel backstop: the grace expired before the loop reached
+                # its own abort return. Repair and record the turn while this
+                # task still owns it, then let the cancellation propagate.
+                await self._salvage_hard_cancelled_abort()
+            raise
         finally:
             self._phase = AgentPhase.IDLE
             self._run_task = None
+            if self._cancellation_event.is_set() and self._abort_completion is not None:
+                self._abort_completion.set()  # a loop that exits any other way never makes _do_abort wait
             # Always clear streaming context to avoid stale references.
             self._inject_stream_context_to_tools(None)
 
@@ -2044,6 +2053,11 @@ class AnthropicAgent(AgentRuntime):
         async with self._interrupt_lock():
             self._mailbox.freeze()
             try:
+                # Decide the terminal marker before interrupt() closes the awaits
+                # that tell a parked turn apart from a running one.
+                record = self._abort_pending = self._open_abort_record()
+                forced: asyncio.Task | None = None
+
                 # Retire the generation: cancels parked awaits and makes any
                 # racing ToolReply a no-op.
                 from agent_base.await_table import get_await_table
@@ -2077,8 +2091,9 @@ class AnthropicAgent(AgentRuntime):
                             )
                         except asyncio.TimeoutError:
                             task = self._run_task
-                            if task is not None and not task.done():
+                            if task is not None and not task.done() and task is not asyncio.current_task():
                                 task.cancel()
+                                forced = task
                 elif phase == AgentPhase.AWAITING_RELAY or (
                     self.agent_config is not None
                     and self.agent_config.pending_relay is not None
@@ -2086,10 +2101,20 @@ class AnthropicAgent(AgentRuntime):
                     # Paused (not running): fix up this agent's chain directly.
                     await self._abort_awaiting_relay()
 
+                if forced is not None:
+                    # Let the cancelled loop salvage and record its turn (it owns
+                    # the sandbox turn lease) before this abort reports back.
+                    await asyncio.wait({forced}, timeout=self._abort_grace_seconds())
+                    if not forced.done():
+                        forced.add_done_callback(lambda _task: self._rekick_actor())
+
                 # Bill anything still unsettled (leak-1 fix). When the loop's
                 # own abort return already settled, the watermark makes this a
                 # genuine no-op — nothing is emitted, no dedupe reliance.
                 await self._settle_and_emit_delta()
+                if forced is not None:
+                    # The cancelled loop never reached its own marker.
+                    self._emit_abort_marker(record, phase.value, forced=True)
                 return self._build_aborted_result()
             finally:
                 self._mailbox.unfreeze()
@@ -2100,8 +2125,13 @@ class AnthropicAgent(AgentRuntime):
         cancellation_event: asyncio.Event | None = None,
     ) -> AgentResult:
         """Abort the current turn and redirect with a new instruction."""
-        # Step 1: Abort cleanly (produces valid chain)
-        await self._do_abort()
+        # Step 1: Abort cleanly (produces valid chain). The steered turn follows
+        # on the same stream, so the preemption marker is 'steered' (NV-4).
+        self._steer_preempting = True
+        try:
+            await self._do_abort()
+        finally:
+            self._steer_preempting = False
 
         # Step 2: Build a user message with the new instruction
         steer_message = Message.user(new_instruction)
@@ -2128,9 +2158,10 @@ class AnthropicAgent(AgentRuntime):
         patch = self.provider.plan_stream_abort(turn)
         self._append_messages_to_histories(patch.append_messages)
 
-        if sink is not None:
-            # NV-4: a forceful-steer preemption is NOT a terminal abort — the
-            # steered turn follows on the same stream, so the marker differs.
+        if self._abort_pending is None and sink is not None and not getattr(self, "_parent_agent_uuid", None):
+            # No Abort command decided the marker (a direct caller): NV-4 — a
+            # forceful-steer preemption is NOT a terminal abort, the steered
+            # turn follows on the same stream, so the marker differs.
             marker = (
                 "steered"
                 if getattr(self, "_steer_preempting", False)
@@ -2138,17 +2169,111 @@ class AnthropicAgent(AgentRuntime):
             )
             sink.emit_meta(Custom(name=marker, data={"phase": "streaming"}))
 
-        self._phase = AgentPhase.IDLE
-        if self._abort_completion:
-            self._abort_completion.set()
-
-        await self._persist_state()
         # Bill the aborted turn's completed steps (leak-1 fix). The cancelled
         # PARTIAL is deliberately not billed: ``turn.was_cancelled`` returns
         # before the ``current_step += 1`` / ``_turn_steps.append`` pair, so it
         # never enters the billable list.
+        return await self._finish_loop_abort("streaming")
+
+    def _open_abort_record(self) -> SimpleNamespace:
+        """Decide this abort's terminal marker while the facts still hold.
+
+        Only a running root turn gets one: a sub-agent shares its root's
+        stream, and a parked turn's reader already closed at ``await_input``
+        — a marker there would end the NEXT request's stream at its first
+        frame. The name is fixed now because ``submit(Steer)`` clears
+        ``_steer_preempting`` as soon as ``_do_abort`` returns, and the
+        marker goes only to the reader attached now, never a newer one.
+        """
+        marker = None
+        if not getattr(self, "_parent_agent_uuid", None) and not self._turn_is_parked():
+            marker = "steered" if getattr(self, "_steer_preempting", False) else "aborted"
+        return SimpleNamespace(marker=marker, queue=self._stream_queue, done=False)
+
+    def _turn_is_parked(self) -> bool:
+        if self._phase == AgentPhase.AWAITING_RELAY:
+            return True
+        if self.agent_config is not None and self.agent_config.pending_relay is not None:
+            return True
+        try:
+            from agent_base.await_table import get_await_table
+            from agent_base.await_table.types import AwaitState
+
+            return any(r.state is AwaitState.OPEN for r in get_await_table().walk(self._root_session_id()))
+        except Exception:  # noqa: BLE001 — never block an abort on introspection
+            return False
+
+    def _emit_abort_marker(self, record: SimpleNamespace | None, phase: str, *, forced: bool = False) -> None:
+        """Emit the terminal ``Custom('aborted'|'steered')`` at most once, and
+        only to the reader that was attached when the abort began."""
+        if record is None or record.done or record.marker is None:
+            return
+        record.done = True
+        if self._stream_queue is None or self._stream_queue is not record.queue:
+            return
+        data: dict[str, Any] = {"phase": phase}
+        if forced:
+            data["forced"] = True
+        self._hook_emit(Custom(name=record.marker, data=data))
+
+    def _mark_conversation_aborted(self) -> None:
+        """Close this run's conversation record as aborted (mirrors _finalize_run)."""
+        conversation = self.conversation
+        if conversation is None or conversation.completed_at is not None:
+            return
+        conversation.stop_reason = "aborted"
+        if self.agent_config is not None:
+            conversation.total_steps = self.agent_config.current_step
+            self.agent_config.conversation_log.mark_agent_completed(self.agent_uuid)
+        conversation.usage = self._run_cumulative_usage
+        conversation.cost = self._compute_cost()
+        conversation.completed_at = datetime.now(timezone.utc).isoformat()
+        conversation.conversation_log.mark_agent_completed(self.agent_uuid)
+
+    async def _finish_loop_abort(self, phase: str) -> AgentResult:
+        """The loop's own abort return (streaming or tool execution).
+
+        ``_abort_completion`` is set before the slow persist so a checkpoint
+        never trips the hard-cancel grace; the marker goes out last so no
+        ``UsageReport`` is stranded behind a consumer's stop frame.
+        """
+        self._phase = AgentPhase.IDLE
+        if self._abort_completion:
+            self._abort_completion.set()
+        self._mark_conversation_aborted()
+        await self._persist_state()
         await self._settle_and_emit_delta()
+        self._emit_abort_marker(self._abort_pending, phase)
         return self._build_aborted_result()
+
+    async def _salvage_hard_cancelled_abort(self) -> None:
+        """Best-effort repair of a turn hard-cancelled by ``_do_abort``: stop
+        remote commands, repair the chain, record and bill the turn. Each step
+        is independent; the cancellation still propagates afterwards."""
+        async def attempt(step: str, fn: Callable[[], Any]) -> None:
+            try:
+                outcome = fn()
+                if inspect.isawaitable(outcome):
+                    await outcome
+            except Exception:  # noqa: BLE001
+                logger.warning("abort_salvage_step_failed", step=step, agent_uuid=self.agent_uuid, exc_info=True)
+
+        kill = getattr(self._sandbox, "terminate_running_commands", None)
+        if callable(kill):
+            await attempt("terminate_running_commands", kill)
+        config = self.agent_config
+        if config is not None:
+            await attempt("sanitize_chain", lambda: config.context_messages.__setitem__(
+                slice(None), self.provider.sanitize_chain(config.context_messages)))
+        self._phase = AgentPhase.IDLE
+        await attempt("mark_aborted", self._mark_conversation_aborted)
+        await attempt("persist_state", self._persist_state)
+        await attempt("settle", self._settle_and_emit_delta)
+
+    def _rekick_actor(self) -> None:
+        """A steer queued behind a slow hard-cancelled turn runs once it exits."""
+        if len(self._mailbox) != 0 and self._can_auto_drive():
+            self.ensure_actor()
 
     async def _abort_awaiting_relay(self) -> None:
         """Handle abort during relay wait (Scenario C).
@@ -2177,6 +2302,7 @@ class AnthropicAgent(AgentRuntime):
         # Clear pending relay state
         self.agent_config.pending_relay = None
         self._phase = AgentPhase.IDLE
+        self._mark_conversation_aborted()
 
         await self._persist_state()
 
@@ -3056,6 +3182,14 @@ class AnthropicAgent(AgentRuntime):
         """Finalize the run: flush exports, update memory, settle the turn,
         persist, emit — provider-touch-points reduced to ``provider.name`` /
         ``provider.collect_api_files`` (providers.md §2.2)."""
+        if self._cancellation_event is not None and self._cancellation_event.is_set():
+            # An abort raced the turn's own completion: RunCompleted is the
+            # terminal frame, so _do_abort must neither wait out its grace
+            # (and hard-cancel mid-persist) nor add a marker after it.
+            if self._abort_completion is not None:
+                self._abort_completion.set()
+            if self._abort_pending is not None:
+                self._abort_pending.done = True
         now = datetime.now(timezone.utc).isoformat()
 
         # Flush exported files from sandbox (returns [] if no sandbox attached).
