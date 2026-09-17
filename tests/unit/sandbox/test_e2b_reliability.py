@@ -12,8 +12,8 @@ import pytest
 
 from agent_base.sandbox import E2BSandbox, Zone, ZoneLayout
 from agent_base.sandbox.e2b import (
-    RemoteError, RemoteExit, RemoteTransportError, SdkE2BTransport,
-    _SdkHandle, _SdkProcess, _bound_sdk_output,
+    PROCESS_TAG_ENV, RemoteError, RemoteExit, RemoteRateLimited, RemoteTransportError, SdkE2BTransport,
+    _SdkHandle, _SdkProcess, _bound_sdk_output, _kill_tree_command, _session_command,
 )
 from agent_base.sandbox.output import SandboxOutputLimitExceeded, Utf8Tail
 from agent_base.sandbox.registry import deserialize_sandbox_config, sandbox_from_config
@@ -178,6 +178,125 @@ async def test_sdk_timeout_and_cancellation_stop_only_its_reader(cancel):
     handle._handle_kill.assert_awaited_once()
     assert handle._wait.done()
     assert not sandbox._processes
+
+
+async def test_run_background_starts_its_own_session_with_a_process_tag():
+    # envd runs commands inside ITS OWN process group, so a kill can only reach
+    # the whole tree if the command leads a fresh session and carries a tag.
+    handle = await _sdk_process([])
+    run = AsyncMock(return_value=handle)
+    sdk = _SdkHandle(SdkE2BTransport(), SimpleNamespace(sandbox_id='remote', commands=SimpleNamespace(run=run)))
+    envs = {'A': '1'}
+    process = await sdk.run_background('python -c "print(1)"', envs=envs, cwd='/w', on_stdout=None, on_stderr=None)
+    (command,), kwargs = run.await_args
+    assert command == _session_command('python -c "print(1)"')
+    assert 'exec setsid -w /bin/bash -c' in command
+    assert kwargs['envs'] == {'A': '1', PROCESS_TAG_ENV: process._tag}
+    assert envs == {'A': '1'}
+
+
+def _killable(events, *, signal_error=None, gate=None):
+    async def signal():
+        events.append('signal')
+        if signal_error:
+            raise signal_error
+        return True
+
+    async def disconnect():
+        events.append('disconnect')
+
+    async def run(command, **kwargs):
+        if gate is not None:
+            await gate.wait()
+        events.append(('tree', command, kwargs.get('timeout')))
+        return SimpleNamespace(exit_code=0)
+
+    handle = SimpleNamespace(pid=4242, kill=signal, disconnect=disconnect)
+    return _SdkProcess(SdkE2BTransport(), handle, sbx=SimpleNamespace(commands=SimpleNamespace(run=run)), tag='t0')
+
+
+async def test_kill_sweeps_the_tree_even_when_the_signal_fails():
+    events = []
+    process = _killable(events, signal_error=RuntimeError('pid already gone'))
+    assert await process.kill() is False
+    assert events[0] == 'signal' and events[-1] == 'disconnect'
+    (_, script, _timeout), = [e for e in events if isinstance(e, tuple)]
+    assert script == _kill_tree_command(4242, 't0')
+    assert 'kill -KILL -- -4242' in script and f'{PROCESS_TAG_ENV}=t0' in script
+
+
+async def test_concurrent_kills_share_one_tree_kill():
+    events = []
+    process = _killable(events)
+    await asyncio.gather(process.kill(), process.kill(), E2BSandbox._stop_process(process))
+    assert [e for e in events if isinstance(e, tuple)].__len__() == 1
+    assert events.count('signal') == 1
+
+
+async def test_stop_process_finishes_the_tree_kill_despite_repeated_cancellation():
+    events, gate = [], asyncio.Event()
+    process = _killable(events, gate=gate)
+    stopper = asyncio.create_task(E2BSandbox._stop_process(process))
+    for _ in range(2):
+        await asyncio.sleep(0.01)
+        stopper.cancel()
+    await asyncio.sleep(0.01)
+    assert not stopper.done()
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await stopper
+    assert [e[0] for e in events if isinstance(e, tuple)] == ['tree']
+    assert events[-1] == 'disconnect'
+
+
+def test_kill_tree_command_never_targets_init_or_envds_group():
+    assert 'kill -KILL -- -' not in _kill_tree_command(1, 't')
+    assert 'kill -KILL -- -' not in _kill_tree_command(0, 't')
+
+
+@pytest.mark.skipif(__import__('os').name == 'nt' or not __import__('shutil').which('setsid'), reason='POSIX setsid')
+async def test_session_wrapper_and_tree_kill_on_a_real_shell():
+    tag = 'localtag'
+    wrapped = _session_command('echo out; exit 7')
+    proc = await asyncio.create_subprocess_exec('/bin/bash', '-c', wrapped, stdout=asyncio.subprocess.PIPE)
+    out, _ = await proc.communicate()
+    assert proc.returncode == 7 and out == b'out\n'
+    tree = _session_command('sleep 301 & setsid sleep 302 & (setsid sh -c "sleep 303" &); wait')
+    env = {**__import__('os').environ, PROCESS_TAG_ENV: tag}
+    proc = await asyncio.create_subprocess_exec('/bin/bash', '-c', tree, env=env)
+    await asyncio.sleep(0.5)
+    killer = await asyncio.create_subprocess_exec('/bin/bash', '-c', _kill_tree_command(proc.pid, tag))
+    await killer.wait()
+    await proc.wait()
+    await asyncio.sleep(0.2)
+    alive = await asyncio.create_subprocess_exec('pgrep', '-f', 'sleep 30[123]', stdout=asyncio.subprocess.PIPE)
+    listed, _ = await alive.communicate()
+    assert listed.strip() == b''
+
+
+async def test_rate_limited_create_is_retried_but_uncertain_create_is_not(tmp_path, monkeypatch):
+    monkeypatch.setattr('agent_base.sandbox.e2b.CREATE_RATE_LIMIT_BACKOFF_S', 0)
+    transport = FakeE2BTransport(tmp_path)
+    transport.fail_next = [RemoteRateLimited('429: rate limit'), RemoteRateLimited('429: rate limit')]
+    sandbox = E2BSandbox(sandbox_id='s', transport=transport, discover_by_metadata=False)
+    await sandbox.setup()
+    assert transport.calls['create'] == 3 and sandbox.e2b_sandbox_id
+
+
+async def test_make_dirs_issues_its_round_trips_concurrently():
+    in_flight = peak = 0
+
+    async def make_dir(path):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return True
+
+    sdk = _SdkHandle(SdkE2BTransport(), SimpleNamespace(sandbox_id='remote', files=SimpleNamespace(make_dir=make_dir)))
+    await sdk.make_dirs(['/a', '/b', '/c', '/d'])
+    assert peak == 4
 
 
 async def test_lookup_failure_is_retried_before_existing_candidate_is_ready(tmp_path):

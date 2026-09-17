@@ -37,6 +37,7 @@ import random
 import shlex
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, runtime_checkable
 
@@ -73,6 +74,11 @@ SPOOL_MAX_BYTES = 8 * 1024 * 1024
 MANIFEST_TIMEOUT_S = 120.0
 RETRY_ATTEMPTS = 4
 RETRY_BASE_S = 0.5
+CREATE_RATE_LIMIT_RETRIES = 2
+CREATE_RATE_LIMIT_BACKOFF_S = 1.0
+PROCESS_TAG_ENV = "AGENT_BASE_PROCESS_TAG"
+KILL_SIGNAL_TIMEOUT_S = 5.0
+KILL_TREE_TIMEOUT_S = 10.0
 
 _SECRET_KEY_MARKERS = ("_KEY", "_SECRET", "_TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL")
 _SECRET_KEY_PREFIXES = ("AWS_", "E2B_", "STYTCH_", "OPENAI_", "ANTHROPIC_", "DATABASE_")
@@ -382,11 +388,45 @@ class SdkE2BTransport:
             raise err from exc
 
 
+def _session_command(cmd: str) -> str:
+    """Run ``cmd`` as the leader of its own session and process group.
+
+    envd starts every command inside envd's OWN process group, so the pid it
+    reports can't be group-killed (that group is envd's). ``setsid`` makes that
+    pid lead a fresh session; ``-w`` keeps the wait and exit status should
+    setsid ever have to fork.
+    """
+    q = shlex.quote(cmd)
+    return (
+        f"if command -v setsid >/dev/null 2>&1; then exec setsid -w /bin/bash -c {q}; "
+        f"else exec /bin/bash -c {q}; fi"
+    )
+
+
+def _kill_tree_command(pid: int, tag: str) -> str:
+    """Kill a command's process group, then every process still carrying its
+    env tag (descendants that left the group, e.g. LibreOffice's soffice.bin or
+    ``setsid`` children). Runs via ``sudo -n`` when available so children
+    started with sudo die too. Never reads a pgid from /proc: before ``setsid``
+    runs, the pid still sits in envd's group."""
+    group = f"kill -KILL -- -{pid} 2>/dev/null; " if pid > 1 else ""
+    needle = shlex.quote(f"{PROCESS_TAG_ENV}={tag}")
+    sweep = (
+        f"for e in $(grep -lzxF -- {needle} /proc/[0-9]*/environ 2>/dev/null); do "
+        'p=${e#/proc/}; kill -KILL "${p%/environ}" 2>/dev/null; done; '
+    )
+    q = shlex.quote(group + sweep * 3 + "exit 0")
+    return f"if sudo -n true 2>/dev/null; then sudo -n /bin/bash -c {q}; else /bin/bash -c {q}; fi; exit 0"
+
+
 class _SdkProcess:
-    def __init__(self, transport: SdkE2BTransport, handle: Any) -> None:
+    def __init__(self, transport: SdkE2BTransport, handle: Any, *, sbx: Any = None, tag: str | None = None) -> None:
         self._t = transport
         self._h = handle
         self.pid = int(getattr(handle, "pid", 0) or 0)
+        self._sbx = sbx
+        self._tag = tag
+        self._killing: asyncio.Future[bool] | None = None
 
     async def wait(self) -> RemoteExit:
         sdk = self._t._sdk_module()
@@ -409,10 +449,29 @@ class _SdkProcess:
         )
 
     async def kill(self) -> bool:
+        """Kill the command and its whole process tree. Concurrent callers (a
+        timeout, a turn cancel, terminate_running_commands) share one kill."""
+        if self._killing is None:
+            self._killing = asyncio.ensure_future(self._kill())
+        return await asyncio.shield(self._killing)
+
+    async def _kill(self) -> bool:
+        killed = False
         try:
-            return bool(await self._h.kill())
-        except Exception:  # noqa: BLE001 — best-effort
-            return False
+            try:
+                killed = bool(await asyncio.wait_for(self._h.kill(), KILL_SIGNAL_TIMEOUT_S))
+            except Exception:  # noqa: BLE001 — best-effort; the tree kill still runs
+                pass
+            if self._sbx is not None and self._tag:
+                # Descendants outlive their parent's SIGKILL: always sweep.
+                try:
+                    await asyncio.wait_for(
+                        self._sbx.commands.run(_kill_tree_command(self.pid, self._tag), timeout=KILL_TREE_TIMEOUT_S),
+                        KILL_TREE_TIMEOUT_S + 5,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort
+                    pass
+            return killed
         finally:
             # Killing the process alone leaves the SDK event reader alive.
             # Disconnect only this handle, including timeout/cancellation paths.
@@ -512,8 +571,8 @@ class _SdkHandle:
         await self._t._guard(self._sbx.files.remove(path), path_context=True)
 
     async def make_dirs(self, paths: list[str]) -> None:
-        for p in paths:
-            await self._t._guard(self._sbx.files.make_dir(p), path_context=True)
+        # One round trip each; concurrently, since make_dir creates parents too.
+        await asyncio.gather(*(self._t._guard(self._sbx.files.make_dir(p), path_context=True) for p in paths))
 
     async def run_background(
         self,
@@ -525,23 +584,26 @@ class _SdkHandle:
         on_stderr: Callable[[str], Any] | None,
         capture_limit_bytes: int = DEFAULT_CAPTURE_BYTES,
     ) -> RemoteProcess:
+        # Tag the tree so a kill can find descendants that leave the group.
+        tag = uuid.uuid4().hex
         handle = await self._t._guard(
             self._sbx.commands.run(
-                cmd,
+                _session_command(cmd),
                 background=True,
-                envs=envs,
+                envs={**envs, PROCESS_TAG_ENV: tag},
                 cwd=cwd,
                 on_stdout=on_stdout,
                 on_stderr=on_stderr,
                 timeout=0,
             )
         )
+        process = _SdkProcess(self._t, handle, sbx=self._sbx, tag=tag)
         try:
             _bound_sdk_output(handle, capture_limit_bytes)
         except Exception:
-            await _SdkProcess(self._t, handle).kill()
+            await process.kill()
             raise
-        return _SdkProcess(self._t, handle)
+        return process
 
 
 # ─── Default transport hook ─────────────────────────────────────────────
@@ -818,14 +880,24 @@ class E2BSandbox(ConfigDrivenSandbox):
             with span("sandbox.create", **self._attrs()):
                 # Create has no provider idempotency token: retrying a timed-out
                 # create may duplicate the VM. The coordinator rediscovers by
-                # persisted operation metadata on the next request.
-                handle = await self._transport.create(
-                        template=self.template,
-                        timeout_s=self.timeout_s,
-                        metadata=dict(self.metadata),
-                        lifecycle=self._lifecycle(),
-                        allow_internet_access=self._allow_internet_access,
-                )
+                # persisted operation metadata on the next request. A rate-limit
+                # rejection is a definite no-create, so only that is retried.
+                for attempt in range(CREATE_RATE_LIMIT_RETRIES + 1):
+                    try:
+                        handle = await self._transport.create(
+                                template=self.template,
+                                timeout_s=self.timeout_s,
+                                metadata=dict(self.metadata),
+                                lifecycle=self._lifecycle(),
+                                allow_internet_access=self._allow_internet_access,
+                        )
+                        break
+                    except RemoteRateLimited:
+                        if attempt == CREATE_RATE_LIMIT_RETRIES:
+                            raise
+                        emit("sandbox.retry", op="create", attempt=attempt + 1,
+                             error_type="RemoteRateLimited", **self._attrs())
+                        await asyncio.sleep(CREATE_RATE_LIMIT_BACKOFF_S * (attempt + 1))
             self._handle = handle
             self.e2b_sandbox_id = handle.sandbox_id
             self._state = "running"
@@ -1236,7 +1308,25 @@ class E2BSandbox(ConfigDrivenSandbox):
 
     async def terminate_running_commands(self) -> None:
         """Best-effort cancellation used when a coordinator loses ownership."""
-        await asyncio.gather(*(p.kill() for p in tuple(self._processes.values())), return_exceptions=True)
+        await asyncio.gather(
+            *(self._stop_process(p) for p in tuple(self._processes.values())), return_exceptions=True
+        )
+
+    @staticmethod
+    async def _stop_process(process: RemoteProcess) -> None:
+        """Finish killing a command's tree despite repeated cancellation: a
+        half-done kill leaves descendants running in the VM."""
+        cleanup = asyncio.ensure_future(process.kill())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        if not cleanup.cancelled():
+            cleanup.exception()  # best-effort, like the kill itself; never re-raised
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def run_streaming(
         self,
@@ -1284,10 +1374,10 @@ class E2BSandbox(ConfigDrivenSandbox):
                 if not stderr_parts:
                     stderr_parts.append(exit_info.stderr)
             except asyncio.TimeoutError:
-                await process.kill()
+                await self._stop_process(process)
                 timed_out = True
             except BaseException:
-                await process.kill()
+                await self._stop_process(process)
                 raise
             finally:
                 self._processes.pop(id(process), None)
