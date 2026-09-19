@@ -23,6 +23,7 @@ from agent_base.sandbox import (
     E2BSandbox,
     E2BSandboxConfig,
     LocalSandbox,
+    ZoneLayout,
     SandboxGone,
     SandboxNotATextFileError,
     SandboxPathEscapeError,
@@ -594,6 +595,247 @@ async def test_snapshotter_captures_only_deltas_and_restores_in_batches(transpor
     assert restored.entries.keys() == manifest1.entries.keys()
     assert await fresh.read_file("workspace/f2.txt") == "v2"
     assert transport.calls["write_files"] - before <= 2  # one batch per zone touched
+
+
+# ─── absolute capture roots ───────────────────────────────────────────────
+
+
+def _multiroot(transport, **kw) -> E2BSandbox:
+    """A sandbox shaped like the new layout: agent root plus /mnt trees."""
+    params = dict(
+        root_path="/home/nova/.nova",
+        home="/home/nova",
+        open_roots=("/home/nova", "/mnt/user-data/outputs", "/mnt/user-data/tool_results"),
+        provision_dirs=("/home/nova", "/mnt/user-data/outputs", "/mnt/user-data/tool_results"),
+        work_dir="/home/nova",
+        exports_dir="/mnt/user-data/outputs",
+        uploads_dir="/mnt/user-data/uploads",
+        layout=ZoneLayout(zones=()),
+    )
+    params.update(kw)
+    return _make(transport, **params)
+
+
+_ROOTS = ("/home/nova", "/mnt/user-data/outputs")
+
+
+def test_open_roots_widen_containment_without_disabling_it(transport):
+    sb = _multiroot(transport)
+    assert sb._abs("/mnt/user-data/outputs/report.xlsx") == "/mnt/user-data/outputs/report.xlsx"
+    assert sb._abs("/home/nova/notes.md") == "/home/nova/notes.md"
+    # Still a CLOSED set: an undeclared tree, and traversal out of a declared
+    # one, are both refused.
+    for bad in ("/etc/passwd", "/mnt/skills/public/x", "/mnt/user-data/outputs/../../etc/shadow"):
+        with pytest.raises(SandboxPathEscapeError):
+            sb._abs(bad)
+
+
+def test_default_sandbox_has_no_open_roots(transport):
+    """The widening must be opt-in, or every existing deployment loosens."""
+    sb = _make(transport)
+    assert sb.open_roots == ()
+    with pytest.raises(SandboxPathEscapeError):
+        sb._abs("/mnt/user-data/outputs/x")
+
+
+def test_open_roots_reject_relative_and_traversing_entries(transport):
+    # "/a/../b" is NOT a case: normpath collapses it to "/b" before the check,
+    # which is the point -- traversal is resolved, not merely rejected.
+    for bad in (("relative/dir",), ("/",), ("../etc",), ("",)):
+        with pytest.raises(ValueError):
+            _make(transport, open_roots=bad)
+
+
+def test_capture_roots_reject_nesting(transport):
+    from agent_base.sandbox.snapshot import SnapshotPolicy
+
+    # Nested roots make the key -> root mapping ambiguous on restore.
+    with pytest.raises(ValueError):
+        SnapshotPolicy(capture_roots=("/home/nova", "/home/nova/work"))
+    with pytest.raises(ValueError):
+        SnapshotPolicy(capture_roots=("relative",))
+
+
+async def test_setup_creates_provision_dirs_and_walk_keeps_them_absolute(transport):
+    sb = _multiroot(transport)
+    await sb.setup()
+    box = transport.boxes[sb.e2b_sandbox_id]
+    for root in _ROOTS:
+        assert (box.host_dir / root.lstrip("/")).is_dir()
+
+    await sb.write_file("/home/nova/a.txt", "A")
+    await sb.write_file("/mnt/user-data/outputs/r.csv", "R")
+    # Keys stay ABSOLUTE for both trees — a mixed key space would make the
+    # manifest mean two different things.
+    assert [fe.relpath for fe in await sb.walk("/mnt/user-data/outputs")] == [
+        "/mnt/user-data/outputs/r.csv"
+    ]
+    assert "/home/nova/a.txt" in [fe.relpath for fe in await sb.walk("/home/nova")]
+
+
+async def test_manifest_keys_are_absolute_across_several_roots(transport):
+    sb = _multiroot(transport)
+    await sb.setup()
+    await sb.write_file("/home/nova/a.txt", "A")
+    await sb.write_file("/mnt/user-data/outputs/a.txt", "B")  # same basename, other tree
+    manifest = await sb.manifest((), capture_roots=_ROOTS)
+    assert manifest is not None
+    assert manifest["/home/nova/a.txt"] == (compute_blake3(b"A").split(":", 1)[1], 1)
+    assert manifest["/mnt/user-data/outputs/a.txt"] == (compute_blake3(b"B").split(":", 1)[1], 1)
+
+
+async def test_both_capture_routes_agree_on_keys(transport, monkeypatch):
+    """A manifest failure must not silently change the key space.
+
+    ``_capture_by_reading`` is the fallback ``manifest() -> None`` selects, and
+    it used to walk ``zones`` while the remote path walked the capture roots.
+    """
+    from agent_base.sandbox.snapshot import SnapshotPolicy
+
+    policy = SnapshotPolicy(capture_roots=_ROOTS)
+    sb = _multiroot(transport)
+    await sb.setup()
+    await sb.write_file("/home/nova/a.txt", "A")
+    await sb.write_file("/mnt/user-data/outputs/r.csv", "R")
+
+    remote, _ = await SandboxSnapshotter(sb, _MemBlobs(), tenant="t", policy=policy).capture()
+
+    async def no_manifest(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sb, "manifest", no_manifest)
+    by_reading, _ = await SandboxSnapshotter(sb, _MemBlobs(), tenant="t", policy=policy).capture()
+    assert set(remote.entries) == set(by_reading.entries)
+
+
+async def test_capture_and_restore_across_two_disjoint_roots(transport):
+    from agent_base.sandbox.snapshot import SnapshotPolicy
+
+    policy = SnapshotPolicy(capture_roots=_ROOTS)
+    sb = _multiroot(transport)
+    await sb.setup()
+    await sb.write_file("/home/nova/notes.md", "keep me")
+    await sb.write_file("/mnt/user-data/outputs/report.csv", "deliverable")
+    blobs = _MemBlobs()
+    manifest, ref = await SandboxSnapshotter(sb, blobs, tenant="t", policy=policy).capture()
+    assert manifest.capture_roots == tuple(sorted(_ROOTS))
+
+    # A file written AFTER the checkpoint must not survive the restore, and a
+    # captured one must come back — in both trees.
+    await sb.write_file("/mnt/user-data/outputs/stale.csv", "should vanish")
+    restored = await SandboxSnapshotter(sb, blobs, tenant="t", policy=policy).materialize(ref)
+    assert restored.entries.keys() == manifest.entries.keys()
+    assert await sb.read_file("/home/nova/notes.md") == "keep me"
+    assert await sb.read_file("/mnt/user-data/outputs/report.csv") == "deliverable"
+    assert (await sb.file_exists("/mnt/user-data/outputs/stale.csv"))[0] is False
+
+
+async def test_restore_clears_contents_but_keeps_the_root_directory(transport):
+    """The roots live under root-owned parents, so they cannot be unlinked.
+
+    Deleting ``/mnt/user-data/outputs`` needs write permission on
+    ``/mnt/user-data``; an unprivileged restore only has it on the contents.
+    """
+    from agent_base.sandbox.snapshot import SnapshotPolicy
+
+    policy = SnapshotPolicy(capture_roots=_ROOTS)
+    sb = _multiroot(transport)
+    await sb.setup()
+    await sb.write_file("/mnt/user-data/outputs/keep.csv", "x")
+    blobs = _MemBlobs()
+    _, ref = await SandboxSnapshotter(sb, blobs, tenant="t", policy=policy).capture()
+    box = transport.boxes[sb.e2b_sandbox_id]
+    outputs = box.host_dir / "mnt/user-data/outputs"
+    await sb.write_file("/mnt/user-data/outputs/junk.csv", "y")
+
+    await SandboxSnapshotter(sb, blobs, tenant="t", policy=policy).materialize(ref)
+    assert outputs.is_dir()                       # never unlinked
+    assert (outputs / "keep.csv").is_file()
+    assert not (outputs / "junk.csv").exists()
+
+
+async def test_restore_refuses_a_checkpoint_from_a_different_capture_scope(transport):
+    """A pre-cutover checkpoint must fail loudly, not restore into nowhere.
+
+    Its keys address trees this sandbox no longer has, so the extract would
+    report success while putting the user's files where nothing reads them.
+    """
+    from agent_base.sandbox.snapshot import SnapshotPolicy
+
+    legacy = _make(transport)
+    await legacy.setup()
+    await legacy.write_file("workspace/old.txt", "from the old layout")
+    blobs = _MemBlobs()
+    _, ref = await SandboxSnapshotter(legacy, blobs, tenant="t").capture()
+
+    sb = _multiroot(transport, sandbox_id="sess-2", metadata={"agent_uuid": "sess-2"})
+    await sb.setup()
+    with pytest.raises(RuntimeError, match="materialize refused"):
+        await SandboxSnapshotter(
+            sb, blobs, tenant="t", policy=SnapshotPolicy(capture_roots=_ROOTS)
+        ).materialize(ref)
+
+
+async def test_legacy_checkpoint_still_restores_under_the_old_scope(transport):
+    """The compat hinge: no capture_roots key reads back as () and takes the
+    original root-relative path."""
+    sb = _make(transport)
+    await sb.setup()
+    await sb.write_file("workspace/old.txt", "still here")
+    blobs = _MemBlobs()
+    manifest, ref = await SandboxSnapshotter(sb, blobs, tenant="t").capture()
+    assert manifest.capture_roots == ()
+
+    fresh = _make(transport, sandbox_id="sess-3", metadata={"agent_uuid": "sess-3"})
+    await fresh.setup()
+    await SandboxSnapshotter(fresh, blobs, tenant="t").materialize(ref)
+    assert await fresh.read_file("workspace/old.txt") == "still here"
+
+
+async def test_run_as_is_a_public_bridge_not_a_private_reach(transport):
+    """Provisioning must not have to touch ``_handle._sbx``.
+
+    That is a private attribute of one transport implementation, and the seam
+    is swapped wholesale in tests -- a caller reaching through it would work in
+    production and silently no-op anywhere else.
+    """
+    sb = _multiroot(transport)
+    await sb.setup()
+    result = await sb.run_as("id -u", user="root")
+    assert result.exit_code == 0
+    assert transport.run_as_calls == [("id -u", "root")]
+
+
+async def test_no_tool_path_can_pass_a_user(transport):
+    """The model reaches the VM only through run_streaming, which has no user."""
+    import inspect
+
+    assert "user" not in inspect.signature(E2BSandbox.run_streaming).parameters
+    assert "user" not in inspect.signature(E2BSandbox.exec).parameters
+
+
+def test_tool_results_dir_travels_with_the_layout(transport):
+    """A relocated tool_results is useless unless emit_capped follows it."""
+    from agent_base.tools.context import TOOL_RESULTS_DIR, ToolContext
+
+    sb = _multiroot(transport, tool_results_dir="/mnt/user-data/tool_results")
+    assert sb.tool_results_dir == "/mnt/user-data/tool_results"
+    # default context still uses the library constant
+    assert ToolContext(run_id="r", tool_call_id="t").tool_results_dir == TOOL_RESULTS_DIR
+    assert _make(transport).tool_results_dir == ""   # opt-in, nothing moves by default
+
+
+async def test_emit_capped_writes_where_the_layout_says(transport):
+    from agent_base.tools.context import ToolContext
+
+    sb = _multiroot(transport, tool_results_dir="/mnt/user-data/tool_results")
+    await sb.setup()
+    ctx = ToolContext(
+        run_id="r", tool_call_id="call-1", sandbox=sb,
+        tool_results_dir=sb.tool_results_dir,
+    )
+    reference = await ctx.emit_capped("x" * 100, max_chars=10)
+    assert "/mnt/user-data/tool_results/call-1_" in reference
 
 
 # ─── LocalSandbox.run_streaming parity ────────────────────────────────────

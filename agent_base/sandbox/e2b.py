@@ -135,6 +135,29 @@ def _is_stream_interrupted(exc: BaseException) -> bool:
     return _STREAM_INTERRUPTED_TEXT in str(exc)
 
 
+def _normalize_abs_dirs(values, *, field: str) -> tuple[str, ...]:
+    """Validate a tuple of absolute in-VM directories.
+
+    Rejects relative entries, ``/`` itself and anything that still contains a
+    ``..`` after normalization, so a caller cannot widen containment by
+    accident. Order-preserving and de-duplicated.
+    """
+    out: list[str] = []
+    for raw in values or ():
+        cleaned = posixpath.normpath(str(raw).replace("\\", "/").strip())
+        if not cleaned.startswith("/") or cleaned == "/":
+            raise ValueError(f"{field} entries must be absolute in-VM directories, got {raw!r}")
+        if ".." in cleaned.split("/"):
+            raise ValueError(f"{field} entries must not contain '..', got {raw!r}")
+        if cleaned not in out:
+            out.append(cleaned)
+    return tuple(out)
+
+
+def _contains(root: str, candidate: str) -> bool:
+    return candidate == root or candidate.startswith(root + "/")
+
+
 # ─── Transport data types ───────────────────────────────────────────────
 
 
@@ -228,6 +251,14 @@ class RemoteHandle(Protocol):
         """Re-attach to a command still running in the sandbox.
 
         Raises ``RemoteProcessNotFound`` when the pid has already exited.
+        """
+        ...
+
+    async def run_as(self, cmd: str, *, user: str, timeout: float = 120.0) -> RemoteExit:
+        """Run one command as a specific OS user (provisioning only).
+
+        Separate from ``run_background`` on purpose: a privileged, short, fully
+        buffered call that never streams and is never reachable from a tool.
         """
         ...
 
@@ -650,6 +681,16 @@ class _SdkHandle:
             raise
         return process
 
+    async def run_as(self, cmd: str, *, user: str, timeout: float = 120.0) -> RemoteExit:
+        result = await self._t._guard(
+            self._sbx.commands.run(cmd, user=user, timeout=timeout)
+        )
+        return RemoteExit(
+            exit_code=int(getattr(result, "exit_code", 0) or 0),
+            stdout=str(getattr(result, "stdout", "") or ""),
+            stderr=str(getattr(result, "stderr", "") or ""),
+        )
+
     async def reconnect(
         self,
         pid: int,
@@ -736,6 +777,23 @@ class E2BSandboxConfig(SandboxConfig):
     on_timeout: str = "pause"
     auto_resume: bool = True
     discover_by_metadata: bool = True
+    #: Absolute in-VM directories OUTSIDE ``root_path`` that this sandbox may
+    #: address. Empty keeps the historical behaviour exactly: ``root_path`` is
+    #: the only reachable tree. See ``_abs``.
+    open_roots: tuple[str, ...] = ()
+    #: Absolute in-VM directories ``setup()`` creates in addition to the zone
+    #: layout. Root-owned trees belong to template/provisioning, never here:
+    #: ``setup()`` runs unprivileged and would fail on every turn.
+    provision_dirs: tuple[str, ...] = ()
+    #: ``HOME`` for every command. Empty derives it from ``root_path`` as before.
+    home: str = ""
+    #: Semantic anchors. Empty falls back to the zone layout, so an existing
+    #: deployment is byte-identical.
+    work_dir: str = ""
+    exports_dir: str = ""
+    uploads_dir: str = ""
+    #: Where ``emit_capped`` persists overflow. Empty keeps the library default.
+    tool_results_dir: str = ""
 
 
 # ─── Backend ────────────────────────────────────────────────────────────
@@ -769,6 +827,13 @@ class E2BSandbox(ConfigDrivenSandbox):
         on_timeout: str = "pause",
         auto_resume: bool = True,
         discover_by_metadata: bool = True,
+        open_roots: tuple[str, ...] = (),
+        provision_dirs: tuple[str, ...] = (),
+        home: str = "",
+        work_dir: str = "",
+        exports_dir: str = "",
+        uploads_dir: str = "",
+        tool_results_dir: str = "",
     ) -> None:
         if not sandbox_id:
             raise ValueError("sandbox_id must not be empty")
@@ -796,6 +861,23 @@ class E2BSandbox(ConfigDrivenSandbox):
                 "zones": tuple(Zone(**z) if isinstance(z, dict) else z for z in layout.get("zones", DEFAULT_ZONE_LAYOUT.zones)),
             })
         self._layout = (layout or DEFAULT_ZONE_LAYOUT).with_extra_zones(*self.extra_zones)
+
+        # Absolute in-VM trees. Every one of these defaults to the historical
+        # behaviour, so an existing config produces a byte-identical sandbox.
+        self.open_roots = _normalize_abs_dirs(open_roots, field="open_roots")
+        self.provision_dirs = _normalize_abs_dirs(provision_dirs, field="provision_dirs")
+        # HOME was derived as dirname(root_path). That is right only while the
+        # root sits directly under the home directory; passing it explicitly
+        # stops a root_path move from silently relocating HOME.
+        self.home = posixpath.normpath(home) if home else (self.root_path.rsplit("/", 1)[0] or "/home/user")
+        self.work_dir = posixpath.normpath(work_dir) if work_dir else self._layout.workspace
+        self.exports_dir = posixpath.normpath(exports_dir) if exports_dir else self._layout.exports
+        self.uploads_dir = (
+            posixpath.normpath(uploads_dir) if uploads_dir
+            else f"{self._layout.workspace}/{self._layout.imported_subdir}"
+        )
+        self.tool_results_dir = posixpath.normpath(tool_results_dir) if tool_results_dir else ""
+
         if max_concurrent_ops < 1:
             raise ValueError("max_concurrent_ops must be positive")
         self.max_concurrent_ops = max_concurrent_ops
@@ -823,6 +905,38 @@ class E2BSandbox(ConfigDrivenSandbox):
     @property
     def layout(self) -> ZoneLayout:
         return self._layout
+
+    async def run_as(self, command: str, *, user: str, timeout: float = 120.0) -> ExecResult:
+        """Run one command inside the VM as ``user`` (root provisioning).
+
+        Deliberately NOT on any tool path: the model reaches the VM only
+        through ``run_streaming``, which accepts no user. This exists so a
+        caller does not have to reach through ``_handle._sbx`` -- a private
+        attribute that the transport seam swaps out in tests.
+        """
+        await self.ensure_running()
+        assert self._handle is not None
+        runner = getattr(self._handle, "run_as", None)
+        if runner is None:
+            raise RemoteError("transport does not support run_as")
+        started = time.monotonic()
+        exit_info = await runner(command, user=user, timeout=timeout)
+        return ExecResult(
+            exit_code=exit_info.exit_code,
+            stdout=exit_info.stdout,
+            stderr=exit_info.stderr,
+            duration_ms=(time.monotonic() - started) * 1000,
+        )
+
+    @property
+    def capture_excludes(self) -> tuple[str, ...]:
+        """Absolute dirs inside a capture root that are NOT user data.
+
+        ``root_path`` holds the manifest helper and verb scratch; it is
+        rewritten on every ``setup()``, so capturing it would hash control-plane
+        files every turn and let a restore overwrite them.
+        """
+        return (self.root_path,)
 
     @property
     def is_remote(self) -> bool:
@@ -857,23 +971,42 @@ class E2BSandbox(ConfigDrivenSandbox):
         return self._abs(sandbox_path)
 
     def _abs(self, rel: str) -> str:
+        """Resolve an agent path to an absolute in-VM path, or refuse it.
+
+        Containment is a CLOSED SET, not a prefix test that can be opted out
+        of: ``root_path`` plus any explicitly declared ``open_roots``. Widening
+        that set is what lets a sandbox address trees outside its root (e.g.
+        ``/mnt/user-data/outputs``) without making every path unchecked --
+        ``..`` is still collapsed first, so nothing escapes by traversal.
+        """
         cleaned = str(rel).replace("\\", "/").strip()
         if cleaned.startswith("/"):
             candidate = posixpath.normpath(cleaned)
         else:
             candidate = posixpath.normpath(posixpath.join(self.root_path, cleaned or "."))
-        if candidate != self.root_path and not candidate.startswith(self.root_path + "/"):
-            raise SandboxPathEscapeError(rel)
-        return candidate
+        if _contains(self.root_path, candidate):
+            return candidate
+        for root in self.open_roots:
+            if _contains(root, candidate):
+                return candidate
+        raise SandboxPathEscapeError(rel)
 
     def _rel(self, abs_path: str) -> str:
+        """Inverse of ``_abs`` for keys the caller will see.
+
+        A path under ``root_path`` becomes root-relative, as always. A path in
+        an open root stays ABSOLUTE rather than being stripped to a bogus
+        relative one: with several reachable trees a root-relative key is
+        ambiguous, and mixing the two forms in a single walk silently produces
+        a manifest whose keys mean different things.
+        """
         normalized = posixpath.normpath(str(abs_path).replace("\\", "/"))
         if normalized == self.root_path:
             return ""
         prefix = self.root_path + "/"
         if normalized.startswith(prefix):
             return normalized[len(prefix):]
-        return normalized.lstrip("/")
+        return normalized
 
     @staticmethod
     def _entry_from_remote(entry: RemoteEntry) -> FileEntry:
@@ -992,6 +1125,7 @@ class E2BSandbox(ConfigDrivenSandbox):
         self._created_last_setup = created
         assert self._handle is not None
         zones = [self._abs(z.name) for z in self._layout.zones]
+        zones += [self._abs(d) for d in self.provision_dirs]
         helper_dir = self._abs(HELPER_DIR)
         with span("sandbox.setup", created=created, **self._attrs()):
             await self._call("make_dirs", lambda h: h.make_dirs([*zones, helper_dir]))
@@ -1227,7 +1361,10 @@ class E2BSandbox(ConfigDrivenSandbox):
         return True
 
     async def walk(self, path: str = ".") -> list[FileEntry]:
-        base = "" if path in (".", "", "/") else path.strip("/")
+        # rstrip only: a LEADING slash is meaningful now (an open root is an
+        # absolute path), and strip("/") used to turn /mnt/user-data/outputs
+        # into a relative "mnt/user-data/outputs" under the sandbox root.
+        base = "" if path in (".", "", "/") else path.rstrip("/")
         target = self._abs(base or ".")
         try:
             entries = await self._call("list_deep", lambda h: h.list(target, WALK_DEPTH))
@@ -1235,12 +1372,20 @@ class E2BSandbox(ConfigDrivenSandbox):
             return []
         except RemoteError:
             return await super().walk(path)
+        # Key semantics are decided ONCE per walk, by where the base is.
+        # Walking an open root (outside root_path) must key every entry
+        # absolutely -- including any that happen to sit under root_path --
+        # or a single walk returns a mix of absolute and root-relative keys
+        # that mean different things.
+        absolute_keys = not _contains(self.root_path, target)
         out: list[FileEntry] = []
         for entry in entries:
             if entry.is_dir:
                 continue
             fe = self._entry_from_remote(entry)
-            fe.relpath = self._rel(entry.path)
+            fe.relpath = (
+                posixpath.normpath(entry.path) if absolute_keys else self._rel(entry.path)
+            )
             out.append(fe)
         out.sort(key=lambda e: e.relpath)
         return out
@@ -1249,12 +1394,12 @@ class E2BSandbox(ConfigDrivenSandbox):
 
     async def import_file(self, filename: str, data: AsyncIterator[bytes]) -> str:
         name = posixpath.basename(filename.replace("\\", "/")) or "upload"
-        sandbox_path = f"{self._layout.workspace}/{self._layout.imported_subdir}/{name}"
+        sandbox_path = f"{self.uploads_dir}/{name}"
         await self.write_file_bytes(sandbox_path, data)
         return sandbox_path
 
     async def list_exported_files(self) -> list[str]:
-        exports = self._layout.exports
+        exports = self.exports_dir
         files = await self.walk(exports)
         prefix = exports + "/"
         return [
@@ -1262,7 +1407,7 @@ class E2BSandbox(ConfigDrivenSandbox):
         ]
 
     def _export_rel(self, path: str) -> str:
-        exports = self._layout.exports
+        exports = self.exports_dir
         cleaned = path.replace("\\", "/")
         joined = posixpath.normpath(f"{exports}/{cleaned}")
         if joined == exports or not joined.startswith(exports + "/"):
@@ -1278,7 +1423,7 @@ class E2BSandbox(ConfigDrivenSandbox):
             yield chunk
 
     async def get_exported_file_metadata(self) -> list[ExportedFileMetadata]:
-        exports = self._layout.exports
+        exports = self.exports_dir
         manifest = await self.manifest([exports])
         results: list[ExportedFileMetadata] = []
         prefix = exports + "/"
@@ -1316,15 +1461,28 @@ class E2BSandbox(ConfigDrivenSandbox):
     # ─── Manifest (sandbox-side hashing) ───────────────────────────────
 
     async def manifest(
-        self, zones: tuple[str, ...] | list[str], *, max_file_bytes: int | None = None
+        self,
+        zones: tuple[str, ...] | list[str],
+        *,
+        max_file_bytes: int | None = None,
+        capture_roots: tuple[str, ...] | list[str] = (),
     ) -> dict[str, tuple[str | None, int]] | None:
-        if not zones:
+        if not zones and not capture_roots:
             return {}
         script = posixpath.join(self._abs(HELPER_DIR), HASH_SCRIPT_NAME)
-        env = {
-            "SBX_ROOT": self.root_path,
-            "SBX_ZONES": ":".join(zones),
-        }
+        # Absolute mode keys every entry by its ABSOLUTE in-VM path: with more
+        # than one reachable tree a root-relative key does not say which tree
+        # it belongs to, and two roots could collide on the same suffix.
+        if capture_roots:
+            env = {
+                "SBX_CAPTURE_ROOTS": ":".join(capture_roots),
+                "SBX_CAPTURE_EXCLUDE": ":".join(self.capture_excludes),
+            }
+        else:
+            env = {
+                "SBX_ROOT": self.root_path,
+                "SBX_ZONES": ":".join(zones),
+            }
         if max_file_bytes is not None:
             env["SBX_MAX_FILE_BYTES"] = str(int(max_file_bytes))
         command = f"{shlex.quote(self.python_path)} {shlex.quote(script)}"
@@ -1354,6 +1512,24 @@ class E2BSandbox(ConfigDrivenSandbox):
             emit("sandbox.manifest_unavailable", reason="bad_json", **self._attrs())
             return None
         out: dict[str, tuple[str | None, int]] = {}
+        if capture_roots:
+            # The helper reports {root_index: {path_relative_to_that_root: info}}.
+            # The HOST builds the key, so nothing in the VM has to know the
+            # declared root name and the walk base never has to equal it.
+            roots = list(capture_roots)
+            for index, group in raw.items():
+                if not isinstance(group, dict):
+                    continue
+                try:
+                    base = roots[int(index)]
+                except (ValueError, IndexError):
+                    continue
+                for rel, info in group.items():
+                    if not isinstance(info, dict):
+                        continue
+                    key = base if rel == "." else f"{base}/{rel}"
+                    out[key] = (info.get("blake3"), int(info.get("size", 0) or 0))
+            return out
         for rel, info in raw.items():
             if not isinstance(info, dict):
                 continue
@@ -1376,7 +1552,7 @@ class E2BSandbox(ConfigDrivenSandbox):
         return clean
 
     def _exec_envs(self, env: dict[str, str] | None) -> dict[str, str]:
-        home = self.root_path.rsplit("/", 1)[0] or "/home/user"
+        home = self.home
         base = {
             "HOME": home,
             "LANG": "C.UTF-8",
@@ -1423,7 +1599,7 @@ class E2BSandbox(ConfigDrivenSandbox):
         capture_limit_bytes: int = DEFAULT_CAPTURE_BYTES,
     ) -> ExecResult:
         effective_timeout = float(timeout) if timeout else self.default_timeout
-        work_dir = self._abs(cwd if cwd is not None else self._layout.workspace)
+        work_dir = self._abs(cwd if cwd is not None else self.work_dir)
         envs = self._exec_envs(env)
         stdout_parts = Utf8Tail(capture_limit_bytes)
         stderr_parts = Utf8Tail(capture_limit_bytes)

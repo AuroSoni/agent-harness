@@ -39,9 +39,26 @@ def _hash_with_b3sum(path):
 def main() -> int:
     root = os.environ.get("SBX_ROOT", "")
     zones = [z for z in os.environ.get("SBX_ZONES", "").split(":") if z]
+    # Absolute mode: capture several independent trees and key every entry by
+    # its absolute path. SBX_ROOT is meaningless here -- there is no single
+    # root to be relative to, which is exactly why the keys are absolute.
+    capture_roots = [r for r in os.environ.get("SBX_CAPTURE_ROOTS", "").split(":") if r]
+    # Control-plane directories that sit INSIDE a capture root but are not
+    # user data (the sandbox root holds the helper itself and verb scratch).
+    excluded = {
+        os.path.abspath(e)
+        for e in os.environ.get("SBX_CAPTURE_EXCLUDE", "").split(":")
+        if e
+    }
+    absolute_mode = bool(capture_roots)
     max_bytes_raw = os.environ.get("SBX_MAX_FILE_BYTES", "")
     max_bytes = int(max_bytes_raw) if max_bytes_raw.isdigit() else None
-    if not root or not os.path.isdir(root) or not zones:
+    if absolute_mode:
+        for base in capture_roots:
+            if not os.path.isabs(base) or base != os.path.normpath(base):
+                sys.stderr.write("hash_manifest: SBX_CAPTURE_ROOTS must be normalized absolute paths\n")
+                return 2
+    elif not root or not os.path.isdir(root) or not zones:
         sys.stderr.write("hash_manifest: SBX_ROOT/SBX_ZONES missing or invalid\n")
         return 2
 
@@ -54,20 +71,45 @@ def main() -> int:
         use_b3sum = True
 
     entries = {}
-    root_abs = os.path.abspath(root)
+    root_abs = os.path.abspath(root) if root else ""
+
+    # ONE key function, used by both the skip path and the file loop, so a
+    # skipped entry can never be keyed differently from a hashed one.
+    current_base = [""]
+
+    if absolute_mode:
+        def keyfn(path):
+            base = current_base[0]
+            rel = os.path.relpath(path, base).replace(os.sep, "/")
+            return rel
+    else:
+        def keyfn(path):
+            return os.path.relpath(path, root_abs).replace(os.sep, "/")
+
+    def bucket():
+        # Absolute mode groups by root INDEX so the host can re-prefix with the
+        # declared root; relative mode keeps the original flat shape.
+        if not absolute_mode:
+            return entries
+        return entries.setdefault(str(current_index[0]), {})
 
     def skipped(path, size=0):
-        rel = os.path.relpath(path, root_abs).replace(os.sep, "/")
-        entries[rel] = {"blake3": None, "size": size}
+        bucket()[keyfn(path)] = {"blake3": None, "size": size}
 
     def walk_error(error):
-        skipped(error.filename or root_abs)
+        skipped(error.filename or (capture_roots[0] if absolute_mode else root_abs))
 
-    for zone in zones:
-        base = os.path.abspath(os.path.join(root_abs, zone))
-        if os.path.commonpath([root_abs, base]) != root_abs:
-            sys.stderr.write("hash_manifest: zone escapes root\n")
-            return 2
+    current_index = [0]
+    for index, zone in enumerate(capture_roots if absolute_mode else zones):
+        current_index[0] = index
+        if absolute_mode:
+            base = os.path.abspath(zone)
+            current_base[0] = base
+        else:
+            base = os.path.abspath(os.path.join(root_abs, zone))
+            if os.path.commonpath([root_abs, base]) != root_abs:
+                sys.stderr.write("hash_manifest: zone escapes root\n")
+                return 2
         if os.path.islink(base):
             skipped(base)
             continue
@@ -79,6 +121,9 @@ def main() -> int:
         for dirpath, dirnames, filenames in os.walk(base, onerror=walk_error, followlinks=False):
             for name in sorted(dirnames):
                 full = os.path.join(dirpath, name)
+                if os.path.abspath(full) in excluded:
+                    dirnames.remove(name)
+                    continue
                 if os.path.islink(full):
                     skipped(full)
                     dirnames.remove(name)
@@ -93,7 +138,8 @@ def main() -> int:
                 except OSError:
                     skipped(full)
                     continue
-                rel = os.path.relpath(full, root_abs).replace(os.sep, "/")
+                rel = keyfn(full)
+                target = bucket()
                 if max_bytes is not None and size > max_bytes:
                     skipped(full, size)
                     continue
@@ -109,7 +155,7 @@ def main() -> int:
                 except (OSError, subprocess.CalledProcessError):
                     skipped(full, size)
                     continue
-                entries[rel] = {"blake3": digest, "size": size}
+                target[rel] = {"blake3": digest, "size": size}
 
     json.dump(entries, sys.stdout, separators=(",", ":"))
     sys.stdout.write("\n")

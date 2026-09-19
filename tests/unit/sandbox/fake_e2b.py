@@ -273,7 +273,9 @@ class FakeHandle:
         if argv and argv[0] in ("python3", "python", "/home/user/.venv/bin/python"):
             argv[0] = sys.executable
         argv = [
-            str(self._host(a)) if a.startswith("/home/") or a.startswith("/opt/") else a
+            str(self._host(a))
+            if a.startswith("/home/") or a.startswith("/opt/") or a.startswith("/mnt/")
+            else a
             for a in argv
         ]
         env = dict(envs)
@@ -281,6 +283,15 @@ class FakeHandle:
         # helper-script environment so hash_manifest walks the host tree.
         if "SBX_ROOT" in env:
             env["SBX_ROOT"] = str(self._host(env["SBX_ROOT"]))
+        for key in ("SBX_CAPTURE_EXCLUDE",):
+            if env.get(key):
+                env[key] = ":".join(str(self._host(v)) for v in env[key].split(":") if v)
+        if "SBX_CAPTURE_ROOTS" in env:
+            # Absolute capture roots are VM paths; map each onto the fake host
+            # tree the same way SBX_ROOT is, or the helper walks the real host.
+            env["SBX_CAPTURE_ROOTS"] = ":".join(
+                str(self._host(r)) for r in env["SBX_CAPTURE_ROOTS"].split(":") if r
+            )
         env.setdefault("SYSTEMROOT", os.environ.get("SYSTEMROOT", ""))
         env.setdefault("PATH", os.environ.get("PATH", ""))
         try:
@@ -323,6 +334,11 @@ class FakeHandle:
         self._t.processes[process.pid] = process
         return process
 
+    async def run_as(self, cmd: str, *, user: str, timeout: float = 120.0) -> RemoteExit:
+        self._check("run_as")
+        self._t.run_as_calls.append((cmd, user))
+        return RemoteExit(exit_code=0, stdout="", stderr="")
+
     async def reconnect(
         self,
         pid: int,
@@ -354,6 +370,7 @@ class FakeE2BTransport:
         self.commands: list[tuple[str, dict[str, str], str]] = []
         self.processes: dict[int, FakeProcess] = {}
         self.reconnects: list[int] = []
+        self.run_as_calls: list[tuple[str, str]] = []
         self.fail_next: list[Exception | None] = []
         self.bytes_read = 0
         self.bytes_written = 0

@@ -87,6 +87,10 @@ class ToolContext:
     sandbox: "Sandbox | None" = None        # overflow persistence seam (emit_capped*)
     principal: "SessionPrincipal | None" = None  # tenant of the sandbox namespace writes land in
     media: "MediaBackend | None" = None     # emit_capped_bytes delegates here when configured (R16)
+    #: Where overflow files land. A bare module constant would pin this to the
+    #: legacy zone name, so a sandbox whose layout puts tool results elsewhere
+    #: would write somewhere nothing reads.
+    tool_results_dir: str = TOOL_RESULTS_DIR
 
     _once_store: OnceStore | None = field(default=None, repr=False)
 
@@ -159,7 +163,7 @@ class ToolContext:
         async def _persist() -> str:
             if self.sandbox is None:
                 return ""
-            path = f"{TOOL_RESULTS_DIR}/{self.tool_call_id or 'result'}_{digest}.txt"
+            path = f"{self.tool_results_dir}/{self.tool_call_id or 'result'}_{digest}.txt"
             stored = await self.sandbox.write_file(path, text)
             return stored if isinstance(stored, str) else path
 
@@ -201,7 +205,7 @@ class ToolContext:
                     return ref if isinstance(ref, str) else str(getattr(ref, "key", ref))
             # Sandbox fallback.
             if self.sandbox is not None:
-                path = f"{TOOL_RESULTS_DIR}/{self.tool_call_id or 'result'}_{digest}.{suffix}"
+                path = f"{self.tool_results_dir}/{self.tool_call_id or 'result'}_{digest}.{suffix}"
                 writer = getattr(self.sandbox, "write_bytes", None)
                 if writer is not None:
                     stored = await writer(path, data)

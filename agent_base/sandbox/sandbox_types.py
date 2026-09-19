@@ -743,7 +743,11 @@ class Sandbox(ABC):
         return path
 
     async def manifest(
-        self, zones: "tuple[str, ...] | list[str]", *, max_file_bytes: int | None = None
+        self,
+        zones: "tuple[str, ...] | list[str]",
+        *,
+        max_file_bytes: int | None = None,
+        capture_roots: "tuple[str, ...] | list[str]" = (),
     ) -> "dict[str, tuple[str | None, int]] | None":
         """Content manifest of ``zones`` computed WITHOUT transferring bytes.
 
@@ -1085,7 +1089,10 @@ class Sandbox(ABC):
     # returned); each FileEntry carries ``relpath`` (sandbox-root-relative,
     # posix) so callers can address it via the file primitives.
     async def walk(self, path: str = ".") -> list[FileEntry]:
-        base = "" if path in (".", "", "/") else path.strip("/")
+        # rstrip only — a leading slash is meaningful to a backend that can
+        # address absolute trees, and stripping it silently reinterprets an
+        # absolute path as root-relative. ``E2BSandbox.walk`` falls back here.
+        base = "" if path in (".", "", "/") else path.rstrip("/")
         out: list[FileEntry] = []
         stack: list[str] = [base]
         while stack:

@@ -1315,6 +1315,13 @@ class AnthropicAgent(AgentRuntime):
         run_id = self._run_id or ""
         store = self._once_store
 
+        # The sandbox owns where overflow files belong: a layout that moves tool
+        # results has to move emit_capped with it, or the reference the model is
+        # handed points at a path that does not exist.
+        from agent_base.tools.context import TOOL_RESULTS_DIR
+
+        tool_results_dir = getattr(self._sandbox, "tool_results_dir", None) or TOOL_RESULTS_DIR
+
         def factory(tc):
             ctx = ToolContext(
                 run_id=run_id,
@@ -1322,6 +1329,7 @@ class AnthropicAgent(AgentRuntime):
                 sandbox=self._sandbox,
                 principal=self.principal,
                 media=self.media_backend,
+                tool_results_dir=tool_results_dir,
                 _once_store=store,
             )
             ctx.emit = self._hook_emit
