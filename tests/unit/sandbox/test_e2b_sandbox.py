@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -26,7 +27,13 @@ from agent_base.sandbox import (
     SandboxNotATextFileError,
     SandboxPathEscapeError,
 )
-from agent_base.sandbox.e2b import RemoteRateLimited, RemoteTransportError
+from agent_base.sandbox.e2b import (
+    _STREAM_INTERRUPTED_TEXT,
+    RemoteError,
+    RemoteProcessNotFound,
+    RemoteRateLimited,
+    RemoteTransportError,
+)
 from agent_base.sandbox.registry import deserialize_sandbox_config, sandbox_from_config
 from agent_base.sandbox.snapshot import SandboxSnapshotter
 
@@ -298,6 +305,143 @@ async def test_manifest_returns_hashes_and_sizes(transport):
     assert manifest["workspace/x.txt"] == (compute_blake3(b"xyz").split(":", 1)[1], 3)
     assert manifest[".context/big.bin"] == (None, 5000)  # sized, not hashed (over cap)
     assert ".sbx/hash_manifest.py" not in manifest
+
+
+async def test_dropped_event_stream_reconnects_instead_of_killing(transport):
+    """The D7 regression: a transport blip must not destroy a healthy command.
+
+    The SDK signals a stream that died before the end event with a BARE
+    ``Exception`` carrying no type of its own, so this test raises exactly that
+    — not a pre-classified ``RemoteTransportError``. If ``_translate`` stops
+    recognising the text, or the reconnect handler is moved below
+    ``except BaseException``, the command is killed and this fails.
+    """
+    sb = _make(transport)
+    await sb.setup()
+    handle = sb._handle
+    real_run = handle.run_background
+    dropped = {"count": 0}
+
+    async def flaky_run(*args, **kwargs):
+        process = await real_run(*args, **kwargs)
+        real_wait = process.wait
+
+        async def wait_once():
+            if dropped["count"] == 0:
+                dropped["count"] += 1
+                raise RemoteError(_STREAM_INTERRUPTED_TEXT)
+            return await real_wait()
+
+        process.wait = wait_once
+        return process
+
+    handle.run_background = flaky_run
+    out: list[str] = []
+    # Still RUNNING when the stream drops — the case the reconnect recovers.
+    # (A command that EXITS during the blip needs the durable spool, which is
+    #  not built yet; test_finished_during_the_blip_is_the_known_gap pins it.)
+    script = "import time; print('survived', flush=True); time.sleep(1.0)"
+    result = await sb.run_streaming(
+        f"{sys.executable} -c {shlex.quote(script)}", on_output=out.append, timeout=30.0
+    )
+    assert dropped["count"] == 1  # the blip really happened
+    assert transport.reconnects, "no reconnect was attempted"
+    assert result.exit_code == 0  # ... and the command still completed
+    assert "survived" in result.stdout
+    assert transport.boxes[sb.e2b_sandbox_id].state == "running"
+
+
+async def test_finished_during_the_blip_is_the_known_gap(transport):
+    """A command that EXITS while the stream is down cannot report its code.
+
+    Without the durable spool there is nothing left to read the exit status
+    from, so this surfaces as a typed error rather than a fabricated success.
+    Still strictly better than the old behaviour, which killed the process AND
+    raised. Pinned so the spool work has a test to flip.
+    """
+    sb = _make(transport)
+    await sb.setup()
+    handle = sb._handle
+    real_run = handle.run_background
+
+    async def drop_after_exit(*args, **kwargs):
+        process = await real_run(*args, **kwargs)
+        real_wait = process.wait
+
+        async def wait_once():
+            await real_wait()          # let it finish...
+            raise RemoteError(_STREAM_INTERRUPTED_TEXT)   # ...then lose the stream
+
+        process.wait = wait_once
+        return process
+
+    handle.run_background = drop_after_exit
+    with pytest.raises(RemoteProcessNotFound):
+        await sb.run_streaming(
+            f"{sys.executable} -c 'pass'", on_output=lambda _: None, timeout=30.0
+        )
+    assert transport.boxes[sb.e2b_sandbox_id].state == "running"  # VM survives
+
+
+async def test_reconnect_does_not_extend_the_original_timeout(transport):
+    """A flapping connection must not silently widen the caller's budget."""
+    sb = _make(transport)
+    await sb.setup()
+    handle = sb._handle
+    real_run = handle.run_background
+
+    async def always_dropping(*args, **kwargs):
+        process = await real_run(*args, **kwargs)
+
+        async def never_ends():
+            await asyncio.sleep(0.05)
+            raise RemoteError(_STREAM_INTERRUPTED_TEXT)
+
+        process.wait = never_ends
+        return process
+
+    handle.run_background = always_dropping
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(RemoteError):
+        await sb.run_streaming(f"{sys.executable} -c 'pass'", on_output=lambda _: None, timeout=0.4)
+    # Bounded by the ORIGINAL deadline plus the bounded backoff, not by
+    # attempts x timeout.
+    assert asyncio.get_running_loop().time() - started < 3.0
+
+
+async def test_reconnect_to_a_finished_command_is_not_a_missing_sandbox(transport):
+    """``RemoteProcessNotFound`` must never be mistaken for ``SandboxGone``.
+
+    The SDK reports both with the same ``NotFoundException``; collapsing them
+    would make the runtime throw away a perfectly healthy VM.
+    """
+    sb = _make(transport)
+    await sb.setup()
+    with pytest.raises(RemoteProcessNotFound):
+        await sb._handle.reconnect(
+            999999, tag=None, on_stdout=None, on_stderr=None
+        )
+    assert not isinstance(RemoteProcessNotFound("x"), SandboxGone)
+    assert transport.boxes[sb.e2b_sandbox_id].state == "running"
+
+
+async def test_manifest_degrades_when_output_exceeds_the_capture_ceiling(transport, monkeypatch):
+    """A huge tree must degrade to None, not kill the whole checkpoint.
+
+    ``exec`` raises ``SandboxOutputLimitExceeded`` rather than truncating; if
+    that escapes ``manifest()`` it propagates out of ``SandboxSnapshotter``.
+    """
+    from agent_base.sandbox.output import SandboxOutputLimitExceeded
+
+    sb = _make(transport)
+    await sb.setup()
+    await sb.write_file("workspace/x.txt", "xyz")
+
+    async def boom(*args, **kwargs):
+        raise SandboxOutputLimitExceeded("captured output exceeded 8388608 bytes")
+
+    monkeypatch.setattr(sb, "exec", boom)
+    assert await sb.manifest(["workspace"]) is None
 
 
 async def test_manifest_unavailable_falls_back(transport):

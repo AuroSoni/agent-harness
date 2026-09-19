@@ -26,6 +26,7 @@ from agent_base.sandbox.e2b import (
     RemoteExit,
     RemoteInfo,
     RemotePathNotFound,
+    RemoteProcessNotFound,
     RemoteSandboxNotFound,
 )
 
@@ -44,13 +45,21 @@ class FakeRemoteSandbox:
 
 
 class FakeProcess:
-    def __init__(self, proc: asyncio.subprocess.Process, done: asyncio.Task[RemoteExit]) -> None:
+    def __init__(
+        self,
+        proc: asyncio.subprocess.Process,
+        done: asyncio.Task[RemoteExit],
+        tag: str | None = None,
+    ) -> None:
         self._proc = proc
         self._done = done
         self.pid = proc.pid
+        self.tag = tag
 
     async def wait(self) -> RemoteExit:
-        return await self._done
+        # Shielded so a reconnect onto the same underlying command does not
+        # cancel the collector the first handle started.
+        return await asyncio.shield(self._done)
 
     async def kill(self) -> bool:
         if self._proc.returncode is None:
@@ -62,6 +71,7 @@ class _FailedProcess:
     def __init__(self, exit: RemoteExit) -> None:
         self._exit = exit
         self.pid = 0
+        self.tag = None
 
     async def wait(self) -> RemoteExit:
         return self._exit
@@ -309,7 +319,31 @@ class FakeHandle:
             code = await proc.wait()
             return RemoteExit(exit_code=code, stdout="".join(out), stderr="".join(err))
 
-        return FakeProcess(proc, asyncio.create_task(_finish()))
+        process = FakeProcess(proc, asyncio.create_task(_finish()), tag=uuid.uuid4().hex)
+        self._t.processes[process.pid] = process
+        return process
+
+    async def reconnect(
+        self,
+        pid: int,
+        *,
+        tag: str | None,
+        on_stdout: Callable[[str], Any] | None,
+        on_stderr: Callable[[str], Any] | None,
+        capture_limit_bytes: int = 2_000_000,
+    ):
+        """Re-attach to a command already running — the D7 recovery path.
+
+        Mirrors the real transport: a fresh handle onto the SAME underlying
+        command, and ``RemoteProcessNotFound`` (never ``RemoteSandboxNotFound``)
+        when the pid has already gone.
+        """
+        self._check("reconnect")
+        self._t.reconnects.append(pid)
+        existing = self._t.processes.get(pid)
+        if existing is None or existing._proc.returncode is not None:
+            raise RemoteProcessNotFound(f"process {pid} is not running")
+        return FakeProcess(existing._proc, existing._done, tag=tag)
 
 
 class FakeE2BTransport:
@@ -318,6 +352,8 @@ class FakeE2BTransport:
         self.boxes: dict[str, FakeRemoteSandbox] = {}
         self.calls: Counter[str] = Counter()
         self.commands: list[tuple[str, dict[str, str], str]] = []
+        self.processes: dict[int, FakeProcess] = {}
+        self.reconnects: list[int] = []
         self.fail_next: list[Exception | None] = []
         self.bytes_read = 0
         self.bytes_written = 0

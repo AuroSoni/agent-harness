@@ -79,6 +79,11 @@ CREATE_RATE_LIMIT_BACKOFF_S = 1.0
 PROCESS_TAG_ENV = "AGENT_BASE_PROCESS_TAG"
 KILL_SIGNAL_TIMEOUT_S = 5.0
 KILL_TREE_TIMEOUT_S = 10.0
+#: A dropped event stream is re-attached this many times before the command is
+#: given up on. Bounded so a persistently broken connection cannot hold a slot
+#: for the whole timeout doing nothing.
+RECONNECT_ATTEMPTS = 3
+RECONNECT_BACKOFF_S = 0.5
 
 _SECRET_KEY_MARKERS = ("_KEY", "_SECRET", "_TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL")
 _SECRET_KEY_PREFIXES = ("AWS_", "E2B_", "STYTCH_", "OPENAI_", "ANTHROPIC_", "DATABASE_")
@@ -99,12 +104,35 @@ class RemotePathNotFound(RemoteError):
     """A filesystem path does not exist inside the sandbox."""
 
 
+class RemoteProcessNotFound(RemoteError):
+    """A pid is unknown to the sandbox — the command already exited.
+
+    Distinct from ``RemoteSandboxNotFound`` on purpose: reconnecting to a pid
+    that has finished is an ordinary outcome, while the SDK reports it with the
+    same ``NotFoundException`` that means "this sandbox is gone". Collapsing the
+    two would make the runtime discard a perfectly healthy VM.
+    """
+
+
 class RemoteRateLimited(RemoteError):
     """The provider rate-limited the call (retryable)."""
 
 
 class RemoteTransportError(RemoteError):
     """A transient network / 5xx failure (retryable)."""
+
+
+#: The pinned SDK reports a command whose event stream died before the end
+#: event by raising a BARE ``Exception`` with this text (``command_handle.py``:
+#: "If the stream closed without an end event…"). It carries no type of its own,
+#: so without this probe it falls through ``_translate`` to a plain
+#: ``RemoteError`` — indistinguishable from a real command failure, and the
+#: single reason a healthy long-running process used to be killed at ~240 s.
+_STREAM_INTERRUPTED_TEXT = "ended without an end event"
+
+
+def _is_stream_interrupted(exc: BaseException) -> bool:
+    return _STREAM_INTERRUPTED_TEXT in str(exc)
 
 
 # ─── Transport data types ───────────────────────────────────────────────
@@ -187,6 +215,21 @@ class RemoteHandle(Protocol):
         on_stderr: Callable[[str], Any] | None,
         capture_limit_bytes: int = DEFAULT_CAPTURE_BYTES,
     ) -> RemoteProcess: ...
+
+    async def reconnect(
+        self,
+        pid: int,
+        *,
+        tag: str | None,
+        on_stdout: Callable[[str], Any] | None,
+        on_stderr: Callable[[str], Any] | None,
+        capture_limit_bytes: int = DEFAULT_CAPTURE_BYTES,
+    ) -> RemoteProcess:
+        """Re-attach to a command still running in the sandbox.
+
+        Raises ``RemoteProcessNotFound`` when the pid has already exited.
+        """
+        ...
 
 
 @dataclass(frozen=True)
@@ -285,6 +328,8 @@ class SdkE2BTransport:
             if "invalid sandbox id" in text.lower() and not path_context:
                 return RemoteSandboxNotFound(text)
             return RemoteError(text)
+        if _is_stream_interrupted(exc):
+            return RemoteTransportError(str(exc))
         return RemoteError(str(exc))
 
     async def _guard(self, coro: Awaitable[Any], *, path_context: bool = False) -> Any:
@@ -425,7 +470,7 @@ class _SdkProcess:
         self._h = handle
         self.pid = int(getattr(handle, "pid", 0) or 0)
         self._sbx = sbx
-        self._tag = tag
+        self.tag = tag
         self._killing: asyncio.Future[bool] | None = None
 
     async def wait(self) -> RemoteExit:
@@ -462,11 +507,11 @@ class _SdkProcess:
                 killed = bool(await asyncio.wait_for(self._h.kill(), KILL_SIGNAL_TIMEOUT_S))
             except Exception:  # noqa: BLE001 — best-effort; the tree kill still runs
                 pass
-            if self._sbx is not None and self._tag:
+            if self._sbx is not None and self.tag:
                 # Descendants outlive their parent's SIGKILL: always sweep.
                 try:
                     await asyncio.wait_for(
-                        self._sbx.commands.run(_kill_tree_command(self.pid, self._tag), timeout=KILL_TREE_TIMEOUT_S),
+                        self._sbx.commands.run(_kill_tree_command(self.pid, self.tag), timeout=KILL_TREE_TIMEOUT_S),
                         KILL_TREE_TIMEOUT_S + 5,
                     )
                 except Exception:  # noqa: BLE001 — best-effort
@@ -597,6 +642,37 @@ class _SdkHandle:
                 timeout=0,
             )
         )
+        process = _SdkProcess(self._t, handle, sbx=self._sbx, tag=tag)
+        try:
+            _bound_sdk_output(handle, capture_limit_bytes)
+        except Exception:
+            await process.kill()
+            raise
+        return process
+
+    async def reconnect(
+        self,
+        pid: int,
+        *,
+        tag: str | None,
+        on_stdout: Callable[[str], Any] | None,
+        on_stderr: Callable[[str], Any] | None,
+        capture_limit_bytes: int = DEFAULT_CAPTURE_BYTES,
+    ) -> RemoteProcess:
+        sdk = self._t._sdk_module()
+        try:
+            handle = await self._sbx.commands.connect(
+                pid, timeout=0, on_stdout=on_stdout, on_stderr=on_stderr
+            )
+        except sdk.exceptions.NotFoundException as exc:
+            # The command finished while the stream was down. That is a normal
+            # outcome, NOT a missing sandbox — see RemoteProcessNotFound.
+            raise RemoteProcessNotFound(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise self._t._translate(exc, path_context=False) from exc
+        # Carry the ORIGINAL tag: _SdkProcess._kill guards its /proc environ
+        # sweep on it, so a reconnect with tag=None would silently stop killing
+        # descendants that left the process group.
         process = _SdkProcess(self._t, handle, sbx=self._sbx, tag=tag)
         try:
             _bound_sdk_output(handle, capture_limit_bytes)
@@ -1252,8 +1328,16 @@ class E2BSandbox(ConfigDrivenSandbox):
         if max_file_bytes is not None:
             env["SBX_MAX_FILE_BYTES"] = str(int(max_file_bytes))
         command = f"{shlex.quote(self.python_path)} {shlex.quote(script)}"
-        with span("sandbox.manifest", zones=len(zones), **self._attrs()):
-            result = await self.exec(command, timeout=MANIFEST_TIMEOUT_S, cwd=".", env=env)
+        try:
+            with span("sandbox.manifest", zones=len(zones), **self._attrs()):
+                result = await self.exec(command, timeout=MANIFEST_TIMEOUT_S, cwd=".", env=env)
+        except SandboxOutputLimitExceeded:
+            # A very large tree can push the JSON past exec's capture ceiling.
+            # ``manifest()``'s contract is "None when the sandbox cannot compute
+            # it", and the snapshotter then falls back to reading every file.
+            # Letting the raise escape instead kills the whole checkpoint.
+            emit("sandbox.manifest_unavailable", reason="output_limit", **self._attrs())
+            return None
         if result.timed_out or result.exit_code != 0:
             emit(
                 "sandbox.manifest_unavailable",
@@ -1355,9 +1439,17 @@ class E2BSandbox(ConfigDrivenSandbox):
         started = time.monotonic()
         timed_out = False
         exit_code = -1
+
+        def _remaining() -> float:
+            # Always measured against the ORIGINAL start. A flapping connection
+            # must not silently turn the caller's 300 s budget into 900 s.
+            return max(effective_timeout - (time.monotonic() - started), 0.0)
+
         with span("sandbox.exec", cwd=work_dir, timeout_s=effective_timeout, **self._attrs()):
-            # Starting a command is side-effectful and must never be replayed on
-            # an uncertain transport response.
+            # STARTING a command is side-effectful and must never be replayed on
+            # an uncertain transport response — which is why this path does not
+            # go through ``_retry``. RE-ATTACHING to a command already started is
+            # not a replay, and is what the reconnect loop below does.
             await self.ensure_running()
             assert self._handle is not None
             async with self._ops:
@@ -1366,17 +1458,56 @@ class E2BSandbox(ConfigDrivenSandbox):
                     on_stderr=_stderr, capture_limit_bytes=capture_limit_bytes,
                 )
             self._processes[id(process)] = process
+            attempts = 0
             try:
-                exit_info = await asyncio.wait_for(process.wait(), timeout=effective_timeout)
-                exit_code = exit_info.exit_code
-                if not stdout_parts:
-                    stdout_parts.append(exit_info.stdout)
-                if not stderr_parts:
-                    stderr_parts.append(exit_info.stderr)
-            except asyncio.TimeoutError:
-                await self._stop_process(process)
-                timed_out = True
+                while True:
+                    try:
+                        exit_info = await asyncio.wait_for(process.wait(), timeout=_remaining())
+                        exit_code = exit_info.exit_code
+                        if not stdout_parts:
+                            stdout_parts.append(exit_info.stdout)
+                        if not stderr_parts:
+                            stderr_parts.append(exit_info.stderr)
+                        break
+                    except asyncio.TimeoutError:
+                        await self._stop_process(process)
+                        timed_out = True
+                        break
+                    except RemoteError as exc:
+                        # The STREAM died; the PROCESS is presumed alive. Killing
+                        # here is the defect this loop exists to fix: a silent
+                        # long-running command loses its event stream and used to
+                        # be destroyed along with it.
+                        #
+                        # ``_translate`` classifies the SDK's bare stream-drop
+                        # exception as a transport error, but the text probe is
+                        # repeated here so a transport that does not translate
+                        # still recovers rather than killing the command. A gone
+                        # sandbox and anything else stay fatal.
+                        if isinstance(exc, RemoteSandboxNotFound) or not (
+                            isinstance(exc, RemoteTransportError) or _is_stream_interrupted(exc)
+                        ):
+                            raise
+                        attempts += 1
+                        emit(
+                            "sandbox.exec_reconnect", attempt=attempts,
+                            pid=getattr(process, "pid", 0),
+                            error_type=type(exc).__name__, **self._attrs(),
+                        )
+                        if attempts > RECONNECT_ATTEMPTS or not _remaining():
+                            raise
+                        await asyncio.sleep(min(RECONNECT_BACKOFF_S * attempts, _remaining()))
+                        self._processes.pop(id(process), None)
+                        process = await self._handle.reconnect(
+                            getattr(process, "pid", 0),
+                            tag=getattr(process, "tag", None),
+                            on_stdout=_stdout, on_stderr=_stderr,
+                            capture_limit_bytes=capture_limit_bytes,
+                        )
+                        self._processes[id(process)] = process
             except BaseException:
+                # Cancellation, abort, a genuinely gone sandbox, and a command
+                # that finished while we were re-attaching all land here.
                 await self._stop_process(process)
                 raise
             finally:

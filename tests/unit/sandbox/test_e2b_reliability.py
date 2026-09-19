@@ -12,6 +12,7 @@ import pytest
 
 from agent_base.sandbox import E2BSandbox, Zone, ZoneLayout
 from agent_base.sandbox.e2b import (
+    _STREAM_INTERRUPTED_TEXT,
     PROCESS_TAG_ENV, RemoteError, RemoteExit, RemoteRateLimited, RemoteTransportError, SdkE2BTransport,
     _SdkHandle, _SdkProcess, _bound_sdk_output, _kill_tree_command, _session_command,
 )
@@ -191,8 +192,36 @@ async def test_run_background_starts_its_own_session_with_a_process_tag():
     (command,), kwargs = run.await_args
     assert command == _session_command('python -c "print(1)"')
     assert 'exec setsid -w /bin/bash -c' in command
-    assert kwargs['envs'] == {'A': '1', PROCESS_TAG_ENV: process._tag}
+    assert kwargs['envs'] == {'A': '1', PROCESS_TAG_ENV: process.tag}
     assert envs == {'A': '1'}
+
+
+def test_installed_sdk_still_reports_a_stream_drop_with_the_text_we_probe():
+    """The D7 recovery hinges on a string match — pin it to the real SDK.
+
+    ``command_handle`` raises a BARE ``Exception`` when a command's event stream
+    closes without an end event. It carries no type, so ``_translate`` has only
+    the message to go on. If a future SDK reworded this, the reconnect loop
+    would silently stop firing and long silent commands would start dying again
+    — with nothing else failing to tell us.
+    """
+    import inspect
+
+    from e2b.sandbox_async.commands import command_handle
+
+    assert _STREAM_INTERRUPTED_TEXT in inspect.getsource(command_handle)
+
+
+def test_translate_classifies_a_bare_stream_drop_as_transport():
+    transport = SdkE2BTransport()
+    translated = transport._translate(
+        Exception("Command ended without an end event"), path_context=False
+    )
+    assert isinstance(translated, RemoteTransportError)
+    # ... and an unrelated bare failure must NOT become retryable.
+    assert not isinstance(
+        transport._translate(Exception("boom"), path_context=False), RemoteTransportError
+    )
 
 
 def _killable(events, *, signal_error=None, gate=None):
