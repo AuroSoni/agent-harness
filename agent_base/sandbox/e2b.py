@@ -682,9 +682,25 @@ class _SdkHandle:
         return process
 
     async def run_as(self, cmd: str, *, user: str, timeout: float = 120.0) -> RemoteExit:
-        result = await self._t._guard(
-            self._sbx.commands.run(cmd, user=user, timeout=timeout)
-        )
+        try:
+            result = await self._t._guard(
+                self._sbx.commands.run(cmd, user=user, timeout=timeout)
+            )
+        except RemoteError as exc:
+            # The SDK RAISES on a non-zero exit, so without this a provisioning
+            # step could never see the status it is checking -- it got a
+            # RemoteError whose message is "Command exited with code 1 and
+            # error:" with the stderr already consumed. The caller wants the
+            # code and the output; a transport failure still propagates.
+            original = exc.__cause__
+            code = getattr(original, "exit_code", None)
+            if code is None:
+                raise
+            return RemoteExit(
+                exit_code=int(code),
+                stdout=str(getattr(original, "stdout", "") or ""),
+                stderr=str(getattr(original, "stderr", "") or ""),
+            )
         return RemoteExit(
             exit_code=int(getattr(result, "exit_code", 0) or 0),
             stdout=str(getattr(result, "stdout", "") or ""),

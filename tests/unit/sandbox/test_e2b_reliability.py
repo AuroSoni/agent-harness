@@ -541,3 +541,64 @@ async def test_scripted_child_defers_warmup_until_actor_provider_boundary(tmp_pa
         await agent.run(Message.user('continue'))
     warm.assert_awaited_once()
     assert not agent._sandbox_resume_warm_pending
+
+
+async def test_run_as_reports_a_non_zero_exit_instead_of_raising():
+    """The SDK raises CommandExitException on a non-zero exit, so a
+    provisioning step could never see the status it is checking: it got a
+    RemoteError reading "Command exited with code 1 and error:" with the
+    stderr already consumed into the exception. A transport failure must still
+    propagate -- only an exit status is a result."""
+    from agent_base.sandbox.e2b import RemoteError, _SdkHandle
+
+    class _Exit(Exception):
+        exit_code = 3
+        stdout = "partial"
+        stderr = "why it failed"
+
+    class _Commands:
+        async def run(self, cmd, *, user, timeout):
+            raise _Exit()
+
+    class _Sbx:
+        commands = _Commands()
+
+    class _Transport:
+        async def _guard(self, coro, *, path_context=False):
+            try:
+                return await coro
+            except Exception as exc:
+                raise RemoteError("Command exited with code 3 and error:") from exc
+
+    handle = _SdkHandle.__new__(_SdkHandle)
+    handle._sbx = _Sbx()
+    handle._t = _Transport()
+
+    result = await handle.run_as("false", user="root")
+
+    assert (result.exit_code, result.stdout, result.stderr) == (3, "partial", "why it failed")
+
+
+async def test_run_as_still_propagates_a_transport_failure():
+    from agent_base.sandbox.e2b import RemoteError, _SdkHandle
+
+    class _Commands:
+        async def run(self, cmd, *, user, timeout):
+            raise ConnectionError("envd is gone")
+
+    class _Sbx:
+        commands = _Commands()
+
+    class _Transport:
+        async def _guard(self, coro, *, path_context=False):
+            try:
+                return await coro
+            except Exception as exc:
+                raise RemoteError("transport") from exc
+
+    handle = _SdkHandle.__new__(_SdkHandle)
+    handle._sbx = _Sbx()
+    handle._t = _Transport()
+
+    with pytest.raises(RemoteError):
+        await handle.run_as("anything", user="root")
