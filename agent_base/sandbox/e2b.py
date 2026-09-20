@@ -1539,7 +1539,21 @@ class E2BSandbox(ConfigDrivenSandbox):
             }
         if max_file_bytes is not None:
             env["SBX_MAX_FILE_BYTES"] = str(int(max_file_bytes))
-        command = f"{shlex.quote(self.python_path)} {shlex.quote(script)}"
+        # -I for the same reason the verb runner uses it, and it matters MORE
+        # here. The helper decides what a checkpoint contains, so it is
+        # installed root-owned where the model cannot rewrite the FILE -- but
+        # protecting the file is not enough. Without isolation CPython runs
+        # `sitecustomize` from PYTHONPATH at startup, and PYTHONPATH points at
+        # the model's own writable package overlay. A three-line sitecustomize
+        # that prints `{}` and calls os._exit(0) yields an EMPTY but "full"
+        # manifest, exit code 0 -- reproduced. Verification checks the entries
+        # that are listed, not the ones that are missing, so the VM could then
+        # be retired with every file absent from its backup.
+        #
+        # -I implies -E, which ignores PYTHON* variables only: os.environ still
+        # carries SBX_CAPTURE_ROOTS and friends, which this helper reads.
+        # Verified, not assumed.
+        command = f"{shlex.quote(self.python_path)} -I -B {shlex.quote(script)}"
         try:
             with span("sandbox.manifest", zones=len(zones), **self._attrs()):
                 result = await self.exec(command, timeout=MANIFEST_TIMEOUT_S, cwd=".", env=env)
@@ -1728,12 +1742,51 @@ class E2BSandbox(ConfigDrivenSandbox):
                             raise
                         await asyncio.sleep(min(RECONNECT_BACKOFF_S * attempts, _remaining()))
                         self._processes.pop(id(process), None)
-                        process = await self._handle.reconnect(
-                            getattr(process, "pid", 0),
-                            tag=getattr(process, "tag", None),
-                            on_stdout=_stdout, on_stderr=_stderr,
-                            capture_limit_bytes=capture_limit_bytes,
-                        )
+                        # The REATTACH gets the same retry budget and the same
+                        # deadline as the wait it is recovering. It used to sit
+                        # bare in this except block, so a transport error here
+                        # could not be caught by the try above it -- Python does
+                        # not route an exception raised in an `except` back to
+                        # its own `try` -- and fell to `except BaseException`,
+                        # which SIGKILLs the healthy command and re-raises.
+                        #
+                        # That made the effective coverage (1 - P(reattach
+                        # fails)) rather than the three attempts it advertises,
+                        # and the reattach fires ~0.5 s after envd reset the
+                        # connection, which is exactly when it is most likely to
+                        # fail again. `sandbox.exec_reconnect attempt=N` could
+                        # never log N>1 for this cause.
+                        #
+                        # Both halves land together on purpose: retrying without
+                        # the deadline would let 3 attempts x the SDK's 60 s
+                        # request timeout overrun the caller's budget by minutes.
+                        try:
+                            process = await asyncio.wait_for(
+                                self._handle.reconnect(
+                                    getattr(process, "pid", 0),
+                                    tag=getattr(process, "tag", None),
+                                    on_stdout=_stdout, on_stderr=_stderr,
+                                    capture_limit_bytes=capture_limit_bytes,
+                                ),
+                                timeout=_remaining(),
+                            )
+                        except asyncio.TimeoutError:
+                            await self._stop_process(process)
+                            timed_out = True
+                            break
+                        except RemoteError as reattach_exc:
+                            # RemoteProcessNotFound stays fatal: the command
+                            # finished while the stream was down, and retrying
+                            # only re-raises it. See the known-gap test.
+                            if isinstance(
+                                reattach_exc,
+                                (RemoteSandboxNotFound, RemoteProcessNotFound),
+                            ) or not (
+                                isinstance(reattach_exc, RemoteTransportError)
+                                or _is_stream_interrupted(reattach_exc)
+                            ):
+                                raise
+                            continue  # same counter, same cap, same deadline
                         self._processes[id(process)] = process
             except BaseException:
                 # Cancellation, abort, a genuinely gone sandbox, and a command

@@ -403,11 +403,47 @@ async def test_reconnect_does_not_extend_the_original_timeout(transport):
 
     handle.run_background = always_dropping
     started = asyncio.get_running_loop().time()
-    with pytest.raises(RemoteError):
-        await sb.run_streaming(f"{sys.executable} -c 'pass'", on_output=lambda _: None, timeout=0.4)
+    result = await sb.run_streaming(
+        f"{sys.executable} -c 'pass'", on_output=lambda _: None, timeout=0.4
+    )
     # Bounded by the ORIGINAL deadline plus the bounded backoff, not by
     # attempts x timeout.
     assert asyncio.get_running_loop().time() - started < 3.0
+    # Running out of BUDGET is a timeout, not a transport error: that is what
+    # the caller asked for, and it is what bash_tool/code_execution render.
+    # Exhausting ATTEMPTS while budget remains still raises — next test.
+    assert result.timed_out is True
+    assert result.exit_code == -1
+
+
+async def test_reconnect_gives_up_by_raising_when_attempts_run_out(transport):
+    """The two ways the loop can end are deliberately different.
+
+    Budget exhausted -> timed_out (the command really did exceed its wall
+    clock). Attempts exhausted while budget remains -> raise, because nothing
+    about the caller's deadline was violated and a fabricated timeout would
+    misdescribe it.
+    """
+    sb = _make(transport)
+    await sb.setup()
+    handle = sb._handle
+    real_run = handle.run_background
+
+    async def always_dropping(*args, **kwargs):
+        process = await real_run(*args, **kwargs)
+
+        async def never_ends():
+            raise RemoteError(_STREAM_INTERRUPTED_TEXT)
+
+        process.wait = never_ends
+        return process
+
+    handle.run_background = always_dropping
+    with pytest.raises(RemoteError):
+        # A generous budget, so ATTEMPTS is what runs out first.
+        await sb.run_streaming(
+            f"{sys.executable} -c 'pass'", on_output=lambda _: None, timeout=60
+        )
 
 
 async def test_reconnect_to_a_finished_command_is_not_a_missing_sandbox(transport):
@@ -883,10 +919,14 @@ async def test_an_absolute_helper_dir_is_neither_created_nor_written(transport):
     await sb.setup()
 
     assert sb.helper_path == "/opt/nova/helper"
-    made = [d for call in transport.calls if call[0] == "make_dirs" for d in call[1]]
-    assert "/opt/nova/helper" not in made
-    written = [call[1] for call in transport.calls if call[0] == "write"]
-    assert not any(path.startswith("/opt/nova") for path in written)
+    # Assert the EFFECT on the fake VM's filesystem, not a call record:
+    # `transport.calls` is a Counter of names, so iterating it for tuples
+    # silently matches nothing and passes whatever the code does.
+    box = transport.boxes[sb.e2b_sandbox_id]
+    assert not (box.host_dir / "opt/nova/helper").exists(), "setup() must not create it"
+    assert not (box.host_dir / "home/nova/.nova/.sbx/hash_manifest.py").exists()
+    # ...while the directories it IS responsible for are there.
+    assert (box.host_dir / "home/nova").is_dir()
 
 
 async def test_the_manifest_runs_the_external_helper(transport):
@@ -909,3 +949,32 @@ async def test_the_manifest_runs_the_external_helper(transport):
     assert "/home/nova/note.txt" in manifest
     # ...and the in-root copy was never created to fall back on.
     assert not (box.host_dir / "home/nova/.nova/.sbx/hash_manifest.py").exists()
+
+
+async def test_the_manifest_helper_runs_isolated(transport):
+    """Protecting the helper FILE is not enough.
+
+    CPython runs `sitecustomize` from PYTHONPATH at startup, and PYTHONPATH
+    points at the model's own writable package overlay. A three-line
+    sitecustomize that prints `{}` and calls os._exit(0) yields an empty but
+    "full" manifest with exit code 0 — and verification checks the entries that
+    ARE listed, not the ones that are missing, so the VM could be retired with
+    every file absent from its backup.
+
+    -I implies -E, which ignores PYTHON* variables ONLY: os.environ still
+    carries SBX_CAPTURE_ROOTS, which the helper reads.
+    """
+    sb = _multiroot(transport, helper_dir="/opt/nova/helper", capture_roots=_ROOTS)
+    await sb.setup()
+    box = transport.boxes[sb.e2b_sandbox_id]
+    external = box.host_dir / "opt/nova/helper"
+    external.mkdir(parents=True, exist_ok=True)
+    from agent_base.sandbox.remote_scripts import hash_manifest_source
+    (external / "hash_manifest.py").write_text(hash_manifest_source())
+
+    await sb.manifest([], capture_roots=_ROOTS)
+
+    command = next(cmd for cmd, _env, _cwd in reversed(transport.commands)
+                   if "hash_manifest.py" in cmd)
+    assert " -I " in command, "the helper must not honour PYTHONPATH's sitecustomize"
+    assert command.index(" -I ") < command.index("hash_manifest.py")
