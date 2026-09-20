@@ -251,6 +251,46 @@ def test_emit_capped_default_cap_is_library_constant():
     assert param.default == 25_000
 
 
+# ─── the truncation notice names a tool the roster actually has ─────────────
+#
+# It used to say "use read_file to inspect" unconditionally. A consumer whose
+# roster has no `read_file` was then handed a real path plus an instruction to
+# call a tool that does not exist — on every truncated result, which is the
+# most common failure surface there is.
+
+
+async def test_the_notice_names_the_configured_reader():
+    ctx = _ctx(sandbox=_RecordingSandbox(), result_reader_tool="view")
+    result = await ctx.emit_capped("z" * 2000, max_chars=500)
+    assert "use view to inspect" in result
+    assert "read_file" not in result
+
+
+async def test_the_notice_names_no_tool_when_none_is_advertised():
+    """The path alone is still actionable. Naming a tool that is not there is
+    not, so the empty default degrades to the path rather than to a guess."""
+    ctx = _ctx(sandbox=_RecordingSandbox())
+    result = await ctx.emit_capped("z" * 2000, max_chars=500)
+    assert ".tool_results/overflow_1.txt" in result
+    assert "to inspect" not in result
+
+
+def test_the_reader_is_resolved_against_what_is_registered():
+    from agent_base.tools.context import RESULT_READER_TOOLS, pick_result_reader
+
+    # Preference order, not mere membership: a roster carrying both gets the
+    # more specific one.
+    assert pick_result_reader(["view", "read_file", "bash_tool"]) == "read_file"
+    assert pick_result_reader(["view", "bash_tool"]) == "view"
+    assert pick_result_reader(["bash_tool", "create_file"]) == ""
+    assert pick_result_reader([]) == ""
+    # A dict is the live registry's shape; iterating it yields its keys.
+    assert pick_result_reader({"view": object()}) == "view"
+    # Junk degrades to the bare path instead of raising inside a tool result.
+    assert pick_result_reader(None) == ""
+    assert RESULT_READER_TOOLS[0] == "read_file"
+
+
 # ─── emit_capped_bytes (R16 delegation) ─────────────────────────────────────
 
 

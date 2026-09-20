@@ -47,6 +47,38 @@ DEFAULT_EMIT_MAX_CHARS = 25_000      # chars (the ctx.emit_capped default kwarg)
 DEFAULT_EMIT_MAX_BYTES = 1_200_000   # bytes (the ctx.emit_capped_bytes default kwarg)
 TOOL_RESULTS_DIR = ".tool_results"   # sandbox zone for overflow persistence
 
+#: Tools that can read back an overflow file, in preference order.
+#:
+#: ``emit_capped`` hands the model a path and, until now, told it to "use
+#: read_file to inspect" -- a hard-coded name. A roster without ``read_file``
+#: therefore got a pointer to a real file and an instruction to call a tool
+#: that does not exist, on every truncated result. Naming the tool is worth
+#: keeping (a bare path is an affordance the model may not take), so the name
+#: is RESOLVED against the live registry instead of assumed.
+#:
+#: Deriving it rather than making it a constructor argument is deliberate: the
+#: only thing this sentence has to agree with is the roster, and an argument
+#: would let the two drift exactly as the constant did.
+RESULT_READER_TOOLS = ("read_file", "view")
+
+
+def pick_result_reader(tool_names: object) -> str:
+    """The best available reader from ``tool_names``, or ``""`` if none is.
+
+    ``""`` is a supported answer, not a failure: the truncation notice then
+    names the path alone. Accepts any iterable of names and tolerates junk, so
+    a registry shape change degrades to the bare path rather than raising
+    inside a tool result.
+    """
+    try:
+        available = {str(name) for name in tool_names}  # type: ignore[union-attr]
+    except TypeError:
+        return ""
+    for candidate in RESULT_READER_TOOLS:
+        if candidate in available:
+            return candidate
+    return ""
+
 
 def stable_hash(run_id: str, tool_call_id: str) -> str:
     """Deterministic idempotency key for a tool call, stable across replays."""
@@ -91,6 +123,10 @@ class ToolContext:
     #: legacy zone name, so a sandbox whose layout puts tool results elsewhere
     #: would write somewhere nothing reads.
     tool_results_dir: str = TOOL_RESULTS_DIR
+    #: Which tool the truncation notice tells the model to read the overflow
+    #: file with. Resolved from the live registry by the runtime; ``""`` means
+    #: no reader is advertised, and the notice names the path alone.
+    result_reader_tool: str = ""
 
     _once_store: OnceStore | None = field(default=None, repr=False)
 
@@ -171,7 +207,12 @@ class ToolContext:
         head = text[:max_chars]
         if not reference:
             return head + "\n[Truncated. Full result not persisted: no sandbox configured.]"
-        return head + f"\n[Truncated. Full result: {reference} - use read_file to inspect]"
+        if self.result_reader_tool:
+            return head + (
+                f"\n[Truncated. Full result: {reference} - use "
+                f"{self.result_reader_tool} to inspect]"
+            )
+        return head + f"\n[Truncated. Full result: {reference}]"
 
     async def emit_capped_bytes(
         self,
