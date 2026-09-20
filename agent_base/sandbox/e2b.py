@@ -794,6 +794,9 @@ class E2BSandboxConfig(SandboxConfig):
     uploads_dir: str = ""
     #: Where ``emit_capped`` persists overflow. Empty keeps the library default.
     tool_results_dir: str = ""
+    #: Absolute trees the checkpoint captures. Declared by the sandbox
+    #: because the layout is the sandbox's, not the snapshot policy's.
+    capture_roots: tuple[str, ...] = ()
 
 
 # ─── Backend ────────────────────────────────────────────────────────────
@@ -834,6 +837,7 @@ class E2BSandbox(ConfigDrivenSandbox):
         exports_dir: str = "",
         uploads_dir: str = "",
         tool_results_dir: str = "",
+        capture_roots: tuple[str, ...] = (),
     ) -> None:
         if not sandbox_id:
             raise ValueError("sandbox_id must not be empty")
@@ -877,6 +881,7 @@ class E2BSandbox(ConfigDrivenSandbox):
             else f"{self._layout.workspace}/{self._layout.imported_subdir}"
         )
         self.tool_results_dir = posixpath.normpath(tool_results_dir) if tool_results_dir else ""
+        self.capture_roots = _normalize_abs_dirs(capture_roots, field="capture_roots")
 
         if max_concurrent_ops < 1:
             raise ValueError("max_concurrent_ops must be positive")

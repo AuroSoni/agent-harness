@@ -166,7 +166,15 @@ class SandboxSnapshotter:
         self._zones = tuple(policy.zones if policy is not None else zones)
         self._per_file_cap = policy.per_file_cap if policy is not None else per_file_cap
         self._total_cap = policy.total_cap if policy is not None else total_cap
-        self._capture_roots = tuple(policy.capture_roots) if policy is not None else ()
+        # The policy carries bounds; the SANDBOX carries its layout. A consumer
+        # with one global policy and several sandbox kinds (a legacy local tree
+        # beside a new remote one) would otherwise have to thread a different
+        # policy through every call site, and the first one it missed would
+        # capture the wrong scope silently.
+        declared = tuple(policy.capture_roots) if policy is not None else ()
+        self._capture_roots = declared or normalize_capture_roots(
+            getattr(sandbox, "capture_roots", ()) or ()
+        )
 
     @property
     def _scope(self) -> tuple[str, ...]:
