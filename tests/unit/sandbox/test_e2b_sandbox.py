@@ -858,3 +858,54 @@ async def test_local_run_streaming_reports_exit_code_and_timeout(tmp_path):
         timeout=1,
     )
     assert slow.timed_out is True and slow.exit_code == -1
+
+
+# ─── an externally managed manifest helper ────────────────────────────────
+
+
+def test_a_relative_helper_dir_keeps_the_historical_behaviour(transport):
+    sb = _make(transport)
+    assert sb.helper_dir == ".sbx"
+    assert sb._helper_is_external is False
+    assert sb.helper_path == sb._abs(".sbx")
+
+
+async def test_an_absolute_helper_dir_is_neither_created_nor_written(transport):
+    """The point of moving the helper out of ``root_path`` is to put it where
+    the model cannot write it. Creating it here would fail — and creating it
+    SUCCESSFULLY would mean it was writable, which is the thing being avoided.
+
+    A modified helper that returns ``{}`` yields an empty, ``"full"`` manifest:
+    verification checks the entries that are listed, not the ones that are
+    missing, so the VM could be retired with files absent from its backup.
+    """
+    sb = _multiroot(transport, helper_dir="/opt/nova/helper")
+    await sb.setup()
+
+    assert sb.helper_path == "/opt/nova/helper"
+    made = [d for call in transport.calls if call[0] == "make_dirs" for d in call[1]]
+    assert "/opt/nova/helper" not in made
+    written = [call[1] for call in transport.calls if call[0] == "write"]
+    assert not any(path.startswith("/opt/nova") for path in written)
+
+
+async def test_the_manifest_runs_the_external_helper(transport):
+    """Nothing is gained by relocating the helper if ``manifest()`` still runs
+    the copy inside ``root_path``."""
+    from agent_base.sandbox.remote_scripts import hash_manifest_source
+
+    sb = _multiroot(transport, helper_dir="/opt/nova/helper", capture_roots=_ROOTS)
+    await sb.setup()
+    # Stand in for the provisioning step that installs it root-owned.
+    box = transport.boxes[sb.e2b_sandbox_id]
+    external = box.host_dir / "opt/nova/helper"
+    external.mkdir(parents=True, exist_ok=True)
+    (external / "hash_manifest.py").write_text(hash_manifest_source())
+    await sb.write_file("/home/nova/note.txt", "hello")
+
+    manifest = await sb.manifest([], capture_roots=_ROOTS)
+
+    assert manifest is not None
+    assert "/home/nova/note.txt" in manifest
+    # ...and the in-root copy was never created to fall back on.
+    assert not (box.host_dir / "home/nova/.nova/.sbx/hash_manifest.py").exists()

@@ -794,6 +794,17 @@ class E2BSandboxConfig(SandboxConfig):
     uploads_dir: str = ""
     #: Where ``emit_capped`` persists overflow. Empty keeps the library default.
     tool_results_dir: str = ""
+    #: Where the manifest helper lives. Relative (the default ``.sbx``) keeps it
+    #: under ``root_path``, written by ``setup()`` on every new handle.
+    #:
+    #: An ABSOLUTE value means the directory is managed from OUTSIDE the
+    #: sandbox: ``setup()`` neither creates nor writes it, and whoever does owns
+    #: keeping it current. That is how a deployment puts the helper somewhere
+    #: the model cannot reach. The distinction matters because a modified helper
+    #: that returns ``{}`` yields an empty, ``"full"`` manifest -- verification
+    #: checks the entries that are listed, not the ones that are missing -- and
+    #: the VM could then be retired with files absent from its backup.
+    helper_dir: str = ""
     #: Absolute trees the checkpoint captures. Declared by the sandbox
     #: because the layout is the sandbox's, not the snapshot policy's.
     capture_roots: tuple[str, ...] = ()
@@ -837,6 +848,7 @@ class E2BSandbox(ConfigDrivenSandbox):
         exports_dir: str = "",
         uploads_dir: str = "",
         tool_results_dir: str = "",
+        helper_dir: str = "",
         capture_roots: tuple[str, ...] = (),
     ) -> None:
         if not sandbox_id:
@@ -881,6 +893,7 @@ class E2BSandbox(ConfigDrivenSandbox):
             else f"{self._layout.workspace}/{self._layout.imported_subdir}"
         )
         self.tool_results_dir = posixpath.normpath(tool_results_dir) if tool_results_dir else ""
+        self.helper_dir = posixpath.normpath(helper_dir) if helper_dir else HELPER_DIR
         self.capture_roots = _normalize_abs_dirs(capture_roots, field="capture_roots")
 
         if max_concurrent_ops < 1:
@@ -910,6 +923,21 @@ class E2BSandbox(ConfigDrivenSandbox):
     @property
     def layout(self) -> ZoneLayout:
         return self._layout
+
+    @property
+    def _helper_is_external(self) -> bool:
+        """Whether the manifest helper is managed from outside the sandbox.
+
+        An absolute ``helper_dir`` says so. The sandbox then neither creates nor
+        writes it, because the point of moving it out of ``root_path`` is to put
+        it somewhere the model cannot write either.
+        """
+        return self.helper_dir.startswith("/")
+
+    @property
+    def helper_path(self) -> str:
+        """The directory holding ``hash_manifest.py``, as the VM sees it."""
+        return self.helper_dir if self._helper_is_external else self._abs(self.helper_dir)
 
     async def run_as(self, command: str, *, user: str, timeout: float = 120.0) -> ExecResult:
         """Run one command inside the VM as ``user`` (root provisioning).
@@ -1131,10 +1159,15 @@ class E2BSandbox(ConfigDrivenSandbox):
         assert self._handle is not None
         zones = [self._abs(z.name) for z in self._layout.zones]
         zones += [self._abs(d) for d in self.provision_dirs]
-        helper_dir = self._abs(HELPER_DIR)
+        external = self._helper_is_external
+        helper_dir = self.helper_dir if external else self._abs(self.helper_dir)
         with span("sandbox.setup", created=created, **self._attrs()):
-            await self._call("make_dirs", lambda h: h.make_dirs([*zones, helper_dir]))
-            if created or not self._helper_ready:
+            # An externally managed helper directory is root-owned by design:
+            # creating it here would fail, and creating it SUCCESSFULLY would
+            # mean it was writable, which is the thing being avoided.
+            targets = list(zones) if external else [*zones, helper_dir]
+            await self._call("make_dirs", lambda h: h.make_dirs(targets))
+            if not external and (created or not self._helper_ready):
                 script = posixpath.join(helper_dir, HASH_SCRIPT_NAME)
                 # Refresh the helper on each newly reconstructed handle; an
                 # older VM must not keep a manifest script that silently omits
@@ -1474,7 +1507,7 @@ class E2BSandbox(ConfigDrivenSandbox):
     ) -> dict[str, tuple[str | None, int]] | None:
         if not zones and not capture_roots:
             return {}
-        script = posixpath.join(self._abs(HELPER_DIR), HASH_SCRIPT_NAME)
+        script = posixpath.join(self.helper_path, HASH_SCRIPT_NAME)
         # Absolute mode keys every entry by its ABSOLUTE in-VM path: with more
         # than one reachable tree a root-relative key does not say which tree
         # it belongs to, and two roots could collide on the same suffix.
