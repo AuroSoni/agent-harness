@@ -67,6 +67,7 @@ from agent_base.core.trace_spans import (
     PENDING_SPAN_MAX_AGE,
     PENDING_SPANS_CAP,
     RELAY_ABORTED,
+    RELAY_ERROR,
     RELAY_QUEUE_CONFIRMATION,
     RELAY_QUEUE_FRONTEND,
     RELAY_RESUMED,
@@ -84,6 +85,8 @@ from agent_base.core.trace_spans import (
     stamp_span,
     trace_entrypoint,
     trace_safe,
+    trace_safe_async,
+    turn_error_span,
     utc_now_iso,
 )
 from agent_base.core.types import (
@@ -457,6 +460,9 @@ class AnthropicAgent(AgentRuntime):
         # priced-but-unbilled fact for the leg(s) before a process boundary.
         # Folded into the next _settle_delta() exactly once, then cleared.
         self._restored_settlement: "TurnSettlement | None" = None
+        # The run finalize last settled (billed): an error past that point
+        # leaves its row as finalize saved it (see _errored_mark_skips).
+        self._finalized_run_id: str | None = None
 
         # These are set during initialize().
         self.conversation: Conversation | None = None
@@ -1271,23 +1277,57 @@ class AnthropicAgent(AgentRuntime):
 
         self.initialize_run(prompt, run_id=pending_run_id)
 
-        self._runtime_contributions = await self._build_runtime_contributions(prompt)
-        self._apply_turn_start_contributions(turn_start_outcome)
-        self._runtime_target_msg_id = prompt.id
+        # The run exists from here on, so a failure before the loop (an
+        # externalized prompt's sandbox write, a contribution, the
+        # run_started emit) closes it as errored too. One the loop met is
+        # closed there already, and the row is saved once.
+        try:
+            self._runtime_contributions = await self._build_runtime_contributions(prompt)
+            self._apply_turn_start_contributions(turn_start_outcome)
+            self._runtime_target_msg_id = prompt.id
 
-        if self._context_externalizer is not None:
-            context_prompt = await self._context_externalizer.externalize_prompt(prompt)
-        else:
-            context_prompt = prompt
+            if self._context_externalizer is not None:
+                context_prompt = await self._context_externalizer.externalize_prompt(prompt)
+            else:
+                context_prompt = prompt
 
-        self._append_message_variants(context_prompt, prompt)
+            self._append_message_variants(context_prompt, prompt)
 
-        sink = self._active_sink()
-        if sink is not None:
-            self._emit_run_started(prompt, sink)
+            sink = self._active_sink()
+            if sink is not None:
+                self._emit_run_started(prompt, sink)
 
-        # Agent Loop
-        return await self._resume_loop(sink)
+            # Agent Loop
+            return await self._resume_loop(sink)
+        except _Recompact:
+            raise
+        except Exception as exc:
+            await self._mark_conversation_errored(exc)
+            raise
+
+    async def _coordinated_resume(self, resume):
+        """The runtime's continuation of a re-armed pause, with the errored
+        run's bookkeeping around it.
+
+        The reply resolved the pause, so a run an error closed while the
+        pause was still on record is opened again first
+        (:meth:`_reopen_errored_run`, fail-soft), before the ``cold_resume``
+        warm whose span it keeps.
+
+        The loop closes a run it fails in itself; this covers what runs
+        before the loop does: the warm and, in :meth:`_resume_rearmed`, the
+        reply's reconcile, splice and checkpoint. A run the loop already
+        closed is left as it is, so the row is saved once. The error is
+        re-raised unchanged, for ``_guard_continuation`` to report.
+        """
+        trace_safe("errored_run.reopen", self._reopen_errored_run)
+        try:
+            return await super()._coordinated_resume(resume)
+        except _Recompact:
+            raise
+        except Exception as exc:
+            await self._mark_conversation_errored(exc)
+            raise
 
     async def _resume_rearmed(self) -> "AgentResult | None":
         """Re-enter a cold-rehydrated turn after rehydrate-then-resolve.
@@ -1720,6 +1760,16 @@ class AnthropicAgent(AgentRuntime):
                 # its own abort return. Repair and record the turn while this
                 # task still owns it, then let the cancellation propagate.
                 await self._salvage_hard_cancelled_abort()
+            raise
+        except _Recompact:
+            raise  # internal mechanics (I10), never a turn's failure
+        except Exception as exc:
+            # The turn failed: a provider error past its retries, a tool phase
+            # or hook that raised, a save that failed (finalize's included).
+            # Close its run as errored (that row alone, unbilled), then
+            # re-raise the same error, so the driver still reports it
+            # (ErrorReport + RunCompleted('error')).
+            await self._mark_conversation_errored(exc)
             raise
         finally:
             self._phase = AgentPhase.IDLE
@@ -2458,6 +2508,161 @@ class AnthropicAgent(AgentRuntime):
         conversation.cost = self._compute_cost()
         conversation.completed_at = datetime.now(timezone.utc).isoformat()
         conversation.conversation_log.mark_agent_completed(self.agent_uuid)
+
+    async def _mark_conversation_errored(self, error: Exception) -> None:
+        """Close this run's conversation record as errored and save that row
+        alone — the error path's counterpart of :meth:`_mark_conversation_aborted`.
+
+        The row gets ``stop_reason='error'``, ``completed_at`` (the error
+        stamp), ``total_steps``, the usage and cost the run had reached,
+        ``extras['error'] = {code, type}`` and a ``turn_error`` span, and a
+        pause still open on it ends with the ``error`` outcome. The error's
+        message is never kept: it may carry user data, and the stream's
+        ``ErrorReport`` already delivered it.
+
+        Nothing else the finalize and abort paths do happens here:
+        ``agent_config`` is not saved, no checkpoint is captured, and the
+        turn is not billed — nothing is settled or reported, and the run's
+        unbilled spend is written off, so no later settle point bills it
+        either (an eviction's abort, or the abort that repairs a pause the
+        error left behind).
+
+        The pause record is left alone. An error that struck while a pause
+        was still on record (after its reply but before the splice, or in a
+        cold continuation's warm) leaves ``pending_relay`` in place, as it
+        always has: the next abort repairs the chain and clears it, and
+        keeps this row's ``error`` (the abort's mark skips a closed row).
+        Where the error came after the reply was taken (a hot resume's
+        reconcile or splice, or a cold one's past its join), a reply
+        re-delivered for the pause re-arms it and resumes the run, which
+        :meth:`_reopen_errored_run` opens again. A failed ``cold_resume``
+        warm is not such a case: the join the reply resolved is still held
+        (only :meth:`_resume_rearmed` takes it), so a re-delivered reply is
+        ignored as a duplicate and the pause is left to an abort.
+
+        The row is closed (and the spend written off) before it is saved,
+        and the save runs with the loop already idle and any abort waiting
+        on it released, as :meth:`_finish_loop_abort` does before its own
+        persist: an abort landing during a slow save must not hard-cancel it
+        and turn the error into an abort.
+
+        A no-op without an open run (see :meth:`_errored_mark_skips`): none
+        yet (the error came before ``initialize_run``), or one already closed
+        (an outer handler of the same error finds the row the loop closed,
+        so it is saved once). Fail-soft: it never masks the error, which the
+        caller re-raises.
+        """
+        conversation = trace_safe("errored_run", self._close_errored_run, error)
+        if conversation is None:
+            return
+        self._phase = AgentPhase.IDLE
+        if self._abort_completion is not None:
+            self._abort_completion.set()
+        await trace_safe_async("errored_run.save", self.conversation_adapter.save, conversation)
+
+    def _close_errored_run(self, error: Exception) -> "Conversation | None":
+        """Close the run as errored in memory and write off its unbilled
+        spend; return the row to save, or ``None`` when there is none to
+        close. The body of :meth:`_mark_conversation_errored`, which runs it
+        fail-soft."""
+        conversation = self.conversation
+        if conversation is None or self._errored_mark_skips(conversation):
+            return None
+        steps = self.agent_config.current_step if self.agent_config is not None else 0
+        span = turn_error_span(self.agent_uuid, error, step=steps)
+        usage, cost = self._errored_run_totals()
+
+        def record_spans() -> None:
+            spans = conversation.conversation_log.spans
+            close_open_relays(spans, RELAY_ERROR)
+            conversation.conversation_log.add_span(span)
+
+        trace_safe("errored_run.spans", record_spans)
+        conversation.stop_reason = "error"
+        conversation.total_steps = steps
+        conversation.usage = usage
+        conversation.cost = cost
+        conversation.completed_at = span["at"]
+        conversation.extras["error"] = {
+            "code": span["error_code"],
+            "type": span["error_type"],
+        }
+        conversation.conversation_log.mark_agent_completed(self.agent_uuid)
+        # Written off, never settled: the watermark passes the unbilled steps
+        # and a restored pre-pause leg is dropped, with nothing emitted.
+        self._settled_upto = len(self._turn_steps)
+        self._restored_settlement = None
+        return conversation
+
+    def _errored_mark_skips(self, conversation: "Conversation") -> bool:
+        """Whether the errored mark leaves ``conversation`` as it is.
+
+        An open run (no ``completed_at``) is closed. So is one finalize
+        stamped closed but failed to persist: ``completed_at`` is set
+        before the save, so a failed config, row, run-log or checkpoint
+        write leaves the row unsaved or saved as completed, and the turn
+        unbilled, while the stream reports the error. Left alone: a row
+        already closed as ``error`` (the same error, met again by an outer
+        handler) or ``aborted`` (the abort closed it, and bills it), and a
+        run finalize settled, which was billed as completed whatever failed
+        after.
+        """
+        if conversation.completed_at is None:
+            return False
+        if conversation.stop_reason in ("error", "aborted"):
+            return True
+        finalized = getattr(self, "_finalized_run_id", None)
+        return finalized is not None and finalized == conversation.run_id
+
+    def _errored_run_totals(self) -> tuple[Usage, CostBreakdown | None]:
+        """The usage and cost the errored run had reached: its accumulators,
+        except for a cold continuation that failed before
+        :meth:`_resume_rearmed` restored them (in its ``cold_resume`` warm),
+        whose totals are still only on the pause record."""
+        pending = self.agent_config.pending_relay if self.agent_config is not None else None
+        if (
+            self._rearmed_join is None
+            or pending is None
+            or pending.run_id != self.conversation.run_id
+        ):
+            return self._run_cumulative_usage, self._compute_cost()
+        usage = (
+            Usage.from_dict(pending.pre_pause_run_usage)
+            if pending.pre_pause_run_usage
+            else Usage()
+        )
+        cost = (
+            CostBreakdown.from_dict(pending.pre_pause_run_cost)
+            if pending.pre_pause_run_cost
+            else None
+        )
+        if cost is not None and cost.total_cost == 0.0 and not cost.breakdown:
+            cost = None  # as _compute_cost reports a run with no spend
+        return usage, cost
+
+    def _reopen_errored_run(self) -> None:
+        """Open the run an error closed again, now that its pause is answered.
+
+        An error can close a run whose pause is still on record (see
+        :meth:`_mark_conversation_errored`), and when it came after the reply
+        was taken, a reply re-delivered for that pause resumes it. The run
+        goes on, so it is open again: it keeps its
+        spans, and closes through finalize or an abort like any run. Its
+        ``extras['error']`` and ``turn_error`` span stay, the record of the
+        leg that failed. Any other run is left as it is.
+        """
+        conversation = self.conversation
+        pending = self.agent_config.pending_relay if self.agent_config is not None else None
+        if (
+            conversation is None
+            or conversation.stop_reason != "error"
+            or pending is None
+            or pending.run_id != conversation.run_id
+        ):
+            return
+        conversation.stop_reason = None
+        conversation.completed_at = None
+        conversation.conversation_log.ensure_agent(agent_uuid=self.agent_uuid, completed=False)
 
     async def _finish_loop_abort(self, phase: str) -> AgentResult:
         """The loop's own abort return (streaming or tool execution).
@@ -3675,6 +3880,7 @@ class AnthropicAgent(AgentRuntime):
         # reads settlement.turn_cost. A prior abort/steer settle point may have
         # already billed part of this run; the watermark makes this the tail only.
         settlement = self._settle_delta()
+        self._finalized_run_id = self._run_id
         result.settlement = settlement
         await self._emit_usage_report(settlement)
 

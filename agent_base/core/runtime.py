@@ -1971,8 +1971,8 @@ class AgentRuntime:
 
         A scripted pause is kept only when a tool body asked (its
         ``ToolContext`` names the tool run). One from ``scripted_ctx()`` — a
-        slash command — belongs to no run: the conversation still open may
-        be an errored run's, which is no place for its wait.
+        slash command — belongs to no run: the conversation still open, if
+        any, is another run's (a parked one), which is no place for its wait.
         """
         parent_tool_use_id = None
         if reason == AWAIT_REASON_SCRIPTED:

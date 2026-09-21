@@ -14,11 +14,13 @@ This module is the one home of the span schema:
   document the keys that writers stamp and readers may rely on. Keys outside
   ``kind``/``v`` are optional, since a span can be recorded before every fact
   about it is known.
-- :func:`trace_safe` — the fail-soft wrapper every stamping site goes through.
-  Tracing must never break a turn.
+- :func:`trace_safe` (:func:`trace_safe_async` for a coroutine) — the
+  fail-soft wrapper every stamping site goes through. Tracing must never
+  break a turn.
 - :class:`SpanClock` — a wall-clock start paired with a monotonic one.
 - the builders and stampers of spans that are recorded first and filled in
-  as the thing they time moves on (the relay span).
+  as the thing they time moves on (the relay span), and the ``turn_error``
+  span's builder with the stable code it names an error by.
 - :func:`trace_entry` — how a consumer names the request a warm runs for, so
   a ``sandbox_ready`` span reaches the right run (:func:`sandbox_ready_route`).
 
@@ -29,11 +31,13 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Awaitable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, TypedDict, TypeVar
+
+from agent_base.core.errors import ErrorCode
 
 #: Version of the span shapes below. Additive keys do not bump it.
 SPAN_SCHEMA_VERSION: int = 1
@@ -95,6 +99,16 @@ def _trace_logger() -> Any:
         return logging.getLogger("agent_base.core.trace_spans")
 
 
+def _note_failure(site: str) -> None:
+    """Log the exception being handled, the first time ``site`` fails."""
+    if site not in _failed_sites:
+        _failed_sites.add(site)
+        try:
+            _trace_logger().warning("trace_capture_failed", site=site, exc_info=True)
+        except Exception:  # pragma: no cover - logging must not raise either
+            pass
+
+
 def trace_safe(site: str, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T | None:
     """Call ``fn(*args, **kwargs)``; on any ``Exception`` return ``None``.
 
@@ -106,12 +120,20 @@ def trace_safe(site: str, fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -
     try:
         return fn(*args, **kwargs)
     except Exception:
-        if site not in _failed_sites:
-            _failed_sites.add(site)
-            try:
-                _trace_logger().warning("trace_capture_failed", site=site, exc_info=True)
-            except Exception:  # pragma: no cover - logging must not raise either
-                pass
+        _note_failure(site)
+        return None
+
+
+async def trace_safe_async(
+    site: str, fn: Callable[..., Awaitable[_T]], /, *args: Any, **kwargs: Any
+) -> _T | None:
+    """:func:`trace_safe` for a coroutine function: await
+    ``fn(*args, **kwargs)``; on any ``Exception`` return ``None``, logging the
+    first failure at ``site``. Cancellation is never swallowed."""
+    try:
+        return await fn(*args, **kwargs)
+    except Exception:
+        _note_failure(site)
         return None
 
 
@@ -281,13 +303,42 @@ class ModelCallCancelledSpan(_Span, total=False):
 
 
 class TurnErrorSpan(_Span, total=False):
-    """The error that ended a turn (the run's ``stop_reason='error'``)."""
+    """The error that ended a turn (the run's ``stop_reason='error'``).
+
+    Recorded as the run is closed, so ``at`` is its error stamp, the
+    instant the row's ``completed_at`` takes. ``step`` is how many steps
+    the run had completed when the error struck (0 before any model call
+    returned; a failed call's own step is on its ``model_call_failed``
+    span). ``error_type`` is the exception's class name and ``error_code``
+    its stable code (:func:`error_code_of`), never its message.
+    """
 
     agent_uuid: str
     at: str
     step: int
     error_type: str
     error_code: str
+
+
+def error_code_of(error: BaseException) -> str:
+    """The stable code of ``error``: the ``ErrorCode`` it carries (a
+    ``ProviderError``'s, an ``AgentError``'s), else ``internal`` — derived as
+    ``_guard_continuation`` derives the code of its ``ErrorReport``."""
+    code = getattr(error, "code", None)
+    return (code if isinstance(code, ErrorCode) else ErrorCode.INTERNAL).value
+
+
+def turn_error_span(agent_uuid: str, error: BaseException, *, step: int) -> TurnErrorSpan:
+    """The span of the error that ends a run, stamped now."""
+    return {
+        "kind": "turn_error",
+        "v": SPAN_SCHEMA_VERSION,
+        "agent_uuid": agent_uuid,
+        "at": utc_now_iso(),
+        "step": step,
+        "error_type": type(error).__name__,
+        "error_code": error_code_of(error),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +592,8 @@ __all__ = [
     "ModelCallFailedSpan",
     "ModelCallCancelledSpan",
     "TurnErrorSpan",
+    "error_code_of",
+    "turn_error_span",
     "RELAY_QUEUE_FRONTEND",
     "RELAY_QUEUE_CONFIRMATION",
     "RELAY_RESUMED",
@@ -568,5 +621,6 @@ __all__ = [
     "json_safe",
     "ended_before",
     "trace_safe",
+    "trace_safe_async",
     "utc_now_iso",
 ]

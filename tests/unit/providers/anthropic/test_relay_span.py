@@ -11,6 +11,7 @@ the pause.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from datetime import datetime
 
@@ -395,7 +396,8 @@ async def test_a_wait_that_fails_closes_its_span_as_an_error(fresh_table):
 
     with pytest.raises(RuntimeError, match="wait failed"):
         await asyncio.wait_for(task, timeout=5)
-    [span] = agent.conversation.conversation_log.spans
+    span, ended = agent.conversation.conversation_log.spans
+    assert ended["kind"] == "turn_error"  # the failure closed the run
     assert (span["cid"], span["outcome"]) == (cid, "error")
     assert _in_order(span, "paused_at", "await_emitted_at")
     assert "resumed_at" not in span and "spliced_at" not in span
@@ -516,7 +518,7 @@ async def test_a_slash_commands_scripted_pause_is_not_kept_on_an_errored_run(fre
     with pytest.raises(Exception):
         await agent.run("go")
     errored = agent.conversation
-    assert errored.completed_at is None  # an errored run is left open
+    assert errored.stop_reason == "error"  # closed by the error
     spans_before = list(errored.conversation_log.spans)
 
     async def slash_command():
@@ -540,6 +542,38 @@ async def test_a_slash_commands_scripted_pause_is_not_kept_on_an_errored_run(fre
     await agent.record_turn(Message.user("/cmd"), [TextContent(text="done")])
     row = await _row(agent, errored.run_id)
     assert all(span["kind"] != "relay" for span in row.conversation_log.spans)
+
+
+async def test_a_slash_commands_scripted_pause_is_not_kept_on_a_parked_run(fresh_table):
+    # The run still open when a slash command asks is another run's: here a
+    # parked one, which is no place for the command's wait.
+    agent = _agent([_pause_step()])
+    parked_task = await _park(agent)
+    parked = agent.conversation
+    spans_before = copy.deepcopy(parked.conversation_log.spans)
+
+    async def slash_command():
+        return await agent.call_frontend_tool(
+            "ask_user_question", {"question": "which sheet?"}, ctx=agent.scripted_ctx()
+        )
+
+    asking = asyncio.create_task(slash_command())
+    record = await _scripted_pause(agent, "ask_user_question", set())
+    (tool_use_id,) = record.tool_use_ids
+    await agent.submit(
+        ToolReply(
+            cid=record.cid,
+            results=[_reply(tool_use_id, "Sheet1", name="ask_user_question")],
+        )
+    )
+    [block] = await asyncio.wait_for(asking, timeout=5)
+
+    assert block.tool_result == "Sheet1"
+    assert parked.completed_at is None
+    assert parked.conversation_log.spans == spans_before
+    parked_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await parked_task
 
 
 # ── a sub-agent's pause ──────────────────────────────────────────────────────

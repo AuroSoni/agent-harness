@@ -274,7 +274,9 @@ async def test_a_raising_provider_leaves_a_failed_span_and_propagates_unchanged(
     # classification, chained to the native error.
     assert raised.value == agent.provider.classify_error(native)
     assert raised.value.__cause__ is native
-    [span] = agent.conversation.conversation_log.spans
+    # The run it ended closes with its own turn_error span (test_errored_run).
+    span, ended = agent.conversation.conversation_log.spans
+    assert ended["kind"] == "turn_error"
     assert span["kind"] == "model_call_failed"
     assert span["v"] == SPAN_SCHEMA_VERSION
     assert span["step"] == 2  # the step the failed call would have been
@@ -288,7 +290,7 @@ async def test_a_raising_provider_leaves_a_failed_span_and_propagates_unchanged(
     assert "overloaded" not in repr(span)  # codes, never messages
     # Spans live on the run's conversation log only.
     assert agent.agent_config.conversation_log.spans == []
-    assert agent.conversation.to_dict()["conversation_log"]["spans"] == [span]
+    assert agent.conversation.to_dict()["conversation_log"]["spans"] == [span, ended]
 
 
 async def test_a_failing_span_recorder_never_masks_the_provider_error():
