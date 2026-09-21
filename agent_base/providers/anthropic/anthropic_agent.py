@@ -44,7 +44,7 @@ from agent_base.core.config import (
     CostBreakdown,
     PendingToolRelay,
 )
-from agent_base.core.conversation_log import ConversationLog
+from agent_base.core.conversation_log import ConversationLog, ToolLogProjection
 from agent_base.core.end_turn_hook import (
     EndTurnContext,
     EndTurnHook,
@@ -94,8 +94,8 @@ from agent_base.streaming.meta import (
     UsageReport,
 )
 from agent_base.streaming.types import TextDelta, ToolResultDelta
-from agent_base.tools.registry import ToolRegistry
-from agent_base.tools.tool_types import ToolResultEnvelope
+from agent_base.tools.registry import ToolRegistry, stamp_never_ran
+from agent_base.tools.tool_types import ToolResultEnvelope, inherit_tool_timing
 
 from .compaction import CompactionConfig, CompactionController
 from .config import AnthropicLLMConfig
@@ -1714,11 +1714,14 @@ class AnthropicAgent(AgentRuntime):
                 call=tc,
             )
             if outcome is not None and outcome.decision == "block":
-                denied[tc.tool_id] = ToolResultEnvelope.error(
+                denial = ToolResultEnvelope.error(
                     tc.name,
                     tc.tool_id,
                     outcome.reason or "Tool call blocked by before_tool.",
                 )
+                # It never runs: a zero-length window at the denial.
+                trace_safe("tool_hooks.denied_timing", stamp_never_ran, denial)
+                denied[tc.tool_id] = denial
                 continue
             allowed.append(dataclasses.replace(tc, input=prepared))
         return allowed, denied
@@ -1743,7 +1746,10 @@ class AnthropicAgent(AgentRuntime):
         """``on_tool_error`` (for RAISED executions, update→recovery envelope)
         then ``after_tool`` (PRE-splice, update→ToolResultEnvelope, R10) per
         backend result; ``ctx.switch_profile`` applies once post-composition
-        (O7 — last call in the chain wins)."""
+        (O7 — last call in the chain wins).
+
+        A replacement envelope still stands for the execution it replaces,
+        so it inherits any timing it lacks (``inherit_tool_timing``)."""
         inputs = {tc.tool_id: dict(tc.input or {}) for tc in tool_calls}
         pending_switches: list[str] = []
 
@@ -1762,6 +1768,10 @@ class AnthropicAgent(AgentRuntime):
                     error=raised,
                 )
                 if outcome is not None and outcome.update is not None:
+                    trace_safe(
+                        "tool_hooks.recovery_timing",
+                        inherit_tool_timing, outcome.update, envelope,
+                    )
                     envelope = outcome.update  # synthesized recovery (R10)
             outcome = await self._fire_hooks(
                 "after_tool",
@@ -1772,6 +1782,10 @@ class AnthropicAgent(AgentRuntime):
                 switch_profile=_record_switch,
             )
             if outcome is not None and outcome.update is not None:
+                trace_safe(
+                    "tool_hooks.after_tool_timing",
+                    inherit_tool_timing, outcome.update, envelope,
+                )
                 envelope = outcome.update  # pre-splice transform (R10)
             out.append(envelope)
         if pending_switches:
@@ -2514,6 +2528,12 @@ class AnthropicAgent(AgentRuntime):
         *,
         agent_uuid: str | None = None,
     ) -> None:
+        """Append each result to BOTH conversation logs.
+
+        Every entry of the batch shares one timestamp, taken after the whole
+        batch (hooks included) finished. Each projection also gets its call's
+        own timing and executor (``_stamp_tool_projection``).
+        """
         effective_agent_uuid = agent_uuid or self.agent_uuid
         if not effective_agent_uuid:
             return
@@ -2523,6 +2543,9 @@ class AnthropicAgent(AgentRuntime):
 
         for envelope in envelopes:
             projection = envelope.for_conversation_log()
+            trace_safe(
+                "tool_log.timing", self._stamp_tool_projection, projection, envelope
+            )
             child_agent_uuid = projection.details.get("child_agent_uuid")
             if projection.nested_conversation is not None and child_agent_uuid:
                 child_descriptor = projection.nested_conversation.agents.get(child_agent_uuid)
@@ -2557,6 +2580,24 @@ class AnthropicAgent(AgentRuntime):
                     agent_uuid=effective_agent_uuid,
                     timestamp=timestamp,
                 )
+
+    def _stamp_tool_projection(
+        self, projection: ToolLogProjection, envelope: ToolResultEnvelope
+    ) -> None:
+        """Copy ``envelope``'s trace timing onto its log ``projection``, plus
+        where the tool ran (``ToolRegistry.executor_for``; ``backend`` for an
+        unknown name).
+
+        Done here, where every tool result enters the log, so no
+        ``for_conversation_log`` needs to know about it — a custom one
+        (``SubAgentEnvelope``, a consumer's envelope) included. A value the
+        projection already carries wins.
+        """
+        for name in ("started_at", "ended_at", "queued_ms"):
+            if getattr(projection, name) is None:
+                setattr(projection, name, getattr(envelope, name, None))
+        if projection.executor is None:
+            projection.executor = self.tool_registry.executor_for(envelope.tool_name)
 
     def log_tool_result_for_replay(self, envelope: ToolResultEnvelope) -> None:
         """WT-4 public seam: persist a tool result to the conversation logs.

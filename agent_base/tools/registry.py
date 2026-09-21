@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Callable, Dict, TYPE_CHECKING
 
 from agent_base.core.abort_types import TOOL_ABORT_TEXT
+from agent_base.core.trace_spans import SpanClock, trace_safe
 from agent_base.observability import emit as observe, span as observation_span
 
 from .base import ConfigurableToolBase
@@ -31,6 +32,38 @@ def _accepts_ctx(func: Callable) -> bool:
         return CTX_PARAM_NAME in inspect.signature(func).parameters
     except (TypeError, ValueError):
         return False
+
+
+def _stamp_window(
+    envelope: ToolResultEnvelope, clock: SpanClock, elapsed_ms: float | None = None
+) -> None:
+    """Stamp ``envelope``'s wall-clock ``started_at``/``ended_at`` from
+    ``clock``: ``elapsed_ms`` long when given (so the window agrees with
+    ``duration_ms``), else ending now."""
+    envelope.started_at, envelope.ended_at, _ = clock.window(elapsed_ms)
+
+
+def stamp_never_ran(envelope: ToolResultEnvelope) -> None:
+    """Time the envelope of a call that never ran (an unknown tool, a call
+    ``before_tool`` denied): a zero-length window now, when it resolved."""
+    _stamp_window(envelope, SpanClock(), 0.0)
+
+
+def _stamp_slot(envelope: ToolResultEnvelope, slot: "tuple[SpanClock, float]") -> None:
+    """Time a stand-in envelope (the call's task raised, or was cancelled)
+    from the slot its call held: started when it got the slot, ended now."""
+    clock, queued_ms = slot
+    _stamp_window(envelope, clock)
+    envelope.queued_ms = queued_ms
+
+
+def _stamp_queue(envelope: ToolResultEnvelope, wait: SpanClock) -> None:
+    """Time the stand-in of a call that never got a parallel slot: it never
+    ran, so a zero-length window now, having queued since ``wait`` started
+    (``started_at - queued_ms`` is when it began waiting, as for any call)."""
+    _, now, queued_ms = wait.window()
+    envelope.started_at = envelope.ended_at = now
+    envelope.queued_ms = queued_ms
 
 
 # ─── Data Structures ───────────────────────────────────────────────────
@@ -219,12 +252,20 @@ class ToolRegistry:
             tool_input: Dictionary of input parameters.
 
         Returns:
-            A ``ToolResultEnvelope`` with ``duration_ms`` set.
+            A ``ToolResultEnvelope`` with ``duration_ms`` set, and its
+            wall-clock ``started_at``/``ended_at`` bracketing the same
+            interval. An unknown tool never runs: its error envelope gets a
+            zero-length window at the dispatch and no ``duration_ms``.
         """
         if tool_name not in self._tools:
-            return ToolResultEnvelope.error(tool_name, tool_id, f"Unknown tool '{tool_name}'")
+            envelope = ToolResultEnvelope.error(
+                tool_name, tool_id, f"Unknown tool '{tool_name}'"
+            )
+            trace_safe("registry.execute.unknown", stamp_never_ran, envelope)
+            return envelope
 
         registered = self._tools[tool_name]
+        clock = SpanClock()
         start = time.monotonic()
 
         call_kwargs = dict(tool_input)
@@ -251,6 +292,9 @@ class ToolRegistry:
             envelope.raised_error = e
 
         envelope.duration_ms = (time.monotonic() - start) * 1000
+        trace_safe(
+            "registry.execute.window", _stamp_window, envelope, clock, envelope.duration_ms
+        )
         observe(
             "tool_call",
             tool_name=tool_name,
@@ -286,7 +330,10 @@ class ToolRegistry:
         Returns:
             List of ``ToolResultEnvelope`` objects, one per tool call,
             in the same order as the input. Cancelled tools get error
-            envelopes with ``is_error=True``.
+            envelopes with ``is_error=True``. Each envelope's ``queued_ms`` is
+            the time its call waited for a parallel slot; a call cancelled
+            before it got one never ran, so it gets a zero-length window at
+            the cancellation and the wait up to it.
         """
         if not tool_calls:
             return []
@@ -295,23 +342,39 @@ class ToolRegistry:
         # so an in-flight backend tool can be aborted promptly.
         semaphore = asyncio.Semaphore(max_parallel)
         results: dict[str, ToolResultEnvelope] = {}  # tool_id → result
+        # tool_id → clock started when the call began waiting for a slot, and
+        # tool_id → (clock started on getting one, queue wait): they time the
+        # stand-in envelope of a call whose task raised or was cancelled.
+        waits: dict[str, SpanClock] = {}
+        slots: dict[str, tuple[SpanClock, float]] = {}
+
+        def _stamp_stand_in(envelope: ToolResultEnvelope, tool_id: str) -> None:
+            if tool_id in slots:
+                _stamp_slot(envelope, slots[tool_id])
+            elif tool_id in waits:
+                _stamp_queue(envelope, waits[tool_id])
 
         async def _run_one(tc: ToolCallInfo) -> tuple[str, ToolResultEnvelope]:
-            wait_started = time.monotonic()
+            wait = waits[tc.tool_id] = SpanClock()
             with observation_span(
                 "tool.semaphore_wait", tool_name=tc.name, tool_id=tc.tool_id
             ):
                 await semaphore.acquire()
+            wait_ms = wait.elapsed_ms()
             observe(
                 "tool_semaphore_wait",
                 tool_name=tc.name,
                 tool_id=tc.tool_id,
-                wait_ms=(time.monotonic() - wait_started) * 1000,
+                wait_ms=wait_ms,
                 max_parallel=max_parallel,
             )
             try:
+                slots[tc.tool_id] = (SpanClock(), wait_ms)
                 ctx = ctx_factory(tc) if ctx_factory is not None else None
                 envelope = await self.execute(tc.name, tc.tool_id, tc.input, ctx=ctx)
+                trace_safe(
+                    "registry.execute_tools.queued", setattr, envelope, "queued_ms", wait_ms
+                )
                 return tc.tool_id, envelope
             finally:
                 semaphore.release()
@@ -353,6 +416,10 @@ class ToolRegistry:
                                 tc.name, tc.tool_id, "Tool execution failed.",
                             )
                             failed.raised_error = task_exc  # CM-G4 (see execute())
+                            trace_safe(
+                                "registry.execute_tools.failed",
+                                _stamp_stand_in, failed, tc.tool_id,
+                            )
                             results[tc.tool_id] = failed
 
                 # All tool calls have finished; stop waiting on the cancellation sentinel.
@@ -371,10 +438,15 @@ class ToolRegistry:
                         # Synthesize error results for any tools without results
                         for tc in tasks.values():
                             if tc.tool_id not in results:
-                                results[tc.tool_id] = ToolResultEnvelope.error(
+                                aborted = ToolResultEnvelope.error(
                                     tc.name, tc.tool_id,
                                     TOOL_ABORT_TEXT,
                                 )
+                                trace_safe(
+                                    "registry.execute_tools.cancelled",
+                                    _stamp_stand_in, aborted, tc.tool_id,
+                                )
+                                results[tc.tool_id] = aborted
                         pending = set()
                         break
         finally:
