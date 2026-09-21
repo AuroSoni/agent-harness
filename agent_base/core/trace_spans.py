@@ -17,6 +17,8 @@ This module is the one home of the span schema:
 - :func:`trace_safe` — the fail-soft wrapper every stamping site goes through.
   Tracing must never break a turn.
 - :class:`SpanClock` — a wall-clock start paired with a monotonic one.
+- the builders and stampers of spans that are recorded first and filled in
+  as the thing they time moves on (the relay span).
 
 Instants are backend wall-clock UTC ISO-8601 strings, the same form as
 ``MessageLogEntry.timestamp``; durations are milliseconds.
@@ -24,6 +26,7 @@ Instants are backend wall-clock UTC ISO-8601 strings, the same form as
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, TypedDict, TypeVar
 
@@ -160,7 +163,8 @@ class RelayBackendCall(TypedDict, total=False):
     """A backend call that ran in the same step as a relay pause.
 
     Those calls get no ``tool_result`` entry (their results ride the spliced
-    reply), so their timing lives here.
+    reply), so their timing lives here: the envelope's, as ``ToolRegistry``
+    stamped it. A field the envelope lacks is left out.
     """
 
     tool_id: str
@@ -175,20 +179,47 @@ class RelayBackendCall(TypedDict, total=False):
 class RelaySpan(_Span, total=False):
     """One pause on external input, keyed by its correlation id.
 
-    Recorded for every await reason, scripted pauses included.
-    ``await_emitted_at`` opens it; ``resumed_at`` and ``outcome``
-    (``resumed``, ``aborted`` or ``error``) close it.
+    Recorded for every await reason — ``reason`` is the await table's
+    (``frontend_tool``, ``confirmation``, ``scripted``). A loop pause records
+    it in ``_run_relay_pause`` before the suspend-side persist, so a cold
+    resume and an abort find it: ``paused_at``, the ``calls`` it waits on and
+    the step's ``backend_calls``. A scripted pause (``call_frontend_tool``)
+    never passes there, so ``await_external`` records it when a tool body
+    asked, with ``parent_tool_use_id`` naming that tool run; one from
+    ``scripted_ctx()`` (a slash command, outside any run) is not kept.
+
+    The instants follow the pause: ``await_emitted_at`` right after the
+    ``AwaitInput`` emit, ``resumed_at`` when the reply wakes the turn (on a
+    cold resume, when the reply resolves the re-armed pause, before the
+    sandbox warm), ``spliced_at`` when a loop pause's results enter the
+    context — a scripted reply goes back to the tool body instead, so it has
+    none. ``outcome`` closes it: ``resumed``, stamped with ``resumed_at``
+    (a run aborted between the reply and the splice leaves it without
+    ``spliced_at``); ``aborted``, never answered, so no ``resumed_at``; or
+    ``error``, when the wait itself failed.
+
+    ``await_emitted_at`` follows the persist, so it reaches the row with the
+    run's next save; a pause that outlives its process keeps ``paused_at``
+    alone. A reader takes the pause as starting at ``await_emitted_at``,
+    else ``paused_at``.
+
+    A step whose every frontend call ``before_tool`` denied never pauses. Its
+    span is ``no_pause: True`` and the step's ``backend_calls``, with none of
+    the pause's fields.
     """
 
+    agent_uuid: str
     cid: str
     reason: str
+    paused_at: str
     await_emitted_at: str
     calls: list[RelayCall]
+    backend_calls: list[RelayBackendCall]
     parent_tool_use_id: str
     resumed_at: str
-    outcome: str
-    backend_calls: list[RelayBackendCall]
     spliced_at: str
+    outcome: str
+    no_pause: bool
 
 
 class ModelCallFailedSpan(_Span, total=False):
@@ -238,6 +269,100 @@ class TurnErrorSpan(_Span, total=False):
     error_code: str
 
 
+# ---------------------------------------------------------------------------
+# Building and stamping relay spans
+# ---------------------------------------------------------------------------
+
+#: ``RelayCall.queue`` values.
+RELAY_QUEUE_FRONTEND = "frontend"
+RELAY_QUEUE_CONFIRMATION = "confirmation"
+
+#: ``RelaySpan.outcome`` values.
+RELAY_RESUMED = "resumed"
+RELAY_ABORTED = "aborted"
+RELAY_ERROR = "error"
+
+
+def relay_call(tool_id: str, tool_name: str, queue: str) -> RelayCall:
+    return {"tool_id": tool_id, "tool_name": tool_name, "queue": queue}
+
+
+def relay_backend_calls(envelopes: Iterable[Any]) -> list[RelayBackendCall]:
+    """The ``backend_calls`` of a relay step, from its result envelopes."""
+    calls: list[RelayBackendCall] = []
+    for envelope in envelopes:
+        call: dict[str, Any] = {
+            "tool_id": envelope.tool_id,
+            "tool_name": envelope.tool_name,
+        }
+        for name in ("started_at", "ended_at", "duration_ms", "queued_ms"):
+            value = getattr(envelope, name, None)
+            if value is not None:
+                call[name] = value
+        call["is_error"] = bool(envelope.is_error)
+        calls.append(call)
+    return calls
+
+
+def relay_span(
+    agent_uuid: str, cid: str, reason: str, calls: list[RelayCall]
+) -> RelaySpan:
+    """A new span for the pause on ``cid``, paused now."""
+    return {
+        "kind": "relay",
+        "v": SPAN_SCHEMA_VERSION,
+        "agent_uuid": agent_uuid,
+        "cid": cid,
+        "reason": reason,
+        "paused_at": utc_now_iso(),
+        "calls": calls,
+    }
+
+
+def no_pause_relay_span(
+    agent_uuid: str, backend_calls: list[RelayBackendCall]
+) -> RelaySpan:
+    """The span of a relay step whose every frontend call was denied."""
+    return {
+        "kind": "relay",
+        "v": SPAN_SCHEMA_VERSION,
+        "agent_uuid": agent_uuid,
+        "no_pause": True,
+        "backend_calls": backend_calls,
+    }
+
+
+def is_open_relay(span: Mapping[str, Any]) -> bool:
+    """A relay span whose pause has not ended yet."""
+    return (
+        span.get("kind") == "relay"
+        and "outcome" not in span
+        and not span.get("no_pause")
+    )
+
+
+def close_open_relays(spans: Iterable[dict[str, Any]], outcome: str) -> None:
+    """End every pause still open in ``spans`` with ``outcome`` — the run is
+    closing without them ever being answered."""
+    for span in spans:
+        if is_open_relay(span):
+            span["outcome"] = outcome
+
+
+def stamp_span(span: dict[str, Any] | None, **fields: Any) -> None:
+    """Set ``fields`` on a kept span in place. ``None`` — a span that was
+    never kept (no run to keep it on, or recording it failed) — is skipped."""
+    if span is not None:
+        span.update(fields)
+
+
+def fill_span(span: dict[str, Any] | None, **fields: Any) -> None:
+    """Like :func:`stamp_span`, but only the fields ``span`` lacks."""
+    if span is not None:
+        for key, value in fields.items():
+            span.setdefault(key, value)
+
+
 __all__ = [
     "SPAN_SCHEMA_VERSION",
     "SpanKind",
@@ -249,6 +374,19 @@ __all__ = [
     "ModelCallFailedSpan",
     "ModelCallCancelledSpan",
     "TurnErrorSpan",
+    "RELAY_QUEUE_FRONTEND",
+    "RELAY_QUEUE_CONFIRMATION",
+    "RELAY_RESUMED",
+    "RELAY_ABORTED",
+    "RELAY_ERROR",
+    "relay_call",
+    "relay_backend_calls",
+    "relay_span",
+    "no_pause_relay_span",
+    "is_open_relay",
+    "close_open_relays",
+    "stamp_span",
+    "fill_span",
     "trace_safe",
     "utc_now_iso",
 ]

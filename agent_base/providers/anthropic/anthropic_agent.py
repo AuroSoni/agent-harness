@@ -61,7 +61,20 @@ from agent_base.core.messages import Message, Usage
 from agent_base.core.provider import ProviderTurn
 from agent_base.core.result import AgentResult, LogEntry
 from agent_base.core.runtime import AgentRuntime, _Recompact
-from agent_base.core.trace_spans import trace_safe
+from agent_base.core.trace_spans import (
+    RELAY_ABORTED,
+    RELAY_QUEUE_CONFIRMATION,
+    RELAY_QUEUE_FRONTEND,
+    RELAY_RESUMED,
+    close_open_relays,
+    no_pause_relay_span,
+    relay_backend_calls,
+    relay_call,
+    relay_span,
+    stamp_span,
+    trace_safe,
+    utc_now_iso,
+)
 from agent_base.core.types import (
     ContentBlock,
     Contribution,
@@ -1229,6 +1242,9 @@ class AnthropicAgent(AgentRuntime):
             return self._build_aborted_result()
         finally:
             table.pop(join.cid)
+        # The kick (_kick_rearmed_resume) normally closed the pause's relay
+        # span, reloaded with the run; this closes it only if that was lost.
+        trace_safe("resume_rearmed.span", self._stamp_relay_resumed, join.cid)
 
         results = await self._reconcile_relay_reply(
             join.cid, join.tool_use_ids, results
@@ -1252,7 +1268,8 @@ class AnthropicAgent(AgentRuntime):
         replacement for the deleted ``on_relay_result``) fires per incoming
         ToolResult as a pre-splice transform; ``pending_relay.completed_results``
         + the (possibly transformed) reply land as ONE user message;
-        ``pending_relay`` clears on success.
+        ``pending_relay`` clears on success. The pause's relay span gets its
+        ``spliced_at``.
         """
         del ctx
         pending = self.agent_config.pending_relay
@@ -1295,8 +1312,20 @@ class AnthropicAgent(AgentRuntime):
             context_message = combined_message
 
         self._append_message_variants(context_message, combined_message)
+        trace_safe("relay_splice.span", self._stamp_relay_spliced, cid or pending.cid)
 
         self.agent_config.pending_relay = None
+
+    def _stamp_relay_spliced(self, cid: str | None) -> None:
+        """Stamp ``spliced_at`` on the relay span of the pause on ``cid``
+        (already ``resumed``: the splice follows the wake)."""
+        if cid is None:
+            return
+        stamp_span(
+            self._find_trace_span("relay", cid=cid),
+            spliced_at=utc_now_iso(),
+            outcome=RELAY_RESUMED,
+        )
 
     def _tool_ctx_factory(self):
         """Build a per-call ``ToolContext`` factory for the current run.
@@ -1920,7 +1949,16 @@ class AnthropicAgent(AgentRuntime):
         pending_calls = (*frontend_calls, *confirmation_calls)
         if not pending_calls:
             # Every pending call was denied — nothing to relay. Splice the
-            # backend + denied results and continue the loop.
+            # backend + denied results and continue the loop. The backend
+            # calls' timing still has nowhere else to go (they get no
+            # tool_result entry), so it rides a no-pause relay span.
+            if backend_results:
+                trace_safe(
+                    "relay_pause.no_pause",
+                    lambda: self._record_trace_span(no_pause_relay_span(
+                        self.agent_uuid, relay_backend_calls(backend_results)
+                    )),
+                )
             fold = Message.user([
                 block
                 for message in completed_result_messages
@@ -1974,6 +2012,13 @@ class AnthropicAgent(AgentRuntime):
             pre_pause_run_cost=self._cumulative_cost.to_dict(),
         )
 
+        # The pause's relay span rides the same write, so a cold resume and an
+        # abort find it by cid; await_external stamps it from here on.
+        trace_safe(
+            "relay_pause.span", self._record_relay_pause_span,
+            cid, reason, frontend_calls, confirmation_calls, backend_results,
+        )
+
         # Suspend-side checkpoint: the pause must be on disk BEFORE parking so
         # an eviction/crash can cold-resume it (await_external checkpoints the
         # resume side). The pre-pause facts ride the same single write.
@@ -2000,6 +2045,35 @@ class AnthropicAgent(AgentRuntime):
             return self._build_aborted_result()
         # Results spliced in; continue the loop for the next LLM call.
         return None
+
+    def _record_relay_pause_span(
+        self,
+        cid: str,
+        reason: str,
+        frontend_calls: list[Any],
+        confirmation_calls: list[Any],
+        backend_results: list[ToolResultEnvelope],
+    ) -> None:
+        """Keep the relay span of the pause on ``cid``: the calls it waits
+        on and the step's backend calls, whose results ride the splice and
+        so get no tool_result entry of their own (``RelaySpan``)."""
+        span = relay_span(
+            self.agent_uuid,
+            cid,
+            reason,
+            [
+                *(
+                    relay_call(tc.tool_id, tc.name, RELAY_QUEUE_FRONTEND)
+                    for tc in frontend_calls
+                ),
+                *(
+                    relay_call(tc.tool_id, tc.name, RELAY_QUEUE_CONFIRMATION)
+                    for tc in confirmation_calls
+                ),
+            ],
+        )
+        span["backend_calls"] = relay_backend_calls(backend_results)
+        self._record_trace_span(span)
 
     # ── Actor loop & checkpoint ────────────────────────────────────────────
 
@@ -2255,10 +2329,19 @@ class AnthropicAgent(AgentRuntime):
         self._hook_emit(Custom(name=record.marker, data=data))
 
     def _mark_conversation_aborted(self) -> None:
-        """Close this run's conversation record as aborted (mirrors _finalize_run)."""
+        """Close this run's conversation record as aborted (mirrors _finalize_run).
+
+        A pause still open ends here too, never answered: its relay span
+        gets the ``aborted`` outcome (and no ``resumed_at``) before the
+        caller saves the row.
+        """
         conversation = self.conversation
         if conversation is None or conversation.completed_at is not None:
             return
+        trace_safe(
+            "abort.relay_spans",
+            lambda: close_open_relays(conversation.conversation_log.spans, RELAY_ABORTED),
+        )
         conversation.stop_reason = "aborted"
         if self.agent_config is not None:
             conversation.total_steps = self.agent_config.current_step
@@ -2489,6 +2572,15 @@ class AnthropicAgent(AgentRuntime):
         if conversation is None or conversation.completed_at is not None:
             return
         conversation.conversation_log.add_span(span)
+
+    def _find_trace_span(self, kind: str, **match: Any) -> dict[str, Any] | None:
+        """Find a span this agent kept on its open run's conversation log
+        (``AgentRuntime`` seam) — the one reloaded with the run too, on a
+        cold resume. A closed run is not searched, as it is not written."""
+        conversation = self.conversation
+        if conversation is None or conversation.completed_at is not None:
+            return None
+        return conversation.conversation_log.find_span(kind, **match)
 
     # ─── WT-4: display-only emission (live stream + replay log, NEVER context) ───
 

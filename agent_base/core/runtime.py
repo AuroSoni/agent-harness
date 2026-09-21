@@ -89,7 +89,21 @@ from agent_base.core.hooks.protocol import HOOK_EVENTS
 from agent_base.core.identity import PrincipalConflict
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import AgentResult
-from agent_base.core.trace_spans import SPAN_SCHEMA_VERSION, SpanClock, trace_safe
+from agent_base.core.trace_spans import (
+    RELAY_ABORTED,
+    RELAY_ERROR,
+    RELAY_QUEUE_CONFIRMATION,
+    RELAY_QUEUE_FRONTEND,
+    RELAY_RESUMED,
+    SPAN_SCHEMA_VERSION,
+    SpanClock,
+    fill_span,
+    relay_call,
+    relay_span,
+    stamp_span,
+    trace_safe,
+    utc_now_iso,
+)
 from agent_base.core.types import (
     ContentBlock,
     TextContent,
@@ -914,6 +928,10 @@ class AgentRuntime:
         checkpoint at the boundary; the ``scripted`` reason
         (``call_frontend_tool``) does NEITHER — the blocks go back to the
         calling tool body only (§I4).
+
+        Every pause, whatever its reason, is timed on its relay span
+        (``core.trace_spans.RelaySpan``, through :meth:`_open_relay_span`):
+        emitted, then resumed or aborted. The stamps are fail-soft.
         """
         from agent_base.streaming.meta import AwaitInput
 
@@ -927,18 +945,35 @@ class AgentRuntime:
             child_agent_id=child_agent_id,
             reason=reason,
         )
+        # Looked up inside the guard: a runtime-shaped stand-in may lack it.
+        span = trace_safe(
+            "await_external.span",
+            lambda: self._open_relay_span(cid, reason, outbound, ctx),
+        )
 
         # ── The ONE control envelope (B5/B8). expects_reply=True; the FE
         # replies via ToolReply(cid). ctx.emit stamps the MetaEnvelope header.
         ctx.emit(AwaitInput(tools=outbound), correlation_id=cid, expects_reply=True)
+        trace_safe(
+            "await_external.emitted", stamp_span, span, await_emitted_at=utc_now_iso()
+        )
 
         try:
             results = await self._race_join_against_cancel(join)
         except _AwaitCancelled:
+            # Stamped before the repair, which may close and save the run.
+            trace_safe("await_external.aborted", stamp_span, span, outcome=RELAY_ABORTED)
             await self._repair_self_chain()   # §6: close my orphaned tool_use
             return ResumeOutcome(status="aborted", results=[])
+        except Exception:
+            trace_safe("await_external.error", stamp_span, span, outcome=RELAY_ERROR)
+            raise
         finally:
             table.pop(cid)
+        trace_safe(
+            "await_external.resumed", stamp_span, span,
+            resumed_at=utc_now_iso(), outcome=RELAY_RESUMED,
+        )
 
         # ── Library-owned resume-boundary chain integrity (B1/C5/X13, R18b). ──
         # A reply is admitted without request-task sandbox warmup. Recover in
@@ -1197,6 +1232,15 @@ class AgentRuntime:
         resume = getattr(self, "_resume_rearmed", None)
         if not callable(resume):
             return
+        # The reply just resolved the pause: the instant a hot pause's parked
+        # coroutine would wake, so resumed_at and the resumed outcome mean the
+        # same on both paths (the continuation warms the sandbox before it
+        # resumes the turn; an abort during the warm finds the pause answered).
+        join = self._rearmed_join
+        trace_safe(
+            "kick_rearmed_resume.span",
+            lambda: self._stamp_relay_resumed(join.cid),
+        )
         self._rearmed_resume_task = asyncio.create_task(
             self._guard_continuation(self._coordinated_resume(resume))
         )
@@ -1866,6 +1910,77 @@ class AgentRuntime:
         Callers go through ``trace_safe``, so an override that raises costs
         the span, never the turn.
         """
+
+    def _find_trace_span(self, kind: str, **match: Any) -> dict[str, Any] | None:
+        """Trace seam: the latest span of ``kind`` kept with the run in
+        flight whose keys equal every ``match`` value (``None`` matches an
+        absent key), for a later stamp to update in place.
+
+        The default keeps none, so finds none; ``AnthropicAgent`` searches
+        the run's conversation log.
+        """
+        return None
+
+    def _open_relay_span(
+        self,
+        cid: str,
+        reason: str,
+        outbound: "list[FrontendCallView]",
+        ctx: Any,
+    ) -> dict[str, Any] | None:
+        """The relay span of the pause ``await_external`` is about to emit.
+
+        A loop pause recorded it before its suspend-side persist
+        (``_run_relay_pause``), so it is found by ``cid``. A scripted pause
+        never passes there, so it is recorded here; its ``cid`` repeats per
+        tool name within a run, hence only a span still open matches.
+
+        A scripted pause is kept only when a tool body asked (its
+        ``ToolContext`` names the tool run). One from ``scripted_ctx()`` — a
+        slash command — belongs to no run: the conversation still open may
+        be an errored run's, which is no place for its wait.
+        """
+        parent_tool_use_id = None
+        if reason == AWAIT_REASON_SCRIPTED:
+            parent_tool_use_id = getattr(ctx, "tool_call_id", None)
+            if not parent_tool_use_id:
+                return None
+        span = self._find_trace_span("relay", cid=cid, outcome=None)
+        if span is not None:
+            return span
+        relay = self._agent_config.pending_relay
+        confirming = (
+            {call.tool_id for call in relay.confirmation_calls}
+            if relay is not None and relay.cid == cid
+            else set()
+        )
+        span = relay_span(
+            self._agent_config.agent_uuid,
+            cid,
+            reason,
+            [
+                relay_call(
+                    view.tool_use_id,
+                    view.tool_name,
+                    RELAY_QUEUE_CONFIRMATION
+                    if view.tool_use_id in confirming
+                    else RELAY_QUEUE_FRONTEND,
+                )
+                for view in outbound
+            ],
+        )
+        if parent_tool_use_id:
+            span["parent_tool_use_id"] = parent_tool_use_id
+        self._record_trace_span(span)
+        return span
+
+    def _stamp_relay_resumed(self, cid: str) -> None:
+        """Close the open relay span of the pause on ``cid`` as ``resumed``,
+        with ``resumed_at`` now unless already set. A span already closed is
+        not found, so a second stamp is a no-op."""
+        span = self._find_trace_span("relay", cid=cid, outcome=None)
+        fill_span(span, resumed_at=utc_now_iso())
+        stamp_span(span, outcome=RELAY_RESUMED)
 
     # ── the awaited entrypoint (Fork E — relocation sequenced last) ────────
 
