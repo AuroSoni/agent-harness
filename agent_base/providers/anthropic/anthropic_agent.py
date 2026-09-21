@@ -29,9 +29,11 @@ import dataclasses
 import inspect
 import json
 import uuid
+from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Iterator, Optional, TYPE_CHECKING
 
 from agent_base.await_table.types import (
     AWAIT_REASON_CONFIRMATION,
@@ -62,16 +64,25 @@ from agent_base.core.provider import ProviderTurn
 from agent_base.core.result import AgentResult, LogEntry
 from agent_base.core.runtime import AgentRuntime, _Recompact
 from agent_base.core.trace_spans import (
+    PENDING_SPAN_MAX_AGE,
+    PENDING_SPANS_CAP,
     RELAY_ABORTED,
     RELAY_QUEUE_CONFIRMATION,
     RELAY_QUEUE_FRONTEND,
     RELAY_RESUMED,
+    SPAN_ROUTE_BUFFER,
+    SpanClock,
     close_open_relays,
+    ended_before,
     no_pause_relay_span,
     relay_backend_calls,
     relay_call,
     relay_span,
+    sandbox_ready_route,
+    sandbox_ready_span,
+    sandbox_warm_trigger,
     stamp_span,
+    trace_entrypoint,
     trace_safe,
     utc_now_iso,
 )
@@ -90,6 +101,7 @@ from agent_base.media_backend.local import LocalMediaBackend
 from agent_base.memory.stores import NoOpMemoryStore
 from agent_base.pricing.settlement import CsvPricingPolicy, settle_turn
 from agent_base.sandbox import sandbox_from_config
+from agent_base.sandbox.coordinator import readiness_sink, report_readiness
 from agent_base.sandbox.local import LocalSandbox
 from agent_base.storage.adapters.memory import (
     MemoryAgentConfigAdapter,
@@ -306,6 +318,9 @@ class AnthropicAgent(AgentRuntime):
         # (so the next capture reads only deltas) and the turn-end pause task.
         self._last_sandbox_manifest = None
         self._sandbox_pause_task = None
+        # Trace spans recorded before the run they belong to exists (a warm
+        # for a new request), held for the next initialize_run to adopt.
+        self._pending_spans: deque[dict[str, Any]] = deque(maxlen=PENDING_SPANS_CAP)
 
         # End-turn validation hook. Cannot be loaded from database.
         self.end_turn_hook = end_turn_hook
@@ -514,9 +529,11 @@ class AnthropicAgent(AgentRuntime):
             await sandbox.setup()
         except SandboxGone:
             _emit("sandbox.gone_on_setup", agent_uuid=agent_uuid)
+            trace_safe("sandbox_ready.gone", report_readiness, gone=True)
             sandbox.forget_remote()
             await sandbox.setup()
         created = bool(sandbox.created_on_last_setup())
+        trace_safe("sandbox_ready.created", report_readiness, created=created)
         needs_restore = created or self._sandbox_recovery_pending or (
             sandbox.is_remote and not getattr(self, "_parent_agent_uuid", None)
             and previous_remote != getattr(sandbox, "e2b_sandbox_id", None)
@@ -549,18 +566,32 @@ class AnthropicAgent(AgentRuntime):
         with observation_span(
             "sandbox.rehydrate", agent_uuid=agent_uuid, manifest_ref=checkpoint.sandbox_manifest_ref
         ):
+            clock = SpanClock()
             self._last_sandbox_manifest = await SandboxSnapshotter(
                 sandbox, self._blobs, tenant=tenant, policy=self._snapshot_policy
             ).materialize(checkpoint.sandbox_manifest_ref)
+        trace_safe(
+            "sandbox_ready.rehydrated",
+            lambda: report_readiness(rehydrated=True, rehydrate_ms=round(clock.elapsed_ms(), 3)),
+        )
 
-    async def _initialize_sandbox(self, agent_uuid: str) -> None:
-        """Set up the sandbox and attach it to tools and media."""
+    async def _initialize_sandbox(self, agent_uuid: str, *, trigger: str = "external") -> None:
+        """Set up the sandbox and attach it to tools and media.
+
+        With :meth:`ensure_sandbox_running`, the one chokepoint of a root
+        agent's sandbox warm: the warm is timed as a ``sandbox_ready`` span
+        (``core.trace_spans.SandboxReadySpan``) naming ``trigger``, through
+        :meth:`_sandbox_ready_trace`. Without a coordinator only a remote
+        sandbox has anything to warm, so a local one records no span.
+        """
         if self._sandbox_coordinator is not None and not getattr(self, "_parent_agent_uuid", None):
-            sandbox = await self._sandbox_coordinator.ensure_ready(self)
+            with self._sandbox_ready_trace(trigger):
+                sandbox = await self._sandbox_coordinator.ensure_ready(self)
             self._sandbox = sandbox
         else:
             sandbox = await self._get_or_create_sandbox(agent_uuid)
-            await self._provision_sandbox(sandbox, agent_uuid)
+            with self._sandbox_ready_trace(trigger, traced=sandbox.is_remote):
+                await self._provision_sandbox(sandbox, agent_uuid)
         self.tool_registry.attach_sandbox(sandbox)
         self.media_backend.attach_sandbox(sandbox)
         self._inject_agent_uuid_to_tools()
@@ -568,29 +599,103 @@ class AnthropicAgent(AgentRuntime):
 
     # ── remote-sandbox lifecycle (no-ops for local backends) ───────────────
 
-    async def ensure_sandbox_running(self) -> None:
+    async def ensure_sandbox_running(self, *, trigger: str | None = None) -> None:
         """Warm the sandbox before a turn: wait for an in-flight turn-end pause,
         then connect/resume. A remote that vanished meanwhile is re-provisioned
-        and rehydrated from the latest checkpoint."""
+        and rehydrated from the latest checkpoint.
+
+        ``trigger`` names the caller on the warm's ``sandbox_ready`` span: a
+        consumer may name its warm (``request``, ``attachments``), else it is
+        ``external``. The runtime calls this as ``warm()`` and names its own
+        (``turn_start``, ``relay_resume``, ``deferred_resume``,
+        ``cold_resume``) through ``trace_spans.sandbox_warm_trigger``, so an
+        override that takes no arguments still works. A local sandbox without
+        a coordinator has nothing to warm and leaves no span.
+        """
+        if trigger is None:
+            trigger = sandbox_warm_trigger.get() or "external"
         if self._sandbox_coordinator is not None and not getattr(self, "_parent_agent_uuid", None):
-            await self._initialize_sandbox(self.agent_uuid)
+            await self._initialize_sandbox(self.agent_uuid, trigger=trigger)
             return
         sandbox = self._sandbox
         if sandbox is None or not sandbox.is_remote:
             return
-        if self._sandbox_recovery_pending:
-            await self._provision_sandbox(sandbox, self.agent_uuid)
-            return
-        task = self._sandbox_pause_task
-        if task is not None and not task.done():
-            await asyncio.gather(task, return_exceptions=True)
-        from agent_base.sandbox.sandbox_types import SandboxGone
+        with self._sandbox_ready_trace(trigger):
+            if self._sandbox_recovery_pending:
+                await self._provision_sandbox(sandbox, self.agent_uuid)
+                return
+            task = self._sandbox_pause_task
+            if task is not None and not task.done():
+                waited = SpanClock()
+                await asyncio.gather(task, return_exceptions=True)
+                trace_safe(
+                    "sandbox_ready.pause_wait",
+                    lambda: report_readiness(pause_wait_ms=round(waited.elapsed_ms(), 3)),
+                )
+            from agent_base.sandbox.sandbox_types import SandboxGone
 
+            try:
+                created = await sandbox.ensure_running()
+            except SandboxGone:
+                trace_safe("sandbox_ready.gone", report_readiness, gone=True)
+                sandbox.forget_remote()
+                await self._provision_sandbox(sandbox, self.agent_uuid)
+            else:
+                trace_safe("sandbox_ready.created", report_readiness, created=bool(created))
+
+    @contextmanager
+    def _sandbox_ready_trace(self, trigger: str, *, traced: bool = True) -> Iterator[None]:
+        """Time the root sandbox warm inside as one ``sandbox_ready`` span.
+
+        For the duration, ``readiness_sink`` is the warm's ``detail``, so
+        what the coordinator (or this runtime) reports through
+        ``report_readiness`` lands on the span; it is reset after. The span
+        is recorded whether the warm returns or raises — then with ``ok``
+        False and the ``error_type`` — and the exception, cancellation
+        included, propagates unchanged. Where it goes is
+        :meth:`_record_span`'s, by ``trigger`` and the consumer's
+        ``trace_entry`` (``core.trace_spans.sandbox_ready_route``). A
+        sub-agent shares its parent's sandbox, so it records none.
+        """
+        if not traced or getattr(self, "_parent_agent_uuid", None):
+            yield
+            return
+        clock = SpanClock()
+        detail: dict[str, Any] = {}
+        token = readiness_sink.set(detail)
+        error: BaseException | None = None
         try:
-            await sandbox.ensure_running()
-        except SandboxGone:
-            sandbox.forget_remote()
-            await self._provision_sandbox(sandbox, self.agent_uuid)
+            yield
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            readiness_sink.reset(token)
+            trace_safe(
+                "sandbox_ready.span",
+                self._record_sandbox_ready, trigger, clock, detail, error,
+            )
+
+    def _record_sandbox_ready(
+        self,
+        trigger: str,
+        clock: SpanClock,
+        detail: dict[str, Any],
+        error: BaseException | None,
+    ) -> None:
+        """Build the ``sandbox_ready`` span of the warm ``clock`` timed and
+        keep it where :func:`~agent_base.core.trace_spans.sandbox_ready_route`
+        says."""
+        entry = trace_entrypoint.get()
+        span = sandbox_ready_span(
+            self.agent_uuid or "",
+            trigger,
+            clock,
+            detail,
+            error=error,
+            request_id=entry.get("request_id") if entry else None,
+        )
+        self._record_span(span, route=sandbox_ready_route(trigger, entry))
 
     async def pause_sandbox(self) -> bool:
         """Pause a remote sandbox now (eviction / explicit). Never raises."""
@@ -738,7 +843,7 @@ class AnthropicAgent(AgentRuntime):
             else:
                 self.conversation = None  # Created per-run in initialize_run()
 
-            await self._initialize_sandbox(self._agent_uuid)
+            await self._initialize_sandbox(self._agent_uuid, trigger="session_load")
 
             await self._initialize_mcp()
 
@@ -774,7 +879,7 @@ class AnthropicAgent(AgentRuntime):
             # The coordinator's principal-scoped binding CAS needs an identity
             # row first. Ordinary saves must preserve authoritative bindings.
             await self.config_adapter.save(self.agent_config)
-        await self._initialize_sandbox(agent_uuid)
+        await self._initialize_sandbox(agent_uuid, trigger="session_create")
 
         await self._initialize_mcp()
 
@@ -805,6 +910,9 @@ class AnthropicAgent(AgentRuntime):
         )
         self.agent_config.conversation_log = ConversationLog()
         self.agent_config.parent_agent_uuid = self._parent_agent_uuid
+        # Warms that ran before this run existed (the session load, the
+        # actor's turn_start, a consumer's own) were buffered for it.
+        trace_safe("initialize_run.adopt_spans", self._adopt_pending_spans, now)
 
         # Reset step counter. This is the ONLY reset site by design —
         # current_step is the billing-identity stamp (see core/config.py) and
@@ -1430,7 +1538,7 @@ class AnthropicAgent(AgentRuntime):
             while self.agent_config.current_step < self.max_steps:
                 if getattr(self, "_sandbox_resume_warm_pending", False):
                     self._sandbox_resume_warm_pending = False
-                    await self.ensure_sandbox_running()
+                    await self._warm_sandbox("deferred_resume")
                 self._phase = AgentPhase.STREAMING
 
                 # --- Proactive compaction check (before/after_compact fire,
@@ -2581,6 +2689,75 @@ class AnthropicAgent(AgentRuntime):
         if conversation is None or conversation.completed_at is not None:
             return None
         return conversation.conversation_log.find_span(kind, **match)
+
+    def _record_span(self, span: dict[str, Any], *, route: str) -> None:
+        """Keep a trace span by ``route`` (``core.trace_spans`` routes).
+
+        ``current`` keeps it with the run in flight, as
+        :meth:`_record_trace_span` does (dropped with no open run).
+        ``buffer`` holds it on ``_pending_spans`` for the next
+        :meth:`initialize_run` to adopt — a span that precedes the run it
+        belongs to. The buffer keeps the newest ``PENDING_SPANS_CAP``.
+        Callers go through ``trace_safe``; an override may keep spans
+        elsewhere.
+        """
+        if route == SPAN_ROUTE_BUFFER:
+            self._pending_spans.append(span)
+        else:
+            self._record_trace_span(span)
+
+    def _take_pending_spans(self, started_at: str) -> list[dict[str, Any]]:
+        """Empty the buffer, returning the spans the run that starts at
+        ``started_at`` adopts, in the order they were recorded. One that
+        ended more than ``PENDING_SPAN_MAX_AGE`` earlier was for a request
+        that never became a turn, and is dropped."""
+        pending = self._pending_spans
+        if not pending:
+            return []
+        spans = list(pending)
+        pending.clear()
+        cutoff = datetime.fromisoformat(started_at) - PENDING_SPAN_MAX_AGE
+        return [span for span in spans if not ended_before(span, cutoff)]
+
+    def _adopt_pending_spans(self, started_at: str) -> None:
+        """Move the buffered spans onto the run that starts at ``started_at``
+        (its conversation log); see :meth:`_take_pending_spans`."""
+        log = self.conversation.conversation_log
+        for span in self._take_pending_spans(started_at):
+            log.add_span(span)
+
+    def _build_run_conversation(self, **fields: Any) -> Conversation:
+        """A scripted turn's row (``record_turn``), carrying the warms that
+        were buffered for it.
+
+        A scripted turn is a run too, and the warms that preceded it (the
+        session load of a slash command's request, say) were buffered for
+        it: it adopts them as :meth:`initialize_run` does, so the next model
+        run cannot take them. The base row shares one log across this
+        runtime's scripted turns, so a row that adopts spans gets its own
+        copy of it; with nothing to adopt the row is unchanged.
+        """
+        conversation = super()._build_run_conversation(**fields)
+        trace_safe(
+            "record_turn.adopt_spans",
+            self._adopt_pending_spans_onto_row, conversation, fields["started_at"],
+        )
+        return conversation
+
+    def _adopt_pending_spans_onto_row(self, conversation: Conversation, started_at: str) -> None:
+        spans = self._take_pending_spans(started_at)
+        if not spans:
+            return
+        shared = conversation.conversation_log
+        log = dataclasses.replace(
+            shared,
+            agents=dict(shared.agents),
+            entries=list(shared.entries),
+            spans=list(shared.spans),
+        )
+        for span in spans:
+            log.add_span(span)
+        conversation.conversation_log = log
 
     # ─── WT-4: display-only emission (live stream + replay log, NEVER context) ───
 

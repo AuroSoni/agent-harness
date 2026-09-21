@@ -19,14 +19,19 @@ This module is the one home of the span schema:
 - :class:`SpanClock` — a wall-clock start paired with a monotonic one.
 - the builders and stampers of spans that are recorded first and filled in
   as the thing they time moves on (the relay span).
+- :func:`trace_entry` — how a consumer names the request a warm runs for, so
+  a ``sandbox_ready`` span reaches the right run (:func:`sandbox_ready_route`).
 
 Instants are backend wall-clock UTC ISO-8601 strings, the same form as
 ``MessageLogEntry.timestamp``; durations are milliseconds.
 """
 from __future__ import annotations
 
+import math
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, TypedDict, TypeVar
 
@@ -129,22 +134,38 @@ class _Span(TypedDict):
 
 
 class SandboxReadySpan(_Span, total=False):
-    """One sandbox warm on the root agent, failures included.
+    """One root sandbox warm, failures included.
 
-    ``trigger`` names what asked for it (``session_load``, ``session_create``,
-    ``turn_start``, ``relay_resume``, ``deferred_resume``, ``cold_resume``,
-    ``request``, ``attachments``). ``mode`` is how it became ready:
-    ``local``, ``reuse``, ``connect``, ``resume``, ``create``, ``recover`` or
-    ``template_refresh``. ``detail`` carries whatever the sandbox coordinator
-    reported for the warm (admission, setup and restore timings and the like).
+    ``trigger`` names what asked for it: ``session_load`` / ``session_create``
+    (the agent's ``initialize``), ``turn_start`` (the actor loop, before
+    ``run``), ``relay_resume`` (a pause's reply, warmed in the turn's own
+    task), ``deferred_resume`` (that warm, deferred to the loop's next step),
+    ``cold_resume`` (a re-armed pause's continuation), or a consumer's own
+    (``request``, ``attachments``; ``external`` when it named none).
+
+    The window is wall-clock (``started_at``/``ended_at``, UTC ISO) with a
+    monotonic ``duration_ms``, and covers the whole warm: a wait on an
+    in-flight pause, the connect/resume/create, and a vanished sandbox's
+    re-provision and rehydrate. ``ok`` is False when the warm raised;
+    ``error_type`` is then the exception's class name (never its message).
+    ``request_id`` is the consumer's, from :func:`trace_entry`, when the
+    warm ran inside one.
+
+    ``detail`` holds what the warm reported through
+    ``agent_base.sandbox.coordinator.report_readiness``: a coordinator's
+    facts (by convention ``mode`` — ``local``, ``reuse``, ``connect``,
+    ``resume``, ``create``, ``recover`` or ``template_refresh`` — and its
+    timings), or, without a coordinator, what the runtime knows itself
+    (``created``, ``gone``, ``rehydrated``/``rehydrate_ms``,
+    ``pause_wait_ms``). It is ``{}`` when nothing was reported.
     """
 
+    agent_uuid: str
     trigger: str
-    mode: str
-    ok: bool
     started_at: str
     ended_at: str
     duration_ms: float
+    ok: bool
     error_type: str
     request_id: str
     detail: dict[str, Any]
@@ -363,6 +384,152 @@ def fill_span(span: dict[str, Any] | None, **fields: Any) -> None:
             span.setdefault(key, value)
 
 
+# ---------------------------------------------------------------------------
+# Sandbox readiness: the request a warm runs for, and where its span goes
+# ---------------------------------------------------------------------------
+
+#: What a consumer request is, for :func:`trace_entry`.
+TraceEntryKind = Literal["run", "tool_results"]
+
+#: The consumer request this context is serving, as :func:`trace_entry` set
+#: it (``{"kind": ..., "request_id"?: ...}``), or ``None``.
+trace_entrypoint: ContextVar[dict[str, Any] | None] = ContextVar(
+    "agent_base_trace_entrypoint", default=None
+)
+
+
+@contextmanager
+def trace_entry(
+    kind: TraceEntryKind, request_id: str | None = None
+) -> Iterator[dict[str, Any]]:
+    """Declare the request the code inside serves (a new ``run``, or the
+    ``tool_results`` answering a pause), for sandbox-warm routing.
+
+    A consumer wraps it around the request's session load and warms
+    (``SessionManager.get_or_create``, ``ensure_sandbox_running``). It only
+    names the request: a ``sandbox_ready`` span of a warm inside carries the
+    ``request_id``, and a ``session_load`` warm inside a ``tool_results``
+    entry goes to the parked run it restores (:func:`sandbox_ready_route`).
+    Nothing else reads it. A task started inside inherits it, except the
+    session's actor, which serves every queued turn and so names none, and
+    a re-armed pause's continuation, which names the reply's request on its
+    ``cold_resume`` warm only: past it, the turn may pause again and be
+    answered by a later request.
+    """
+    entry: dict[str, Any] = {"kind": kind}
+    if request_id is not None:
+        entry["request_id"] = request_id
+    token = trace_entrypoint.set(entry)
+    try:
+        yield entry
+    finally:
+        # Left in a context other than the one it entered (a generator
+        # finalized elsewhere), there is nothing of ours to restore.
+        trace_safe("trace_entry.reset", trace_entrypoint.reset, token)
+
+
+#: The trigger of the root sandbox warm the runtime is calling through its
+#: ``ensure_sandbox_running`` hook, or ``None``. The runtime names it here,
+#: around a bare ``warm()`` call, instead of passing a keyword: the hook is
+#: looked up duck-typed, so an override or wrapper that takes no arguments
+#: keeps working, and one that forwards to the original passes the trigger
+#: on without knowing about it. Read by ``ensure_sandbox_running`` when it
+#: is not given a ``trigger`` itself.
+sandbox_warm_trigger: ContextVar[str | None] = ContextVar(
+    "agent_base_sandbox_warm_trigger", default=None
+)
+
+#: Span routes: onto the run in flight, or held for the next run to adopt.
+SPAN_ROUTE_CURRENT = "current"
+SPAN_ROUTE_BUFFER = "buffer"
+
+#: Warms done for the run already open: its own pause's continuation.
+CURRENT_RUN_TRIGGERS = frozenset({"relay_resume", "deferred_resume", "cold_resume"})
+
+#: How many buffered spans an agent holds for its next run (oldest dropped).
+PENDING_SPANS_CAP = 16
+
+#: A buffered span that ended this long before the next run started is not
+#: that run's (a warm for a request that never became a turn), so it is
+#: dropped at adoption.
+PENDING_SPAN_MAX_AGE = timedelta(minutes=15)
+
+
+def sandbox_ready_route(trigger: str, entrypoint: Mapping[str, Any] | None) -> str:
+    """Where the ``sandbox_ready`` span of a ``trigger`` warm goes.
+
+    A pause's continuation (:data:`CURRENT_RUN_TRIGGERS`) belongs to the run
+    it resumes: ``current``. So does a ``session_load`` inside a
+    ``tool_results`` entry — a cold continuation restoring its parked run.
+    Every other warm precedes the run it serves (a session load or create
+    for a new ``run``, the actor's ``turn_start``, a consumer's own), so it
+    is buffered for the next ``initialize_run`` to adopt.
+
+    The route follows the trigger and the entry only — never whether a run
+    happens to be open — so a parked run left open cannot absorb the warm
+    of a new request.
+    """
+    if trigger in CURRENT_RUN_TRIGGERS:
+        return SPAN_ROUTE_CURRENT
+    if (
+        trigger == "session_load"
+        and entrypoint is not None
+        and entrypoint.get("kind") == "tool_results"
+    ):
+        return SPAN_ROUTE_CURRENT
+    return SPAN_ROUTE_BUFFER
+
+
+def json_safe(value: Any) -> Any:
+    """``value`` as plain JSON: dicts (string keys) and lists of str, finite
+    numbers, bools and ``None``. A non-finite float becomes ``None`` and any
+    other object its ``str``, so a reported detail can never fail a save."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [json_safe(item) for item in value]
+    return str(value)
+
+
+def sandbox_ready_span(
+    agent_uuid: str,
+    trigger: str,
+    clock: SpanClock,
+    detail: Mapping[str, Any],
+    *,
+    error: BaseException | None = None,
+    request_id: str | None = None,
+) -> SandboxReadySpan:
+    """The span of a warm ``clock`` timed, ending now."""
+    started_at, ended_at, duration_ms = clock.window()
+    span: dict[str, Any] = {
+        "kind": "sandbox_ready",
+        "v": SPAN_SCHEMA_VERSION,
+        "agent_uuid": agent_uuid,
+        "trigger": trigger,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_ms": duration_ms,
+        "ok": error is None,
+    }
+    if error is not None:
+        span["error_type"] = type(error).__name__
+    if request_id is not None:
+        span["request_id"] = request_id
+    span["detail"] = json_safe(dict(detail))
+    return span  # type: ignore[return-value]
+
+
+def ended_before(span: Mapping[str, Any], cutoff: datetime) -> bool:
+    """True when ``span`` has an ``ended_at`` earlier than ``cutoff``."""
+    ended_at = span.get("ended_at")
+    return ended_at is not None and datetime.fromisoformat(ended_at) < cutoff
+
+
 __all__ = [
     "SPAN_SCHEMA_VERSION",
     "SpanKind",
@@ -387,6 +554,19 @@ __all__ = [
     "close_open_relays",
     "stamp_span",
     "fill_span",
+    "TraceEntryKind",
+    "trace_entrypoint",
+    "trace_entry",
+    "sandbox_warm_trigger",
+    "SPAN_ROUTE_CURRENT",
+    "SPAN_ROUTE_BUFFER",
+    "CURRENT_RUN_TRIGGERS",
+    "PENDING_SPANS_CAP",
+    "PENDING_SPAN_MAX_AGE",
+    "sandbox_ready_route",
+    "sandbox_ready_span",
+    "json_safe",
+    "ended_before",
     "trace_safe",
     "utc_now_iso",
 ]

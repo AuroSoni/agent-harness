@@ -100,7 +100,9 @@ from agent_base.core.trace_spans import (
     fill_span,
     relay_call,
     relay_span,
+    sandbox_warm_trigger,
     stamp_span,
+    trace_entrypoint,
     trace_safe,
     utc_now_iso,
 )
@@ -985,7 +987,7 @@ class AgentRuntime:
             drivers = (getattr(self, "_actor_task", None), getattr(self, "_run_task", None),
                        getattr(self, "_rearmed_resume_task", None))
             if task in drivers:
-                await self.ensure_sandbox_running()
+                await self._warm_sandbox("relay_resume")
             else:
                 self._sandbox_resume_warm_pending = True
 
@@ -1252,12 +1254,39 @@ class AgentRuntime:
             return uncoordinated()
         return coordinator.turn(self)
 
+    async def _warm_sandbox(self, trigger: str) -> None:
+        """Warm the sandbox through the ``ensure_sandbox_running`` hook, when
+        this runtime has one, naming ``trigger`` for its ``sandbox_ready``
+        span.
+
+        The hook is duck-typed and has always been called as ``warm()``, so
+        the trigger goes out of band (``trace_spans.sandbox_warm_trigger``)
+        rather than as a keyword: an override or wrapper that takes no
+        arguments keeps working, and one that forwards to the original
+        passes the trigger on.
+        """
+        warm = getattr(self, "ensure_sandbox_running", None)
+        if not callable(warm):
+            return
+        token = sandbox_warm_trigger.set(trigger)
+        try:
+            await warm()
+        finally:
+            sandbox_warm_trigger.reset(token)
+
     async def _coordinated_resume(self, resume):
         async with self._sandbox_turn_guard():
-            warm = getattr(self, "ensure_sandbox_running", None)
-            if callable(warm):
-                await warm()
-            return await resume()
+            await self._warm_sandbox("cold_resume")
+            # This task was spawned by the submit of the reply that answered
+            # the pause, and inherited its trace_entry: the warm above was for
+            # that reply. The continuation may pause again and be answered by
+            # a later request, so past it the task names no request (as the
+            # actor does); the task owns its context.
+            token = trace_entrypoint.set(None)
+            try:
+                return await resume()
+            finally:
+                trace_entrypoint.reset(token)
 
     async def _guard_continuation(self, coro: "Awaitable[Any]") -> Any:
         """Contain a driven-turn failure (actor drain or cold-resume
@@ -1629,7 +1658,14 @@ class AgentRuntime:
         errored; an aborted turn ends with the ``Custom('aborted')`` frame
         contract). Cancellation passes through untouched.
         """
-        return await self._guard_continuation(self._actor_loop())
+        # The task outlives the request whose submit spawned it and drains the
+        # turns queued after it too, so it serves no one request: it drives
+        # its turns without the consumer's trace_entry.
+        token = trace_entrypoint.set(None)
+        try:
+            return await self._guard_continuation(self._actor_loop())
+        finally:
+            trace_entrypoint.reset(token)
 
     async def _actor_loop(self) -> "AgentResult | None":
         """Single-writer driver: drain the mailbox oldest-first, one turn at
@@ -1663,9 +1699,7 @@ class AgentRuntime:
                         ):
                             # Remote sandboxes: resume (or re-provision a vanished
                             # one) BEFORE the turn touches files. No-op for local.
-                            warm = getattr(self, "ensure_sandbox_running", None)
-                            if callable(warm):
-                                await warm()
+                            await self._warm_sandbox("turn_start")
                             last_result = await self.run(msg.message)
                             await self.checkpoint()
                 finally:
