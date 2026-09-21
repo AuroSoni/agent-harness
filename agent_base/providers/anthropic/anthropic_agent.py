@@ -61,6 +61,7 @@ from agent_base.core.messages import Message, Usage
 from agent_base.core.provider import ProviderTurn
 from agent_base.core.result import AgentResult, LogEntry
 from agent_base.core.runtime import AgentRuntime, _Recompact
+from agent_base.core.trace_spans import trace_safe
 from agent_base.core.types import (
     ContentBlock,
     Contribution,
@@ -1458,7 +1459,14 @@ class AnthropicAgent(AgentRuntime):
                 self._turn_steps.append(response_message)
 
                 self.agent_config.context_messages.append(response_message)
-                self._append_message_to_logs(response_message)
+                self._append_message_to_logs(
+                    response_message,
+                    timing=getattr(turn, "timing", None),
+                    cost_usd=trace_safe(
+                        "resume_loop.cost_usd", self._step_cost_usd, response_message
+                    ),
+                    step=self.agent_config.current_step,
+                )
 
                 stop_reason = response_message.stop_reason
 
@@ -2336,14 +2344,26 @@ class AnthropicAgent(AgentRuntime):
 
         final_text = self._extract_text(last_msg)
 
+        log = copy.deepcopy(
+            self.agent_config.conversation_log
+            if self.agent_config is not None
+            else ConversationLog()
+        )
+        # agent_config's log never holds spans; carry the run's, so an aborted
+        # sub-agent's cancelled call still reaches its parent's
+        # nested_conversation (as a completed one's does via _finalize_run).
+        if self.conversation is not None:
+            spans = trace_safe(
+                "aborted_result.spans",
+                copy.deepcopy, self.conversation.conversation_log.spans,
+            )
+            if spans:
+                log.spans = spans
+
         return AgentResult(
             final_message=last_msg,
             final_answer=final_text,
-            conversation_log=copy.deepcopy(
-                self.agent_config.conversation_log
-                if self.agent_config is not None
-                else ConversationLog()
-            ),
+            conversation_log=log,
             stop_reason="aborted",
             model=self.agent_config.model if self.agent_config else (self.model or ""),
             provider=self.provider.name,
@@ -2386,7 +2406,16 @@ class AnthropicAgent(AgentRuntime):
         *,
         agent_uuid: str | None = None,
         timestamp: str | None = None,
+        timing: dict[str, Any] | None = None,
+        cost_usd: float | None = None,
+        step: int | None = None,
     ) -> None:
+        """Append ``message`` to BOTH conversation logs.
+
+        ``timing``, ``cost_usd`` and ``step`` are the model-call trace fields
+        (see ``MessageLogEntry``); only the loop's provider-call append passes
+        them.
+        """
         effective_agent_uuid = agent_uuid or self.agent_uuid
         if not effective_agent_uuid:
             return
@@ -2402,13 +2431,50 @@ class AnthropicAgent(AgentRuntime):
             message,
             agent_uuid=effective_agent_uuid,
             timestamp=timestamp,
+            timing=timing,
+            cost_usd=cost_usd,
+            step=step,
         )
         if self.conversation:
             self.conversation.conversation_log.add_message(
                 message,
                 agent_uuid=effective_agent_uuid,
                 timestamp=timestamp,
+                timing=timing,
+                cost_usd=cost_usd,
+                step=step,
             )
+
+    def _step_cost_usd(self, message: Message) -> float | None:
+        """This provider call's cost, priced the way settlement prices a step
+        (``pricing_policy.cost_for_step`` on the message's own model).
+
+        None, not 0, when there is no usage or the model is unpriced, so a
+        reader can tell unknown from free. Informational only: the
+        conversation's ``cost`` (``_cumulative_cost``) and billing are
+        computed as before.
+        """
+        if message.usage is None:
+            return None
+        step_cost = self.pricing_policy.cost_for_step(
+            message.usage, message.model or self.agent_config.model
+        )
+        return step_cost.total_cost if step_cost is not None else None
+
+    def _record_trace_span(self, span: dict[str, Any]) -> None:
+        """Keep a trace span with the run in flight (``AgentRuntime`` seam).
+
+        This agent's spans go to ``self.conversation.conversation_log`` only
+        — the per-run record — never to ``agent_config.conversation_log``.
+        (A sub-agent's reach its parent inside the ``AgentResult`` log that
+        becomes its ``nested_conversation``; see ``_build_aborted_result``.)
+        With no open run there is nothing to attach it to, and the span is
+        dropped.
+        """
+        conversation = self.conversation
+        if conversation is None or conversation.completed_at is not None:
+            return
+        conversation.conversation_log.add_span(span)
 
     # ─── WT-4: display-only emission (live stream + replay log, NEVER context) ───
 

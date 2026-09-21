@@ -28,7 +28,7 @@ imports live only inside ``agent_base/providers/<name>/``.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -95,12 +95,23 @@ class ProviderTurn:
     O12(d): a mid-stream failure returns cooperatively — partial content is kept
     on ``message`` and ``partial_error`` is set, so the loop emits an
     ``ErrorReport`` without discarding the partials.
+
+    ``timing`` is ``{started_at, ended_at, flight_ms}`` for the call, stamped
+    by ``AgentRuntime._provider_turn`` with ``dataclasses.replace(turn,
+    timing=...)`` — providers never set it. It is an ``InitVar`` kept as a
+    plain attribute rather than a field: O12(a) pins the provider-neutral
+    field set, and timing is a fact about the call, not part of the turn's
+    value (equality and ``repr`` ignore it). ``replace`` carries it over.
     """
 
     message: "Message"
     was_cancelled: bool = False
     partial_error: "ProviderError | None" = None
     stream_bookkeeping: Any = None
+    timing: InitVar[dict[str, Any] | None] = None
+
+    def __post_init__(self, timing: dict[str, Any] | None) -> None:
+        object.__setattr__(self, "timing", timing)
 
 
 # ---------------------------------------------------------------------------

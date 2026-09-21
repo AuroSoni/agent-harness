@@ -49,6 +49,14 @@ def _serialize_value(value: Any) -> Any:
     return value
 
 
+def _put_if_set(data: dict[str, Any], **fields: Any) -> None:
+    """Add the optional trace fields that are set. A ``None`` field stays
+    absent, so an entry written before they existed serialises unchanged."""
+    for key, value in fields.items():
+        if value is not None:
+            data[key] = _serialize_value(value)
+
+
 @dataclass
 class AgentDescriptor:
     agent_uuid: str
@@ -93,9 +101,16 @@ class ToolLogProjection:
     duration_ms: float | None = None
     details: dict[str, Any] = field(default_factory=dict)
     nested_conversation: "ConversationLog | None" = None
+    # Trace timing (optional; omitted from to_dict while None). Wall-clock UTC
+    # instants bracketing the call, the time it queued for a parallel slot
+    # before starting, and where it ran (``ToolRegistry.executor_for``).
+    started_at: str | None = None
+    ended_at: str | None = None
+    queued_ms: float | None = None
+    executor: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "tool_name": self.tool_name,
             "tool_id": self.tool_id,
             "is_error": self.is_error,
@@ -109,6 +124,14 @@ class ToolLogProjection:
                 else None
             ),
         }
+        _put_if_set(
+            data,
+            started_at=self.started_at,
+            ended_at=self.ended_at,
+            queued_ms=self.queued_ms,
+            executor=self.executor,
+        )
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ToolLogProjection":
@@ -128,6 +151,10 @@ class ToolLogProjection:
                 if data.get("nested_conversation")
                 else None
             ),
+            started_at=data.get("started_at"),
+            ended_at=data.get("ended_at"),
+            queued_ms=data.get("queued_ms"),
+            executor=data.get("executor"),
         )
 
 
@@ -146,7 +173,16 @@ class MessageLogEntry:
     usage: Usage | None = None
     provider: str = ""
     model: str = ""
+    # When the entry was appended. For a model call that is the call's END.
     timestamp: str = field(default_factory=_now_iso)
+    # Model-call trace fields, set on the entry of each provider call and
+    # omitted from to_dict while None. ``timing`` is ``{started_at, ended_at,
+    # flight_ms}`` (``AgentRuntime._provider_turn``); ``cost_usd`` is this
+    # call's priced cost, None when the model is unpriced; ``step`` is the
+    # run's 1-based ``current_step`` for the call.
+    timing: dict[str, Any] | None = None
+    cost_usd: float | None = None
+    step: int | None = None
 
     @classmethod
     def from_message(
@@ -155,6 +191,9 @@ class MessageLogEntry:
         *,
         agent_uuid: str,
         timestamp: str | None = None,
+        timing: dict[str, Any] | None = None,
+        cost_usd: float | None = None,
+        step: int | None = None,
     ) -> "MessageLogEntry":
         return cls(
             agent_uuid=agent_uuid,
@@ -167,10 +206,13 @@ class MessageLogEntry:
             provider=message.provider,
             model=message.model,
             timestamp=timestamp or _now_iso(),
+            timing=dict(timing) if timing is not None else None,
+            cost_usd=cost_usd,
+            step=step,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return _stamp({
+        data = {
             "entry_type": self.entry_type,
             "agent_uuid": self.agent_uuid,
             "role": self.role.value,
@@ -182,7 +224,9 @@ class MessageLogEntry:
             "provider": self.provider,
             "model": self.model,
             "timestamp": self.timestamp,
-        })
+        }
+        _put_if_set(data, timing=self.timing, cost_usd=self.cost_usd, step=self.step)
+        return _stamp(data)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MessageLogEntry":
@@ -197,6 +241,9 @@ class MessageLogEntry:
             provider=data.get("provider", ""),
             model=data.get("model", ""),
             timestamp=data.get("timestamp") or _now_iso(),
+            timing=data.get("timing"),
+            cost_usd=data.get("cost_usd"),
+            step=data.get("step"),
         )
 
 
@@ -313,8 +360,21 @@ def conversation_log_entry_from_dict(data: dict[str, Any]) -> ConversationLogEnt
 
 @dataclass
 class ConversationLog:
+    """One run's rich log: the agents in it, its entries and its trace spans.
+
+    ``spans`` are timed facts that are not conversation entries (see
+    :mod:`agent_base.core.trace_spans`); replay reads ``entries`` only. A run
+    carries two logs — ``initialize_run`` gives the run's ``Conversation`` one
+    and resets ``agent_config.conversation_log`` to another — and an agent
+    records its own spans on the ``Conversation``'s log alone (the
+    ``conversation_history`` row). A sub-agent's spans travel inside the
+    ``nested_conversation`` of its tool result, which the parent writes into
+    both of its logs like any other projection.
+    """
+
     agents: dict[str, AgentDescriptor] = field(default_factory=dict)
     entries: list[ConversationLogEntry] = field(default_factory=list)
+    spans: list[dict[str, Any]] = field(default_factory=list)
 
     def ensure_agent(
         self,
@@ -364,11 +424,17 @@ class ConversationLog:
         *,
         agent_uuid: str,
         timestamp: str | None = None,
+        timing: dict[str, Any] | None = None,
+        cost_usd: float | None = None,
+        step: int | None = None,
     ) -> MessageLogEntry:
         entry = MessageLogEntry.from_message(
             message,
             agent_uuid=agent_uuid,
             timestamp=timestamp,
+            timing=timing,
+            cost_usd=cost_usd,
+            step=step,
         )
         self.entries.append(entry)
         return entry
@@ -426,16 +492,37 @@ class ConversationLog:
         self.entries.append(entry)
         return entry
 
+    def add_span(self, span: dict[str, Any]) -> dict[str, Any]:
+        """Keep a trace span; returns the stored dict, which the caller may
+        update in place as later facts arrive."""
+        self.spans.append(span)
+        return span
+
+    def find_span(self, kind: str, **match: Any) -> dict[str, Any] | None:
+        """The latest span of ``kind`` whose keys equal every ``match``
+        value, or None."""
+        for span in reversed(self.spans):
+            if span.get("kind") == kind and all(
+                span.get(key) == value for key, value in match.items()
+            ):
+                return span
+        return None
+
     def to_dict(self) -> dict[str, Any]:
         # Canonical, versioned (R27): every entry via its own to_dict (no
-        # asdict); the log and each entry carry the `_v` stamp.
-        return _stamp({
+        # asdict); the log and each entry carry the `_v` stamp. `spans` is
+        # emitted only when there are some, so a log without them serialises
+        # exactly as it did before spans existed.
+        data = {
             "agents": {
                 agent_uuid: descriptor.to_dict()
                 for agent_uuid, descriptor in self.agents.items()
             },
             "entries": [entry.to_dict() for entry in self.entries],
-        })
+        }
+        if self.spans:
+            data["spans"] = _serialize_value(self.spans)
+        return _stamp(data)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "ConversationLog":
@@ -449,4 +536,5 @@ class ConversationLog:
             conversation_log_entry_from_dict(entry)
             for entry in data.get("entries", [])
         ]
-        return cls(agents=agents, entries=entries)
+        spans = [dict(span) for span in data.get("spans") or []]
+        return cls(agents=agents, entries=entries, spans=spans)

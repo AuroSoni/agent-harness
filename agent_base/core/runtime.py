@@ -35,6 +35,7 @@ Surface shipped NOW (core.md + AMENDMENTS):
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -88,6 +89,7 @@ from agent_base.core.hooks.protocol import HOOK_EVENTS
 from agent_base.core.identity import PrincipalConflict
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import AgentResult
+from agent_base.core.trace_spans import SPAN_SCHEMA_VERSION, SpanClock, trace_safe
 from agent_base.core.types import (
     ContentBlock,
     TextContent,
@@ -128,6 +130,15 @@ class _AwaitCancelled(Exception):
     never escapes past ``await_external``'s ``finally`` — disconnect/abort
     are normal exits.
     """
+
+
+def _with_timing(turn: Any, clock: SpanClock, flight_ms: float) -> Any:
+    """``turn`` with its call's ``timing`` stamped (see ``ProviderTurn``)."""
+    started_at, ended_at, elapsed_ms = clock.window(flight_ms)
+    return dataclasses.replace(
+        turn,
+        timing={"started_at": started_at, "ended_at": ended_at, "flight_ms": elapsed_ms},
+    )
 
 
 def _anonymous_principal() -> "SessionPrincipal | None":
@@ -1712,10 +1723,19 @@ class AgentRuntime:
         compaction controller is present; every other failure surfaces as a
         typed ``ProviderError``.
 
-        Returns the provider's ``ProviderTurn``.
+        Returns the provider's ``ProviderTurn`` with ``timing`` stamped:
+        ``{started_at, ended_at, flight_ms}``, measured around the provider
+        call alone (after the chain repair). The flight covers everything
+        inside ``generate``/``generate_stream`` — every retry and its backoff
+        sleep, and the API-key fallback — so it is the time the turn spent
+        waiting on the model, not one HTTP request.
+
+        A call that raises records a ``model_call_failed`` span, and a
+        cancelled one (hard-cancelled, or returning a cooperative partial) a
+        ``model_call_cancelled`` span, through :meth:`_record_trace_span`. An
+        overflow handed to compaction records nothing: it is control flow.
         """
         cfg = self.agent_config
-        provider_started = time.monotonic()
         # B1/C5/X13: chain integrity before EVERY call — provider-supplied
         # shape, loop-owned policy.
         cfg.context_messages[:] = self.provider.sanitize_chain(cfg.context_messages)
@@ -1745,6 +1765,7 @@ class AgentRuntime:
                 agent_uuid=cfg.agent_uuid,
             )
 
+        clock = SpanClock()
         try:
             with observation_span(
                 "provider.call",
@@ -1753,6 +1774,12 @@ class AgentRuntime:
                 streaming=sink is not None,
             ):
                 turn = await invoke_provider()
+        except asyncio.CancelledError:
+            trace_safe(
+                "provider_turn.hard_cancel", self._trace_model_call,
+                "model_call_cancelled", clock, forced=True,
+            )
+            raise
         except Exception as exc:
             from agent_base.core.provider import ProviderError
 
@@ -1768,7 +1795,30 @@ class AgentRuntime:
                 # I10: overflow routes through compact+retry (_Recompact is
                 # internal mechanics; the hook seam is the trigger value).
                 raise _Recompact(reason="request_too_large") from perr
+            # The reads of ``perr`` sit inside the guard too: it comes from the
+            # provider's classify_error, and a malformed one must cost the
+            # span, never replace the error raised below.
+            trace_safe(
+                "provider_turn.failed",
+                lambda: self._trace_model_call(
+                    "model_call_failed", clock,
+                    error_type=type(exc).__name__,
+                    error_code=getattr(perr.code, "value", perr.code),
+                    retriable=perr.retriable,
+                ),
+            )
             raise perr from exc
+        flight_ms = clock.elapsed_ms()
+        timed = trace_safe("provider_turn.timing", _with_timing, turn, clock, flight_ms)
+        if timed is not None:
+            turn = timed
+        if getattr(turn, "was_cancelled", False):
+            # A cooperative abort or forceful steer. The partial never
+            # becomes a billed, timed step, so the span is its timing record.
+            trace_safe(
+                "provider_turn.cancelled", self._trace_model_call,
+                "model_call_cancelled", clock, elapsed_ms=flight_ms,
+            )
         # O12(d): a cooperative mid-stream failure keeps partials on
         # turn.message and sets turn.partial_error; the LOOP emits the typed
         # ErrorReport without discarding the partials.
@@ -1777,10 +1827,45 @@ class AgentRuntime:
             agent_uuid=cfg.agent_uuid,
             model=cfg.model,
             streaming=sink is not None,
-            duration_ms=(time.monotonic() - provider_started) * 1000,
+            duration_ms=flight_ms,
             partial_error=bool(getattr(turn, "partial_error", None)),
         )
         return turn
+
+    def _trace_model_call(
+        self,
+        kind: str,
+        clock: SpanClock,
+        *,
+        elapsed_ms: float | None = None,
+        **detail: Any,
+    ) -> None:
+        """Record a ``model_call_failed`` / ``model_call_cancelled`` span for
+        the provider call ``clock`` timed (shapes in ``core.trace_spans``)."""
+        cfg = self.agent_config
+        started_at, ended_at, duration_ms = clock.window(elapsed_ms)
+        self._record_trace_span({
+            "kind": kind,
+            "v": SPAN_SCHEMA_VERSION,
+            "agent_uuid": cfg.agent_uuid,
+            "model": cfg.model,
+            # The step this call would have been: the loop increments
+            # current_step only once a call returns a usable turn.
+            "step": cfg.current_step + 1,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_ms": duration_ms,
+            **detail,
+        })
+
+    def _record_trace_span(self, span: dict[str, Any]) -> None:
+        """Trace seam: keep ``span`` with the run in flight.
+
+        The runtime has no per-run record of its own, so the default drops
+        it; ``AnthropicAgent`` appends it to the run's conversation log.
+        Callers go through ``trace_safe``, so an override that raises costs
+        the span, never the turn.
+        """
 
     # ── the awaited entrypoint (Fork E — relocation sequenced last) ────────
 
