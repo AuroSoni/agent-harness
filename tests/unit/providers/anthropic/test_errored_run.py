@@ -1,7 +1,7 @@
 """Errored runs: a turn that fails is saved as ``stop_reason='error'``, unbilled.
 
 When a turn fails (a provider error past its retries, a tool phase or hook
-that raises, a finalize whose persist fails, a failure between
+that raises, a finalize whose config or row save fails, a failure between
 ``initialize_run`` and the loop, a continuation that cannot resume), its run
 is closed as errored and only that ``conversation_history`` row is saved:
 ``completed_at``, the
@@ -15,7 +15,11 @@ same error still propagates, so a driven turn still ends with ``ErrorReport``
 A pause the error left on record is kept: the next abort repairs it and keeps
 the row's ``error``, and a reply re-delivered for it after the reply was taken
 resumes the run, which opens again and closes like any run. A run finalize
-already settled is billed as completed and left as finalize saved it.
+already settled is billed as completed and left as finalize saved it, and so
+is one whose config and row finalize saved before its run-log save or
+checkpoint capture failed: that bookkeeping is fail-soft, and the turn is
+complete. Sub-agents that completed before the root's error were billed at
+their own finalize and stay billed; only the root's own spend is written off.
 """
 from __future__ import annotations
 
@@ -25,17 +29,20 @@ import json
 import pytest
 
 from agent_base.await_table import AwaitTable, get_await_table, set_await_table
+from agent_base.common_tools.sub_agent_tool import SubAgentSpec
 from agent_base.core import trace_spans
 from agent_base.core.commands import Abort, ToolReply, UserMessage
 from agent_base.core.errors import AgentError, ErrorCode
 from agent_base.core.hooks.matcher import HookMatcher
 from agent_base.core.messages import Message, Usage
 from agent_base.core.provider import ProviderError
+from agent_base.core.result import LogEntry
 from agent_base.core.runtime import _Recompact
 from agent_base.core.trace_spans import SPAN_SCHEMA_VERSION, trace_safe_async
 from agent_base.core.types import ToolResultContent
 from agent_base.pricing.calculator import calculate_step_cost
 from agent_base.providers.anthropic import AnthropicAgent
+from agent_base.providers.anthropic import anthropic_agent as anthropic_agent_module
 from agent_base.session.manager import SessionManager
 from agent_base.storage.adapters.memory import (
     MemoryAgentConfigAdapter,
@@ -356,12 +363,29 @@ async def test_an_error_without_a_code_is_internal():
 
 
 async def _fail_finalize(agent: AnthropicAgent, where: str) -> None:
-    """Make the first save of finalize's persist raise at ``where``."""
+    """Make finalize's persist fail at ``where``: the checkpoint capture or
+    the run-log save (every time), or the first config save."""
     if where == "checkpoint":
         async def broken_checkpoint(*args, **kwargs):
             raise RuntimeError("snapshot failed")
 
         agent.capture_checkpoint = broken_checkpoint
+        return
+    if where == "run_logs":
+        # The loop keeps no run logs of its own; a consumer's may.
+        initialize_run = agent.initialize_run
+
+        def initialize_run_with_a_log(*args, **kwargs) -> None:
+            initialize_run(*args, **kwargs)
+            agent._run_logs.append(
+                LogEntry(step=0, event_type="llm_call", timestamp="t", message="m")
+            )
+
+        async def broken_run_logs(*args, **kwargs):
+            raise OSError("run logs gone")
+
+        agent.initialize_run = initialize_run_with_a_log
+        agent.run_adapter.save_logs = broken_run_logs
         return
     configs = agent.config_adapter
     original = configs.save
@@ -375,35 +399,24 @@ async def _fail_finalize(agent: AnthropicAgent, where: str) -> None:
     configs.save = save_fails_once
 
 
-@pytest.mark.parametrize(
-    "where, error_type, finalize_saved",
-    [
-        # The row was saved as completed before the checkpoint failed.
-        ("checkpoint", "RuntimeError", ["end_turn"]),
-        # The config save comes first, so finalize saved no row at all.
-        ("config", "ConnectionError", []),
-    ],
-)
-async def test_a_failed_finalize_persist_saves_the_run_as_errored(
-    where, error_type, finalize_saved
-):
-    # finalize stamps completed_at before it persists and settles: a failed
-    # persist leaves a turn the stream reports as errored, so its row says so
-    # and it is not billed, then or at a later settle point.
+async def test_a_failed_finalize_config_save_saves_the_run_as_errored():
+    # finalize stamps completed_at before it persists and settles. The config
+    # save comes first, so when it fails nothing of the turn is recorded: the
+    # stream reports the error, the row says so, and it is not billed, then
+    # or at a later settle point.
     billed: list = []
     agent = _agent([_tool_use("echo", "t1"), _end_turn()], billed)
     await agent.initialize()
-    await _fail_finalize(agent, where)
+    await _fail_finalize(agent, "config")
 
-    with pytest.raises(Exception) as raised:
+    with pytest.raises(ConnectionError):
         await agent.run("go")
 
-    assert type(raised.value).__name__ == error_type
-    assert agent.conversation_adapter.saved == [*finalize_saved, "error"]
+    assert agent.conversation_adapter.saved == ["error"]
     assert billed == []
     row = await _row(agent)
     assert (row.stop_reason, row.total_steps) == ("error", 2)
-    assert row.extras["error"] == {"code": "internal", "type": error_type}
+    assert row.extras["error"] == {"code": "internal", "type": "ConnectionError"}
     assert _turn_error(row)["at"] == row.completed_at
     assert row.cost.total_cost == pytest.approx(2 * ROW_STEP_COST)
 
@@ -413,11 +426,46 @@ async def test_a_failed_finalize_persist_saves_the_run_as_errored(
     assert (await _row(agent)).stop_reason == "error"
 
 
-async def test_a_failed_finalize_still_ends_a_driven_turn_with_run_completed_error():
+@pytest.mark.parametrize(
+    "where, error_type",
+    [("checkpoint", "RuntimeError"), ("run_logs", "OSError")],
+)
+async def test_bookkeeping_that_fails_after_finalize_saved_the_turn_leaves_it_complete(
+    where, error_type
+):
+    # The config (the context the agent continues from) and the row are
+    # saved before the run logs and the checkpoint: the turn is complete, so
+    # it is billed and stays end_turn, with the gap on the row.
+    billed: list = []
+    agent = _agent([_tool_use("echo", "t1"), _end_turn()], billed)
+    await agent.initialize()
+    await _fail_finalize(agent, where)
+
+    result = await agent.run("go")
+
+    assert result.stop_reason == "end_turn"
+    # The row as finalize saved it, then again with the gap recorded.
+    assert agent.conversation_adapter.saved == ["end_turn", "end_turn"]
+    [settlement] = billed
+    assert settlement.turn_cost.total_cost == pytest.approx(2 * STEP_COST)
+    row = await _row(agent)
+    assert (row.stop_reason, row.total_steps) == ("end_turn", 2)
+    assert row.extras["persist_errors"] == [{"step": where, "type": error_type}]
+    assert "error" not in row.extras
+    assert "turn_error" not in _kinds(row)
+    saved = await agent.config_adapter.load(agent.agent_uuid)
+    assert saved.context_messages[-1].stop_reason == "end_turn"
+
+    await agent._do_abort()  # nothing is billed twice
+
+    assert len(billed) == 1
+
+
+async def test_a_failed_config_save_still_ends_a_driven_turn_with_run_completed_error():
     billed: list = []
     agent = _agent([_end_turn()], billed)
     await agent.initialize()
-    await _fail_finalize(agent, "checkpoint")
+    await _fail_finalize(agent, "config")
     reader = agent.attach_stream()
 
     await agent.submit(UserMessage(message=Message.user("go")))
@@ -428,6 +476,39 @@ async def test_a_failed_finalize_still_ends_a_driven_turn_with_run_completed_err
     assert "usage_report" not in _meta_kinds(items)
     assert billed == []
     assert (await _row(agent)).stop_reason == "error"
+
+
+async def test_a_failed_checkpoint_reports_the_gap_on_a_completed_driven_turn():
+    billed: list = []
+    agent = _agent([_end_turn()], billed)
+    await agent.initialize()
+    await _fail_finalize(agent, "checkpoint")
+    reader = agent.attach_stream()
+
+    await agent.submit(UserMessage(message=Message.user("go")))
+    items = await _frames_until_run_completed(reader)
+    await asyncio.wait_for(agent.wait_idle(), timeout=5)
+    later: list = []
+    try:
+        while True:
+            later.append(await asyncio.wait_for(reader.__anext__(), 0.3))
+    except (asyncio.TimeoutError, StopAsyncIteration):
+        pass
+
+    kinds = _meta_kinds(items)
+    assert _stop_reason(items) == "end_turn"
+    assert kinds.index("error_report") < kinds.index("usage_report") < kinds.index("run_completed")
+    [report] = [
+        item.body for item in items
+        if isinstance(item, MetaEnvelope) and item.body.kind == "error_report"
+    ]
+    assert (report.code, report.retriable) == (ErrorCode.INTERNAL, False)
+    assert "checkpoint" in report.message and "snapshot failed" not in report.message
+    # The actor's own boundary checkpoint fails again after RunCompleted:
+    # logged, never a second terminal frame on the stream.
+    assert _meta_kinds(later) == []
+    assert len(billed) == 1
+    assert (await _row(agent)).stop_reason == "end_turn"
 
 
 async def test_an_error_after_finalize_billed_the_run_leaves_its_row():
@@ -735,6 +816,49 @@ async def test_a_failing_reopen_never_fails_the_continuation():
     assert (await _row(agent)).stop_reason == "end_turn"
 
 
+# ── sub-agents ───────────────────────────────────────────────────────────────
+
+
+async def test_a_completed_sub_agent_stays_billed_when_the_root_errors():
+    # The write-off covers the root's own spend. A child that completed
+    # before the error settled at its own finalize, through the billing
+    # callback it inherited, and that charge stands; the root row's cost
+    # still folds the child in, so it is the spend reached, not the charge.
+    children: list[AnthropicAgent] = []
+
+    def build_child(spec, resume_uuid, parent_context):
+        child = _agent(
+            [_end_turn("child done")],
+            config_adapter=parent_context.config_adapter,
+            conversation_adapter=parent_context.conversation_adapter,
+            run_adapter=parent_context.run_adapter,
+        )
+        child._parent_agent_uuid = parent_context.parent_agent_uuid
+        children.append(child)
+        return child
+
+    billed: list = []
+    spawn = _tool_use("spawn_subagent", "s1", {"agent_name": "helper", "task": "plan it"})
+    root = _agent(
+        [spawn, NativeError("down")],
+        billed,
+        subagents={"helper": SubAgentSpec(name="helper", description="Plans things.")},
+    )
+    root._sub_agent_tool._child_agent_builder = build_child
+
+    with pytest.raises(ProviderError):
+        await root.run("go")
+    await root._do_abort()  # a later settle point bills nothing of the root
+
+    [child] = children
+    [settlement] = billed
+    assert settlement.agent_id == child.agent_uuid
+    assert settlement.turn_cost.total_cost == pytest.approx(STEP_COST)
+    row = await _row(root)
+    assert row.stop_reason == "error"
+    assert row.cost.total_cost == pytest.approx(2 * ROW_STEP_COST)
+
+
 # ── what is not an errored run ───────────────────────────────────────────────
 
 
@@ -814,28 +938,47 @@ async def test_the_internal_recompact_is_not_an_error():
 # ── fail-soft ────────────────────────────────────────────────────────────────
 
 
-async def test_a_failing_save_never_masks_the_error(monkeypatch):
-    warnings: list[str] = []
+class _RecordingLogger:
+    """Stands in for a module's structlog logger; records every call."""
 
-    class _Logger:
-        def warning(self, event, **kw):
-            warnings.append(kw["site"])
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict]] = []
 
-    monkeypatch.setattr(trace_spans, "_trace_logger", lambda: _Logger())
-    monkeypatch.setattr(trace_spans, "_failed_sites", set())
-    native = NativeError("down")
-    agent = _agent([native])
+    def __getattr__(self, level: str):
+        def log(event, *args, **kw):
+            self.calls.append((level, event, kw))
+
+        return log
+
+    def events(self, name: str) -> list[dict]:
+        return [kw for _, event, kw in self.calls if event == name]
+
+
+async def test_a_failing_save_never_masks_the_error_and_is_logged_every_time(monkeypatch):
+    # A failed errored-row save loses the row, so unlike a trace stamp it is
+    # logged on every failure, with the ids to find the turn by.
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(anthropic_agent_module, "logger", recorder)
+    first, second = NativeError("down"), NativeError("down again")
+    agent = _agent([first, second])
 
     async def broken_save(conversation):
         raise ConnectionError("database gone")
 
     agent.conversation_adapter.save = broken_save
 
-    with pytest.raises(ProviderError) as raised:
-        await agent.run("go")
+    run_ids = []
+    for native in (first, second):
+        with pytest.raises(ProviderError) as raised:
+            await agent.run("go")
+        assert raised.value.__cause__ is native
+        run_ids.append(agent.conversation.run_id)
 
-    assert raised.value.__cause__ is native
-    assert warnings == ["errored_run.save"]
+    failures = recorder.events("errored_run_save_failed")
+    assert [(f["agent_uuid"], f["run_id"]) for f in failures] == [
+        (agent.agent_uuid, run_id) for run_id in run_ids
+    ]
+    assert all(f["exc_info"] is True for f in failures)
 
 
 async def test_a_failing_close_never_masks_the_error(monkeypatch):

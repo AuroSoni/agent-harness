@@ -85,7 +85,6 @@ from agent_base.core.trace_spans import (
     stamp_span,
     trace_entrypoint,
     trace_safe,
-    trace_safe_async,
     turn_error_span,
     utc_now_iso,
 )
@@ -2554,7 +2553,9 @@ class AnthropicAgent(AgentRuntime):
         yet (the error came before ``initialize_run``), or one already closed
         (an outer handler of the same error finds the row the loop closed,
         so it is saved once). Fail-soft: it never masks the error, which the
-        caller re-raises.
+        caller re-raises. A failed close is a trace fault and logs once per
+        process; a failed save loses the row, so it logs every time
+        (``errored_run_save_failed``, with the agent and run ids).
         """
         conversation = trace_safe("errored_run", self._close_errored_run, error)
         if conversation is None:
@@ -2562,7 +2563,20 @@ class AnthropicAgent(AgentRuntime):
         self._phase = AgentPhase.IDLE
         if self._abort_completion is not None:
             self._abort_completion.set()
-        await trace_safe_async("errored_run.save", self.conversation_adapter.save, conversation)
+        try:
+            await self.conversation_adapter.save(conversation)
+        except Exception:
+            # A lost row, not a lost trace fact: logged every time, with the
+            # ids to find it by (trace_safe's warn-once is for span stamps).
+            try:
+                logger.warning(
+                    "errored_run_save_failed",
+                    agent_uuid=self.agent_uuid,
+                    run_id=conversation.run_id,
+                    exc_info=True,
+                )
+            except Exception:  # pragma: no cover - logging must not raise either
+                pass
 
     def _close_errored_run(self, error: Exception) -> "Conversation | None":
         """Close the run as errored in memory and write off its unbilled
@@ -2602,10 +2616,12 @@ class AnthropicAgent(AgentRuntime):
         """Whether the errored mark leaves ``conversation`` as it is.
 
         An open run (no ``completed_at``) is closed. So is one finalize
-        stamped closed but failed to persist: ``completed_at`` is set
-        before the save, so a failed config, row, run-log or checkpoint
-        write leaves the row unsaved or saved as completed, and the turn
-        unbilled, while the stream reports the error. Left alone: a row
+        stamped closed but failed to record: ``completed_at`` is set before
+        the save, so a failed config or row save leaves the row unsaved and
+        the turn unbilled, while the stream reports the error. (The run-log
+        save and the checkpoint capture that follow are fail-soft, see
+        :meth:`_persist_state`: a turn whose config and row are saved is
+        complete.) Left alone: a row
         already closed as ``error`` (the same error, met again by an outer
         handler) or ``aborted`` (the abort closed it, and bills it), and a
         run finalize settled, which was billed as completed whatever failed
@@ -3851,8 +3867,12 @@ class AnthropicAgent(AgentRuntime):
         # Validate tool_use / tool_result pairing before persisting.
         self._warn_orphaned_tool_uses(self.agent_config.context_messages)
 
-        # Persist state.
-        await self._persist_state()
+        # Persist state. A failed config or row save raises (the turn is not
+        # recorded: it closes as errored); a failed run-log save or checkpoint
+        # capture after them does not undo the saved turn, and is reported.
+        persist_failures = await self._persist_state()
+        if persist_failures:
+            await self._report_persist_failures(persist_failures)
 
         # Auto-generate title on first run if not already set.
         if (
@@ -3938,8 +3958,22 @@ class AnthropicAgent(AgentRuntime):
             return text
         return text[: max_len - 1].rstrip() + "…"
 
-    async def _persist_state(self) -> None:
-        """Save agent config, conversation, and run logs to storage adapters."""
+    async def _persist_state(self) -> list[dict[str, str]]:
+        """Save agent config, conversation, and run logs to storage adapters,
+        then capture the turn-boundary checkpoint.
+
+        The config and conversation-row saves are the record: once they are
+        in, the agent continues from this state, so a failure in either
+        propagates. The run-log save and the checkpoint capture that follow
+        are bookkeeping. A failure in them must not undo what is already
+        saved (finalize would otherwise close a turn whose context and final
+        row are stored as errored, unbilled). Each is logged
+        (``persist_bookkeeping_failed``) and returned as ``{step, type}``,
+        never raised; finalize reports what it gets back
+        (:meth:`_report_persist_failures`), and every other caller only logs.
+        A missing checkpoint degrades fork/reset and sandbox rehydration to
+        the previous one; the next persist at a turn boundary captures again.
+        """
         now = datetime.now(timezone.utc).isoformat()
         self.agent_config.updated_at = now
         if self._sandbox is not None:
@@ -3965,19 +3999,77 @@ class AnthropicAgent(AgentRuntime):
             with observation_span("persistence.conversation"):
                 await self.conversation_adapter.save(self.conversation)
 
+        failures: list[dict[str, str]] = []
         if self._run_logs:
-            with observation_span("persistence.run_logs"):
-                await self.run_adapter.save_logs(
-                    self.agent_config.agent_uuid,
-                    self._run_id,
-                    self._run_logs,
-                )
+            try:
+                with observation_span("persistence.run_logs"):
+                    await self.run_adapter.save_logs(
+                        self.agent_config.agent_uuid,
+                        self._run_id,
+                        self._run_logs,
+                    )
+            except Exception as exc:
+                failures.append(self._persist_bookkeeping_failed("run_logs", exc))
 
         # fork-reset: capture a checkpoint at the quiescent turn boundary. Auto
         # (SPEC §D1) — a single insertion point that covers both the live
         # finalize path and the scripted record_turn path (both reach here via
         # _persist_state). No-op unless a CheckpointAdapter is wired.
-        await self.capture_checkpoint(created_at=now)
+        try:
+            await self.capture_checkpoint(created_at=now)
+        except Exception as exc:
+            failures.append(self._persist_bookkeeping_failed("checkpoint", exc))
+        return failures
+
+    def _persist_bookkeeping_failed(self, step: str, exc: Exception) -> dict[str, str]:
+        """Log one failed bookkeeping write of :meth:`_persist_state` and
+        return its ``{step, type}`` (never the message, which may carry user
+        data). A cancellation a coordinator converted into an exception
+        while this task was being cancelled is re-raised, never absorbed."""
+        task = asyncio.current_task()
+        cancelling = getattr(task, "cancelling", None)
+        if callable(cancelling) and cancelling():
+            raise exc
+        logger.warning(
+            "persist_bookkeeping_failed",
+            step=step,
+            agent_uuid=self.agent_uuid,
+            run_id=self._run_id,
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        return {"step": step, "type": type(exc).__name__}
+
+    async def _report_persist_failures(self, failures: list[dict[str, str]]) -> None:
+        """finalize's report of bookkeeping its persist could not do.
+
+        The turn is complete, since its context and row are saved, so it is
+        still settled and ends with ``RunCompleted`` as usual. The row
+        records the gap in ``extras['persist_errors']`` (re-saved, fail-soft)
+        and a non-fatal ``ErrorReport`` goes out, as a failed memory update
+        does.
+        """
+        conversation = self.conversation
+        if conversation is not None:
+            conversation.extras["persist_errors"] = [dict(f) for f in failures]
+            try:
+                await self.conversation_adapter.save(conversation)
+            except Exception:
+                logger.warning(
+                    "persist_errors_save_failed",
+                    agent_uuid=self.agent_uuid,
+                    run_id=self._run_id,
+                    exc_info=True,
+                )
+        labels = {"run_logs": "run-log save", "checkpoint": "checkpoint capture"}
+        failed = " and ".join(labels.get(f["step"], f["step"]) for f in failures)
+        self._hook_emit(
+            ErrorReport(
+                code=ErrorCode.INTERNAL,
+                message=f"the turn was saved, but its {failed} failed",
+                retriable=False,
+            )
+        )
 
     async def _capture_turn_checkpoint(self, conversation: "Conversation") -> None:
         """Scripted-turn capture seam (overrides the base no-op): record_turn
