@@ -315,7 +315,11 @@ never sees display lines). Bare ctx raises (B8). For programmatically-executed t
 (whose results never pass through the loop), the provider exposes
 `log_tool_result_for_replay(envelope)` — persists the envelope's conversation-log projection
 (nested conversation intact) to both logs only. See AMENDMENTS §WT-4 for the carrier rationale
-and the `spawn_subagent` tool-name contract.
+and the `spawn_subagent` tool-name contract. A sub-agent dispatched this way (`SubAgentTool.run`
+called directly) times itself: every envelope it returns carries the dispatch's `started_at` /
+`ended_at` / `duration_ms` (not `queued_ms`: a caller's wait for a slot is outside it), so the
+logged child is timed like a registry-run tool; through `ToolRegistry.execute` the registry's own
+stamp replaces them. Spec: `tests/unit/tools/test_sub_agent_dispatch_timing.py`.
 
 ---
 
