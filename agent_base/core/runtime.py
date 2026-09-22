@@ -1219,7 +1219,7 @@ class AgentRuntime:
             )
         return join
 
-    def _kick_rearmed_resume(self) -> None:
+    def _kick_rearmed_resume(self, cid: str) -> None:
         """Restart a cold-rehydrated turn whose re-armed join just resolved.
 
         relay-await §2.4: on the reply-triggered cold path there is no live
@@ -1228,8 +1228,14 @@ class AgentRuntime:
         concrete runtime's ``_resume_rearmed`` re-enters the suspended turn on
         a background task (CQRS — submit never blocks on the turn). Hot-path
         and non-rearmed submits are a no-op.
+
+        Only the reply that resolved the re-armed pause (``cid``) kicks it. A
+        hot pause's reply resolves another cid, and must never start a
+        continuation on a join that pause does not own, even one left behind
+        (see :meth:`_rearmed_continuation`).
         """
-        if self._rearmed_join is None:
+        join = self._rearmed_join
+        if join is None or join.cid != cid:
             return
         resume = getattr(self, "_resume_rearmed", None)
         if not callable(resume):
@@ -1238,14 +1244,43 @@ class AgentRuntime:
         # coroutine would wake, so resumed_at and the resumed outcome mean the
         # same on both paths (the continuation warms the sandbox before it
         # resumes the turn; an abort during the warm finds the pause answered).
-        join = self._rearmed_join
         trace_safe(
             "kick_rearmed_resume.span",
             lambda: self._stamp_relay_resumed(join.cid),
         )
         self._rearmed_resume_task = asyncio.create_task(
-            self._guard_continuation(self._coordinated_resume(resume))
+            self._guard_continuation(self._rearmed_continuation(resume, join))
         )
+
+    async def _rearmed_continuation(self, resume: Callable[[], Awaitable[Any]], join: Join) -> Any:
+        """Run the continuation of the re-armed ``join``, and drop the join
+        if the continuation never took it.
+
+        ``_resume_rearmed`` takes the join (and pops its await record) once
+        the turn guard is held and the sandbox is warm. A continuation that
+        failed or was cancelled before that (the ``cold_resume`` warm, or
+        the turn guard itself) used to leave the resolved join on
+        ``_rearmed_join`` and its record on the await table. The record made
+        a re-delivered reply a duplicate and kept the session from being
+        evicted, and the join was later resumed by an unrelated hot reply.
+        Dropping it here, after the concrete runtime's own error handling
+        has read it, lets a re-delivered reply re-arm the pause from
+        ``pending_relay`` and resume the run.
+        """
+        try:
+            return await self._coordinated_resume(resume)
+        finally:
+            self._drop_rearmed_join(join)
+
+    def _drop_rearmed_join(self, join: Join | None = None) -> None:
+        """Forget the re-armed join (``join``, when given, and only if it is
+        still the one held) and pop its await record, which no parked
+        coroutine will pop."""
+        current = self._rearmed_join
+        if current is None or (join is not None and current is not join):
+            return
+        self._rearmed_join = None
+        get_await_table().pop(current.cid)
 
     def _sandbox_turn_guard(self):
         from agent_base.sandbox.coordinator import uncoordinated
@@ -1525,7 +1560,7 @@ class AgentRuntime:
                 # relay-await §2.4 cold path: a re-armed join has no live
                 # parked coroutine — restart the suspended turn out-of-band
                 # (hot path: no-op, the original await_external wakes).
-                self._kick_rearmed_resume()
+                self._kick_rearmed_resume(command.cid)
             self._audit_command(seq, command, disposition)
             return Ack(seq=seq, disposition=disposition)
 
@@ -1613,9 +1648,26 @@ class AgentRuntime:
             self._mailbox.drain()
             if self._cancellation_event is not None:
                 self._cancellation_event.set()
+            self._drop_idle_rearmed_join()
         finally:
             self._mailbox.unfreeze()
         return None
+
+    def _drop_idle_rearmed_join(self) -> None:
+        """An abort's cleanup of a re-armed join no continuation will take.
+
+        A join is left without a continuation when its reply never resolved
+        it (rejected, or retired by this abort's interrupt) or when the
+        rehydrate re-prompted and the abort came instead of the reply. While
+        a continuation is live the join is its own: ``_resume_rearmed``
+        races it against the cancellation this abort set, and
+        :meth:`_rearmed_continuation` drops it if the continuation fails
+        before taking it.
+        """
+        task = self._rearmed_resume_task
+        if task is not None and not task.done():
+            return
+        self._drop_rearmed_join()
 
     # ── GF-P6G3/G4 — the public actor-drive surface ────────────────────────
 

@@ -2370,6 +2370,9 @@ class AnthropicAgent(AgentRuntime):
                 ):
                     # Paused (not running): fix up this agent's chain directly.
                     await self._abort_awaiting_relay()
+                # A re-armed join no continuation will take goes with the
+                # pause it belonged to (see _drop_idle_rearmed_join).
+                self._drop_idle_rearmed_join()
 
                 if forced is not None:
                     # Let the cancelled loop salvage and record its turn (it owns
@@ -2535,10 +2538,11 @@ class AnthropicAgent(AgentRuntime):
         Where the error came after the reply was taken (a hot resume's
         reconcile or splice, or a cold one's past its join), a reply
         re-delivered for the pause re-arms it and resumes the run, which
-        :meth:`_reopen_errored_run` opens again. A failed ``cold_resume``
-        warm is not such a case: the join the reply resolved is still held
-        (only :meth:`_resume_rearmed` takes it), so a re-delivered reply is
-        ignored as a duplicate and the pause is left to an abort.
+        :meth:`_reopen_errored_run` opens again. So does a failed
+        ``cold_resume`` warm: the continuation drops the join it never took
+        once this mark has read the pause record's totals
+        (``_rearmed_continuation``), so the re-delivered reply finds no
+        record and the session manager re-arms the pause.
 
         The row is closed (and the spend written off) before it is saved,
         and the save runs with the loop already idle and any abort waiting
