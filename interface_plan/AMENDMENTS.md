@@ -944,3 +944,103 @@ and their authoritative binding cleared under coordinator ownership.
 Cold reset supports an optional scoped config adapter `save_reset(config)`
 capability, with `save(config)` fallback. Only reset uses this replacement seam;
 fork and normal runtime saves retain their existing method.
+
+
+## Trace capture and errored turns (TR) — 2026-09-22
+
+Recorded for the trace commits (e681f8a..8b7607b) and their review fixes. The
+facts feed a consumer's trace explorer (Nova's admin); replay and the rest of
+the library read none of them.
+
+- **TR-1 — `ConversationLog.spans`.** A list of plain dicts, one per timed
+  fact that is not a conversation entry: `sandbox_ready`, `relay`,
+  `model_call_failed`, `model_call_cancelled`, `turn_error`. Their shapes are
+  the `TypedDict`s in `agent_base/core/trace_spans.py`, each stamped
+  `v = SPAN_SCHEMA_VERSION` (1). That is the span axis only: the log's `_v`
+  does not change. `to_dict` omits `spans` while empty, so a log without spans
+  serialises exactly as before, and `from_dict` defaults it to `[]`.
+  `add_span` / `find_span` write and read them. An agent records its own spans
+  on its run's `Conversation` log (the `conversation_history` row) alone; a
+  sub-agent's travel inside the `nested_conversation` of its tool result. Spans
+  carry codes, class names, ids and instants, never an exception's message.
+  Specs: tests/interface/core/test_core_conversation_log_trace.py.
+- **TR-2 — additive entry fields**, each omitted from `to_dict` while `None`:
+  `MessageLogEntry.timing` (`{started_at, ended_at, flight_ms}` of the provider
+  call, stamped by `AgentRuntime._provider_turn`), `cost_usd` (the call priced
+  by the settlement policy on the call's own model; `None` when unpriced) and
+  `step` (the run's 1-based `current_step`); `ToolLogProjection.started_at`,
+  `ended_at`, `queued_ms`, `executor`. `ToolResultEnvelope` gains
+  keyword-only `started_at`, `ended_at` and `queued_ms` beside `duration_ms`,
+  stamped by `ToolRegistry`; `TOOL_TIMING_FIELDS` / `inherit_tool_timing`
+  carry them onto an envelope a hook returns in place of the executed one.
+  Additive, so no `CORE_SCHEMA_VERSION` bump; JSON inside existing columns, so
+  no `LIBRARY_SCHEMA_VERSION` bump. Specs: as TR-1.
+- **TR-3 — `ProviderTurn.timing`** is an `InitVar` kept as a plain attribute,
+  not a field. O12(a) pins the provider-neutral field set, and timing is a
+  fact about the call, not part of the turn's value: equality and `repr`
+  ignore it, `dataclasses.replace` carries it. Providers never set it.
+- **TR-4 — sandbox readiness.** `ensure_sandbox_running(*, trigger=None)`: a
+  consumer may name its warm (`request`, `attachments`), else it is
+  `external`. The runtime names its own (`session_load`, `session_create`,
+  `turn_start`, `relay_resume`, `deferred_resume`, `cold_resume`) through the
+  `sandbox_warm_trigger` ContextVar, so an override that takes no arguments
+  keeps working. `agent_base.sandbox.coordinator` gains `readiness_sink` (a
+  ContextVar) and `report_readiness(**detail)`: a coordinator's `ensure_ready`
+  MAY report how the warm went, and the facts land on the `sandbox_ready`
+  span; outside a runtime-timed warm it is a no-op. The `SandboxCoordinator`
+  protocol is unchanged. `trace_entry(kind, request_id=None)` (`run` or
+  `tool_results`) names the request a warm serves; only span routing reads it.
+- **TR-5 — errored turns are persisted.** A turn that fails (a provider error
+  past its retries, a tool phase or hook that raises, a failure between
+  `initialize_run` and the loop, a continuation that cannot resume, a finalize
+  whose config or row save fails) saves its `conversation_history` row with
+  `stop_reason='error'`, `completed_at` at the error stamp, the steps, usage
+  and cost it reached, `extras['error'] = {code, type}` (the `ErrorCode` value
+  and the class name, never the message) and a `turn_error` span. Nothing else
+  of finalize happens (no `agent_config` save, no checkpoint), and the error
+  still propagates, so a driven turn still ends with `ErrorReport` +
+  `RunCompleted('error')`. `'error'` was already in `RunCompleted`'s
+  vocabulary (GF-P6G4) and `is_error_stop('error')` was already true: the
+  rows are new, the taxonomy is not. A resident agent still holds the errored
+  turn's messages in its context (nothing rolls them back), so the next
+  completed turn persists them with its own.
+- **TR-6 — errored spend is written off (a new billing decision).** An errored
+  turn is never settled, and no later settle point (an eviction's abort, the
+  abort that repairs a pause the error left) bills it: the settlement
+  watermark passes its steps and a restored pre-pause leg is dropped. Only the
+  root agent's own spend is written off. A sub-agent or workflow child that
+  completed before the error settled at its own finalize, through the
+  propagated `on_usage_report` callback (GF-P7G1), and stays billed; the root
+  row's `cost` still folds child cost in, so on an errored row it is the spend
+  reached, not the amount charged. Before TR-6 the errored spend was billed
+  only when an abort's settle point came before the session's next turn
+  (`initialize_run` resets the watermark without settling), so this makes an
+  incidental write-off deterministic rather than reversing a documented rule.
+  Specs: tests/interface/pricing_cost/test_pricing_cost_errored_turn.py (the
+  sub-agent case is pinned in tests/unit/providers/anthropic/test_errored_run.py).
+- **TR-7 — a turn whose config and row finalize saved is complete.** The
+  run-log save and the checkpoint capture that follow them in
+  `_persist_state` are fail-soft on every path: each failure is logged
+  (`persist_bookkeeping_failed`, every time, with the agent and run ids) and
+  never raised; a cancellation a coordinator converted into an exception while
+  the task was being cancelled is re-raised. finalize records the gap on the
+  row as `extras['persist_errors'] = [{step, type}]`, emits a non-fatal
+  `ErrorReport(code=internal, retriable=False)`, settles and ends with
+  `RunCompleted('end_turn')`. The next boundary persist captures again; until
+  then fork/reset and rehydration use the previous checkpoint. A failed config
+  or row save still raises and closes the turn as errored (TR-5). A failed
+  save of the errored row itself is logged every time
+  (`errored_run_save_failed`) and never masks the error. Specs: as TR-6.
+- **TR-8 — re-armed joins (relay-await §2.4; a fix, no surface change).**
+  `submit(ToolReply)` kicks a cold continuation only for the join re-armed
+  under the reply's cid. A continuation that failed before `_resume_rearmed`
+  took its join (the `cold_resume` warm, the sandbox turn guard) drops the
+  join and pops its await record, so a reply re-delivered for that pause
+  re-arms it and resumes the run, and the session is evictable again. An abort
+  drops a re-armed join no continuation will take.
+- **Not added: a switch to strip spans from streamed frames.** Every streamed
+  log (`RunCompleted.conversation_log`, `RunStarted`,
+  `ToolResultDelta.envelope_log`) is already gated by
+  `stream_meta_history_and_tool_results`, default `False`. A consumer that
+  opts in gets the spans with the rest of the log and strips what its clients
+  should not see (Nova does, on its member streams).

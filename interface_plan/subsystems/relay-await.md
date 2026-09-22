@@ -436,6 +436,16 @@ class AgentRuntime:
 The consumer makes **one** call (`submit(ToolReply(cid))`); hot vs cold is invisible, and the
 reply-triggered cold path never re-emits the await frame.
 
+**AMENDED (2026-09-22, TR-8 — the re-armed join is the reply's alone).** The RESOLVED reply
+kicks the cold continuation only when its cid is the re-armed join's; a hot pause's reply never
+starts a continuation on a join it does not own. A continuation that fails before
+`_resume_rearmed` takes its join (the `cold_resume` warm, the sandbox turn guard) drops the join
+and pops its await record once the run is closed as errored, so a reply re-delivered for that
+pause finds no record, is re-armed from `pending_relay` and resumes the run, and the session is
+evictable again. An abort drops a re-armed join no continuation will take (a reply that never
+resolved it, or a re-prompt answered with an abort); while a continuation is live the join stays
+its own, raced against the abort's cancellation in `_resume_rearmed`.
+
 ### 2.5 Library-owned chain integrity at the resume boundary (B1 / C5 / X13)
 
 This is the contract §6 guarantee, and **§3-R18b** confirms this subsystem owns it. The reconcile

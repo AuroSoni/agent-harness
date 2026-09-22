@@ -354,6 +354,16 @@ A server-side consumer that wants structure iterates `agent.stream()` and gets `
 > terminates the contract: the actor/continuation guard emits `ErrorReport` then
 > `RunCompleted(stop_reason="error")`; an ABORTED turn keeps its `Custom('aborted')` terminal
 > frame. The matching awaitable handle is `agent.wait_idle()` (core.md §2.6a).
+>
+> **AMENDED (2026-09-22, TR-1/TR-7).** The logs those flag-gated payloads carry
+> (`RunStarted`/`RunCompleted.conversation_log`, `ToolResultDelta.envelope_log`) now include
+> the trace `spans` and the entries' timing fields (core.md §2.1.4) when there are any. They
+> are still gated by `stream_meta_history_and_tool_results` (default `False`), so a consumer
+> that opts in strips what its clients should not see; there is no separate span switch. A
+> completed turn whose run-log save or checkpoint capture failed after its row was saved emits
+> a non-fatal `ErrorReport(code="internal", retriable=False)` before its `UsageReport` and
+> ends with `RunCompleted(stop_reason="end_turn")`; the boundary persists after
+> `RunCompleted` never put a second terminal frame on the stream.
 
 ### 2.4a `DeltaSink` — the producer-side seam (resolves R30; what providers emit into)
 

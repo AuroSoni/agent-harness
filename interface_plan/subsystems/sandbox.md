@@ -847,3 +847,31 @@ Public `AnthropicAgent.destroy_sandbox()` and cold deletion both delegate to an
 injected coordinator, including when no local handle exists. The coordinator
 owns exclusive deletion and authoritative unbinding of live/pending candidates.
 Without a coordinator, local teardown and config persistence remain unchanged.
+
+
+## Readiness spans (TR-4) — 2026-09-22
+
+`AnthropicAgent.ensure_sandbox_running(*, trigger=None)` names the warm on its
+`sandbox_ready` trace span: a consumer may pass its own (`request`,
+`attachments`), else it is `external`. The runtime names its own warms
+(`session_load`, `session_create`, `turn_start`, `relay_resume`,
+`deferred_resume`, `cold_resume`) through the `trace_spans.sandbox_warm_trigger`
+ContextVar and still calls the hook as `warm()`, so an override that takes no
+arguments keeps working. Every root warm is timed, failures included (`ok:
+false`, `error_type`, then the error propagates as before).
+
+`agent_base.sandbox.coordinator` gains `readiness_sink` (a ContextVar holding the
+timed warm's `detail` dict) and `report_readiness(**detail)`, which merges into
+it. A coordinator's `ensure_ready` MAY call it to say how the warm went (by
+convention `mode` and its timings); outside a runtime-timed warm, such as a file
+API preparing the sandbox, there is no sink and it is a no-op. The
+`SandboxCoordinator` protocol is unchanged.
+
+A checkpoint capture that fails at a turn boundary no longer fails the persist
+that runs it (TR-7): the snapshot, blob writes, `record_checkpoint` and the
+checkpoint row are bookkeeping after the config and row saves. The failure is
+logged every time, finalize reports it (`extras['persist_errors']`, a non-fatal
+`ErrorReport`), and the next boundary persist captures again; until then
+fork/reset and rehydration fall back to the previous checkpoint. Provisioning,
+restore and binding failures still propagate as before.
+
