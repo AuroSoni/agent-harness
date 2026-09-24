@@ -1751,6 +1751,21 @@ class AnthropicAgent(AgentRuntime):
                     error, self._sandbox_preparation_error = self._sandbox_preparation_error, None
                     raise error
                 stop_reason = response_message.stop_reason
+                # The API can close a response with "end_turn" while it still
+                # carries tool_use blocks (seen with claude-sonnet-5). Ending
+                # there orphans the calls — the parked card never gets an
+                # await_input and the chat's next request is rejected — so a
+                # local tool call always takes the tool path. A max_tokens cut
+                # stays terminal: its tool input may be truncated.
+                if stop_reason in ("end_turn", "stop", None) and (
+                    self.provider.extract_tool_calls(response_message)
+                ):
+                    logger.warning(
+                        "tool_use_with_end_turn_stop_reason",
+                        agent_uuid=self.agent_uuid,
+                        stop_reason=stop_reason,
+                    )
+                    stop_reason = "tool_use"
 
                 if stop_reason == "model_context_window_exceeded":
                     if self._compaction_controller is not None:
