@@ -203,6 +203,23 @@ class RunStarted(MetaBody):
 
 
 @dataclass(frozen=True)
+class AnswerCompleted(MetaBody):
+    """Durable root answer; transport stays open until RunCompleted."""
+
+    kind: ClassVar[str] = "answer_completed"
+    answer_completed_at: str
+    finalization: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class FinalizationUpdated(MetaBody):
+    """Run-correlated publication/recovery progress, never a terminal frame."""
+
+    kind: ClassVar[str] = "finalization_updated"
+    finalization: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class RunCompleted(MetaBody):
     """Supersedes ``meta_final``; carries the typed result projection."""
 
@@ -246,6 +263,8 @@ LIBRARY_META_KINDS: frozenset[str] = frozenset(
         Rollback.kind,
         RunStarted.kind,
         RunCompleted.kind,
+        AnswerCompleted.kind,
+        FinalizationUpdated.kind,
         FilesUpdated.kind,
         Custom.kind,
     )
@@ -261,6 +280,8 @@ META_BODY_REGISTRY: dict[str, type[MetaBody]] = {
         Rollback,
         RunStarted,
         RunCompleted,
+        AnswerCompleted,
+        FinalizationUpdated,
         FilesUpdated,
         Custom,
     )

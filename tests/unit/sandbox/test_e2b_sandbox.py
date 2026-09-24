@@ -481,11 +481,13 @@ async def test_manifest_degrades_when_output_exceeds_the_capture_ceiling(transpo
     assert await sb.manifest(["workspace"]) is None
 
 
-async def test_manifest_unavailable_falls_back(transport):
-    sb = _make(transport, python_path="definitely-not-a-python-binary")
+async def test_manifest_unavailable_falls_back(transport, monkeypatch):
+    sb = _make(transport)
     await sb.setup()
     await sb.write_file(".exports/a.txt", "A")
-    assert await sb.manifest([".exports"]) is None
+    async def unavailable():
+        return None
+    monkeypatch.setattr(sb, "_export_manifest", unavailable)
     metas = await sb.get_exported_file_metadata()  # client-side fallback path
     assert [m.path for m in metas] == ["a.txt"]
     assert metas[0].blake3_hash == compute_blake3(b"A").split(":", 1)[1]
@@ -653,6 +655,101 @@ def _multiroot(transport, **kw) -> E2BSandbox:
 
 
 _ROOTS = ("/home/nova", "/mnt/user-data/outputs")
+
+
+@pytest.mark.parametrize("exports", ["/mnt/user-data/outputs", "/home/nova/.nova/exports"])
+async def test_absolute_export_metadata_hashes_in_sandbox(transport, exports):
+    sb = _multiroot(transport, exports_dir=exports + "/")
+    await sb.setup()
+    contents = {"report.csv": b"a,b\n1,2\n", "nested/report.csv": b"different", "empty.txt": b""}
+    for name, data in contents.items():
+        await sb.write_bytes(f"{exports}/{name}", data)
+
+    before_reads = transport.bytes_read
+    metas = await sb.get_exported_file_metadata()
+    assert transport.bytes_read == before_reads
+    assert {m.path: (m.blake3_hash, m.size_bytes) for m in metas} == {
+        name: (compute_blake3(data).split(":", 1)[1], len(data))
+        for name, data in contents.items()
+    }
+    assert [m.filename for m in metas] == ["empty.txt", "report.csv", "report.csv"]
+    assert all(not m.path.startswith("/") for m in metas)
+
+    await sb.write_bytes(f"{exports}/nested/report.csv", b"edited")
+    edited = {m.path: m for m in await sb.get_exported_file_metadata()}
+    assert transport.bytes_read == before_reads
+    assert edited["report.csv"].blake3_hash == metas[-1].blake3_hash
+    assert edited["nested/report.csv"].blake3_hash == compute_blake3(b"edited").split(":", 1)[1]
+
+
+@pytest.mark.parametrize("exports", ["/mnt/user-data/outputs", "/home/nova/.nova/exports"])
+async def test_absolute_export_metadata_unavailable_manifest_falls_back(transport, monkeypatch, exports):
+    from agent_base.sandbox import e2b
+
+    events = []
+    monkeypatch.setattr(e2b, "emit", lambda kind, **attrs: events.append((kind, attrs)))
+    sb = _multiroot(transport, exports_dir=exports)
+    await sb.setup()
+    await sb.write_file(f"{sb.exports_dir}/nested/a.txt", "A")
+    real_exec = sb.exec
+    async def no_hash(command, **kwargs):
+        from agent_base.sandbox.sandbox_types import ExecResult
+        if kwargs.get("env", {}).get("SBX_EXPORT_MODE") == "manifest":
+            return ExecResult(exit_code=3, stdout='{"error":"hash_unavailable"}')
+        return await real_exec(command, **kwargs)
+    monkeypatch.setattr(sb, "exec", no_hash)
+    metas = await sb.get_exported_file_metadata()
+    assert transport.bytes_read == 0  # SDK file reads are never a safe fallback
+    reads = [a for k, a in events if k == "sandbox.export_read_complete"]
+    assert [a["size_bytes"] for a in reads] == [1]
+    assert [(m.path, m.blake3_hash, m.size_bytes) for m in metas] == [
+        ("nested/a.txt", compute_blake3(b"A").split(":", 1)[1], 1)
+    ]
+    failures = [a for k, a in events if k == "sandbox.manifest_unavailable"]
+    assert len(failures) == 1
+    assert failures[0]["reason"] == "nonzero_exit"
+    fallbacks = [a for k, a in events if k == "sandbox.export_metadata_fallback"]
+    assert len(fallbacks) == 1
+    assert fallbacks[0]["reason"] == "manifest_unavailable"
+
+
+async def test_absolute_export_metadata_still_hashes_entries_without_digest(transport, monkeypatch):
+    sb = _multiroot(transport)
+    await sb.setup()
+    await sb.write_file(f"{sb.exports_dir}/large.txt", "large")
+    await sb.write_file(f"{sb.exports_dir}/small.txt", "x")
+    manifest = sb._export_manifest
+    async def capped():
+        result = await manifest()
+        result["large.txt"] = (None, 5)
+        return result
+    monkeypatch.setattr(sb, "_export_manifest", capped)
+    before_reads = transport.bytes_read
+    metas = {m.path: m for m in await sb.get_exported_file_metadata()}
+    assert transport.bytes_read == before_reads
+    assert metas["large.txt"].blake3_hash == compute_blake3(b"large").split(":", 1)[1]
+    assert metas["large.txt"].size_bytes == 5
+
+
+async def test_absolute_export_metadata_refuses_undeclared_root(transport):
+    sb = _multiroot(transport, exports_dir="/undeclared/outputs")
+    await sb.setup()
+    with pytest.raises(SandboxPathEscapeError):
+        await sb.get_exported_file_metadata()
+
+
+async def test_export_metadata_sizes_the_bytes_when_manifest_digest_is_missing(transport, monkeypatch):
+    sb = _multiroot(transport)
+    await sb.setup()
+    await sb.write_file(f"{sb.exports_dir}/a.txt", "actual bytes")
+
+    async def missing_digest(*args, **kwargs):
+        return {"a.txt": (None, 0)}
+
+    monkeypatch.setattr(sb, "_export_manifest", missing_digest)
+    meta, = await sb.get_exported_file_metadata()
+    assert meta.blake3_hash == compute_blake3(b"actual bytes").split(":", 1)[1]
+    assert meta.size_bytes == len(b"actual bytes")
 
 
 def test_open_roots_widen_containment_without_disabling_it(transport):

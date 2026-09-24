@@ -237,6 +237,9 @@ class AnthropicAgent(AgentRuntime):
         memory_store: "MemoryStore | None" = None,
         sandbox: "Sandbox | None" = None,
         sandbox_factory: Callable[[str], "Sandbox"] | None = None,
+        defer_sandbox_initialization: bool = False,
+        before_sandbox_use: Callable[[Any], Any] | None = None,
+        early_answer_completion: bool = False,
         end_turn_hook: EndTurnHook | None = None,
         agent_uuid: str | None = None,
         # Tenancy §A.1 / GF-P8G2: the ONE identity input, forwarded to the
@@ -313,6 +316,11 @@ class AnthropicAgent(AgentRuntime):
         self._sandbox = sandbox
         self._sandbox_factory = sandbox_factory
         self._sandbox_coordinator = sandbox_coordinator
+        self.defer_sandbox_initialization = defer_sandbox_initialization
+        self.before_sandbox_use = before_sandbox_use
+        self.early_answer_completion = early_answer_completion
+        self._sandbox_preparation_pending = defer_sandbox_initialization
+        self._sandbox_preparation_error = None
         self._snapshot_policy = snapshot_policy
         self._sandbox_recovery_pending = False
         self.sandbox_warnings: list[dict[str, Any]] = []
@@ -602,6 +610,85 @@ class AnthropicAgent(AgentRuntime):
         self._inject_agent_uuid_to_tools()
         self._configure_context_externalizer()
 
+    async def _initialize_sandbox_binding(self, agent_uuid: str, *, trigger: str) -> None:
+        if not self.defer_sandbox_initialization:
+            await self._initialize_sandbox(agent_uuid, trigger=trigger)
+            return
+        # Schemas, UUID injection and context policy exist before inference.
+        # Resolving this handle is local; no remote setup happens here.
+        sandbox = await self._get_or_create_sandbox(agent_uuid)
+        self.tool_registry.attach_sandbox(sandbox)
+        self.media_backend.attach_sandbox(sandbox)
+        self._inject_agent_uuid_to_tools()
+        self._configure_context_externalizer()
+
+    async def prepare_sandbox(self, *, trigger: str = "before_use") -> None:
+        """Complete this turn's preparation, including the consumer's I/O barrier.
+
+        Called by the owning actor (or before submission for attachments). The
+        model may run concurrently, but tools cannot pass this boundary. Eager
+        callers keep the existing warm path and never use this opt-in seam.
+        """
+        if not self._sandbox_preparation_pending:
+            return
+        from agent_base.sandbox.coordinator import uncoordinated
+        coordination = getattr(self._sandbox_coordinator, "preparation", None)
+        guard = coordination(self) if callable(coordination) else uncoordinated()
+        async with guard:
+            await self._initialize_sandbox(self.agent_uuid, trigger=trigger)
+            if self.before_sandbox_use is not None:
+                await self.before_sandbox_use(self)
+            self._sandbox_preparation_pending = False
+
+    async def _warm_sandbox(self, trigger: str) -> None:
+        if self.defer_sandbox_initialization and trigger == "turn_start":
+            self._sandbox_preparation_pending = True
+            self._sandbox_preparation_error = None
+            return
+        await super()._warm_sandbox(trigger)
+
+    async def _provider_turn(self, *, render_view, sink=None):
+        if not self._sandbox_preparation_pending:
+            return await super()._provider_turn(render_view=render_view, sink=sink)
+        # Keep preparation in the actor: its database locks are task-owned.
+        # Only the provider flight runs in a scoped child task; no detached work.
+        flight = asyncio.create_task(
+            super()._provider_turn(render_view=render_view, sink=sink),
+            name="model-during-sandbox-preparation",
+        )
+        try:
+            await self.prepare_sandbox(trigger="model_overlap")
+        except BaseException as exc:
+            flight.cancel()
+            result = (await asyncio.gather(flight, return_exceptions=True))[0]
+            if isinstance(exc, Exception) and sink is not None:
+                # Readiness used to fail before an SSE stream existed. With
+                # overlap a visible answer can precede this failure: preserve it
+                # and use the existing terminal error channel so clients expose
+                # a retryable error instead of rendering a successful answer.
+                from agent_base.streaming.types import ErrorDelta
+                sink.emit(ErrorDelta(
+                    agent_uuid=self.agent_uuid, is_final=True, terminal=True,
+                    code=ErrorCode.INTERNAL, message=str(exc),
+                    details={"retriable": bool(getattr(exc, "retriable", False))},
+                ))
+            # A flight that already completed is still recorded in the ordinary
+            # loop before the preparation failure closes the run (unbilled,
+            # matching the existing errored-run accounting policy).
+            if (isinstance(exc, asyncio.CancelledError) and isinstance(result, ProviderTurn)
+                    and not result.was_cancelled):
+                self._record_provider_response(result)
+            if isinstance(exc, Exception) and not isinstance(result, BaseException):
+                self._sandbox_preparation_error = exc
+                return result
+            raise
+        try:
+            return await flight
+        finally:
+            if not flight.done():
+                flight.cancel()
+                await asyncio.gather(flight, return_exceptions=True)
+
     # ── remote-sandbox lifecycle (no-ops for local backends) ───────────────
 
     async def ensure_sandbox_running(self, *, trigger: str | None = None) -> None:
@@ -848,7 +935,7 @@ class AnthropicAgent(AgentRuntime):
             else:
                 self.conversation = None  # Created per-run in initialize_run()
 
-            await self._initialize_sandbox(self._agent_uuid, trigger="session_load")
+            await self._initialize_sandbox_binding(self._agent_uuid, trigger="session_load")
 
             await self._initialize_mcp()
 
@@ -884,7 +971,7 @@ class AnthropicAgent(AgentRuntime):
             # The coordinator's principal-scoped binding CAS needs an identity
             # row first. Ordinary saves must preserve authoritative bindings.
             await self.config_adapter.save(self.agent_config)
-        await self._initialize_sandbox(agent_uuid, trigger="session_create")
+        await self._initialize_sandbox_binding(agent_uuid, trigger="session_create")
 
         await self._initialize_mcp()
 
@@ -1254,6 +1341,14 @@ class AnthropicAgent(AgentRuntime):
         if not self._initialized:
             await self.initialize()
 
+        if self.has_pending_finalization:
+            await self._recover_pending_finalization()
+
+        if self.defer_sandbox_initialization:
+            # Direct run() and actor-driven turns share the readiness contract.
+            self._sandbox_preparation_pending = True
+            self._sandbox_preparation_error = None
+
         # §5 boundary discipline: a surface change queued while the previous
         # run was active applies HERE — the turn boundary — so this turn's
         # schemas and change notice are consistent.
@@ -1285,6 +1380,10 @@ class AnthropicAgent(AgentRuntime):
             self._apply_turn_start_contributions(turn_start_outcome)
             self._runtime_target_msg_id = prompt.id
 
+            if (self._sandbox_preparation_pending and self._context_externalizer is not None
+                    and self.provider.token_estimator.estimate_message(prompt)
+                    > self._context_externalizer.config.max_prompt_tokens):
+                await self.prepare_sandbox(trigger="context_externalization")
             if self._context_externalizer is not None:
                 context_prompt = await self._context_externalizer.externalize_prompt(prompt)
             else:
@@ -1558,6 +1657,22 @@ class AnthropicAgent(AgentRuntime):
 
     # ── the loop (written ONCE against the Provider protocol — §2.2) ───────
 
+    def _record_provider_response(self, turn: ProviderTurn) -> None:
+        response_message = turn.message
+        self.agent_config.current_step += 1
+        self._accumulate_usage(response_message.usage)
+        self._turn_steps.append(response_message)
+
+        self.agent_config.context_messages.append(response_message)
+        self._append_message_to_logs(
+            response_message,
+            timing=getattr(turn, "timing", None),
+            cost_usd=trace_safe(
+                "resume_loop.cost_usd", self._step_cost_usd, response_message
+            ),
+            step=self.agent_config.current_step,
+        )
+
     async def _resume_loop(self, sink: "DeltaSink | None" = None) -> AgentResult:
         # Initialize cancellation primitives.
         if self._cancellation_event is None:
@@ -1630,20 +1745,11 @@ class AnthropicAgent(AgentRuntime):
 
                 response_message = turn.message
 
-                self.agent_config.current_step += 1
-                self._accumulate_usage(response_message.usage)
-                self._turn_steps.append(response_message)
+                self._record_provider_response(turn)
 
-                self.agent_config.context_messages.append(response_message)
-                self._append_message_to_logs(
-                    response_message,
-                    timing=getattr(turn, "timing", None),
-                    cost_usd=trace_safe(
-                        "resume_loop.cost_usd", self._step_cost_usd, response_message
-                    ),
-                    step=self.agent_config.current_step,
-                )
-
+                if self._sandbox_preparation_error is not None:
+                    error, self._sandbox_preparation_error = self._sandbox_preparation_error, None
+                    raise error
                 stop_reason = response_message.stop_reason
 
                 if stop_reason == "model_context_window_exceeded":
@@ -2243,15 +2349,22 @@ class AnthropicAgent(AgentRuntime):
         """Persist only while owning a current session state and sandbox lease."""
         if self.agent_config is None:
             return
+        async def persist():
+            if self.has_pending_finalization:
+                from .finalization import _save
+                await _save(self, self.agent_config.extras["pending_finalization"])
+                return  # recovery owns the physical checkpoint, never idle/shutdown
+            await self._persist_state()
+
         coordinator = self._sandbox_coordinator
         if coordinator is None or getattr(self, "_parent_agent_uuid", None):
-            await self._persist_state()
+            await persist()
             return
         async with coordinator.exclusive(self, reason="persist_idle"):
             # Active turn owners may advance their own state. Idle residents
             # must compare against storage before any persistence side effect.
             await coordinator.validate_resident(self)
-            await self._persist_state()
+            await persist()
 
     # ``_actor_loop`` is INHERITED from ``AgentRuntime`` (GF-P6G3 — the
     # single-writer drain was lifted into the base so ``ensure_actor()`` and
@@ -2316,6 +2429,10 @@ class AnthropicAgent(AgentRuntime):
         queued messages, run tool ``on_abort()`` hooks, then wait for the loop
         to self-clean with a bounded hard-cancel backstop (``ABORT_GRACE_MS``).
         """
+        if self.has_pending_finalization:
+            # The answer is already durable. Stop cancels generation, never
+            # interrupts required publication/checkpoint/settlement afterward.
+            return self._build_agent_result(self.conversation.final_response, self.conversation.stop_reason)
         if self._cancellation_event is None:
             self._cancellation_event = asyncio.Event()
 
@@ -2627,6 +2744,8 @@ class AnthropicAgent(AgentRuntime):
         run finalize settled, which was billed as completed whatever failed
         after.
         """
+        if self.has_pending_finalization:
+            return True  # preserve the durable answer and recoverable failure
         if conversation.completed_at is None:
             return False
         if conversation.stop_reason in ("error", "aborted"):
@@ -3788,6 +3907,20 @@ class AnthropicAgent(AgentRuntime):
                     exc_info=True,
                 )
 
+    @property
+    def has_pending_finalization(self) -> bool:
+        return bool(self.agent_config and self.agent_config.extras.get("pending_finalization"))
+
+    async def _recover_pending_finalization(self) -> None:
+        if self.has_pending_finalization:
+            from .finalization import recover_finalization
+            await recover_finalization(self)
+
+    async def _checkpoint_after_turn(self) -> None:
+        if self.early_answer_completion and self.conversation and self.conversation.extras.get("answer_lifecycle", {}).get("status") == "complete":
+            return  # finalization already captured the required turn boundary
+        await self.checkpoint()
+
     # ── finalize (written ONCE — kills B2's duplication) ───────────────────
 
     async def _finalize_run(
@@ -3807,6 +3940,9 @@ class AnthropicAgent(AgentRuntime):
                 self._abort_completion.set()
             if self._abort_pending is not None:
                 self._abort_pending.done = True
+        if self.early_answer_completion and not self._parent_agent_uuid:
+            from .finalization import finalize_answer
+            return await finalize_answer(self, response_message, stop_reason)
         now = datetime.now(timezone.utc).isoformat()
 
         # Flush exported files from sandbox (returns [] if no sandbox attached).
@@ -4082,6 +4218,7 @@ class AnthropicAgent(AgentRuntime):
         conversation: "Conversation | None" = None,
         *,
         created_at: str | None = None,
+        config_snapshot: "AgentConfig | None" = None,
     ) -> "CheckpointRef | None":
         """Capture a fork/reset checkpoint of the agent + sandbox at this turn
         boundary. Core runtime behavior gated on adapter presence (SPEC §D1) —
@@ -4092,6 +4229,11 @@ class AnthropicAgent(AgentRuntime):
         boundary). ``conversation`` defaults to the live ``self.conversation``;
         the scripted path passes its per-run row explicitly.
         """
+        # Abort persistence can run before first readiness. Snapshotting that
+        # unready handle would implicitly create a VM outside the coordinator
+        # and publish a turn checkpoint before the pristine seq-0 barrier.
+        if self._sandbox_preparation_pending and config_snapshot is None:
+            return None
         conversation = conversation if conversation is not None else self.conversation
         if self.checkpoint_adapter is None or conversation is None:
             return None
@@ -4103,13 +4245,14 @@ class AnthropicAgent(AgentRuntime):
         from agent_base.sandbox.snapshot import SandboxSnapshotter
         from agent_base.storage.checkpoint_codec import split_config_for_checkpoint
 
-        tenant = self.agent_config.owner_tenant or "_"
+        checkpoint_config = config_snapshot if config_snapshot is not None else self.agent_config
+        tenant = checkpoint_config.owner_tenant or "_"
         from agent_base.observability import span as observation_span
 
         with observation_span("checkpoint.transcript_codec"):
             base, transcript_segments, log_segments, codec_v = (
                 await split_config_for_checkpoint(
-                    self.agent_config, self._blobs, tenant=tenant
+                    checkpoint_config, self._blobs, tenant=tenant
                 )
             )
 

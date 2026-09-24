@@ -29,6 +29,9 @@ Design (docs/design/sandbox-e2b.md in the consumer repo):
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import json
 from datetime import datetime
 import io
 import os
@@ -44,7 +47,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, runtime_ch
 from agent_base.observability import emit, span
 
 from .config_driven import ConfigDrivenSandbox, register_sandbox
-from .remote_scripts import hash_manifest_source
+from .remote_scripts import export_files_source, hash_manifest_source
 from .output import DEFAULT_CAPTURE_BYTES, HELPER_CAPTURE_BYTES, SandboxOutputLimitExceeded, Utf8Tail
 from .sandbox_types import (
     DEFAULT_ZONE_LAYOUT,
@@ -1452,13 +1455,47 @@ class E2BSandbox(ConfigDrivenSandbox):
         await self.write_file_bytes(sandbox_path, data)
         return sandbox_path
 
+    def _export_command(self, mode: str, path: str = "") -> tuple[str, dict[str, str]]:
+        # Inline trusted code also protects already-running VMs whose installed
+        # manifest helper predates export symlink protection.
+        return (
+            f"{shlex.quote(self.python_path)} -I -B -c {shlex.quote(export_files_source())}",
+            {"SBX_EXPORT_ROOT": self._abs(self.exports_dir),
+             "SBX_EXPORT_MODE": mode, "SBX_EXPORT_PATH": path},
+        )
+
+    async def _export_index(self, mode: str) -> dict[str, tuple[str | None, int]] | None:
+        command, env = self._export_command(mode)
+        try:
+            result = await self.exec(command, env=env, cwd=".", timeout=MANIFEST_TIMEOUT_S)
+        except SandboxOutputLimitExceeded:
+            result = None
+            reason = "output_limit"
+        else:
+            if result.exit_code == 4:
+                raise SandboxPathEscapeError(self.exports_dir)
+            reason = "timeout" if result.timed_out else "nonzero_exit"
+        if result is not None and not result.timed_out and result.exit_code == 0:
+            try:
+                raw = json.loads(result.stdout)
+                files = raw["files"]
+                if raw.get("rejected_count"):
+                    emit("sandbox.export_rejected", count=raw["rejected_count"], **self._attrs())
+                return {name: (value[0], int(value[1])) for name, value in files.items()}
+            except (ValueError, KeyError, TypeError):
+                reason = "bad_json"
+        if mode == "manifest":
+            emit("sandbox.manifest_unavailable", reason=reason, **self._attrs())
+            return None
+        # No unchecked SDK walk/read fallback: without the safe helper we
+        # cannot establish whether a path traverses a symlink.
+        raise RuntimeError(f"Safe export listing unavailable ({reason}); retry sandbox preparation")
+
+    async def _export_manifest(self) -> dict[str, tuple[str | None, int]] | None:
+        return await self._export_index("manifest")
+
     async def list_exported_files(self) -> list[str]:
-        exports = self.exports_dir
-        files = await self.walk(exports)
-        prefix = exports + "/"
-        return [
-            fe.relpath[len(prefix):] for fe in files if fe.relpath.startswith(prefix)
-        ]
+        return sorted(await self._export_index("list") or {})
 
     def _export_rel(self, path: str) -> str:
         exports = self.exports_dir
@@ -1469,19 +1506,61 @@ class E2BSandbox(ConfigDrivenSandbox):
         return joined
 
     async def get_exported_file(self, path: str) -> AsyncIterator[bytes]:
-        rel = self._export_rel(path)
-        exists, entry = await self.file_exists(rel)
-        if not exists or (entry is not None and entry.is_dir):
-            raise FileNotFoundError(f"Exported file not found: '{path}'")
-        async for chunk in self.read_file_bytes(rel):
-            yield chunk
+        rel = posixpath.relpath(self._export_rel(path), self.exports_dir)
+        command, env = self._export_command("read", rel)
+        # Spool before yielding: a failure or truncated command stream must not
+        # publish a partial file. RAM remains bounded for large exports.
+        with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES, mode="w+b") as spool:
+            pending = ""
+            final = None
+            digest = hashlib.sha256()
+
+            def consume(chunk: str) -> None:
+                nonlocal pending, final
+                pending += chunk
+                while "\n" in pending:
+                    line, pending = pending.split("\n", 1)
+                    try:
+                        record = json.loads(line)
+                    except ValueError as exc:
+                        raise RuntimeError("Safe export reader returned invalid data") from exc
+                    if "data" in record:
+                        data = base64.b64decode(record["data"], validate=True)
+                        offset = record["offset"]
+                        if offset < spool.tell() and offset + len(data) <= spool.tell():
+                            continue  # command reattachment may replay output
+                        if offset != spool.tell():
+                            raise RuntimeError("Safe export reader lost data")
+                        spool.write(data)
+                        digest.update(data)
+                    else:
+                        final = record
+                if len(pending) > 65536:
+                    raise RuntimeError("Safe export reader exceeded its record limit")
+
+            with span("sandbox.export_read", **self._attrs()):
+                result = await self.run_streaming(
+                    command, env=env, cwd=".", timeout=MANIFEST_TIMEOUT_S,
+                    on_output=consume, capture_limit_bytes=1024,
+                )
+            if result.exit_code == 4:
+                raise SandboxPathEscapeError(path)
+            if result.exit_code == 5:
+                raise FileNotFoundError(f"Exported file not found: '{path}'")
+            if (result.timed_out or result.exit_code != 0 or pending or not final
+                    or final.get("size") != spool.tell()
+                    or final.get("sha256") != digest.hexdigest()):
+                raise RuntimeError("Safe export read failed or was incomplete; retry the export")
+            emit("sandbox.export_read_complete", size_bytes=spool.tell(), **self._attrs())
+            spool.seek(0)
+            while chunk := spool.read(READ_CHUNK_SIZE):
+                yield chunk
 
     async def get_exported_file_metadata(self) -> list[ExportedFileMetadata]:
-        exports = self.exports_dir
-        manifest = await self.manifest([exports])
+        manifest = await self._export_manifest()
         results: list[ExportedFileMetadata] = []
-        prefix = exports + "/"
         if manifest is None:
+            emit("sandbox.export_metadata_fallback", reason="manifest_unavailable", **self._attrs())
             for rel in await self.list_exported_files():
                 data = b"".join([c async for c in self.get_exported_file(rel)])
                 results.append(
@@ -1494,13 +1573,12 @@ class E2BSandbox(ConfigDrivenSandbox):
                     )
                 )
             return results
-        for rel, (digest, size) in sorted(manifest.items()):
-            if not rel.startswith(prefix):
-                continue
-            inner = rel[len(prefix):]
-            if digest is None:  # over the hashing cap — hash it here
-                data = b"".join([c async for c in self.read_file_bytes(rel)])
+        for inner, (digest, size) in sorted(manifest.items()):
+            self._export_rel(inner)
+            if digest is None:  # helper could not hash it — read safely and hash here
+                data = b"".join([c async for c in self.get_exported_file(inner)])
                 digest = self._blake3_hex(data)
+                size = len(data)
             results.append(
                 ExportedFileMetadata(
                     filename=posixpath.basename(inner),
@@ -1567,6 +1645,7 @@ class E2BSandbox(ConfigDrivenSandbox):
         if result.timed_out or result.exit_code != 0:
             emit(
                 "sandbox.manifest_unavailable",
+                reason="timeout" if result.timed_out else "nonzero_exit",
                 exit_code=result.exit_code,
                 timed_out=result.timed_out,
                 **self._attrs(),

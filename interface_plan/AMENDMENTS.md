@@ -1044,3 +1044,58 @@ the library read none of them.
   `stream_meta_history_and_tool_results`, default `False`. A consumer that
   opts in gets the spans with the rest of the log and strips what its clients
   should not see (Nova does, on its member streams).
+
+## 2026-09-24 — E2B export symlink containment
+
+- **EX-1:** E2B export listing, hashing and byte publication must never follow
+  symlinks, including parent/root links and swaps between discovery and reading.
+  Use descriptor-relative `O_NOFOLLOW` opens. Skip rejected discovery entries;
+  direct reads reject with `SandboxPathEscapeError`. Digest unavailability may
+  use a safe byte-read fallback; missing safe execution support fails closed.
+  Spooling plus offsets/terminal checksum prevents partial or replay-corrupted
+  command streams from publishing bytes. Applies to absolute web exports and
+  legacy relative E2B exports; no change to generic workspace/checkpoint APIs.
+  Spec: `tests/interface/sandbox/test_e2b_export_security.py`.
+
+
+### SB-2 — Deferred sandbox preparation (2026-09-24)
+
+`AnthropicAgent(defer_sandbox_initialization=False, before_sandbox_use=None)`
+retains eager initialization by default. Opt-in callers resolve identity, profile,
+tool schemas and a local sandbox handle during initialization, then overlap the
+first provider flight with actor-owned preparation. Only the provider flight runs
+in a scoped child task; cancellation/failure drains it. Tools and finalization
+wait for preparation. `prepare_sandbox(trigger=...)` is the explicit barrier for
+consumer uploads or hooks that require sandbox I/O before inference. Oversized
+prompt externalization crosses that barrier automatically. `before_sandbox_use`
+is an optional async callback called with the agent after remote readiness and
+before mutation; failure fails the turn. Consumers must configure this callback
+before submission and must gate sandbox-backed contributions/hooks themselves.
+
+`capture_checkpoint(..., config_snapshot=None)` can serialize a frozen pre-turn
+config while capturing the now-ready, still-pristine sandbox. The default uses
+the live config as before. `model_overlap` and `context_externalization`
+readiness spans belong to the current run. Eager callers and relay resumes
+retain their existing behavior. No post-turn pause policy changes.
+
+Interface coverage: `tests/interface/sandbox/test_deferred_preparation.py`.
+
+SB-2 cancellation addendum: persistence before readiness keeps the conversation
+but skips physical checkpoint capture; it cannot implicitly provision an unready
+handle. A completed provider flight is recorded before hard-cancel salvage, so
+completed usage follows the existing settlement rules. Preparation failures emit
+the existing terminal error delta (and ordinary error report) for visible retry
+feedback even after partial answer text. Nova retains the pre-first-turn config
+in temporary extensible metadata until the pristine physical seq-0 capture succeeds.
+
+## AC-1 — durable answer completion and resumable web finalization (2026-09-24)
+
+Opt-in root `answer_completed`/`finalization_updated` separate answer activity
+from publication/checkpoint/settlement readiness. Journal/config and conversation
+extras preserve answer and priced usage; actor-owned recovery precedes subsequent
+turns. Keep default/Excel behavior eager. Stamp actual run/parent identities on
+runtime meta envelopes. Stable, atomic export IDs plus consumer billing dedupe
+make retries safe. Checkpoints contain no pending journal; avoid duplicate actor
+checkpoint work after opted-in completion. Tests: `tests/interface/finalization`,
+streaming/meta and media contracts. See subsystem AC-1 sections for failure,
+cancellation, and workspace-loss semantics. No canonical duration change (Stage 5).

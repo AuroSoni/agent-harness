@@ -1733,6 +1733,10 @@ class AgentRuntime:
         last_result = None
         ran_turn = False
         try:
+            if getattr(self, "has_pending_finalization", False):
+                ran_turn = True
+                async with self._sandbox_turn_guard():
+                    await self._recover_pending_finalization()
             while True:
                 msg = self._mailbox.take()
                 if msg is None:
@@ -1753,7 +1757,7 @@ class AgentRuntime:
                             # one) BEFORE the turn touches files. No-op for local.
                             await self._warm_sandbox("turn_start")
                             last_result = await self.run(msg.message)
-                            await self.checkpoint()
+                            await self._checkpoint_after_turn()
                 finally:
                     observe(
                         "actor_turn_end",
@@ -1773,6 +1777,9 @@ class AgentRuntime:
                     except Exception:  # pragma: no cover - best-effort
                         pass
         return last_result
+
+    async def _checkpoint_after_turn(self) -> None:
+        await self.checkpoint()
 
     async def wait_idle(self) -> None:
         """Await the runtime reaching IDLE: no live actor or cold-resume
@@ -2306,9 +2313,9 @@ class AgentRuntime:
             self._meta_seq += 1
             envelope = MetaEnvelope(
                 event_id=str(uuid.uuid4()),
-                run_id="",
+                run_id=self._run_id or "",
                 agent_id=self.agent_uuid,
-                parent_agent_id=None,
+                parent_agent_id=getattr(self, "_parent_agent_uuid", None),
                 seq=self._meta_seq,
                 ts=datetime.now(timezone.utc).isoformat(),
                 correlation_id=correlation_id,

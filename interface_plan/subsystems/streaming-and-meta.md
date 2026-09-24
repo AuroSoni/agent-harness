@@ -767,3 +767,43 @@ back-compat shim is **removed**, not maintained — Nova migrates in the same cu
 3. Replace `_yield_turn_chunks` + header copy with `sse_response()` (D4).
 4. Replace `emit_awaiting_chunk`/`emit_meta_init`/raw `MetaDelta` with `ctx.emit` + `ctx.call_frontend_tool` (C4/B7/X5/I4).
 5. Replace `_build_relay_result`/`_raw_block_to_content_block` with `WireToolResult.to_tool_reply()` + `ContentBlock.from_api_dict` (D5/C1-meta).
+
+## AC-1 — opt-in durable answer completion (Nova web)
+
+`AnthropicAgent(early_answer_completion=True)` emits root `answer_completed`
+only after the final response passes end-turn hooks and its answer/config/run
+records are durable. Payload: `answer_completed_at` (UTC), `finalization`
+(`status`, `stage`, `files_ready`, canonical `pending_paths`, optional `error`
+and `retryable`).
+The runtime stamps real run and parent IDs. Intermediate text, tools, and child
+answers never establish the root boundary. Default/Excel behavior is unchanged.
+
+`finalization_updated` reports publication/recovery state for the same run. These
+are additive nonterminal metas: readers continue accepting files, usage and
+`run_completed`. A client must correlate root agent + run and ignore duplicates
+or late events. `run_completed` retains its terminal contract. A transport owner
+may wait for `wait_idle()` before releasing terminal readiness to the UI queue.
+
+The opt-in config's `pending_finalization` journal holds the answer projection
+and the already-priced settlement. Conversation `extras.answer_lifecycle` is the
+history projection. The actor owns recovery before taking another mailbox turn;
+`ensure_actor()` also resumes pending work with an empty mailbox. Recovery does
+not call the model. Publication uses stable content/path identities; billing
+callbacks must durably deduplicate the supplied settlement identity. A failed
+checkpoint/publication/settlement preserves the answer and leaves a retryable
+journal. Stop after the durable boundary cannot interrupt required finalization.
+A VM lost before this turn's checkpoint is reported explicitly; recovery must
+not silently accept the prior turn's workspace as the answer's workspace.
+
+Checkpoints exclude the journal so fork/reset cannot replay an old settlement.
+The required boundary is captured once in finalization; the actor does not repeat
+that capture after emitting terminal. No detached finalization tasks are used.
+
+Usage settlement follows the durable answer boundary and precedes publication
+and checkpoint work: a completed answer is still billable when those operations
+fail. The journal marks callback success, and its stable settlement identity
+protects ambiguous retries. Recovery transports without an SSE reader detach the
+read point; a new prompt must discard old recovery frames, while relay
+reattachment continues to hand off its undelivered tail. History may read the
+answer from the journal if a crash interrupted its conversation-row projection;
+sequence allocation remains owned by the row adapter.

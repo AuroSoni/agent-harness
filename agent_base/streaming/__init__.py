@@ -45,6 +45,8 @@ from .types import (
 from .meta import (
     META_BODY_REGISTRY,
     AwaitInput,
+    AnswerCompleted,
+    FinalizationUpdated,
     Custom,
     ErrorReport,
     FilesUpdated,
@@ -108,6 +110,8 @@ __all__ = [
     "META_BODY_REGISTRY",
     "register_meta_body",
     "AwaitInput",
+    "AnswerCompleted",
+    "FinalizationUpdated",
     "FrontendCallView",
     "ProfileChanged",
     "UsageReport",

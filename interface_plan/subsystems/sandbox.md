@@ -875,3 +875,49 @@ logged every time, finalize reports it (`extras['persist_errors']`, a non-fatal
 fork/reset and rehydration fall back to the previous checkpoint. Provisioning,
 restore and binding failures still propagate as before.
 
+
+### EX-1 — E2B export publication (2026-09-24)
+
+E2B export discovery, metadata hashing, and byte publication open every directory
+and file through descriptors with `O_NOFOLLOW`. Symlinks and non-regular entries
+are omitted from discovery; explicit reads through a symlink (including an
+ancestor or export-root symlink) raise `SandboxPathEscapeError`. Regular nested
+exports keep relative names on both absolute and legacy relative layouts.
+
+An unavailable hash manifest falls back to safe listing and safe byte reads.
+An unavailable safe reader fails closed; the SDK pathname read is not a fallback.
+Reads spool locally and validate offsets, size and a terminal checksum before
+publishing bytes. The helper is trusted inline code, so this contract also holds
+for existing VMs with an older installed manifest helper. Generic workspace I/O
+and checkpoint manifests are unchanged. Spec: `test_e2b_export_security.py`.
+
+
+### SB-2 — Deferred sandbox preparation (2026-09-24)
+
+`AnthropicAgent(defer_sandbox_initialization=False, before_sandbox_use=None)`
+retains eager initialization by default. Opt-in callers resolve identity, profile,
+tool schemas and a local sandbox handle during initialization, then overlap the
+first provider flight with actor-owned preparation. Only the provider flight runs
+in a scoped child task; cancellation/failure drains it. Tools and finalization
+wait for preparation. `prepare_sandbox(trigger=...)` is the explicit barrier for
+consumer uploads or hooks that require sandbox I/O before inference. Oversized
+prompt externalization crosses that barrier automatically. `before_sandbox_use`
+is an optional async callback called with the agent after remote readiness and
+before mutation; failure fails the turn. Consumers must configure this callback
+before submission and must gate sandbox-backed contributions/hooks themselves.
+
+`capture_checkpoint(..., config_snapshot=None)` can serialize a frozen pre-turn
+config while capturing the now-ready, still-pristine sandbox. The default uses
+the live config as before. `model_overlap` and `context_externalization`
+readiness spans belong to the current run. Eager callers and relay resumes
+retain their existing behavior. No post-turn pause policy changes.
+
+Interface coverage: `tests/interface/sandbox/test_deferred_preparation.py`.
+
+SB-2 cancellation addendum: persistence before readiness keeps the conversation
+but skips physical checkpoint capture; it cannot implicitly provision an unready
+handle. A completed provider flight is recorded before hard-cancel salvage, so
+completed usage follows the existing settlement rules. Preparation failures emit
+the existing terminal error delta (and ordinary error report) for visible retry
+feedback even after partial answer text. Nova retains the pre-first-turn config
+in temporary extensible metadata until the pristine physical seq-0 capture succeeds.

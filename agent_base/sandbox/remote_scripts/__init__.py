@@ -16,4 +16,9 @@ def hash_manifest_source() -> str:
     return HASH_MANIFEST_SCRIPT.read_text(encoding="utf-8")
 
 
-__all__ = ["HASH_MANIFEST_SCRIPT", "hash_manifest_source"]
+def export_files_source() -> str:
+    """Trusted export helper, independent of a sandbox's installed template."""
+    return Path(__file__).with_name("export_files.py").read_text(encoding="utf-8")
+
+
+__all__ = ["HASH_MANIFEST_SCRIPT", "hash_manifest_source", "export_files_source"]

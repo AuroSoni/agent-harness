@@ -697,9 +697,15 @@ class AnthropicProvider(Provider):
                     mimetypes.guess_type(filename)[0] or "application/octet-stream"
                 )
 
-                metadata = await runtime.media_backend.store(
-                    response.iter_bytes(), filename, mime_type, agent_config.agent_uuid
-                )
+                if getattr(runtime, "has_pending_finalization", False):
+                    metadata = await runtime.media_backend.store_idempotent(
+                        response.iter_bytes(), filename, mime_type, agent_config.agent_uuid,
+                        key=f"anthropic:{agent_config.agent_uuid}:{file_id}",
+                    )
+                else:
+                    metadata = await runtime.media_backend.store(
+                        response.iter_bytes(), filename, mime_type, agent_config.agent_uuid
+                    )
                 metadata.extras["anthropic_file_id"] = file_id
                 results.append(metadata)
             except Exception:
@@ -708,6 +714,8 @@ class AnthropicProvider(Provider):
                     file_id=file_id,
                     exc_info=True,
                 )
+                if getattr(runtime, "has_pending_finalization", False):
+                    raise  # Required publication stays recoverable in the journal.
                 continue
 
         return results

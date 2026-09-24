@@ -281,6 +281,8 @@ class FakeHandle:
         env = dict(envs)
         # The fake maps the VM root onto a host directory: translate the
         # helper-script environment so hash_manifest walks the host tree.
+        if "SBX_EXPORT_ROOT" in env:
+            env["SBX_EXPORT_ROOT"] = str(self._box.host_dir.resolve() / env["SBX_EXPORT_ROOT"].lstrip("/"))
         if "SBX_ROOT" in env:
             env["SBX_ROOT"] = str(self._host(env["SBX_ROOT"]))
         for key in ("SBX_CAPTURE_EXCLUDE",):

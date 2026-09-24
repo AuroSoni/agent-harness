@@ -228,6 +228,18 @@ class MediaBackend(ABC):
         """
         ...
 
+    async def store_idempotent(
+        self, content: AsyncIterator[bytes], filename: str, mime_type: str,
+        agent_uuid: str, *, key: str,
+    ) -> MediaMetadata:
+        """Store immutable export bytes once under a caller's content/path key.
+
+        Required only by recoverable finalization. Custom backends must implement
+        atomic publication and stable identity; silently falling back to store()
+        would create duplicate files after an interrupted upload.
+        """
+        raise NotImplementedError("This media backend does not support idempotent exports")
+
     @abstractmethod
     async def retrieve(
         self,

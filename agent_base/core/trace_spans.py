@@ -495,7 +495,8 @@ SPAN_ROUTE_CURRENT = "current"
 SPAN_ROUTE_BUFFER = "buffer"
 
 #: Warms done for the run already open: its own pause's continuation.
-CURRENT_RUN_TRIGGERS = frozenset({"relay_resume", "deferred_resume", "cold_resume"})
+CURRENT_RUN_TRIGGERS = frozenset({"relay_resume", "deferred_resume", "cold_resume",
+                                  "model_overlap", "context_externalization", "finalization_recovery"})
 
 #: How many buffered spans an agent holds for its next run (oldest dropped).
 PENDING_SPANS_CAP = 16
