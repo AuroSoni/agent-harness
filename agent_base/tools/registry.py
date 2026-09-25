@@ -229,6 +229,12 @@ class ToolRegistry:
         registered = self._tools.get(tool_name)
         return registered.executor if registered else "backend"
 
+    def input_schema_for(self, tool_name: str) -> dict[str, Any] | None:
+        """The JSON Schema of a registered tool's input; ``None`` for an
+        unknown name."""
+        registered = self._tools.get(tool_name)
+        return registered.schema.input_schema if registered else None
+
     # ─── Single Tool Execution ─────────────────────────────────────
 
     async def execute(

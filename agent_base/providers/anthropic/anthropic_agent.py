@@ -2003,6 +2003,9 @@ class AnthropicAgent(AgentRuntime):
         await self._persist_state()
         return True
 
+    def _tool_input_schema(self, tool_name: str) -> dict[str, Any] | None:
+        return self.tool_registry.input_schema_for(tool_name)
+
     async def _run_backend_before_tool(
         self, tool_calls: list[Any]
     ) -> tuple[list[Any], dict[str, ToolResultEnvelope]]:

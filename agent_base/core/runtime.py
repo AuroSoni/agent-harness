@@ -113,6 +113,7 @@ from agent_base.core.types import (
     ToolResultContent,
 )
 from agent_base.profiles import Profile
+from agent_base.tools.schema_utils import decode_json_encoded_arguments
 from agent_base.session.mailbox import Mailbox
 
 if TYPE_CHECKING:
@@ -1429,6 +1430,12 @@ class AgentRuntime:
         CM-G1/CM-G4: shared by the live backend execution, the in-loop relay
         pause, and ``call_frontend_tool``.
         """
+        # A JSON-encoded object/array argument is decoded before any hook
+        # reads it; the model's tool_use block in the history keeps what it
+        # sent (editing it would break the cache and preserved thinking).
+        tool_input = decode_json_encoded_arguments(
+            tool_input, self._tool_input_schema(tool_name)
+        )
         base = self._base_hook_kwargs()
         base["executor"] = executor
         hook_ctx = ToolCallContext(
@@ -1445,6 +1452,11 @@ class AgentRuntime:
         outcome = await self._run_hook("before_tool", hook_ctx)
         self._emit_outcome_events(outcome)
         return dict(hook_ctx.tool_input), outcome
+
+    def _tool_input_schema(self, tool_name: str) -> Mapping[str, Any] | None:
+        """The JSON Schema of ``tool_name``'s input, or ``None``. The runtime
+        holds no tool registry; an agent that does overrides this."""
+        return None
 
     async def _run_before_tool(
         self,
