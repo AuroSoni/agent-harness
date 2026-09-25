@@ -1604,16 +1604,21 @@ class AnthropicAgent(AgentRuntime):
         # The sandbox owns where overflow files belong: a layout that moves tool
         # results has to move emit_capped with it, or the reference the model is
         # handed points at a path that does not exist.
-        from agent_base.tools.context import TOOL_RESULTS_DIR, pick_result_reader
+        from agent_base.tools.context import (
+            TOOL_RESULTS_DIR,
+            pick_result_loader,
+            pick_result_reader,
+        )
 
         tool_results_dir = getattr(self._sandbox, "tool_results_dir", None) or TOOL_RESULTS_DIR
 
-        # And the roster owns which tool can READ one. Resolved per run rather
-        # than at construction: a profile switch recomposes the registry, and a
-        # notice naming a tool the active profile does not carry is worse than
-        # one naming no tool at all.
+        # And the roster owns which tool can READ one (and LOAD a saved JSON
+        # result as data). Resolved per run rather than at construction: a
+        # profile switch recomposes the registry, and a notice naming a tool the
+        # active profile does not carry is worse than one naming no tool at all.
         registered = getattr(self.tool_registry, "_tools", None) or {}
         result_reader_tool = pick_result_reader(registered)
+        result_loader_tool = pick_result_loader(registered)
 
         def factory(tc):
             ctx = ToolContext(
@@ -1624,6 +1629,7 @@ class AnthropicAgent(AgentRuntime):
                 media=self.media_backend,
                 tool_results_dir=tool_results_dir,
                 result_reader_tool=result_reader_tool,
+                result_loader_tool=result_loader_tool,
                 _once_store=store,
             )
             ctx.emit = self._hook_emit

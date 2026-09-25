@@ -85,6 +85,39 @@ async def test_factory_ctx_carries_agent_sandbox_principal_media():
     assert ctx.tool_call_id == "toolu_body"
 
 
+async def test_factory_ctx_names_the_roster_reader_and_loader():
+    # Overflow notices name tools the live roster has: a reader for text, a
+    # code runner for a saved JSON result (tools.md §2.4, mcp.md §6).
+    from agent_base.tools import tool
+
+    @tool
+    def view(path: str) -> str:
+        """View a file.
+
+        Args:
+            path: the file.
+        """
+        return path
+
+    @tool
+    def bash_tool(command: str) -> str:
+        """Run a command.
+
+        Args:
+            command: the command.
+        """
+        return command
+
+    agent = AnthropicAgent(system_prompt="t")
+    await agent.initialize()
+    assert _make_ctx(agent).result_loader_tool == ""
+
+    agent.tool_registry.register_tools([view, bash_tool])
+    ctx = _make_ctx(agent)
+    assert ctx.result_reader_tool == "view"
+    assert ctx.result_loader_tool == "bash_tool"
+
+
 # ── WT-1: emit binds to the wired _hook_emit (B8) ─────────────────────────
 
 

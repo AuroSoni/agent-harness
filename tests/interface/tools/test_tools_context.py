@@ -291,6 +291,55 @@ def test_the_reader_is_resolved_against_what_is_registered():
     assert RESULT_READER_TOOLS[0] == "read_file"
 
 
+def test_the_loader_is_resolved_against_what_is_registered():
+    from agent_base.tools.context import RESULT_LOADER_TOOLS, pick_result_loader
+
+    # A saved JSON result is loaded with code, so the loader is a code runner.
+    assert pick_result_loader(["view", "bash_tool"]) == "bash_tool"
+    # A shell before a tool named code_execution, which may not run where
+    # the sandbox keeps the file.
+    assert pick_result_loader(["code_execution", "bash_tool"]) == "bash_tool"
+    assert pick_result_loader(["view", "code_execution"]) == "code_execution"
+    assert pick_result_loader(["view", "read_file"]) == ""
+    assert pick_result_loader(None) == ""
+    assert RESULT_LOADER_TOOLS[0] == "bash_tool"
+
+
+# ─── spill: the persistence step emit_capped shares ─────────────────────────
+
+
+async def test_spill_persists_the_whole_text_and_returns_its_path():
+    sandbox = _RecordingSandbox()
+    ctx = _ctx(sandbox=sandbox)
+    path = await ctx.spill("{}" * 10, ext="json")
+    assert path == ".tool_results/overflow_1.txt"  # what the sandbox reported
+    (_name, args, _kwargs), = sandbox.calls
+    requested, text = args
+    assert requested.startswith(f"{ctx.tool_results_dir}/{ctx.tool_call_id}_")
+    assert requested.endswith(".json")
+    assert text == "{}" * 10
+
+
+async def test_spill_can_file_under_a_subdirectory():
+    sandbox = _RecordingSandbox()
+    await _ctx(sandbox=sandbox).spill("x", subdir="/mcp__srv__tool/")
+    (_name, (requested, _text), _kwargs), = sandbox.calls
+    assert requested.startswith(".tool_results/mcp__srv__tool/")
+
+
+async def test_spill_without_a_sandbox_persists_nothing():
+    assert await _ctx().spill("x" * 10) == ""
+
+
+async def test_emit_capped_and_spill_write_one_file_between_them():
+    sandbox = _RecordingSandbox()
+    ctx = _ctx(sandbox=sandbox, _once_store=OnceStore())
+    full = "q" * 2000
+    capped = await ctx.emit_capped(full, max_chars=500)
+    assert await ctx.spill(full) in capped
+    assert len(sandbox.calls) == 1
+
+
 # ─── emit_capped_bytes (R16 delegation) ─────────────────────────────────────
 
 

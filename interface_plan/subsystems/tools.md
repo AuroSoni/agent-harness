@@ -273,6 +273,13 @@ class ToolContext:
         OutputBudget dataclass (O11(a))."""
         ...
 
+    async def spill(self, text: str, *, ext: str = "txt", subdir: str = "") -> str:
+        """emit_capped's persistence step, for callers that present an overflow their
+        own way (MCP JSON results, mcp.md §6): writes the FULL text to
+        <tool_results_dir>/[<subdir>/]<tool_call_id>_<digest>.<ext> and returns the
+        path ("" with no sandbox). Idempotent via ctx.once, shared with emit_capped."""
+        ...
+
     async def emit_capped_bytes(self, data: bytes, *, ext: str,
                                 max_bytes: int = DEFAULT_EMIT_MAX_BYTES) -> str:
         """Bytes variant. When ctx.media/BlobStore is configured, persistence DELEGATES

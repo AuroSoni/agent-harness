@@ -18,7 +18,8 @@ the runtime populates them at call-time):
   unwired default that raises (B8),
 - ``emit_capped`` / ``emit_capped_bytes`` output budgeting (I5/O11(a) — plain
   kwargs over library default constants; the ``OutputBudget`` dataclass is
-  deleted),
+  deleted), and ``spill``, the persistence step they share with callers that
+  present an overflow their own way (MCP JSON results),
 - ``call_frontend_tool(name, input)`` — the public relay primitive (I4; the
   old public ``await_external`` is runtime-internal only).
 """
@@ -61,6 +62,27 @@ TOOL_RESULTS_DIR = ".tool_results"   # sandbox zone for overflow persistence
 #: would let the two drift exactly as the constant did.
 RESULT_READER_TOOLS = ("read_file", "view")
 
+#: Tools that can LOAD an overflow file as data, in preference order.
+#:
+#: A saved JSON result is read with code (parse it, pick the paths the outline
+#: names), not paged through with a viewer, so its notice names one of these
+#: when the roster has it. Resolved against the live registry like the reader,
+#: for the same reason: the library cannot assume a code tool exists. A shell
+#: comes first: it runs where the sandbox keeps the file, which a tool named
+#: ``code_execution`` (an in-process interpreter, a provider's container) may not.
+RESULT_LOADER_TOOLS = ("bash_tool", "bash", "code_execution")
+
+
+def _pick(tool_names: object, candidates: tuple[str, ...]) -> str:
+    try:
+        available = {str(name) for name in tool_names}  # type: ignore[union-attr]
+    except TypeError:
+        return ""
+    for candidate in candidates:
+        if candidate in available:
+            return candidate
+    return ""
+
 
 def pick_result_reader(tool_names: object) -> str:
     """The best available reader from ``tool_names``, or ``""`` if none is.
@@ -70,14 +92,16 @@ def pick_result_reader(tool_names: object) -> str:
     a registry shape change degrades to the bare path rather than raising
     inside a tool result.
     """
-    try:
-        available = {str(name) for name in tool_names}  # type: ignore[union-attr]
-    except TypeError:
-        return ""
-    for candidate in RESULT_READER_TOOLS:
-        if candidate in available:
-            return candidate
-    return ""
+    return _pick(tool_names, RESULT_READER_TOOLS)
+
+
+def pick_result_loader(tool_names: object) -> str:
+    """The best available loader from ``tool_names``, or ``""`` if none is.
+
+    Same contract as :func:`pick_result_reader`; ``""`` makes a JSON overflow
+    notice fall back to the reader, then to the bare path.
+    """
+    return _pick(tool_names, RESULT_LOADER_TOOLS)
 
 
 def stable_hash(run_id: str, tool_call_id: str) -> str:
@@ -127,6 +151,9 @@ class ToolContext:
     #: file with. Resolved from the live registry by the runtime; ``""`` means
     #: no reader is advertised, and the notice names the path alone.
     result_reader_tool: str = ""
+    #: Which tool a saved JSON result is loaded with (a code runner; see
+    #: ``RESULT_LOADER_TOOLS``). Resolved the same way; ``""`` means none.
+    result_loader_tool: str = ""
 
     _once_store: OnceStore | None = field(default=None, repr=False)
 
@@ -194,16 +221,7 @@ class ToolContext:
         if len(text) <= max_chars:
             return text
 
-        digest = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
-
-        async def _persist() -> str:
-            if self.sandbox is None:
-                return ""
-            path = f"{self.tool_results_dir}/{self.tool_call_id or 'result'}_{digest}.txt"
-            stored = await self.sandbox.write_file(path, text)
-            return stored if isinstance(stored, str) else path
-
-        reference = await self.once(f"emit_capped:{digest}:{max_chars}", _persist)
+        reference = await self.spill(text)
         head = text[:max_chars]
         if not reference:
             return head + "\n[Truncated. Full result not persisted: no sandbox configured.]"
@@ -213,6 +231,29 @@ class ToolContext:
                 f"{self.result_reader_tool} to inspect]"
             )
         return head + f"\n[Truncated. Full result: {reference}]"
+
+    async def spill(self, text: str, *, ext: str = "txt", subdir: str = "") -> str:
+        """Persist the FULL ``text`` via ``ctx.sandbox`` and return where it landed.
+
+        The file is ``<tool_results_dir>/[<subdir>/]<tool_call_id>_<digest>.<ext>``;
+        ``""`` means nothing was persisted (no sandbox configured). Idempotent
+        via :meth:`once`: the same text is written once per call however many
+        times it is spilled, so a caller may re-ask for the path.
+        """
+        digest = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+        suffix = ext.lstrip(".") or "txt"
+        folder = self.tool_results_dir
+        if subdir.strip("/"):
+            folder = f"{folder}/{subdir.strip('/')}"
+
+        async def _persist() -> str:
+            if self.sandbox is None:
+                return ""
+            path = f"{folder}/{self.tool_call_id or 'result'}_{digest}.{suffix}"
+            stored = await self.sandbox.write_file(path, text)
+            return stored if isinstance(stored, str) else path
+
+        return await self.once(f"spill:{digest}:{suffix}:{folder}", _persist)
 
     async def emit_capped_bytes(
         self,
@@ -289,4 +330,8 @@ __all__ = [
     "DEFAULT_EMIT_MAX_CHARS",
     "DEFAULT_EMIT_MAX_BYTES",
     "TOOL_RESULTS_DIR",
+    "RESULT_READER_TOOLS",
+    "RESULT_LOADER_TOOLS",
+    "pick_result_reader",
+    "pick_result_loader",
 ]
