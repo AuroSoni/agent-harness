@@ -1498,6 +1498,16 @@ class AnthropicAgent(AgentRuntime):
         await self._splice_relay_results(join.cid, results, self._emit_ctx())
         await self._checkpoint_at_resume()
 
+        # A cold resume never runs initialize_run, and the stored llm_config
+        # loads as the empty base class (no effort, server tools, betas or
+        # max_tokens). Land this process's live config and tool surface — MCP
+        # tools included, registered at load — so the resumed request is the
+        # one a warm resume sends (same cached prefix, same behaviour).
+        self.agent_config.llm_config = self.config
+        if self.tool_registry:
+            self.agent_config.tool_schemas = self.tool_registry.get_schemas()
+            self.agent_config.tool_names = [s.name for s in self.agent_config.tool_schemas]
+
         # Resume the agent loop.
         return await self._resume_loop(self._active_sink())
 

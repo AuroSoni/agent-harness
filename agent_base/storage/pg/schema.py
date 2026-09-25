@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .pool import PgPool
 
 #: DDL/migration axis ONLY (R12) — NOT the entity-wire version.
-LIBRARY_SCHEMA_VERSION: int = 5
+LIBRARY_SCHEMA_VERSION: int = 6
 
 #: Single-row bookkeeping table ensure_schema() records the version in.
 VERSION_TABLE = "_agent_base_schema_version"
@@ -90,6 +90,36 @@ LIBRARY_MIGRATIONS: list[Migration] = [
         "ON agent_checkpoints (agent_uuid, run_id)",
         "ALTER TABLE conversation_history "
         "ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE",
+    ]),
+    # The model-facing agent_config columns become json (text kept verbatim):
+    # jsonb re-sorts object keys, so a reloaded session replayed different
+    # bytes than it sent — a whole-conversation cache miss after every reload.
+    # Existing rows keep jsonb's order (the original is gone). One rewrite of
+    # agent_config under ACCESS EXCLUSIVE; a busy table fails fast on the lock
+    # timeout instead of queueing every query behind the boot. A consumer that
+    # already converted the columns by hand makes this a no-op.
+    Migration(5, 6, [
+        "SET LOCAL lock_timeout = '5s'",
+        """DO $$
+DECLARE
+    clauses text;
+BEGIN
+    IF to_regclass('agent_config') IS NULL THEN
+        RETURN;
+    END IF;
+    SELECT string_agg(format('ALTER COLUMN %I TYPE json USING %I::json', attname, attname),
+                      ', ' ORDER BY attnum)
+      INTO clauses
+      FROM pg_attribute
+     WHERE attrelid = 'agent_config'::regclass
+       AND attname IN ('context_messages', 'pending_relay', 'tool_schemas', 'llm_config')
+       AND atttypid = 'jsonb'::regtype
+       AND NOT attisdropped;
+    IF clauses IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE agent_config ' || clauses;
+    END IF;
+END
+$$""",
     ]),
 ]
 

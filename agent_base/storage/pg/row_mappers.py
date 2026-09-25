@@ -51,14 +51,16 @@ def _json_default(obj: Any) -> Any:
 
 
 def to_jsonb(value: Any) -> str | None:
-    """Serialize a Python object to JSON text for a JSONB column."""
+    """Serialize a Python object to JSON text for a json or jsonb column (key
+    order kept; a json column stores the text verbatim)."""
     if value is None:
         return None
     return json.dumps(value, default=_json_default)
 
 
 def from_jsonb(value: Any) -> Any:
-    """Decode a JSONB column value; passes already-decoded objects through."""
+    """Decode a json or jsonb column value (key order kept as stored); passes
+    already-decoded objects through."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -134,14 +136,18 @@ _CONFIG_COLUMNS: list[tuple[str, str, Callable[[AgentConfig], Any]]] = [
     ("model", "TEXT", lambda c: c.model),
     ("max_steps", "INTEGER", lambda c: c.max_steps),
     ("system_prompt", "TEXT", lambda c: c.system_prompt),
-    ("context_messages", "JSONB",
+    # JSON, not JSONB: these are replayed to the model, and JSONB re-sorts
+    # object keys (and rewrites some numbers), so a reloaded session would send
+    # different bytes — a prompt-cache miss and, on Opus 5.5, invalidated
+    # thinking blocks. Only ever read and written whole.
+    ("context_messages", "JSON",
      lambda c: to_jsonb([m.to_dict() for m in c.context_messages])),
     ("conversation_log", "JSONB",
      lambda c: to_jsonb(c.conversation_log.to_dict())),
-    ("tool_schemas", "JSONB",
+    ("tool_schemas", "JSON",
      lambda c: to_jsonb([dataclasses.asdict(ts) for ts in c.tool_schemas])),
     ("tool_names", "TEXT[]", lambda c: c.tool_names),
-    ("llm_config", "JSONB", lambda c: to_jsonb(c.llm_config.to_dict())),
+    ("llm_config", "JSON", lambda c: to_jsonb(c.llm_config.to_dict())),
     ("formatter", "TEXT", lambda c: c.formatter),
     ("compaction_config", "JSONB",
      lambda c: to_jsonb(
@@ -156,7 +162,7 @@ _CONFIG_COLUMNS: list[tuple[str, str, Callable[[AgentConfig], Any]]] = [
      lambda c: to_jsonb({k: v.to_dict() for k, v in c.media_registry.items()})),
     ("last_known_input_tokens", "INTEGER", lambda c: c.last_known_input_tokens),
     ("last_known_output_tokens", "INTEGER", lambda c: c.last_known_output_tokens),
-    ("pending_relay", "JSONB",
+    ("pending_relay", "JSON",
      lambda c: to_jsonb(_serialize_pending_relay(c.pending_relay))),
     ("current_step", "INTEGER", lambda c: c.current_step),
     ("active_profile", "TEXT", lambda c: c.active_profile),
