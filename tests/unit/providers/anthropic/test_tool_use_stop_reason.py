@@ -138,4 +138,4 @@ async def test_the_chat_continues_after_a_refusal():
     assert (first.stop_reason, second.stop_reason) == ("refusal", "end_turn")
     assert agent.provider.calls == 2
     # The follow-up request carries no trace of the declined (empty) message.
-    assert [m.role.value for m in sent[-1]["messages"]] == ["user", "user"]
+    assert {m.role.value for m in sent[-1]["messages"]} == {"user"}

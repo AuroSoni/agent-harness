@@ -431,7 +431,10 @@ class AnthropicProvider(Provider):
         Delegates to the shared :func:`agent_base.core.chain.ensure_chain_validity`
         (R18a) so Anthropic/LiteLLM never diverge.
         """
-        return ensure_chain_validity(messages)
+        # No merging of consecutive user messages: the API combines them
+        # itself, and a merged message was a rebuilt one — a history edit
+        # that invalidates the cache and every later thinking block.
+        return ensure_chain_validity(messages, merge_consecutive_users=False)
 
     # -- Public API (providers.md §2.1 — keyword-only, ProviderTurn) ---------
 

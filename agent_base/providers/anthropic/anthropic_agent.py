@@ -1714,6 +1714,11 @@ class AnthropicAgent(AgentRuntime):
 
                 # --- The ONE provider invocation (runtime seam, §2.2) ---
                 try:
+                    # Repair the chain first, so the request sent is the
+                    # repaired one (_provider_turn repairs again: a no-op).
+                    self.agent_config.context_messages[:] = self.provider.sanitize_chain(
+                        self.agent_config.context_messages
+                    )
                     render_view = self._build_render_view(self.agent_config.context_messages)
                     turn: ProviderTurn = await self._provider_turn(
                         render_view=render_view, sink=sink

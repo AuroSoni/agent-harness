@@ -29,6 +29,7 @@ already-valid chain.  The six rules enforced:
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -181,18 +182,21 @@ def _scrub_persisted_history(messages: list["Message"]) -> list["Message"]:
         if not changed:
             out.append(msg)
         else:
-            out.append(Msg(
-                role=msg.role,
-                content=kept,
-                stop_reason=msg.stop_reason,
-                usage=msg.usage,
-                provider=msg.provider,
-                model=msg.model,
-            ))
+            out.append(_with_content(msg, kept))
     return out
 
 
-def ensure_chain_validity(messages: list["Message"]) -> list["Message"]:
+def _with_content(msg: "Message", content: list[ContentBlock], **changes) -> "Message":
+    """``msg`` with new content, keeping everything else — its id, attachments
+    and contributions included. A rebuilt message that dropped them lost the
+    request context rendered from them (time, workbook, framing) and changed
+    the history's bytes."""
+    return dataclasses.replace(msg, content=list(content), **changes)
+
+
+def ensure_chain_validity(
+    messages: list["Message"], *, merge_consecutive_users: bool = True
+) -> list["Message"]:
     """Walk the chain and fix structural violations (idempotent).
 
     Scrubs (CM-G5 — persisted-history damage, BEFORE structural repair):
@@ -205,7 +209,9 @@ def ensure_chain_validity(messages: list["Message"]) -> list["Message"]:
     Fixes:
     - Trailing assistant message with ``tool_use`` but no following
       ``tool_result`` → synthesize results.
-    - Consecutive user messages → merge into one user message.
+    - Consecutive user messages → merge into one user message (unless
+      ``merge_consecutive_users`` is false: the Anthropic API combines
+      consecutive user turns itself).
     - ``tool_result`` blocks after text blocks in a user message → reorder.
     - ``tool_use`` whose matching ``tool_result`` is missing → synthesize it.
 
@@ -255,28 +261,27 @@ def ensure_chain_validity(messages: list["Message"]) -> list["Message"]:
                     patched_content = _reorder_user_content(
                         list(next_msg.content) + list(synthetic)
                     )
-                    result.append(Msg(
-                        role=next_msg.role,
-                        content=patched_content,
-                        stop_reason=next_msg.stop_reason,
-                        usage=next_msg.usage,
-                        provider=next_msg.provider,
-                        model=next_msg.model,
-                    ))
+                    result.append(_with_content(next_msg, patched_content))
                     consumed_indices.add(i + 1)
                     continue
 
             result.append(msg)
 
         elif msg.role.value == "user":
-            if result and result[-1].role.value == "user":
+            if merge_consecutive_users and result and result[-1].role.value == "user":
                 previous = result[-1]
                 merged_content = _reorder_user_content(
                     list(previous.content) + list(msg.content)
                 )
-                result[-1] = Msg(
-                    role=previous.role,
-                    content=merged_content,
+                # The newer message keeps its id (runtime contributions
+                # target it); both messages' contributions and attachments
+                # carry over.
+                result[-1] = _with_content(
+                    previous,
+                    merged_content,
+                    id=msg.id,
+                    attachments=[*previous.attachments, *msg.attachments],
+                    contributions=[*previous.contributions, *msg.contributions],
                     stop_reason=msg.stop_reason or previous.stop_reason,
                     usage=msg.usage or previous.usage,
                     provider=msg.provider or previous.provider,
@@ -285,14 +290,7 @@ def ensure_chain_validity(messages: list["Message"]) -> list["Message"]:
                 continue
             reordered = _reorder_user_content(msg.content)
             if reordered is not msg.content:
-                result.append(Msg(
-                    role=msg.role,
-                    content=reordered,
-                    stop_reason=msg.stop_reason,
-                    usage=msg.usage,
-                    provider=msg.provider,
-                    model=msg.model,
-                ))
+                result.append(_with_content(msg, reordered))
             else:
                 result.append(msg)
         else:
