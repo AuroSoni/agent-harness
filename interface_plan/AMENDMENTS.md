@@ -1100,7 +1100,7 @@ checkpoint work after opted-in completion. Tests: `tests/interface/finalization`
 streaming/meta and media contracts. See subsystem AC-1 sections for failure,
 cancellation, and workspace-loss semantics. No canonical duration change (Stage 5).
 
-## Relay-resume persist (RP) — 2026-09-25
+## Relay-resume persist and warm (RP) — 2026-09-25
 
 - **RP-1 — no fork/reset capture at a relay's resume.** `await_external` (hot)
   and `_resume_rearmed` (cold) persist through the `AgentRuntime` seam
@@ -1120,3 +1120,10 @@ cancellation, and workspace-loss semantics. No canonical duration change (Stage 
   record, whose failure propagates.
   Specs: `tests/unit/providers/anthropic/test_relay_resume.py`,
   `tests/interface/relay_await/test_relay_await_runtime_contract.py`.
+- **RP-2 — a resume's warm runs in the task that holds the turn guard** (the
+  actor, or the cold continuation), as the turn's first warm does; a scripted
+  pause's warm still waits for the loop's next step (`deferred_resume`), in
+  that same task. A coordinator may rely on it to recognise its own live turn:
+  Nova's reuses the handle its turn verified for the rest of the turn, without
+  reconnecting (bounded by the VM's own timeout). No behaviour change in the
+  library. Spec: `test_relay_resume.py`.

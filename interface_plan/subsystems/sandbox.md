@@ -921,3 +921,14 @@ completed usage follows the existing settlement rules. Preparation failures emit
 the existing terminal error delta (and ordinary error report) for visible retry
 feedback even after partial answer text. Nova retains the pre-first-turn config
 in temporary extensible metadata until the pristine physical seq-0 capture succeeds.
+
+
+### RP-2 — the resume warm's task (2026-09-25)
+
+A relay resume's warm (`relay_resume`, `deferred_resume`, `cold_resume`) runs in
+the task that entered the coordinator's `turn(agent)`, as the turn's first warm
+does. A coordinator may recognise its own live turn by that task, for instance to
+reuse the handle the turn verified without reconnecting: within a live turn every
+pause, replacement, reset or destroy needs the turn guard. The relay-resume
+persist no longer captures a fork/reset checkpoint (AMENDMENTS RP-1). Coverage:
+`tests/unit/providers/anthropic/test_relay_resume.py`.
