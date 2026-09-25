@@ -317,7 +317,9 @@ class AgentRuntime:   # the one provider-agnostic loop class @ agent_base/core/r
         results = await self._reconcile_relay_reply(cid, join.tool_use_ids, results)
 
         await self._splice_relay_results(cid, results, ctx)   # fires after_tool per result (§2.1)
-        await self.checkpoint()                               # persist at the suspend/resume boundary
+        await self._checkpoint_at_resume()                    # persist at the suspend/resume boundary
+        #        └─ RP-1: config/row/run logs as checkpoint() saves them, never a fork/reset
+        #           capture (the turn is mid-flight; its turn end captures).
         return ResumeOutcome(status="resumed", results=results)
 
     async def _race_join_against_cancel(self, join: Join) -> list[ContentBlock]:

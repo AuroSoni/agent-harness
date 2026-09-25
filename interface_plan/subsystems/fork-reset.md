@@ -96,7 +96,9 @@ in V1 (meaningless on win32; no restore path).
 hook. It captures the codec-split config + the sandbox snapshot as ONE row (FR-2). Wired at a single
 point in `_persist_state` (covers the live path) and via the base `_capture_turn_checkpoint` seam
 (covers the scripted `record_turn`, which persists a local Conversation). Skipped when
-`pending_relay` is set (mid-pause is not a quiescent boundary). `AnthropicAgent` gains
+`pending_relay` is set (mid-pause is not a quiescent boundary), and never run by the
+relay-resume persist (`_checkpoint_at_resume`, RP-1): the splice has cleared the pause, but the
+turn is still mid-flight. `AnthropicAgent` gains
 `checkpoint_adapter=`/`blob_store=` ctor kwargs (opt-in — no Memory default).
 
 ## 5. The verbs — `core/fork_reset.py`

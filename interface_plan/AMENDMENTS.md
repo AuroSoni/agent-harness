@@ -1099,3 +1099,24 @@ make retries safe. Checkpoints contain no pending journal; avoid duplicate actor
 checkpoint work after opted-in completion. Tests: `tests/interface/finalization`,
 streaming/meta and media contracts. See subsystem AC-1 sections for failure,
 cancellation, and workspace-loss semantics. No canonical duration change (Stage 5).
+
+## Relay-resume persist (RP) — 2026-09-25
+
+- **RP-1 — no fork/reset capture at a relay's resume.** `await_external` (hot)
+  and `_resume_rearmed` (cold) persist through the `AgentRuntime` seam
+  `_checkpoint_at_resume()` (base: `checkpoint()`). `AnthropicAgent` saves the
+  config, conversation row and run logs there under the same coordinator
+  persist guard as `checkpoint()`, but never calls `capture_checkpoint()`
+  (`_persist_state(capture=False)`). The splice clears `pending_relay` first,
+  so the capture's mid-pause guard could not tell, and every relay re-encoded
+  the transcript, snapshotted the sandbox and wrote the turn's checkpoint row,
+  only for the turn end to rewrite it (Nova's traces: 0.42–1.8 s from the
+  splice to the next model call).
+  Turn ends (finalize, `_checkpoint_after_turn`, aborts) capture as before;
+  an errored turn, which captures nothing, no longer leaves a mid-turn row.
+  The persist stays on the critical path: deferring it would need a
+  consistent snapshot, ordering against the next persist and a task-owned
+  coordinator guard in another task, and its config and row saves are the
+  record, whose failure propagates.
+  Specs: `tests/unit/providers/anthropic/test_relay_resume.py`,
+  `tests/interface/relay_await/test_relay_await_runtime_contract.py`.

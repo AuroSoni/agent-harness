@@ -1496,7 +1496,7 @@ class AnthropicAgent(AgentRuntime):
             join.cid, join.tool_use_ids, results
         )
         await self._splice_relay_results(join.cid, results, self._emit_ctx())
-        await self.checkpoint()
+        await self._checkpoint_at_resume()
 
         # Resume the agent loop.
         return await self._resume_loop(self._active_sink())
@@ -2362,6 +2362,22 @@ class AnthropicAgent(AgentRuntime):
 
     async def checkpoint(self) -> None:
         """Persist only while owning a current session state and sandbox lease."""
+        await self._coordinated_persist(capture=True)
+
+    async def _checkpoint_at_resume(self) -> None:
+        """The relay-resume persist: the config, row and run logs as
+        :meth:`checkpoint` saves them, but no fork/reset capture.
+
+        The splice has just cleared ``pending_relay``, so the capture's
+        mid-pause guard does not hold here, yet the turn is mid-flight: a
+        capture would re-encode the transcript, snapshot the sandbox and
+        write the turn's checkpoint row at every relay, for the turn end to
+        rewrite it.
+        """
+        await self._coordinated_persist(capture=False)
+
+    async def _coordinated_persist(self, *, capture: bool) -> None:
+        """:meth:`_persist_state` under the coordinator's persist guard."""
         if self.agent_config is None:
             return
         async def persist():
@@ -2369,7 +2385,7 @@ class AnthropicAgent(AgentRuntime):
                 from .finalization import _save
                 await _save(self, self.agent_config.extras["pending_finalization"])
                 return  # recovery owns the physical checkpoint, never idle/shutdown
-            await self._persist_state()
+            await self._persist_state(capture=capture)
 
         coordinator = self._sandbox_coordinator
         if coordinator is None or getattr(self, "_parent_agent_uuid", None):
@@ -4109,9 +4125,10 @@ class AnthropicAgent(AgentRuntime):
             return text
         return text[: max_len - 1].rstrip() + "…"
 
-    async def _persist_state(self) -> list[dict[str, str]]:
+    async def _persist_state(self, *, capture: bool = True) -> list[dict[str, str]]:
         """Save agent config, conversation, and run logs to storage adapters,
-        then capture the turn-boundary checkpoint.
+        then capture the turn-boundary checkpoint (unless ``capture`` is
+        False: the relay-resume persist, :meth:`_checkpoint_at_resume`).
 
         The config and conversation-row saves are the record: once they are
         in, the agent continues from this state, so a failure in either
@@ -4166,6 +4183,8 @@ class AnthropicAgent(AgentRuntime):
         # (SPEC §D1) — a single insertion point that covers both the live
         # finalize path and the scripted record_turn path (both reach here via
         # _persist_state). No-op unless a CheckpointAdapter is wired.
+        if not capture:
+            return failures
         try:
             await self.capture_checkpoint(created_at=now)
         except Exception as exc:
@@ -4252,7 +4271,9 @@ class AnthropicAgent(AgentRuntime):
         conversation = conversation if conversation is not None else self.conversation
         if self.checkpoint_adapter is None or conversation is None:
             return None
-        # Turn-boundary only: never checkpoint a paused (mid-relay) state.
+        # Turn-boundary only: never checkpoint a paused (mid-relay) state. The
+        # resume side's persist, after the splice cleared the pause, never
+        # calls here (``_checkpoint_at_resume``).
         if self.agent_config.pending_relay is not None:
             return None
 

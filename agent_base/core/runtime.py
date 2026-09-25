@@ -1001,7 +1001,7 @@ class AgentRuntime:
         # normally. Loop reasons keep the splice+checkpoint boundary.
         if reason != AWAIT_REASON_SCRIPTED:
             await self._splice_relay_results(cid, results, ctx)   # after_tool per result (§2.1)
-            await self.checkpoint()           # persist at the suspend/resume boundary
+            await self._checkpoint_at_resume()   # persist at the suspend/resume boundary
         return ResumeOutcome(status="resumed", results=results)
 
     async def _race_join_against_cancel(self, join: Join) -> "list[ContentBlock]":
@@ -1141,6 +1141,16 @@ class AgentRuntime:
         save = getattr(self.config_adapter, "save", None)
         if callable(save):
             await save(self._agent_config)
+
+    async def _checkpoint_at_resume(self) -> None:
+        """Persist at a relay's resume boundary, once its results are spliced,
+        so a crash before the next boundary keeps them.
+
+        The turn is still in flight here, so a concrete runtime whose
+        :meth:`checkpoint` also captures a fork/reset checkpoint persists
+        without that capture: its turn end captures (fork-reset.md §4).
+        """
+        await self.checkpoint()
 
     async def _repair_self_chain(self) -> None:
         """§6 nested repair: a parked node woken cancelled closes its OWN
