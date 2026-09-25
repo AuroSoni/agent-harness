@@ -16,6 +16,7 @@ same ``stop_reason`` strings but does not own them.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -174,7 +175,7 @@ class MessageLogEntry:
     provider: str = ""
     model: str = ""
     # When the entry was appended. For a model call that is the call's END.
-    timestamp: str = field(default_factory=_now_iso)
+    timestamp: str | None = field(default_factory=_now_iso)
     # Model-call trace fields, set on the entry of each provider call and
     # omitted from to_dict while None. ``timing`` is ``{started_at, ended_at,
     # flight_ms}`` (``AgentRuntime._provider_turn``); ``cost_usd`` is this
@@ -183,6 +184,11 @@ class MessageLogEntry:
     timing: dict[str, Any] | None = None
     cost_usd: float | None = None
     step: int | None = None
+    # Pre-ConversationLog storage was a list of Message dictionaries. Keep
+    # their original identity, billing kwargs and provider-specific fields
+    # when projecting them into the typed UI log; none are inferred from the
+    # current transcript. Omitted for every modern entry.
+    legacy_message: dict[str, Any] | None = None
 
     @classmethod
     def from_message(
@@ -225,7 +231,8 @@ class MessageLogEntry:
             "model": self.model,
             "timestamp": self.timestamp,
         }
-        _put_if_set(data, timing=self.timing, cost_usd=self.cost_usd, step=self.step)
+        _put_if_set(data, timing=self.timing, cost_usd=self.cost_usd, step=self.step,
+                    legacy_message=deepcopy(self.legacy_message))
         return _stamp(data)
 
     @classmethod
@@ -240,10 +247,12 @@ class MessageLogEntry:
             usage=Usage.from_dict(data["usage"]) if data.get("usage") else None,
             provider=data.get("provider", ""),
             model=data.get("model", ""),
-            timestamp=data.get("timestamp") or _now_iso(),
+            timestamp=(data.get("timestamp") if data.get("legacy_message") is not None
+                       else data.get("timestamp") or _now_iso()),
             timing=data.get("timing"),
             cost_usd=data.get("cost_usd"),
             step=data.get("step"),
+            legacy_message=deepcopy(data.get("legacy_message")),
         )
 
 
@@ -525,9 +534,31 @@ class ConversationLog:
         return _stamp(data)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "ConversationLog":
+    def from_dict(
+        cls, data: dict[str, Any] | list[dict[str, Any]] | None, *, agent_uuid: str = "",
+    ) -> "ConversationLog":
         if not data:
             return cls()
+        if isinstance(data, list):
+            # Before the typed-log format, both config and history rows
+            # stored canonical Message[] (not typed entry dictionaries).
+            # Decode through Message's public content decoder and retain the
+            # original payload so later save/checkpoint cycles lose no legacy
+            # IDs or metadata. This changes an in-memory view only.
+            log = cls()
+            for raw in data:
+                if not isinstance(raw, dict) or "role" not in raw or "entry_type" in raw:
+                    raise ValueError("Legacy conversation log must contain Message dictionaries")
+                message = Message.from_dict(deepcopy(raw))
+                entry = MessageLogEntry.from_message(message, agent_uuid=agent_uuid)
+                # Legacy messages usually had no entry time. Do not invent
+                # one at read time or make replay/digests nondeterministic.
+                entry.timestamp = raw.get("timestamp")
+                entry.legacy_message = deepcopy(raw)
+                log.entries.append(entry)
+            if agent_uuid:
+                log.ensure_agent(agent_uuid=agent_uuid)
+            return log
         agents = {
             agent_uuid: AgentDescriptor.from_dict(descriptor)
             for agent_uuid, descriptor in data.get("agents", {}).items()

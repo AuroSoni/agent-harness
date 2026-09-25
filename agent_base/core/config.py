@@ -425,7 +425,7 @@ class Conversation:
             completed_at=data.get("completed_at"),
             user_message=Message.from_dict(data["user_message"]) if data.get("user_message") else None,
             final_response=Message.from_dict(data["final_response"]) if data.get("final_response") else None,
-            conversation_log=ConversationLog.from_dict(data.get("conversation_log")),
+            conversation_log=ConversationLog.from_dict(data.get("conversation_log"), agent_uuid=data["agent_uuid"]),
             stop_reason=data.get("stop_reason"),
             total_steps=data.get("total_steps"),
             usage=Usage.from_dict(data["usage"]) if data.get("usage") else Usage(),

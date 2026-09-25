@@ -145,7 +145,7 @@ def deserialize_config(
         context_messages=[
             Message.from_dict(m) for m in data.get("context_messages", [])
         ],
-        conversation_log=ConversationLog.from_dict(data.get("conversation_log")),
+        conversation_log=ConversationLog.from_dict(data.get("conversation_log"), agent_uuid=data["agent_uuid"]),
         # Tools
         tool_schemas=[
             ToolSchema(**ts) for ts in data.get("tool_schemas", [])
