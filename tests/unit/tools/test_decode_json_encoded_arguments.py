@@ -75,3 +75,27 @@ async def test_the_hooks_and_the_executed_call_see_the_decoded_input():
     assert outcome is None
     assert prepared["cells"] == {"A1": {"value": 1}}
     assert seen["hook"]["cells"] == {"A1": {"value": 1}}
+
+
+async def test_a_hook_editing_a_nested_value_never_writes_through_to_history():
+    from agent_base.tools.registry import ToolCallInfo
+
+    stored = {"sheetName": "S", "cells": {"A1:B2": {"value": "", "cellStyles": {"bold": True}}}}
+    call = ToolCallInfo(name="set_cell_range", tool_id="toolu_1", input=stored)
+
+    async def run_hook(event, ctx):
+        del ctx.tool_input["cells"]["A1:B2"]["value"]  # a repair, as the Excel hooks do
+        ctx.call.input["cells"]["A1:B2"]["cellStyles"]["bold"] = False
+        return None
+
+    agent = SimpleNamespace(
+        _base_hook_kwargs=lambda: dict.fromkeys(HOOK_FIELDS),
+        _tool_input_schema=lambda name: SCHEMA,
+        _run_hook=run_hook,
+        _emit_outcome_events=lambda outcome: None,
+    )
+    prepared, _ = await AgentRuntime._before_tool_chain(
+        agent, "set_cell_range", dict(stored), tool_use_id="toolu_1", call=call
+    )
+    assert "value" not in prepared["cells"]["A1:B2"]  # the repaired input runs
+    assert stored == {"sheetName": "S", "cells": {"A1:B2": {"value": "", "cellStyles": {"bold": True}}}}

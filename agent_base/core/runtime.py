@@ -35,6 +35,7 @@ Surface shipped NOW (core.md + AMENDMENTS):
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import time
 import uuid
@@ -1431,22 +1432,26 @@ class AgentRuntime:
         pause, and ``call_frontend_tool``.
         """
         # A JSON-encoded object/array argument is decoded before any hook
-        # reads it; the model's tool_use block in the history keeps what it
-        # sent (editing it would break the cache and preserved thinking).
-        tool_input = decode_json_encoded_arguments(
-            tool_input, self._tool_input_schema(tool_name)
+        # reads it, and the hooks work on their own deep copy: the model's
+        # tool_use block in the history keeps exactly what it sent, even when
+        # a hook edits a nested value (editing history would break the cache
+        # and preserved thinking).
+        tool_input = copy.deepcopy(
+            decode_json_encoded_arguments(tool_input, self._tool_input_schema(tool_name))
         )
+        if call is not None and dataclasses.is_dataclass(call):
+            call = dataclasses.replace(call, input=copy.deepcopy(tool_input))
         base = self._base_hook_kwargs()
         base["executor"] = executor
         hook_ctx = ToolCallContext(
             **base,
             tool_name=tool_name,
-            tool_input=dict(tool_input),
+            tool_input=tool_input,
             tool_use_id=tool_use_id,
             call=call
             if call is not None
             else SimpleNamespace(
-                name=tool_name, tool_id=tool_use_id, input=dict(tool_input)
+                name=tool_name, tool_id=tool_use_id, input=copy.deepcopy(tool_input)
             ),
         )
         outcome = await self._run_hook("before_tool", hook_ctx)
