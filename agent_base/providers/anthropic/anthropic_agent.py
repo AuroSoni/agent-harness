@@ -1751,6 +1751,12 @@ class AnthropicAgent(AgentRuntime):
                     error, self._sandbox_preparation_error = self._sandbox_preparation_error, None
                     raise error
                 stop_reason = response_message.stop_reason
+                # A safety decline arrives as a normal response (HTTP 200):
+                # before any output (empty) or mid-stream (partial). Handled
+                # before anything reads the content — a partial tool_use must
+                # never run.
+                if stop_reason == "refusal":
+                    return await self._finalize_refusal(response_message, sink)
                 # The API can close a response with "end_turn" while it still
                 # carries tool_use blocks (seen with claude-sonnet-5). Ending
                 # there orphans the calls — the parked card never gets an
@@ -3956,6 +3962,52 @@ class AnthropicAgent(AgentRuntime):
         await self.checkpoint()
 
     # ── finalize (written ONCE — kills B2's duplication) ───────────────────
+
+    #: What the user reads when the model declines a request.
+    REFUSAL_NOTICE = (
+        "I can't help with this request as written, so I stopped here. "
+        "Rephrasing it, or asking for a narrower part of it, may work."
+    )
+
+    async def _finalize_refusal(
+        self,
+        response_message: Message,
+        sink: "DeltaSink | None" = None,
+    ) -> AgentResult:
+        """End the turn on a safety decline (``stop_reason == "refusal"``).
+
+        The declined message — empty, or a partial the API says to discard —
+        leaves the model context: replayed, an empty assistant message fails
+        every later request and a partial one reads as a finished answer.
+        Dropping the trailing message edits no earlier turn, so preserved
+        thinking is unaffected. It stays in the conversation log, and its
+        usage is already counted (a mid-stream partial is billed).
+
+        The user gets a display-only notice (never in the model context); the
+        turn closes with ``stop_reason="refusal"`` and a ``Custom("refusal")``
+        frame carrying the policy category from ``stop_details``. The same
+        prompt is not retried: the next message starts a normal turn.
+        """
+        context = self.agent_config.context_messages
+        if context and context[-1] is response_message:
+            context.pop()
+        details = response_message.usage_kwargs.get("stop_details")
+        category = details.get("category") if isinstance(details, dict) else None
+        partial = bool(response_message.content)
+        logger.warning(
+            "model_refusal",
+            agent_uuid=self.agent_uuid,
+            category=category,
+            partial=partial,
+        )
+        if sink is not None:
+            sink.emit_meta(
+                Custom(name="refusal", data={"category": category, "partial": partial})
+            )
+        self._emit_display_text(self.REFUSAL_NOTICE)
+        return await self._finalize_run(
+            Message.assistant(self.REFUSAL_NOTICE), "refusal", sink
+        )
 
     async def _finalize_run(
         self,

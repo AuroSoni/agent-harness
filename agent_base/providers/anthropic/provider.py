@@ -401,6 +401,18 @@ class AnthropicProvider(Provider):
                 else raw_context_management
             )
 
+        # A refusal's policy category (cyber, bio, reasoning_extraction, ...).
+        # Informational: callers branch on stop_reason, never on this.
+        raw_stop_details = getattr(raw_response, "stop_details", None)
+        if raw_stop_details is None:
+            raw_stop_details = (getattr(raw_response, "model_extra", None) or {}).get("stop_details")
+        if raw_stop_details:
+            usage_kwargs["stop_details"] = (
+                raw_stop_details.model_dump()
+                if hasattr(raw_stop_details, "model_dump")
+                else raw_stop_details
+            )
+
         return Message(
             role=Role.ASSISTANT,
             content=content_blocks,

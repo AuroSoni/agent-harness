@@ -80,3 +80,62 @@ async def test_a_max_tokens_cut_stays_terminal():
     assert result.stop_reason == "max_tokens"
     assert agent.provider.calls == 1
     assert _tool_results(agent) == []
+
+
+# ─── refusal: a safety decline ends the turn without poisoning the chat ──────
+
+from agent_base.core.types import TextContent  # noqa: E402
+
+
+def _refusal(content, category="cyber") -> ProviderTurn:
+    msg = Message.assistant(content)
+    msg.stop_reason = "refusal"
+    msg.usage = dataclasses.replace(STEP_USAGE)
+    msg.model = "scripted-model"
+    if category is not None:
+        msg.usage_kwargs["stop_details"] = {"type": "refusal", "category": category}
+    return ProviderTurn(message=msg)
+
+
+@pytest.mark.parametrize("content", [[], [TextContent(text="Here is how to")]])
+async def test_a_refusal_ends_the_turn_and_leaves_the_model_context(content):
+    agent = _agent([_refusal(content)], tools=[echo])
+
+    result = await agent.run("go")
+
+    assert result.stop_reason == "refusal"
+    assert agent.provider.calls == 1
+    # The declined message is gone from what the model will be sent next ...
+    assert all(m.stop_reason != "refusal" for m in agent.agent_config.context_messages)
+    assert agent.agent_config.context_messages[-1].role.value == "user"
+    # ... and the user reads the notice.
+    assert result.final_answer == agent.REFUSAL_NOTICE
+
+
+async def test_a_partial_tool_call_in_a_refusal_never_runs():
+    agent = _agent([_refusal([ToolUseContent(tool_name="echo", tool_id="t1", tool_input={})])], tools=[echo])
+
+    result = await agent.run("go")
+
+    assert result.stop_reason == "refusal"
+    assert _tool_results(agent) == []
+
+
+async def test_the_chat_continues_after_a_refusal():
+    agent = _agent([_refusal([], category=None), _end_turn()], tools=[echo])
+    sent = []
+    inner = agent.provider.generate_stream
+
+    async def recording(**kwargs):
+        sent.append(kwargs)
+        return await inner(**kwargs)
+
+    agent.provider.generate_stream = recording
+
+    first = await agent.run("go")
+    second = await agent.run("something else")
+
+    assert (first.stop_reason, second.stop_reason) == ("refusal", "end_turn")
+    assert agent.provider.calls == 2
+    # The follow-up request carries no trace of the declined (empty) message.
+    assert [m.role.value for m in sent[-1]["messages"]] == ["user", "user"]
