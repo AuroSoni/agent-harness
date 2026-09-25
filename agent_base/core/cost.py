@@ -11,11 +11,17 @@ AMENDMENTS I9/O14(d)) for the once-per-turn billing vocabulary:
   carried on ``AgentResult.settlement`` AND inside the auto-emitted
   ``UsageReport`` MetaEnvelope (identical bytes, no double extraction). Per
   O14(d) it is **turn-level only** (``turn_usage``/``turn_cost`` + identity
-  fields); the ``cumulative_*`` fields are removed — cumulative is the
-  :class:`SettlementAggregator`'s job.
-- :class:`SettlementAggregator` (I9) — subscribes to the ``UsageReport`` channel
-  and reconstructs cumulative roll-ups by root session / by agent. **Homed in
-  core.cost, owned by pricing-cost.**
+  fields); the ``cumulative_*`` fields are removed — cumulative roll-ups are a
+  consumer-side fold over the per-turn ``UsageReport`` stream (or, once the
+  cost-event ledger lands, a fold over durable cost events).
+
+The ``SettlementAggregator`` that I9 parked here as future work was DELETED
+(2026-07-14, cost-ledger review): it was never instantiated in production, its
+only input seam (``subscribe(channel) → channel.add_subscriber``) had zero
+production implementors, and its state was two plain in-memory dicts — wiring
+it for billing would have regressed durability from per-turn-durable rows to
+RAM-until-read. Cumulative-by-root is served durably by the consumer's ledger
+(see the cost-event-ledger spec in the consumer repo).
 
 Serialization follows the ``Serializable`` convention (core.md §2.1, O15(c)/R12):
 ``to_dict()`` stamps the single library-wide ``CORE_SCHEMA_VERSION`` under
@@ -113,9 +119,10 @@ class TurnSettlement:
     ``AgentResult.settlement`` AND inside the auto-emitted ``UsageReport``
     MetaEnvelope — identical bytes, no double extraction (fixes X9).
 
-    O14(d): TURN-LEVEL ONLY — no ``cumulative_*`` fields. Cumulative is the
-    :class:`SettlementAggregator`'s job (I9), reconstructed from the
-    ``UsageReport`` channel.
+    O14(d): TURN-LEVEL ONLY — no ``cumulative_*`` fields. Cumulative is a
+    consumer-side fold over the per-turn ``UsageReport`` stream (the parked
+    ``SettlementAggregator`` was deleted 2026-07-14; durable roll-ups belong
+    to the consumer's cost-event ledger).
 
     B2: ``to_dict()`` serializes only ``tenant``/``subject`` from the
     principal — never ``claims``. The in-process ``principal`` keeps the full
@@ -169,84 +176,7 @@ class TurnSettlement:
         )
 
 
-# ==============================================================================
-# SettlementAggregator — cumulative roll-ups (I9; homed core.cost, owned pricing)
-# ==============================================================================
-
-
-class SettlementAggregator:
-    """Subscribes to the ``UsageReport`` channel and rolls per-turn settlements
-    up by root session / by agent (I9).
-
-    Replaces baking ``cumulative_*`` into every ``TurnSettlement`` (O14d). The
-    credits consumer calls ONE method to get a cumulative total. Each child
-    runtime emits its own ``UsageReport`` stamped with its ``agent_id`` and the
-    parent's id as ``parent_agent_id``; the aggregator sums them by root via the
-    correlation header, so the parent never auto-rolls-up child cost.
-    """
-
-    def __init__(self) -> None:
-        # Per-agent running cost (folded once per UsageReport).
-        self._by_agent: dict[str, CostBreakdown] = {}
-        # agent_id -> parent_agent_id (the correlation chain), so a root rollup
-        # can walk ancestry transitively (parent + ALL descendants).
-        self._parent_of: dict[str, str | None] = {}
-
-    def subscribe(self, channel: Any) -> None:
-        """Attach to the ``UsageReport`` channel; each per-turn settlement is
-        folded into the running totals.
-
-        The fake/real channel exposes ``add_subscriber(fn)``; ``fn`` receives a
-        :class:`TurnSettlement` (the body decoded back via its correlation
-        header). The real MetaEnvelope channel uses the same shape.
-        """
-        channel.add_subscriber(self._fold)
-
-    def _fold(self, settlement: TurnSettlement) -> None:
-        """Fold one per-turn settlement into the running per-agent totals."""
-        agent_id = settlement.agent_id
-        self._parent_of[agent_id] = settlement.parent_agent_id
-        existing = self._by_agent.get(agent_id)
-        if existing is None:
-            self._by_agent[agent_id] = settlement.turn_cost
-        else:
-            self._by_agent[agent_id] = existing + settlement.turn_cost
-
-    def _agents_under(self, root_session_id: str) -> list[str]:
-        """Every agent whose correlation chain reaches ``root_session_id``.
-
-        Includes the root itself and any descendant (direct or transitive)
-        whose ancestry walks up to the root.
-        """
-        result: list[str] = []
-        for agent_id in self._by_agent:
-            cursor: str | None = agent_id
-            seen: set[str] = set()
-            while cursor is not None and cursor not in seen:
-                if cursor == root_session_id:
-                    result.append(agent_id)
-                    break
-                seen.add(cursor)
-                cursor = self._parent_of.get(cursor)
-        return result
-
-    def total_by_root(self, root_session_id: str) -> CostBreakdown:
-        """Cumulative cost for an entire agent tree (parent + all sub-agents)
-        rooted here. Sums every turn's ``turn_cost`` whose correlation header
-        chains to this root."""
-        total = CostBreakdown()
-        for agent_id in self._agents_under(root_session_id):
-            total = total + self._by_agent[agent_id]
-        return total
-
-    def totals_by_agent(self, root: str) -> dict[str, CostBreakdown]:
-        """Per-``agent_id`` breakdown under a root (so a consumer can attribute
-        child cost separately)."""
-        return {agent_id: self._by_agent[agent_id] for agent_id in self._agents_under(root)}
-
-
 __all__ = [
     "CostBreakdown",
     "TurnSettlement",
-    "SettlementAggregator",
 ]

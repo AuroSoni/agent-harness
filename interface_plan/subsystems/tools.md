@@ -273,6 +273,13 @@ class ToolContext:
         OutputBudget dataclass (O11(a))."""
         ...
 
+    async def spill(self, text: str, *, ext: str = "txt", subdir: str = "") -> str:
+        """emit_capped's persistence step, for callers that present an overflow their
+        own way (MCP JSON results, mcp.md §6): writes the FULL text to
+        <tool_results_dir>/[<subdir>/]<tool_call_id>_<digest>.<ext> and returns the
+        path ("" with no sandbox). Idempotent via ctx.once, shared with emit_capped."""
+        ...
+
     async def emit_capped_bytes(self, data: bytes, *, ext: str,
                                 max_bytes: int = DEFAULT_EMIT_MAX_BYTES) -> str:
         """Bytes variant. When ctx.media/BlobStore is configured, persistence DELEGATES
@@ -307,6 +314,19 @@ per-INSTANCE attribute assignments (`ctx.emit = runtime._hook_emit`; `ctx.call_f
 A bare-constructed `ToolContext` keeps the LOUD unwired raises (B8 unchanged). Constraints for
 tool authors: a relay-calling tool must be `async def` (sync tools run via `asyncio.to_thread`,
 off the loop), and programmatic pauses serialize per runtime — see relay-await §2.6 (WT-3).
+
+**Display-line + replay seam (WT-4, 2026-07-13 — SHIPPED).** `ctx.emit_text(text)` streams one
+user-facing line: a live `TextDelta` on the run's stream AND a DISPLAY-ONLY assistant
+`MessageLogEntry` appended to the conversation logs — never to `context_messages` (the model
+never sees display lines). Bare ctx raises (B8). For programmatically-executed tools/sub-agents
+(whose results never pass through the loop), the provider exposes
+`log_tool_result_for_replay(envelope)` — persists the envelope's conversation-log projection
+(nested conversation intact) to both logs only. See AMENDMENTS §WT-4 for the carrier rationale
+and the `spawn_subagent` tool-name contract. A sub-agent dispatched this way (`SubAgentTool.run`
+called directly) times itself: every envelope it returns carries the dispatch's `started_at` /
+`ended_at` / `duration_ms` (not `queued_ms`: a caller's wait for a slot is outside it), so the
+logged child is timed like a registry-run tool; through `ToolRegistry.execute` the registry's own
+stamp replaces them. Spec: `tests/unit/tools/test_sub_agent_dispatch_timing.py`.
 
 ---
 

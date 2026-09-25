@@ -12,8 +12,14 @@ checkpoint storage is O(distinct bytes) and a fork is a pointer copy.
 Correctness invariants (SPEC §2 correctness notes):
 - Serialize via ``serialize_config`` (the codec path), NOT ``config_to_row`` —
   the PG ``_CONFIG_COLUMNS`` set omits ``agent_phase``.
-- **Canonical (sorted-key) JSON** for segment hashing, or identical messages
-  hash differently and dedupe evaporates (back to O(n²)).
+- **Transcript segments keep the message's own key order** (``segment_json``):
+  reset/fork replay those bytes to the model, and a re-sorted replay misses the
+  prompt cache (and invalidates Opus 5.5 thinking blocks). Dedupe still holds —
+  a resident message keeps its order and a reload returns it (the model-facing
+  columns are json) — and the key is the hash of exactly the bytes stored.
+  **Log segments** are never replayed, so they stay canonical (sorted-key):
+  ``conversation_log`` is jsonb and comes back re-sorted after a reload, and
+  sorting keeps its dedupe intact.
 - **Tenant-scope the blob keys** (``<tenant>/<blake3>``) — the keyed CAS surface
   takes a raw key with no scope arg, so a bare content hash would let two tenants
   share a blob (a cross-tenant leak).
@@ -34,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 
 from agent_base.blob_store.hashing import compute_blake3
 from agent_base.core.config import AgentConfig, LLMConfig
+from agent_base.observability import span as observation_span
 
 from .serialization import deserialize_config, serialize_config
 
@@ -51,6 +58,12 @@ def canonical_json(obj: Any) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+def segment_json(obj: Any) -> bytes:
+    """Separator-tight JSON bytes in the object's own key order: the exact bytes
+    reset/fork replay to the model. The blob key hashes these same bytes."""
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+
+
 def _bare_digest(data: bytes) -> str:
     """Bare blake3 hex (no ``algo:`` prefix). The prefix carries a colon, which
     is an invalid filename character on win32, so blob KEYS use the bare hex."""
@@ -62,13 +75,19 @@ def blob_key(tenant: str, data: bytes) -> str:
     return f"{tenant}/{_bare_digest(data)}"
 
 
-async def _store_segment(blobs: "KeyedBlobStore", tenant: str, payload: dict) -> str:
+async def _store_segment(
+    blobs: "KeyedBlobStore", tenant: str, payload: dict, *, keep_order: bool = False
+) -> str:
     """Content-address one segment; return its tenant-scoped key. Dedupes: an
-    already-present key writes 0 bytes."""
-    data = canonical_json(payload)
+    already-present key writes 0 bytes. ``keep_order`` stores the payload in its
+    own key order (transcript segments); otherwise canonically (log segments)."""
+    data = segment_json(payload) if keep_order else canonical_json(payload)
     key = blob_key(tenant, data)
-    if await blobs.exists_key(key) is None:
-        await blobs.put_at(key, data, mime_type="application/json")
+    with observation_span("checkpoint.blob_exists"):
+        missing = await blobs.exists_key(key) is None
+    if missing:
+        with observation_span("checkpoint.blob_write"):
+            await blobs.put_at(key, data, mime_type="application/json")
     return key
 
 
@@ -84,14 +103,22 @@ async def split_config_for_checkpoint(
     Returns ``(config_base, transcript_segments, log_segments, codec_v)``. With
     no blob store wired, returns the full inline base and ``codec_v = 0``.
     """
-    base = serialize_config(config)
+    with observation_span("checkpoint.config_persistence"):
+        base = serialize_config(config)
+        # Operational ownership belongs to the live binding, never a replayed
+        # checkpoint or a fork. Copy the dict before removing reserved data.
+        if isinstance(base.get("sandbox_config"), dict):
+            base["sandbox_config"] = dict(base["sandbox_config"])
+            base["sandbox_config"].pop("_nova_lifecycle", None)
     if blobs is None:
         return base, [], [], CODEC_INLINE
 
     # context_messages: a flat list -> one segment per message; popped from base.
     transcript_segments: list[str] = []
     for message in base.get("context_messages", []):
-        transcript_segments.append(await _store_segment(blobs, tenant, message))
+        transcript_segments.append(
+            await _store_segment(blobs, tenant, message, keep_order=True)
+        )
     base.pop("context_messages", None)
 
     # conversation_log: keep the small {agents, _v} envelope inline; slice the
@@ -139,6 +166,7 @@ __all__ = [
     "CODEC_INLINE",
     "CODEC_CAS",
     "canonical_json",
+    "segment_json",
     "split_config_for_checkpoint",
     "assemble_config_from_checkpoint",
 ]

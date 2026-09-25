@@ -32,6 +32,7 @@ from agent_base.streaming.types import (
 )
 from agent_base.streaming.wire import (
     CODECS,
+    KEEPALIVE,
     TERMINAL,
     DeltaSink,
     SseCodec,
@@ -69,6 +70,12 @@ def test_terminal_is_the_one_done_frame():
     assert TERMINAL == WireFrame(data="[DONE]")
 
 
+def test_keepalive_is_the_one_ping_frame():
+    # SSE-1b: the keepalive twin of TERMINAL — a data frame (never an SSE
+    # comment: comments don't fire client onmessage), no StreamItem behind it.
+    assert KEEPALIVE == WireFrame(data="[PING]")
+
+
 def test_wire_codec_is_abstract_with_the_four_seams():
     with pytest.raises(TypeError):
         WireCodec()  # type: ignore[abstract]
@@ -78,6 +85,14 @@ def test_wire_codec_is_abstract_with_the_four_seams():
         "render",
         "decoder",
     }
+
+
+def test_encode_keepalive_is_concrete_and_returns_the_one_ping():
+    # SSE-1b: encode_keepalive is CONCRETE on the ABC — every codec inherits
+    # the one KEEPALIVE without overriding, so the ping stays codec-rendered.
+    assert "encode_keepalive" not in WireCodec.__abstractmethods__
+    assert SseCodec().encode_keepalive() == KEEPALIVE
+    assert SseCodec().render(SseCodec().encode_keepalive()) == "data: [PING]\n\n"
 
 
 def test_codec_version_matches_wire_protocol_version():

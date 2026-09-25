@@ -271,6 +271,21 @@ def test_feed_line_strips_data_prefix_and_done():
     assert texts[0].text == "hi"
 
 
+def test_feed_line_drops_ping_keepalives():
+    # SSE-1c: [PING] is transport-level — no StreamItem, no decoder state.
+    decoder = SseStreamDecoder()
+    assert decoder.feed_line("data: [PING]") == []
+    # A ping mid-accumulation must not disturb an open partial either.
+    codec = SseCodec()
+    items = []
+    for frame in codec.encode(TextDelta(agent_uuid="a1", text="par", is_final=False, seq=1)):
+        items.extend(decoder.feed_line(codec.render(frame).strip()))
+    assert decoder.feed_line("data: [PING]") == []
+    items.extend(decoder.feed_done())
+    texts = [i for i in items if isinstance(i, TextDelta)]
+    assert len(texts) == 1 and texts[0].text == "par"
+
+
 def test_feed_done_flushes_open_partials():
     codec = SseCodec()
     decoder = SseStreamDecoder()

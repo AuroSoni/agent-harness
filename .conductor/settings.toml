@@ -1,0 +1,6 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+# Arguments are the Homebrew formulae to install or upgrade. Files and commands
+# come from .claude/worktree-setup.json: add them there, not here.
+setup = "bash .conductor/setup.sh uv"

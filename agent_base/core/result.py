@@ -109,7 +109,8 @@ class AgentResult:
             ``as_settlement()`` is deleted; there is no builder fallback).
             Per-turn cost rides here (pricing-cost.md §6 / G0: the legacy
             ``cost`` / ``cumulative_usage`` fields are DELETED); cumulative
-            totals live in the ``SettlementAggregator`` (O14(d)).
+            totals are a consumer-side fold over the per-turn ``UsageReport``
+            stream (O14(d)).
     """
     final_message: Message
     final_answer: str

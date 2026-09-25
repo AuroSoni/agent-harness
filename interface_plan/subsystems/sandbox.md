@@ -808,3 +808,127 @@ library calls (`import_tree` + `extract_archive(members=)`, no `staging()` — O
 module (X12) is deleted in favor of `SessionPrincipal` + `namespaced_base_dir`; and the per-field config +
 module-bottom registration ceremony (F9) collapse to a decorator + a `config_class` attribute (with
 class-creation validation — I12(b)). Breaking changes are allowed (G0); Nova migrates in the same cut.
+
+
+## E2B reliability coordination and bounded capture (2026-09-09)
+
+Consumers may inject `SandboxCoordinator` and `SnapshotPolicy` into AnthropicAgent.
+The coordinator owns authoritative readiness, activity/turn/exclusive guards,
+checkpoint warnings, idle pause, and deletion. Actor and cold-resume turns hold
+the turn guard through parked frontend awaits and completion independently of SSE.
+Snapshot capture runs under the exclusive guard; coordinators release shared
+activity before requesting exclusivity and fence connection-loss epochs.
+Provisioning/restore/binding failures propagate and cannot imply readiness.
+
+`SnapshotPolicy` keeps library defaults (50 MiB/file, 500 MiB total); consumers
+can supply other bounds. Oversized/unreadable entries are recorded as skipped,
+never silently full; degraded restoration restores stored entries and propagates
+storage/corruption errors. Operational `_nova_lifecycle` data is excluded from
+checkpoint config copies.
+
+`run_streaming(..., capture_limit_bytes=2_000_000)` retains bounded UTF-8 tails
+and reports cumulative `stdout_bytes`, `stderr_bytes`, and `output_truncated` on
+ExecResult. The SDK's per-command accumulators are bounded by an isolated adapter,
+with no global patch. E2B `exec` uses an 8 MiB budget and raises
+SandboxOutputLimitExceeded on overflow so JSON helpers cannot consume truncation.
+E2B configuration round-trips layout, internet access, lifecycle, discovery and
+concurrency policies. Upload retries rewind their stream; uncertain create or
+command-start responses are not blindly replayed.
+
+Coordinated `checkpoint()` and normal eviction take exclusive activity and
+validate the resident before persistence. Eviction validates before abort and
+session-end hooks as well, since those hooks may write state. The coordinator
+recognizes an active turn owner whose state legitimately advances and otherwise
+rejects obsolete residents. Rejection preserves the resident for explicit safe
+invalidation; no stale state is written as a side effect of eviction.
+
+
+Public `AnthropicAgent.destroy_sandbox()` and cold deletion both delegate to an
+injected coordinator, including when no local handle exists. The coordinator
+owns exclusive deletion and authoritative unbinding of live/pending candidates.
+Without a coordinator, local teardown and config persistence remain unchanged.
+
+
+## Readiness spans (TR-4) — 2026-09-22
+
+`AnthropicAgent.ensure_sandbox_running(*, trigger=None)` names the warm on its
+`sandbox_ready` trace span: a consumer may pass its own (`request`,
+`attachments`), else it is `external`. The runtime names its own warms
+(`session_load`, `session_create`, `turn_start`, `relay_resume`,
+`deferred_resume`, `cold_resume`) through the `trace_spans.sandbox_warm_trigger`
+ContextVar and still calls the hook as `warm()`, so an override that takes no
+arguments keeps working. Every root warm is timed, failures included (`ok:
+false`, `error_type`, then the error propagates as before).
+
+`agent_base.sandbox.coordinator` gains `readiness_sink` (a ContextVar holding the
+timed warm's `detail` dict) and `report_readiness(**detail)`, which merges into
+it. A coordinator's `ensure_ready` MAY call it to say how the warm went (by
+convention `mode` and its timings); outside a runtime-timed warm, such as a file
+API preparing the sandbox, there is no sink and it is a no-op. The
+`SandboxCoordinator` protocol is unchanged.
+
+A checkpoint capture that fails at a turn boundary no longer fails the persist
+that runs it (TR-7): the snapshot, blob writes, `record_checkpoint` and the
+checkpoint row are bookkeeping after the config and row saves. The failure is
+logged every time, finalize reports it (`extras['persist_errors']`, a non-fatal
+`ErrorReport`), and the next boundary persist captures again; until then
+fork/reset and rehydration fall back to the previous checkpoint. Provisioning,
+restore and binding failures still propagate as before.
+
+
+### EX-1 — E2B export publication (2026-09-24)
+
+E2B export discovery, metadata hashing, and byte publication open every directory
+and file through descriptors with `O_NOFOLLOW`. Symlinks and non-regular entries
+are omitted from discovery; explicit reads through a symlink (including an
+ancestor or export-root symlink) raise `SandboxPathEscapeError`. Regular nested
+exports keep relative names on both absolute and legacy relative layouts.
+
+An unavailable hash manifest falls back to safe listing and safe byte reads.
+An unavailable safe reader fails closed; the SDK pathname read is not a fallback.
+Reads spool locally and validate offsets, size and a terminal checksum before
+publishing bytes. The helper is trusted inline code, so this contract also holds
+for existing VMs with an older installed manifest helper. Generic workspace I/O
+and checkpoint manifests are unchanged. Spec: `test_e2b_export_security.py`.
+
+
+### SB-2 — Deferred sandbox preparation (2026-09-24)
+
+`AnthropicAgent(defer_sandbox_initialization=False, before_sandbox_use=None)`
+retains eager initialization by default. Opt-in callers resolve identity, profile,
+tool schemas and a local sandbox handle during initialization, then overlap the
+first provider flight with actor-owned preparation. Only the provider flight runs
+in a scoped child task; cancellation/failure drains it. Tools and finalization
+wait for preparation. `prepare_sandbox(trigger=...)` is the explicit barrier for
+consumer uploads or hooks that require sandbox I/O before inference. Oversized
+prompt externalization crosses that barrier automatically. `before_sandbox_use`
+is an optional async callback called with the agent after remote readiness and
+before mutation; failure fails the turn. Consumers must configure this callback
+before submission and must gate sandbox-backed contributions/hooks themselves.
+
+`capture_checkpoint(..., config_snapshot=None)` can serialize a frozen pre-turn
+config while capturing the now-ready, still-pristine sandbox. The default uses
+the live config as before. `model_overlap` and `context_externalization`
+readiness spans belong to the current run. Eager callers and relay resumes
+retain their existing behavior. No post-turn pause policy changes.
+
+Interface coverage: `tests/interface/sandbox/test_deferred_preparation.py`.
+
+SB-2 cancellation addendum: persistence before readiness keeps the conversation
+but skips physical checkpoint capture; it cannot implicitly provision an unready
+handle. A completed provider flight is recorded before hard-cancel salvage, so
+completed usage follows the existing settlement rules. Preparation failures emit
+the existing terminal error delta (and ordinary error report) for visible retry
+feedback even after partial answer text. Nova retains the pre-first-turn config
+in temporary extensible metadata until the pristine physical seq-0 capture succeeds.
+
+
+### RP-2 — the resume warm's task (2026-09-25)
+
+A relay resume's warm (`relay_resume`, `deferred_resume`, `cold_resume`) runs in
+the task that entered the coordinator's `turn(agent)`, as the turn's first warm
+does. A coordinator may recognise its own live turn by that task, for instance to
+reuse the handle the turn verified without reconnecting: within a live turn every
+pause, replacement, reset or destroy needs the turn guard. The relay-resume
+persist no longer captures a fork/reset checkpoint (AMENDMENTS RP-1). Coverage:
+`tests/unit/providers/anthropic/test_relay_resume.py`.

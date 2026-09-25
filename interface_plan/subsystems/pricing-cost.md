@@ -314,6 +314,31 @@ them by root, so the parent never has to auto-roll-up child cost into its own pe
 
 ---
 
+### 2.7 Errored turns are not settled (TR-6/TR-7, 2026-09-22)
+
+An **errored turn** (the row saved with `stop_reason='error'`, core.md §2.1.4) is
+never settled and emits no `UsageReport`. Its unbilled spend is **written off**:
+the settlement watermark passes its steps and a restored pre-pause leg is
+dropped, so no later settle point bills it either (an eviction's abort, the
+abort that repairs a pause the error left behind). This is a decision, not a
+reversal: before it, the spend was billed only when such a settle point came
+before the session's next turn, since `initialize_run` resets the watermark
+without settling.
+
+The write-off covers the **root agent's own spend**. A sub-agent or workflow
+child that completed before the root's error settled at its own finalize,
+through the `on_usage_report` subscribers propagated at spawn (GF-P7G1), and
+stays billed. The root row's `cost` folds child cost in as always, so on an
+errored row it is the spend reached, not the amount charged.
+
+A turn whose **config and row finalize saved** is complete, whatever fails
+after: a failed run-log save or checkpoint capture is recorded on the row
+(`extras['persist_errors']`) and reported with a non-fatal `ErrorReport`, and
+the turn settles and ends with `RunCompleted('end_turn')` as usual. Only a
+failed config or row save makes finalize's turn an errored one.
+
+Specs: `tests/interface/pricing_cost/test_pricing_cost_errored_turn.py`.
+
 ## 3. Consumer override examples (smell → after)
 
 ### 3.1 X9 + E10 — billing settlement (`credits/manager.py`, `router._deduct_credits_from_result`)

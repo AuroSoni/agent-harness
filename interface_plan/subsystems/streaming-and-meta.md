@@ -354,6 +354,16 @@ A server-side consumer that wants structure iterates `agent.stream()` and gets `
 > terminates the contract: the actor/continuation guard emits `ErrorReport` then
 > `RunCompleted(stop_reason="error")`; an ABORTED turn keeps its `Custom('aborted')` terminal
 > frame. The matching awaitable handle is `agent.wait_idle()` (core.md §2.6a).
+>
+> **AMENDED (2026-09-22, TR-1/TR-7).** The logs those flag-gated payloads carry
+> (`RunStarted`/`RunCompleted.conversation_log`, `ToolResultDelta.envelope_log`) now include
+> the trace `spans` and the entries' timing fields (core.md §2.1.4) when there are any. They
+> are still gated by `stream_meta_history_and_tool_results` (default `False`), so a consumer
+> that opts in strips what its clients should not see; there is no separate span switch. A
+> completed turn whose run-log save or checkpoint capture failed after its row was saved emits
+> a non-fatal `ErrorReport(code="internal", retriable=False)` before its `UsageReport` and
+> ends with `RunCompleted(stop_reason="end_turn")`; the boundary persists after
+> `RunCompleted` never put a second terminal frame on the stream.
 
 ### 2.4a `DeltaSink` — the producer-side seam (resolves R30; what providers emit into)
 
@@ -389,6 +399,11 @@ class WireFrame:
     # §O11d (amended): the `event:` line field is DELETED — v1 SSE carries only `data:` frames.
 
 TERMINAL = WireFrame(data="[DONE]")    # the ONE defined terminal frame (D4), owned by sse_response (O11c)
+KEEPALIVE = WireFrame(data="[PING]")   # AMENDED (2026-07-19, SSE-1): the ONE keepalive frame, owned by
+                                       # sse_response. Transport-level — carries no StreamItem; the paired
+                                       # decoder (§2.6) drops it. A `data:` frame by design: SSE `:` comments
+                                       # never fire client `onmessage`, so app-level idle watchdogs would
+                                       # still abort a silent-but-alive stream.
 
 class WireCodec(ABC):
     version: str = WIRE_PROTOCOL_VERSION
@@ -399,6 +414,9 @@ class WireCodec(ABC):
     def encode_terminal(self) -> WireFrame: ...           # returns TERMINAL for SSE
     @abstractmethod
     def render(self, frame: WireFrame) -> str: ...        # frame → transport string
+    def encode_keepalive(self) -> WireFrame: ...          # concrete: returns KEEPALIVE (SSE-1 — every
+                                                          # codec inherits the one ping; render stays the
+                                                          # single place the transport string lives)
 
     # The paired decoder type for THIS codec version (the shipped reference, D1/D2):
     @abstractmethod
@@ -418,7 +436,7 @@ CODECS: dict[str, type[WireCodec]] = {"sse": SseCodec}
 def get_codec(name: str = "sse", **kw) -> WireCodec: ...
 ```
 
-**SSE transport factory (kills the verbatim header copy, D4):**
+**SSE transport factory (kills the verbatim header copy, D4). AMENDED (2026-07-19, SSE-1): idle keepalive.**
 
 ```python
 # agent_base/streaming/transport.py   (NEW) — FastAPI optional extra
@@ -428,21 +446,31 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+KEEPALIVE_INTERVAL_S = 15.0            # SSE-1 default: well under app-level client
+                                       # watchdogs (nova aborts at 120 s silent)
+
 def sse_response(item_iter: AsyncIterator[StreamItem],
-                 *, codec: WireCodec | None = None) -> "StreamingResponse":
+                 *, codec: WireCodec | None = None,
+                 keepalive_interval: float | None = KEEPALIVE_INTERVAL_S,
+                 ) -> "StreamingResponse":
     """Frame a StreamItem iterator as a ready-to-return StreamingResponse.
 
-    Owns: per-item encode → render, the terminal [DONE] frame, and the
-    canonical headers. The consumer returns this object and writes ZERO
-    framing code.
+    Owns: per-item encode → render, the terminal [DONE] frame, the idle
+    keepalive frame (SSE-1: `data: [PING]` whenever item_iter has yielded
+    nothing for keepalive_interval seconds; None disables; <= 0 ValueError),
+    and the canonical headers. The consumer returns this object and writes
+    ZERO framing code.
     """
-    codec = codec or SseCodec()
-    async def _gen():
-        async for item in item_iter:
-            for frame in codec.encode(item):
-                yield codec.render(frame)
-        yield codec.render(codec.encode_terminal())   # exactly one [DONE]
-    return StreamingResponse(_gen(), media_type="text/event-stream", headers=SSE_HEADERS)
+    # Heartbeat contract (SSE-1a): real frames never delayed or reordered — a
+    # ping appears only BETWEEN items, never inside one item's chunk batch;
+    # exactly one [DONE], always last, no ping after it; a source exception
+    # still propagates with NO trailing [DONE]; cancelling the response body
+    # still propagates CancelledError into item_iter at its await point
+    # (disconnect ≠ cancel consumers' detach handlers fire unchanged). The
+    # pending read is NEVER cancelled on a keepalive tick, and the next read
+    # is dispatched only after the current item's frames are yielded (zero
+    # lookahead — no item can be consumed-and-dropped on disconnect).
+    ...
 ```
 
 ### 2.6 The shipped reference decoder (resolves D1, D2 — deletes `stream_parser.py`)
@@ -739,3 +767,43 @@ back-compat shim is **removed**, not maintained — Nova migrates in the same cu
 3. Replace `_yield_turn_chunks` + header copy with `sse_response()` (D4).
 4. Replace `emit_awaiting_chunk`/`emit_meta_init`/raw `MetaDelta` with `ctx.emit` + `ctx.call_frontend_tool` (C4/B7/X5/I4).
 5. Replace `_build_relay_result`/`_raw_block_to_content_block` with `WireToolResult.to_tool_reply()` + `ContentBlock.from_api_dict` (D5/C1-meta).
+
+## AC-1 — opt-in durable answer completion (Nova web)
+
+`AnthropicAgent(early_answer_completion=True)` emits root `answer_completed`
+only after the final response passes end-turn hooks and its answer/config/run
+records are durable. Payload: `answer_completed_at` (UTC), `finalization`
+(`status`, `stage`, `files_ready`, canonical `pending_paths`, optional `error`
+and `retryable`).
+The runtime stamps real run and parent IDs. Intermediate text, tools, and child
+answers never establish the root boundary. Default/Excel behavior is unchanged.
+
+`finalization_updated` reports publication/recovery state for the same run. These
+are additive nonterminal metas: readers continue accepting files, usage and
+`run_completed`. A client must correlate root agent + run and ignore duplicates
+or late events. `run_completed` retains its terminal contract. A transport owner
+may wait for `wait_idle()` before releasing terminal readiness to the UI queue.
+
+The opt-in config's `pending_finalization` journal holds the answer projection
+and the already-priced settlement. Conversation `extras.answer_lifecycle` is the
+history projection. The actor owns recovery before taking another mailbox turn;
+`ensure_actor()` also resumes pending work with an empty mailbox. Recovery does
+not call the model. Publication uses stable content/path identities; billing
+callbacks must durably deduplicate the supplied settlement identity. A failed
+checkpoint/publication/settlement preserves the answer and leaves a retryable
+journal. Stop after the durable boundary cannot interrupt required finalization.
+A VM lost before this turn's checkpoint is reported explicitly; recovery must
+not silently accept the prior turn's workspace as the answer's workspace.
+
+Checkpoints exclude the journal so fork/reset cannot replay an old settlement.
+The required boundary is captured once in finalization; the actor does not repeat
+that capture after emitting terminal. No detached finalization tasks are used.
+
+Usage settlement follows the durable answer boundary and precedes publication
+and checkpoint work: a completed answer is still billable when those operations
+fail. The journal marks callback success, and its stable settlement identity
+protects ambiguous retries. Recovery transports without an SSE reader detach the
+read point; a new prompt must discard old recovery frames, while relay
+reattachment continues to hand off its undelivered tail. History may read the
+answer from the journal if a crash interrupted its conversation-row projection;
+sequence allocation remains owned by the row adapter.

@@ -42,7 +42,7 @@ logger = get_logger(__name__)
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BASE_DELAY = 1.0
 DEFAULT_MAX_TOKENS = 16384
-DEFAULT_MODEL = "claude-sonnet-4-5"
+DEFAULT_MODEL = "claude-sonnet-5"
 
 # ---------------------------------------------------------------------------
 # Cache control (pure dict→dict utility)
@@ -309,7 +309,23 @@ class AnthropicProvider(Provider):
         if processed_system:
             request_params["system"] = processed_system
 
-        if llm_config and llm_config.thinking_tokens and llm_config.thinking_tokens > 0:
+        # Extended thinking — two paradigms, chosen by which field the caller
+        # set (never by model name, keeping this provider model-agnostic):
+        #   • effort         → ADAPTIVE thinking, required by the latest models
+        #     (e.g. claude-opus-4-8, claude-sonnet-5), which 400 on the legacy
+        #     shape. Adaptive carries NO token budget — the server sizes the
+        #     reasoning from the effort level (output_config.effort).
+        #   • thinking_tokens → legacy "enabled" extended thinking for older
+        #     models that predate adaptive.
+        #   • both set        → effort wins (adaptive has no budget knob).
+        #   • neither         → no thinking.
+        effort = getattr(llm_config, "effort", None) if llm_config else None
+        if effort:
+            request_params["thinking"] = {"type": "adaptive"}
+            output_config = dict(request_params.get("output_config") or {})
+            output_config["effort"] = effort
+            request_params["output_config"] = output_config
+        elif llm_config and llm_config.thinking_tokens and llm_config.thinking_tokens > 0:
             request_params["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": llm_config.thinking_tokens,
@@ -385,6 +401,18 @@ class AnthropicProvider(Provider):
                 else raw_context_management
             )
 
+        # A refusal's policy category (cyber, bio, reasoning_extraction, ...).
+        # Informational: callers branch on stop_reason, never on this.
+        raw_stop_details = getattr(raw_response, "stop_details", None)
+        if raw_stop_details is None:
+            raw_stop_details = (getattr(raw_response, "model_extra", None) or {}).get("stop_details")
+        if raw_stop_details:
+            usage_kwargs["stop_details"] = (
+                raw_stop_details.model_dump()
+                if hasattr(raw_stop_details, "model_dump")
+                else raw_stop_details
+            )
+
         return Message(
             role=Role.ASSISTANT,
             content=content_blocks,
@@ -403,7 +431,10 @@ class AnthropicProvider(Provider):
         Delegates to the shared :func:`agent_base.core.chain.ensure_chain_validity`
         (R18a) so Anthropic/LiteLLM never diverge.
         """
-        return ensure_chain_validity(messages)
+        # No merging of consecutive user messages: the API combines them
+        # itself, and a merged message was a rebuilt one — a history edit
+        # that invalidates the cache and every later thinking block.
+        return ensure_chain_validity(messages, merge_consecutive_users=False)
 
     # -- Public API (providers.md §2.1 — keyword-only, ProviderTurn) ---------
 
@@ -681,9 +712,15 @@ class AnthropicProvider(Provider):
                     mimetypes.guess_type(filename)[0] or "application/octet-stream"
                 )
 
-                metadata = await runtime.media_backend.store(
-                    response.iter_bytes(), filename, mime_type, agent_config.agent_uuid
-                )
+                if getattr(runtime, "has_pending_finalization", False):
+                    metadata = await runtime.media_backend.store_idempotent(
+                        response.iter_bytes(), filename, mime_type, agent_config.agent_uuid,
+                        key=f"anthropic:{agent_config.agent_uuid}:{file_id}",
+                    )
+                else:
+                    metadata = await runtime.media_backend.store(
+                        response.iter_bytes(), filename, mime_type, agent_config.agent_uuid
+                    )
                 metadata.extras["anthropic_file_id"] = file_id
                 results.append(metadata)
             except Exception:
@@ -692,6 +729,8 @@ class AnthropicProvider(Provider):
                     file_id=file_id,
                     exc_info=True,
                 )
+                if getattr(runtime, "has_pending_finalization", False):
+                    raise  # Required publication stays recoverable in the journal.
                 continue
 
         return results

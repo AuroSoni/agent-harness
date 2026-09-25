@@ -317,7 +317,9 @@ class AgentRuntime:   # the one provider-agnostic loop class @ agent_base/core/r
         results = await self._reconcile_relay_reply(cid, join.tool_use_ids, results)
 
         await self._splice_relay_results(cid, results, ctx)   # fires after_tool per result (§2.1)
-        await self.checkpoint()                               # persist at the suspend/resume boundary
+        await self._checkpoint_at_resume()                    # persist at the suspend/resume boundary
+        #        └─ RP-1: config/row/run logs as checkpoint() saves them, never a fork/reset
+        #           capture (the turn is mid-flight; its turn end captures).
         return ResumeOutcome(status="resumed", results=results)
 
     async def _race_join_against_cancel(self, join: Join) -> list[ContentBlock]:
@@ -435,6 +437,16 @@ class AgentRuntime:
 
 The consumer makes **one** call (`submit(ToolReply(cid))`); hot vs cold is invisible, and the
 reply-triggered cold path never re-emits the await frame.
+
+**AMENDED (2026-09-22, TR-8 — the re-armed join is the reply's alone).** The RESOLVED reply
+kicks the cold continuation only when its cid is the re-armed join's; a hot pause's reply never
+starts a continuation on a join it does not own. A continuation that fails before
+`_resume_rearmed` takes its join (the `cold_resume` warm, the sandbox turn guard) drops the join
+and pops its await record once the run is closed as errored, so a reply re-delivered for that
+pause finds no record, is re-armed from `pending_relay` and resumes the run, and the session is
+evictable again. An abort drops a re-armed join no continuation will take (a reply that never
+resolved it, or a re-prompt answered with an abort); while a continuation is live the join stays
+its own, raced against the abort's cancellation in `_resume_rearmed`.
 
 ### 2.5 Library-owned chain integrity at the resume boundary (B1 / C5 / X13)
 

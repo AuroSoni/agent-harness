@@ -393,13 +393,46 @@ MCP `CallToolResult` → `ToolResultEnvelope`, honoring existing library convent
 
 | MCP content | Envelope treatment |
 |---|---|
-| `text` | `GenericTextEnvelope`; oversized output goes through **`ctx.emit_capped`** (tools.md §2.4) — spill to sandbox `.tool_results/`, never flood context |
+| `text` | passed through; an over-budget result is spilled to the sandbox's tool-results zone, never flooding context (see *Budget* below) |
 | `image` / `audio` | media helpers → **`media_backend`** (R16) + `media_registry` entry; block projected per provider formatter |
 | `resource_link` / `embedded_resource` | v1: text projection (name + uri + description); native resource fetch deferred |
-| `isError: true` | `ToolResultEnvelope.error(...)` — a *returned* tool error (no `raised_error`), model-visible |
+| `isError: true` | `ToolResultEnvelope.error(...)` — a *returned* tool error (no `raised_error`), model-visible; its text is capped by `ctx.emit_capped` |
 | transport/timeout/protocol failure | `ToolResultEnvelope.error(...)` **with** `raised_error` set (CM-G4) so `on_tool_error` can distinguish and synthesize recovery |
 
-`structuredContent` (when a server returns it) is appended as a fenced JSON block in v1.
+`structuredContent` (when a server returns it) is appended as a fenced JSON block in v1 — unless it
+only repeats the text blocks (FastMCP sends a typed return both as JSON text and as structured
+output, `{"result": …}`-wrapped for non-objects, one text block per item for lists), in which case
+the copy is dropped.
+
+**Budget.** The cap (`ctx.emit_capped`'s 25,000 chars) applies to the WHOLE result: all text blocks
+together, any structured block, and embedded resources. Within it, nothing changes. Over it:
+
+- **JSON** (one JSON object/array text, text blocks that each parse, or structured output) is always
+  saved whole via `ctx.spill(..., ext="json")` — the server's own text, or the value indented when
+  the server sent a single line. The model sees, within `preview_chars` (10,000, never more than
+  the cap): its compact form, with `[Also saved: <path>]` in a block of its own, when that fits;
+  otherwise a notice naming the path (and a loader tool from the roster — `ctx.result_loader_tool`,
+  a shell before `code_execution`, else the reader), a structural **outline** and an **abridged**
+  copy (`mcp/json_overflow.py`). The abridged copy keeps every key of a record while it can, the
+  newest entries of every series (maps keyed by date, period or Unix time; lists in date order),
+  the head of other lists and collections (maps keyed by id, or many same-shape entries keyed by
+  name), and marks each cut (`"…9 more": "2014-03-31…2022-03-31, in file"`). Its budget goes out in
+  tiers — every value's floor (a record its keys, a list its marker), then each series' newest
+  entry, then the rest smallest need first — so a short summary is never starved and a series never
+  shows none of its years while a lesser list shows many; a record too wide for its floors keeps its
+  leading keys. The outline lists a repeated record shape once and points back to it
+  (`{31 keys, as filedBy.data.pending_cases[]}`), and gives up keys before depth when it must shrink.
+  `details["spilled"]` carries `{path, chars, format, view, shown_chars}`.
+- **Structured output beside text** takes its share first (up to `preview_chars`, and at most half
+  the cap when the text needs the rest): the fenced block whole when it fits, else the JSON view
+  above. The text is cut by `ctx.emit_capped` to what is left.
+- **Other text** is joined and cut once by `ctx.emit_capped` (head + path), as before.
+- **Embedded resources** share what the rest left, each cut by `ctx.emit_capped` to at least 2,000
+  chars.
+- The log blocks are what the model saw, so a trace counts what it read. Parsing and trimming run in
+  a worker thread (`asyncio.to_thread`), and sizes are measured only as far as a budget needs, so a
+  20 MB result does not stall the event loop other sessions stream on.
+- Any failure while presenting JSON falls back to `ctx.emit_capped`. With no `ctx` nothing is cut.
 
 ## 7. Runtime management & observability
 

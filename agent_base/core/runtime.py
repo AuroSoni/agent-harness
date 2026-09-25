@@ -35,6 +35,9 @@ Surface shipped NOW (core.md + AMENDMENTS):
 from __future__ import annotations
 
 import asyncio
+import copy
+import dataclasses
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime, timezone
@@ -53,6 +56,11 @@ from agent_base.await_table.types import (
 from agent_base.core.abort_types import AgentPhase
 from agent_base.core.ack import Ack, Disposition
 from agent_base.core.audit import CommandAuditRecord, InMemoryCommandAuditLog
+from agent_base.observability import (
+    emit as observe,
+    is_enabled as observation_enabled,
+    span as observation_span,
+)
 from agent_base.core.commands import (
     Abort,
     AgentInput,
@@ -82,6 +90,23 @@ from agent_base.core.hooks.protocol import HOOK_EVENTS
 from agent_base.core.identity import PrincipalConflict
 from agent_base.core.messages import Message, Usage
 from agent_base.core.result import AgentResult
+from agent_base.core.trace_spans import (
+    RELAY_ABORTED,
+    RELAY_ERROR,
+    RELAY_QUEUE_CONFIRMATION,
+    RELAY_QUEUE_FRONTEND,
+    RELAY_RESUMED,
+    SPAN_SCHEMA_VERSION,
+    SpanClock,
+    fill_span,
+    relay_call,
+    relay_span,
+    sandbox_warm_trigger,
+    stamp_span,
+    trace_entrypoint,
+    trace_safe,
+    utc_now_iso,
+)
 from agent_base.core.types import (
     ContentBlock,
     TextContent,
@@ -89,6 +114,7 @@ from agent_base.core.types import (
     ToolResultContent,
 )
 from agent_base.profiles import Profile
+from agent_base.tools.schema_utils import decode_json_encoded_arguments
 from agent_base.session.mailbox import Mailbox
 
 if TYPE_CHECKING:
@@ -122,6 +148,15 @@ class _AwaitCancelled(Exception):
     never escapes past ``await_external``'s ``finally`` — disconnect/abort
     are normal exits.
     """
+
+
+def _with_timing(turn: Any, clock: SpanClock, flight_ms: float) -> Any:
+    """``turn`` with its call's ``timing`` stamped (see ``ProviderTurn``)."""
+    started_at, ended_at, elapsed_ms = clock.window(flight_ms)
+    return dataclasses.replace(
+        turn,
+        timing={"started_at": started_at, "ended_at": ended_at, "flight_ms": elapsed_ms},
+    )
 
 
 def _anonymous_principal() -> "SessionPrincipal | None":
@@ -675,9 +710,9 @@ class AgentRuntime:
         self._emit_outcome_events(end_outcome)
 
         # pricing-cost.md §6 / B6 / G0: no `cost` / `cumulative_usage` on
-        # AgentResult — per-turn cost rides `settlement`, cumulative rides the
-        # SettlementAggregator. Settlement stays ABSENT here (B6): a scripted
-        # turn has no provider usage to settle.
+        # AgentResult — per-turn cost rides `settlement`; cumulative is a
+        # consumer-side fold over the UsageReport stream. Settlement stays
+        # ABSENT here (B6): a scripted turn has no provider usage to settle.
         result = AgentResult(
             final_message=assistant_message,
             final_answer=final_answer,
@@ -897,6 +932,10 @@ class AgentRuntime:
         checkpoint at the boundary; the ``scripted`` reason
         (``call_frontend_tool``) does NEITHER — the blocks go back to the
         calling tool body only (§I4).
+
+        Every pause, whatever its reason, is timed on its relay span
+        (``core.trace_spans.RelaySpan``, through :meth:`_open_relay_span`):
+        emitted, then resumed or aborted. The stamps are fail-soft.
         """
         from agent_base.streaming.meta import AwaitInput
 
@@ -910,20 +949,50 @@ class AgentRuntime:
             child_agent_id=child_agent_id,
             reason=reason,
         )
+        # Looked up inside the guard: a runtime-shaped stand-in may lack it.
+        span = trace_safe(
+            "await_external.span",
+            lambda: self._open_relay_span(cid, reason, outbound, ctx),
+        )
 
         # ── The ONE control envelope (B5/B8). expects_reply=True; the FE
         # replies via ToolReply(cid). ctx.emit stamps the MetaEnvelope header.
         ctx.emit(AwaitInput(tools=outbound), correlation_id=cid, expects_reply=True)
+        trace_safe(
+            "await_external.emitted", stamp_span, span, await_emitted_at=utc_now_iso()
+        )
 
         try:
             results = await self._race_join_against_cancel(join)
         except _AwaitCancelled:
+            # Stamped before the repair, which may close and save the run.
+            trace_safe("await_external.aborted", stamp_span, span, outcome=RELAY_ABORTED)
             await self._repair_self_chain()   # §6: close my orphaned tool_use
             return ResumeOutcome(status="aborted", results=[])
+        except Exception:
+            trace_safe("await_external.error", stamp_span, span, outcome=RELAY_ERROR)
+            raise
         finally:
             table.pop(cid)
+        trace_safe(
+            "await_external.resumed", stamp_span, span,
+            resumed_at=utc_now_iso(), outcome=RELAY_RESUMED,
+        )
 
         # ── Library-owned resume-boundary chain integrity (B1/C5/X13, R18b). ──
+        # A reply is admitted without request-task sandbox warmup. Recover in
+        # the actor that owns the activity lease, before checkpointing resumed
+        # state. A scripted tool runs in a child task; defer its warmup to the
+        # next provider boundary instead of trying to borrow the actor's lease.
+        if getattr(self, "_sandbox_coordinator", None) is not None and not getattr(self, "_parent_agent_uuid", None):
+            task = asyncio.current_task()
+            drivers = (getattr(self, "_actor_task", None), getattr(self, "_run_task", None),
+                       getattr(self, "_rearmed_resume_task", None))
+            if task in drivers:
+                await self._warm_sandbox("relay_resume")
+            else:
+                self._sandbox_resume_warm_pending = True
+
         results = await self._reconcile_relay_reply(cid, join.tool_use_ids, results)
 
         # WT-2: a scripted pause (``call_frontend_tool``) returns the
@@ -934,7 +1003,7 @@ class AgentRuntime:
         # normally. Loop reasons keep the splice+checkpoint boundary.
         if reason != AWAIT_REASON_SCRIPTED:
             await self._splice_relay_results(cid, results, ctx)   # after_tool per result (§2.1)
-            await self.checkpoint()           # persist at the suspend/resume boundary
+            await self._checkpoint_at_resume()   # persist at the suspend/resume boundary
         return ResumeOutcome(status="resumed", results=results)
 
     async def _race_join_against_cancel(self, join: Join) -> "list[ContentBlock]":
@@ -1075,6 +1144,16 @@ class AgentRuntime:
         if callable(save):
             await save(self._agent_config)
 
+    async def _checkpoint_at_resume(self) -> None:
+        """Persist at a relay's resume boundary, once its results are spliced,
+        so a crash before the next boundary keeps them.
+
+        The turn is still in flight here, so a concrete runtime whose
+        :meth:`checkpoint` also captures a fork/reset checkpoint persists
+        without that capture: its turn end captures (fork-reset.md §4).
+        """
+        await self.checkpoint()
+
     async def _repair_self_chain(self) -> None:
         """§6 nested repair: a parked node woken cancelled closes its OWN
         pending tool_use — synthesize aborted ``is_error`` results for the
@@ -1152,7 +1231,7 @@ class AgentRuntime:
             )
         return join
 
-    def _kick_rearmed_resume(self) -> None:
+    def _kick_rearmed_resume(self, cid: str) -> None:
         """Restart a cold-rehydrated turn whose re-armed join just resolved.
 
         relay-await §2.4: on the reply-triggered cold path there is no live
@@ -1161,15 +1240,100 @@ class AgentRuntime:
         concrete runtime's ``_resume_rearmed`` re-enters the suspended turn on
         a background task (CQRS — submit never blocks on the turn). Hot-path
         and non-rearmed submits are a no-op.
+
+        Only the reply that resolved the re-armed pause (``cid``) kicks it. A
+        hot pause's reply resolves another cid, and must never start a
+        continuation on a join that pause does not own, even one left behind
+        (see :meth:`_rearmed_continuation`).
         """
-        if self._rearmed_join is None:
+        join = self._rearmed_join
+        if join is None or join.cid != cid:
             return
         resume = getattr(self, "_resume_rearmed", None)
         if not callable(resume):
             return
-        self._rearmed_resume_task = asyncio.create_task(
-            self._guard_continuation(resume())
+        # The reply just resolved the pause: the instant a hot pause's parked
+        # coroutine would wake, so resumed_at and the resumed outcome mean the
+        # same on both paths (the continuation warms the sandbox before it
+        # resumes the turn; an abort during the warm finds the pause answered).
+        trace_safe(
+            "kick_rearmed_resume.span",
+            lambda: self._stamp_relay_resumed(join.cid),
         )
+        self._rearmed_resume_task = asyncio.create_task(
+            self._guard_continuation(self._rearmed_continuation(resume, join))
+        )
+
+    async def _rearmed_continuation(self, resume: Callable[[], Awaitable[Any]], join: Join) -> Any:
+        """Run the continuation of the re-armed ``join``, and drop the join
+        if the continuation never took it.
+
+        ``_resume_rearmed`` takes the join (and pops its await record) once
+        the turn guard is held and the sandbox is warm. A continuation that
+        failed or was cancelled before that (the ``cold_resume`` warm, or
+        the turn guard itself) used to leave the resolved join on
+        ``_rearmed_join`` and its record on the await table. The record made
+        a re-delivered reply a duplicate and kept the session from being
+        evicted, and the join was later resumed by an unrelated hot reply.
+        Dropping it here, after the concrete runtime's own error handling
+        has read it, lets a re-delivered reply re-arm the pause from
+        ``pending_relay`` and resume the run.
+        """
+        try:
+            return await self._coordinated_resume(resume)
+        finally:
+            self._drop_rearmed_join(join)
+
+    def _drop_rearmed_join(self, join: Join | None = None) -> None:
+        """Forget the re-armed join (``join``, when given, and only if it is
+        still the one held) and pop its await record, which no parked
+        coroutine will pop."""
+        current = self._rearmed_join
+        if current is None or (join is not None and current is not join):
+            return
+        self._rearmed_join = None
+        get_await_table().pop(current.cid)
+
+    def _sandbox_turn_guard(self):
+        from agent_base.sandbox.coordinator import uncoordinated
+        coordinator = getattr(self, "_sandbox_coordinator", None)
+        if coordinator is None or getattr(self, "_parent_agent_uuid", None):
+            return uncoordinated()
+        return coordinator.turn(self)
+
+    async def _warm_sandbox(self, trigger: str) -> None:
+        """Warm the sandbox through the ``ensure_sandbox_running`` hook, when
+        this runtime has one, naming ``trigger`` for its ``sandbox_ready``
+        span.
+
+        The hook is duck-typed and has always been called as ``warm()``, so
+        the trigger goes out of band (``trace_spans.sandbox_warm_trigger``)
+        rather than as a keyword: an override or wrapper that takes no
+        arguments keeps working, and one that forwards to the original
+        passes the trigger on.
+        """
+        warm = getattr(self, "ensure_sandbox_running", None)
+        if not callable(warm):
+            return
+        token = sandbox_warm_trigger.set(trigger)
+        try:
+            await warm()
+        finally:
+            sandbox_warm_trigger.reset(token)
+
+    async def _coordinated_resume(self, resume):
+        async with self._sandbox_turn_guard():
+            await self._warm_sandbox("cold_resume")
+            # This task was spawned by the submit of the reply that answered
+            # the pause, and inherited its trace_entry: the warm above was for
+            # that reply. The continuation may pause again and be answered by
+            # a later request, so past it the task names no request (as the
+            # actor does); the task owns its context.
+            token = trace_entrypoint.set(None)
+            try:
+                return await resume()
+            finally:
+                trace_entrypoint.reset(token)
 
     async def _guard_continuation(self, coro: "Awaitable[Any]") -> Any:
         """Contain a driven-turn failure (actor drain or cold-resume
@@ -1204,6 +1368,9 @@ class AgentRuntime:
             )
             config = getattr(self, "_agent_config", None)
             steps = int(getattr(config, "current_step", 0) or 0)
+            pending_abort = getattr(self, "_abort_pending", None)
+            if pending_abort is not None:
+                pending_abort.done = True  # the error RunCompleted is the terminal frame
             self._emit_run_frame_if_attached(
                 self._build_run_completed("error", steps)
             )
@@ -1229,23 +1396,24 @@ class AgentRuntime:
         """
         from agent_base.streaming.meta import FrontendCallView
 
-        async with self._scripted_pause_lock:
-            cid = f"relay_{self._run_id or uuid.uuid4().hex}_{name}"
-            tool_use_id = f"toolu_{uuid.uuid4().hex}"
-            prepared = await self._run_before_tool(
-                name, tool_input, tool_use_id=tool_use_id, executor="frontend"
-            )
-            outcome = await self.await_external(
-                cid=cid,
-                tool_use_ids=[tool_use_id],
-                outbound=[
-                    FrontendCallView(
-                        tool_use_id=tool_use_id, tool_name=name, input=prepared
-                    )
-                ],
-                reason=AWAIT_REASON_SCRIPTED,
-                ctx=ctx,
-            )
+        with observation_span("tool.frontend", tool_name=name, executor="frontend"):
+            async with self._scripted_pause_lock:
+                cid = f"relay_{self._run_id or uuid.uuid4().hex}_{name}"
+                tool_use_id = f"toolu_{uuid.uuid4().hex}"
+                prepared = await self._run_before_tool(
+                    name, tool_input, tool_use_id=tool_use_id, executor="frontend"
+                )
+                outcome = await self.await_external(
+                    cid=cid,
+                    tool_use_ids=[tool_use_id],
+                    outbound=[
+                        FrontendCallView(
+                            tool_use_id=tool_use_id, tool_name=name, input=prepared
+                        )
+                    ],
+                    reason=AWAIT_REASON_SCRIPTED,
+                    ctx=ctx,
+                )
         return outcome.results
 
     async def _before_tool_chain(
@@ -1263,22 +1431,37 @@ class AgentRuntime:
         CM-G1/CM-G4: shared by the live backend execution, the in-loop relay
         pause, and ``call_frontend_tool``.
         """
+        # A JSON-encoded object/array argument is decoded before any hook
+        # reads it, and the hooks work on their own deep copy: the model's
+        # tool_use block in the history keeps exactly what it sent, even when
+        # a hook edits a nested value (editing history would break the cache
+        # and preserved thinking).
+        tool_input = copy.deepcopy(
+            decode_json_encoded_arguments(tool_input, self._tool_input_schema(tool_name))
+        )
+        if call is not None and dataclasses.is_dataclass(call):
+            call = dataclasses.replace(call, input=copy.deepcopy(tool_input))
         base = self._base_hook_kwargs()
         base["executor"] = executor
         hook_ctx = ToolCallContext(
             **base,
             tool_name=tool_name,
-            tool_input=dict(tool_input),
+            tool_input=tool_input,
             tool_use_id=tool_use_id,
             call=call
             if call is not None
             else SimpleNamespace(
-                name=tool_name, tool_id=tool_use_id, input=dict(tool_input)
+                name=tool_name, tool_id=tool_use_id, input=copy.deepcopy(tool_input)
             ),
         )
         outcome = await self._run_hook("before_tool", hook_ctx)
         self._emit_outcome_events(outcome)
         return dict(hook_ctx.tool_input), outcome
+
+    def _tool_input_schema(self, tool_name: str) -> Mapping[str, Any] | None:
+        """The JSON Schema of ``tool_name``'s input, or ``None``. The runtime
+        holds no tool registry; an agent that does overrides this."""
+        return None
 
     async def _run_before_tool(
         self,
@@ -1404,7 +1587,7 @@ class AgentRuntime:
                 # relay-await §2.4 cold path: a re-armed join has no live
                 # parked coroutine — restart the suspended turn out-of-band
                 # (hot path: no-op, the original await_external wakes).
-                self._kick_rearmed_resume()
+                self._kick_rearmed_resume(command.cid)
             self._audit_command(seq, command, disposition)
             return Ack(seq=seq, disposition=disposition)
 
@@ -1492,9 +1675,26 @@ class AgentRuntime:
             self._mailbox.drain()
             if self._cancellation_event is not None:
                 self._cancellation_event.set()
+            self._drop_idle_rearmed_join()
         finally:
             self._mailbox.unfreeze()
         return None
+
+    def _drop_idle_rearmed_join(self) -> None:
+        """An abort's cleanup of a re-armed join no continuation will take.
+
+        A join is left without a continuation when its reply never resolved
+        it (rejected, or retired by this abort's interrupt) or when the
+        rehydrate re-prompted and the abort came instead of the reply. While
+        a continuation is live the join is its own: ``_resume_rearmed``
+        races it against the cancellation this abort set, and
+        :meth:`_rearmed_continuation` drops it if the continuation fails
+        before taking it.
+        """
+        task = self._rearmed_resume_task
+        if task is not None and not task.done():
+            return
+        self._drop_rearmed_join()
 
     # ── GF-P6G3/G4 — the public actor-drive surface ────────────────────────
 
@@ -1521,7 +1721,9 @@ class AgentRuntime:
         task = self._actor_task
         if task is not None and not task.done():
             return task
-        task = asyncio.create_task(self._drive_actor())
+        task = asyncio.create_task(
+            self._drive_actor(), name=f"agent:{self._root_session_id()}:actor"
+        )
         self._actor_task = task
         return task
 
@@ -1535,7 +1737,14 @@ class AgentRuntime:
         errored; an aborted turn ends with the ``Custom('aborted')`` frame
         contract). Cancellation passes through untouched.
         """
-        return await self._guard_continuation(self._actor_loop())
+        # The task outlives the request whose submit spawned it and drains the
+        # turns queued after it too, so it serves no one request: it drives
+        # its turns without the consumer's trace_entry.
+        token = trace_entrypoint.set(None)
+        try:
+            return await self._guard_continuation(self._actor_loop())
+        finally:
+            trace_entrypoint.reset(token)
 
     async def _actor_loop(self) -> "AgentResult | None":
         """Single-writer driver: drain the mailbox oldest-first, one turn at
@@ -1549,16 +1758,55 @@ class AgentRuntime:
             return None  # already draining — never double-drive a session
         self._actor_running = True
         last_result = None
+        ran_turn = False
         try:
+            if getattr(self, "has_pending_finalization", False):
+                ran_turn = True
+                async with self._sandbox_turn_guard():
+                    await self._recover_pending_finalization()
             while True:
                 msg = self._mailbox.take()
                 if msg is None:
                     break
-                last_result = await self.run(msg.message)
-                await self.checkpoint()
+                ran_turn = True
+                turn_started = time.monotonic()
+                observe(
+                    "actor_turn_start",
+                    root_session_id=self._root_session_id(),
+                    mailbox_depth=len(self._mailbox),
+                )
+                try:
+                    async with self._sandbox_turn_guard():
+                        with observation_span(
+                            "actor.turn", root_session_id=self._root_session_id()
+                        ):
+                            # Remote sandboxes: resume (or re-provision a vanished
+                            # one) BEFORE the turn touches files. No-op for local.
+                            await self._warm_sandbox("turn_start")
+                            last_result = await self.run(msg.message)
+                            await self._checkpoint_after_turn()
+                finally:
+                    observe(
+                        "actor_turn_end",
+                        root_session_id=self._root_session_id(),
+                        duration_ms=(time.monotonic() - turn_started) * 1000,
+                        mailbox_depth=len(self._mailbox),
+                    )
         finally:
             self._actor_running = False
+            if ran_turn:
+                # Turn-end pause of a remote sandbox — scheduled, never awaited
+                # here, so RunCompleted is never delayed by the provider.
+                schedule = getattr(self, "_schedule_sandbox_pause", None)
+                if callable(schedule):
+                    try:
+                        schedule()
+                    except Exception:  # pragma: no cover - best-effort
+                        pass
         return last_result
+
+    async def _checkpoint_after_turn(self) -> None:
+        await self.checkpoint()
 
     async def wait_idle(self) -> None:
         """Await the runtime reaching IDLE: no live actor or cold-resume
@@ -1639,7 +1887,17 @@ class AgentRuntime:
         compaction controller is present; every other failure surfaces as a
         typed ``ProviderError``.
 
-        Returns the provider's ``ProviderTurn``.
+        Returns the provider's ``ProviderTurn`` with ``timing`` stamped:
+        ``{started_at, ended_at, flight_ms}``, measured around the provider
+        call alone (after the chain repair). The flight covers everything
+        inside ``generate``/``generate_stream`` — every retry and its backoff
+        sleep, and the API-key fallback — so it is the time the turn spent
+        waiting on the model, not one HTTP request.
+
+        A call that raises records a ``model_call_failed`` span, and a
+        cancelled one (hard-cancelled, or returning a cooperative partial) a
+        ``model_call_cancelled`` span, through :meth:`_record_trace_span`. An
+        overflow handed to compaction records nothing: it is control flow.
         """
         cfg = self.agent_config
         # B1/C5/X13: chain integrity before EVERY call — provider-supplied
@@ -1647,9 +1905,9 @@ class AgentRuntime:
         cfg.context_messages[:] = self.provider.sanitize_chain(cfg.context_messages)
         # O12(c): no retry scalars threaded — the provider reads its own
         # self.retry_policy.
-        try:
+        async def invoke_provider() -> Any:
             if sink is not None:
-                turn = await self.provider.generate_stream(
+                return await self.provider.generate_stream(
                     system_prompt=cfg.system_prompt,
                     messages=render_view,
                     tool_schemas=cfg.tool_schemas,
@@ -1662,15 +1920,30 @@ class AgentRuntime:
                     agent_uuid=cfg.agent_uuid,
                     cancellation_event=self._cancellation_event,
                 )
-            else:
-                turn = await self.provider.generate(
-                    system_prompt=cfg.system_prompt,
-                    messages=render_view,
-                    tool_schemas=cfg.tool_schemas,
-                    llm_config=cfg.llm_config,
-                    model=cfg.model,
-                    agent_uuid=cfg.agent_uuid,
-                )
+            return await self.provider.generate(
+                system_prompt=cfg.system_prompt,
+                messages=render_view,
+                tool_schemas=cfg.tool_schemas,
+                llm_config=cfg.llm_config,
+                model=cfg.model,
+                agent_uuid=cfg.agent_uuid,
+            )
+
+        clock = SpanClock()
+        try:
+            with observation_span(
+                "provider.call",
+                agent_uuid=cfg.agent_uuid,
+                model=cfg.model,
+                streaming=sink is not None,
+            ):
+                turn = await invoke_provider()
+        except asyncio.CancelledError:
+            trace_safe(
+                "provider_turn.hard_cancel", self._trace_model_call,
+                "model_call_cancelled", clock, forced=True,
+            )
+            raise
         except Exception as exc:
             from agent_base.core.provider import ProviderError
 
@@ -1686,11 +1959,148 @@ class AgentRuntime:
                 # I10: overflow routes through compact+retry (_Recompact is
                 # internal mechanics; the hook seam is the trigger value).
                 raise _Recompact(reason="request_too_large") from perr
+            # The reads of ``perr`` sit inside the guard too: it comes from the
+            # provider's classify_error, and a malformed one must cost the
+            # span, never replace the error raised below.
+            trace_safe(
+                "provider_turn.failed",
+                lambda: self._trace_model_call(
+                    "model_call_failed", clock,
+                    error_type=type(exc).__name__,
+                    error_code=getattr(perr.code, "value", perr.code),
+                    retriable=perr.retriable,
+                ),
+            )
             raise perr from exc
+        flight_ms = clock.elapsed_ms()
+        timed = trace_safe("provider_turn.timing", _with_timing, turn, clock, flight_ms)
+        if timed is not None:
+            turn = timed
+        if getattr(turn, "was_cancelled", False):
+            # A cooperative abort or forceful steer. The partial never
+            # becomes a billed, timed step, so the span is its timing record.
+            trace_safe(
+                "provider_turn.cancelled", self._trace_model_call,
+                "model_call_cancelled", clock, elapsed_ms=flight_ms,
+            )
         # O12(d): a cooperative mid-stream failure keeps partials on
         # turn.message and sets turn.partial_error; the LOOP emits the typed
         # ErrorReport without discarding the partials.
+        observe(
+            "provider_call",
+            agent_uuid=cfg.agent_uuid,
+            model=cfg.model,
+            streaming=sink is not None,
+            duration_ms=flight_ms,
+            partial_error=bool(getattr(turn, "partial_error", None)),
+        )
         return turn
+
+    def _trace_model_call(
+        self,
+        kind: str,
+        clock: SpanClock,
+        *,
+        elapsed_ms: float | None = None,
+        **detail: Any,
+    ) -> None:
+        """Record a ``model_call_failed`` / ``model_call_cancelled`` span for
+        the provider call ``clock`` timed (shapes in ``core.trace_spans``)."""
+        cfg = self.agent_config
+        started_at, ended_at, duration_ms = clock.window(elapsed_ms)
+        self._record_trace_span({
+            "kind": kind,
+            "v": SPAN_SCHEMA_VERSION,
+            "agent_uuid": cfg.agent_uuid,
+            "model": cfg.model,
+            # The step this call would have been: the loop increments
+            # current_step only once a call returns a usable turn.
+            "step": cfg.current_step + 1,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_ms": duration_ms,
+            **detail,
+        })
+
+    def _record_trace_span(self, span: dict[str, Any]) -> None:
+        """Trace seam: keep ``span`` with the run in flight.
+
+        The runtime has no per-run record of its own, so the default drops
+        it; ``AnthropicAgent`` appends it to the run's conversation log.
+        Callers go through ``trace_safe``, so an override that raises costs
+        the span, never the turn.
+        """
+
+    def _find_trace_span(self, kind: str, **match: Any) -> dict[str, Any] | None:
+        """Trace seam: the latest span of ``kind`` kept with the run in
+        flight whose keys equal every ``match`` value (``None`` matches an
+        absent key), for a later stamp to update in place.
+
+        The default keeps none, so finds none; ``AnthropicAgent`` searches
+        the run's conversation log.
+        """
+        return None
+
+    def _open_relay_span(
+        self,
+        cid: str,
+        reason: str,
+        outbound: "list[FrontendCallView]",
+        ctx: Any,
+    ) -> dict[str, Any] | None:
+        """The relay span of the pause ``await_external`` is about to emit.
+
+        A loop pause recorded it before its suspend-side persist
+        (``_run_relay_pause``), so it is found by ``cid``. A scripted pause
+        never passes there, so it is recorded here; its ``cid`` repeats per
+        tool name within a run, hence only a span still open matches.
+
+        A scripted pause is kept only when a tool body asked (its
+        ``ToolContext`` names the tool run). One from ``scripted_ctx()`` — a
+        slash command — belongs to no run: the conversation still open, if
+        any, is another run's (a parked one), which is no place for its wait.
+        """
+        parent_tool_use_id = None
+        if reason == AWAIT_REASON_SCRIPTED:
+            parent_tool_use_id = getattr(ctx, "tool_call_id", None)
+            if not parent_tool_use_id:
+                return None
+        span = self._find_trace_span("relay", cid=cid, outcome=None)
+        if span is not None:
+            return span
+        relay = self._agent_config.pending_relay
+        confirming = (
+            {call.tool_id for call in relay.confirmation_calls}
+            if relay is not None and relay.cid == cid
+            else set()
+        )
+        span = relay_span(
+            self._agent_config.agent_uuid,
+            cid,
+            reason,
+            [
+                relay_call(
+                    view.tool_use_id,
+                    view.tool_name,
+                    RELAY_QUEUE_CONFIRMATION
+                    if view.tool_use_id in confirming
+                    else RELAY_QUEUE_FRONTEND,
+                )
+                for view in outbound
+            ],
+        )
+        if parent_tool_use_id:
+            span["parent_tool_use_id"] = parent_tool_use_id
+        self._record_trace_span(span)
+        return span
+
+    def _stamp_relay_resumed(self, cid: str) -> None:
+        """Close the open relay span of the pause on ``cid`` as ``resumed``,
+        with ``resumed_at`` now unless already set. A span already closed is
+        not found, so a second stamp is a no-op."""
+        span = self._find_trace_span("relay", cid=cid, outcome=None)
+        fill_span(span, resumed_at=utc_now_iso())
+        stamp_span(span, outcome=RELAY_RESUMED)
 
     # ── the awaited entrypoint (Fork E — relocation sequenced last) ────────
 
@@ -1779,10 +2189,44 @@ class AgentRuntime:
     async def _stream_items(self, queue: "asyncio.Queue[Any]") -> AsyncIterator[Any]:
         """Reader bound to ITS attach-time queue — a steal ends exactly this
         iterator via the close sentinel, never the thief's."""
+        count = 0
         while True:
+            waiting_at = time.monotonic() if observation_enabled() else None
+            queue_depth_before_wait = queue.qsize()
             item = await queue.get()
+            if waiting_at is not None:
+                observe(
+                    "stream_queue_get_wait",
+                    agent_uuid=self._root_session_id(),
+                    wait_ms=(time.monotonic() - waiting_at) * 1000,
+                    wait_category=(
+                        "producer_idle" if queue_depth_before_wait == 0 else "queue_backlog"
+                    ),
+                    queue_depth_before_wait=queue_depth_before_wait,
+                    queue_depth_after_get=queue.qsize(),
+                    producer_state=getattr(self._phase, "value", str(self._phase)),
+                    # Legacy alias retained for ABI-1 report compatibility.
+                    queue_depth=queue.qsize(),
+                )
             if item is _STREAM_CLOSED:
                 return
+            count += 1
+            if count == 1:
+                observe(
+                    "stream_first_frame",
+                    agent_uuid=self._root_session_id(),
+                    queue_depth=queue.qsize(),
+                )
+            if count % 20 == 0 and observation_enabled():
+                yielded_at = time.monotonic()
+                await asyncio.sleep(0)
+                observe(
+                    "stream_yield_delay",
+                    agent_uuid=self._root_session_id(),
+                    frame_ordinal=count,
+                    delay_ms=(time.monotonic() - yielded_at) * 1000,
+                    queue_depth=queue.qsize(),
+                )
             yield item
 
     def _emit_stream_item(self, item: Any) -> None:
@@ -1896,9 +2340,9 @@ class AgentRuntime:
             self._meta_seq += 1
             envelope = MetaEnvelope(
                 event_id=str(uuid.uuid4()),
-                run_id="",
+                run_id=self._run_id or "",
                 agent_id=self.agent_uuid,
-                parent_agent_id=None,
+                parent_agent_id=getattr(self, "_parent_agent_uuid", None),
                 seq=self._meta_seq,
                 ts=datetime.now(timezone.utc).isoformat(),
                 correlation_id=correlation_id,

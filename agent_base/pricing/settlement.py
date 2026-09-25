@@ -69,10 +69,10 @@ def settle_turn(ctx: Any, steps: list[Message]) -> TurnSettlement:
     else sums ``policy.cost_for_step(m.usage, m.model or ctx.model)`` per step
     (an unknown model returning ``None`` contributes zero, never a crash).
 
-    Cumulative is NOT computed here (O14d) — the
-    :class:`~agent_base.core.cost.SettlementAggregator` rolls it up from the
-    channel. The runtime emits the ``UsageReport`` and attaches the settlement
-    (B1/B6: not this function).
+    Cumulative is NOT computed here (O14d) — cumulative roll-ups are a
+    consumer-side fold over the per-turn ``UsageReport`` stream. The runtime
+    emits the ``UsageReport`` and attaches the settlement (B1/B6: not this
+    function).
     """
     policy: PricingPolicy = ctx.pricing_policy
 

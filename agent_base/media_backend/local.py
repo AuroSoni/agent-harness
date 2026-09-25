@@ -123,22 +123,40 @@ class LocalMediaBackend(MediaBackend):
     # ─── Storage operations ───────────────────────────────────────────
 
     async def store(
-        self,
-        content: AsyncIterator[bytes],
-        filename: str,
-        mime_type: str,
-        agent_uuid: str,
+        self, content: AsyncIterator[bytes], filename: str, mime_type: str, agent_uuid: str,
     ) -> MediaMetadata:
-        media_id = uuid.uuid4().hex
+        return await self._store_with_id(content, filename, mime_type, agent_uuid, uuid.uuid4().hex)
+
+    async def store_idempotent(
+        self, content: AsyncIterator[bytes], filename: str, mime_type: str,
+        agent_uuid: str, *, key: str,
+    ) -> MediaMetadata:
+        import hashlib
+        media_id = hashlib.sha256(key.encode()).hexdigest()
+        existing = await self.get_metadata(media_id, agent_uuid)
+        if existing is not None:
+            return existing
+        return await self._store_with_id(content, filename, mime_type, agent_uuid, media_id)
+
+    async def _store_with_id(
+        self, content: AsyncIterator[bytes], filename: str, mime_type: str,
+        agent_uuid: str, media_id: str,
+    ) -> MediaMetadata:
         agent_dir = self.base_path / agent_uuid
         agent_dir.mkdir(parents=True, exist_ok=True)
 
         file_path = self._file_path(agent_uuid, media_id, filename)
+        # Readers can observe only the complete object, including on retry.
+        temporary = file_path.with_name("." + file_path.name + "." + uuid.uuid4().hex + ".tmp")
         size = 0
-        async with aiofiles.open(file_path, "wb") as f:
-            async for chunk in content:
-                await f.write(chunk)
-                size += len(chunk)
+        try:
+            async with aiofiles.open(temporary, "wb") as f:
+                async for chunk in content:
+                    await f.write(chunk)
+                    size += len(chunk)
+            temporary.replace(file_path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
         return self._build_metadata(
             media_id=media_id,

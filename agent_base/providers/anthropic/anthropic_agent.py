@@ -29,9 +29,11 @@ import dataclasses
 import inspect
 import json
 import uuid
+from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Iterator, Optional, TYPE_CHECKING
 
 from agent_base.await_table.types import (
     AWAIT_REASON_CONFIRMATION,
@@ -44,7 +46,7 @@ from agent_base.core.config import (
     CostBreakdown,
     PendingToolRelay,
 )
-from agent_base.core.conversation_log import ConversationLog
+from agent_base.core.conversation_log import ConversationLog, ToolLogProjection
 from agent_base.core.end_turn_hook import (
     EndTurnContext,
     EndTurnHook,
@@ -61,6 +63,31 @@ from agent_base.core.messages import Message, Usage
 from agent_base.core.provider import ProviderTurn
 from agent_base.core.result import AgentResult, LogEntry
 from agent_base.core.runtime import AgentRuntime, _Recompact
+from agent_base.core.trace_spans import (
+    PENDING_SPAN_MAX_AGE,
+    PENDING_SPANS_CAP,
+    RELAY_ABORTED,
+    RELAY_ERROR,
+    RELAY_QUEUE_CONFIRMATION,
+    RELAY_QUEUE_FRONTEND,
+    RELAY_RESUMED,
+    SPAN_ROUTE_BUFFER,
+    SpanClock,
+    close_open_relays,
+    ended_before,
+    no_pause_relay_span,
+    relay_backend_calls,
+    relay_call,
+    relay_span,
+    sandbox_ready_route,
+    sandbox_ready_span,
+    sandbox_warm_trigger,
+    stamp_span,
+    trace_entrypoint,
+    trace_safe,
+    turn_error_span,
+    utc_now_iso,
+)
 from agent_base.core.types import (
     ContentBlock,
     Contribution,
@@ -76,6 +103,7 @@ from agent_base.media_backend.local import LocalMediaBackend
 from agent_base.memory.stores import NoOpMemoryStore
 from agent_base.pricing.settlement import CsvPricingPolicy, settle_turn
 from agent_base.sandbox import sandbox_from_config
+from agent_base.sandbox.coordinator import readiness_sink, report_readiness
 from agent_base.sandbox.local import LocalSandbox
 from agent_base.storage.adapters.memory import (
     MemoryAgentConfigAdapter,
@@ -92,9 +120,9 @@ from agent_base.streaming.meta import (
     RunStarted,
     UsageReport,
 )
-from agent_base.streaming.types import ToolResultDelta
-from agent_base.tools.registry import ToolRegistry
-from agent_base.tools.tool_types import ToolResultEnvelope
+from agent_base.streaming.types import TextDelta, ToolResultDelta
+from agent_base.tools.registry import ToolRegistry, stamp_never_ran
+from agent_base.tools.tool_types import ToolResultEnvelope, inherit_tool_timing
 
 from .compaction import CompactionConfig, CompactionController
 from .config import AnthropicLLMConfig
@@ -112,6 +140,8 @@ if TYPE_CHECKING:
     from agent_base.media_backend.media_types import MediaBackend, MediaMetadata
     from agent_base.memory.base import MemoryStore
     from agent_base.sandbox.sandbox_types import Sandbox
+    from agent_base.sandbox.coordinator import SandboxCoordinator
+    from agent_base.sandbox.snapshot import SnapshotPolicy
     from agent_base.storage.base import (
         AgentConfigAdapter,
         ConversationAdapter,
@@ -207,6 +237,9 @@ class AnthropicAgent(AgentRuntime):
         memory_store: "MemoryStore | None" = None,
         sandbox: "Sandbox | None" = None,
         sandbox_factory: Callable[[str], "Sandbox"] | None = None,
+        defer_sandbox_initialization: bool = False,
+        before_sandbox_use: Callable[[Any], Any] | None = None,
+        early_answer_completion: bool = False,
         end_turn_hook: EndTurnHook | None = None,
         agent_uuid: str | None = None,
         # Tenancy §A.1 / GF-P8G2: the ONE identity input, forwarded to the
@@ -224,6 +257,8 @@ class AnthropicAgent(AgentRuntime):
         # KeyedBlobStore content-addresses the transcript segments + sandbox
         # snapshot. With no adapter wired the feature is off (no capture).
         checkpoint_adapter: "CheckpointAdapter | None" = None,
+        sandbox_coordinator: "SandboxCoordinator | None" = None,
+        snapshot_policy: "SnapshotPolicy | None" = None,
         blob_store: "KeyedBlobStore | None" = None,
         media_backend: "MediaBackend | None" = None,
         fallback_api_keys: list[str] | None = None,
@@ -280,6 +315,22 @@ class AnthropicAgent(AgentRuntime):
         # Sandbox configuration — created lazily in initialize() when UUID is known.
         self._sandbox = sandbox
         self._sandbox_factory = sandbox_factory
+        self._sandbox_coordinator = sandbox_coordinator
+        self.defer_sandbox_initialization = defer_sandbox_initialization
+        self.before_sandbox_use = before_sandbox_use
+        self.early_answer_completion = early_answer_completion
+        self._sandbox_preparation_pending = defer_sandbox_initialization
+        self._sandbox_preparation_error = None
+        self._snapshot_policy = snapshot_policy
+        self._sandbox_recovery_pending = False
+        self.sandbox_warnings: list[dict[str, Any]] = []
+        # Remote-sandbox lifecycle state: the last captured workspace manifest
+        # (so the next capture reads only deltas) and the turn-end pause task.
+        self._last_sandbox_manifest = None
+        self._sandbox_pause_task = None
+        # Trace spans recorded before the run they belong to exists (a warm
+        # for a new request), held for the next initialize_run to adopt.
+        self._pending_spans: deque[dict[str, Any]] = deque(maxlen=PENDING_SPANS_CAP)
 
         # End-turn validation hook. Cannot be loaded from database.
         self.end_turn_hook = end_turn_hook
@@ -359,6 +410,8 @@ class AnthropicAgent(AgentRuntime):
         # Abort/steer state — cooperative cancellation.
         self._abort_completion: asyncio.Event | None = None
         self._run_task: asyncio.Task | None = None
+        # The in-flight abort's terminal-marker decision (see _open_abort_record).
+        self._abort_pending: SimpleNamespace | None = None
 
         # Optional upstream forward for cumulative usage/cost so inline-await
         # children fold their per-step tokens and $ into the root's sinks.
@@ -404,6 +457,19 @@ class AnthropicAgent(AgentRuntime):
         self._cumulative_cost: CostBreakdown = CostBreakdown()
         # The turn's provider steps — settle_turn input (pricing-cost §2.4).
         self._turn_steps: list[Message] = []
+        # Settlement watermark: index into _turn_steps below which steps are
+        # already billed. INVARIANT: reset to 0 wherever _turn_steps is reset
+        # (initialize_run + _resume_rearmed) — the two always move together.
+        # _settle_delta() bills _turn_steps[_settled_upto:] and advances this,
+        # so an abort→finalize double-fire settles the tail exactly once.
+        self._settled_upto: int = 0
+        # A pre-pause settlement restored on cold resume (leak-2 fix): the
+        # priced-but-unbilled fact for the leg(s) before a process boundary.
+        # Folded into the next _settle_delta() exactly once, then cleared.
+        self._restored_settlement: "TurnSettlement | None" = None
+        # The run finalize last settled (billed): an error past that point
+        # leaves its row as finalize saved it (see _errored_mark_skips).
+        self._finalized_run_id: str | None = None
 
         # These are set during initialize().
         self.conversation: Conversation | None = None
@@ -436,30 +502,369 @@ class AnthropicAgent(AgentRuntime):
         """Create the default LocalSandbox for an agent UUID."""
         return LocalSandbox(sandbox_id=agent_uuid, base_dir="./sandbox_data")
 
-    def _get_or_create_sandbox(self, agent_uuid: str) -> "Sandbox":
-        """Resolve the sandbox instance for this agent session."""
+    async def _get_or_create_sandbox(self, agent_uuid: str) -> "Sandbox":
+        """Resolve the sandbox instance for this agent session.
+
+        Precedence: a ctor-injected instance (sub-agents share the parent's)
+        > the persisted ``agent_config.sandbox_config`` (carries a remote id)
+        > the consumer factory (sync or awaitable) > the default local sandbox.
+        The config is stamped by ``_provision_sandbox`` AFTER setup so a
+        freshly minted remote id is what gets persisted.
+        """
+        import inspect as _inspect
+
         if self._sandbox is not None:
             sandbox = self._sandbox
         elif self.agent_config and self.agent_config.sandbox_config is not None:
             sandbox = sandbox_from_config(self.agent_config.sandbox_config)
         elif self._sandbox_factory is not None:
             sandbox = self._sandbox_factory(agent_uuid)
+            if _inspect.isawaitable(sandbox):
+                sandbox = await sandbox
         else:
             sandbox = self._default_sandbox_factory(agent_uuid)
 
         self._sandbox = sandbox
-        if self.agent_config is not None:
-            self.agent_config.sandbox_config = sandbox.config
         return sandbox
 
-    async def _initialize_sandbox(self, agent_uuid: str) -> None:
-        """Set up the sandbox and attach it to tools and media."""
-        sandbox = self._get_or_create_sandbox(agent_uuid)
-        await sandbox.setup()
+    async def _provision_sandbox(self, sandbox: "Sandbox", agent_uuid: str) -> bool:
+        """``setup()`` the sandbox, surviving a vanished remote (``SandboxGone``
+        → forget the id and provision afresh), rehydrate a NEWLY created
+        remote sandbox from the latest checkpoint manifest, then stamp (and
+        for a new remote id, immediately persist) ``sandbox_config``.
+        Returns True when a new remote sandbox was created."""
+        from agent_base.observability import emit as _emit
+        from agent_base.sandbox.sandbox_types import SandboxGone
+
+        previous_config = self.agent_config.sandbox_config if self.agent_config else None
+        previous_remote = getattr(previous_config, "e2b_sandbox_id", None)
+        try:
+            await sandbox.setup()
+        except SandboxGone:
+            _emit("sandbox.gone_on_setup", agent_uuid=agent_uuid)
+            trace_safe("sandbox_ready.gone", report_readiness, gone=True)
+            sandbox.forget_remote()
+            await sandbox.setup()
+        created = bool(sandbox.created_on_last_setup())
+        trace_safe("sandbox_ready.created", report_readiness, created=created)
+        needs_restore = created or self._sandbox_recovery_pending or (
+            sandbox.is_remote and not getattr(self, "_parent_agent_uuid", None)
+            and previous_remote != getattr(sandbox, "e2b_sandbox_id", None)
+        )
+        if needs_restore:
+            self._sandbox_recovery_pending = True
+            await self._rehydrate_sandbox(sandbox, agent_uuid)
+        if self.agent_config is not None:
+            self.agent_config.sandbox_config = sandbox.config
+            if needs_restore and sandbox.is_remote:
+                try:
+                    await self.config_adapter.save(self.agent_config)
+                except BaseException:
+                    self.agent_config.sandbox_config = previous_config
+                    raise
+        self._sandbox_recovery_pending = False
+        return created
+
+    async def _rehydrate_sandbox(self, sandbox: "Sandbox", agent_uuid: str) -> None:
+        """Materialize the latest checkpoint's workspace into a fresh sandbox."""
+        if self.checkpoint_adapter is None or self._blobs is None:
+            return
+        checkpoint = await self.checkpoint_adapter.load_latest(agent_uuid)
+        if checkpoint is None or not checkpoint.sandbox_manifest_ref:
+            return
+        from agent_base.observability import span as observation_span
+        from agent_base.sandbox.snapshot import SandboxSnapshotter
+
+        tenant = (self.agent_config.owner_tenant if self.agent_config else None) or "_"
+        with observation_span(
+            "sandbox.rehydrate", agent_uuid=agent_uuid, manifest_ref=checkpoint.sandbox_manifest_ref
+        ):
+            clock = SpanClock()
+            self._last_sandbox_manifest = await SandboxSnapshotter(
+                sandbox, self._blobs, tenant=tenant, policy=self._snapshot_policy
+            ).materialize(checkpoint.sandbox_manifest_ref)
+        trace_safe(
+            "sandbox_ready.rehydrated",
+            lambda: report_readiness(rehydrated=True, rehydrate_ms=round(clock.elapsed_ms(), 3)),
+        )
+
+    async def _initialize_sandbox(self, agent_uuid: str, *, trigger: str = "external") -> None:
+        """Set up the sandbox and attach it to tools and media.
+
+        With :meth:`ensure_sandbox_running`, the one chokepoint of a root
+        agent's sandbox warm: the warm is timed as a ``sandbox_ready`` span
+        (``core.trace_spans.SandboxReadySpan``) naming ``trigger``, through
+        :meth:`_sandbox_ready_trace`. Without a coordinator only a remote
+        sandbox has anything to warm, so a local one records no span.
+        """
+        if self._sandbox_coordinator is not None and not getattr(self, "_parent_agent_uuid", None):
+            with self._sandbox_ready_trace(trigger):
+                sandbox = await self._sandbox_coordinator.ensure_ready(self)
+            self._sandbox = sandbox
+        else:
+            sandbox = await self._get_or_create_sandbox(agent_uuid)
+            with self._sandbox_ready_trace(trigger, traced=sandbox.is_remote):
+                await self._provision_sandbox(sandbox, agent_uuid)
         self.tool_registry.attach_sandbox(sandbox)
         self.media_backend.attach_sandbox(sandbox)
         self._inject_agent_uuid_to_tools()
         self._configure_context_externalizer()
+
+    async def _initialize_sandbox_binding(self, agent_uuid: str, *, trigger: str) -> None:
+        if not self.defer_sandbox_initialization:
+            await self._initialize_sandbox(agent_uuid, trigger=trigger)
+            return
+        # Schemas, UUID injection and context policy exist before inference.
+        # Resolving this handle is local; no remote setup happens here.
+        sandbox = await self._get_or_create_sandbox(agent_uuid)
+        self.tool_registry.attach_sandbox(sandbox)
+        self.media_backend.attach_sandbox(sandbox)
+        self._inject_agent_uuid_to_tools()
+        self._configure_context_externalizer()
+
+    async def prepare_sandbox(self, *, trigger: str = "before_use") -> None:
+        """Complete this turn's preparation, including the consumer's I/O barrier.
+
+        Called by the owning actor (or before submission for attachments). The
+        model may run concurrently, but tools cannot pass this boundary. Eager
+        callers keep the existing warm path and never use this opt-in seam.
+        """
+        if not self._sandbox_preparation_pending:
+            return
+        from agent_base.sandbox.coordinator import uncoordinated
+        coordination = getattr(self._sandbox_coordinator, "preparation", None)
+        guard = coordination(self) if callable(coordination) else uncoordinated()
+        async with guard:
+            await self._initialize_sandbox(self.agent_uuid, trigger=trigger)
+            if self.before_sandbox_use is not None:
+                await self.before_sandbox_use(self)
+            self._sandbox_preparation_pending = False
+
+    async def _warm_sandbox(self, trigger: str) -> None:
+        if self.defer_sandbox_initialization and trigger == "turn_start":
+            self._sandbox_preparation_pending = True
+            self._sandbox_preparation_error = None
+            return
+        await super()._warm_sandbox(trigger)
+
+    async def _provider_turn(self, *, render_view, sink=None):
+        if not self._sandbox_preparation_pending:
+            return await super()._provider_turn(render_view=render_view, sink=sink)
+        # Keep preparation in the actor: its database locks are task-owned.
+        # Only the provider flight runs in a scoped child task; no detached work.
+        flight = asyncio.create_task(
+            super()._provider_turn(render_view=render_view, sink=sink),
+            name="model-during-sandbox-preparation",
+        )
+        try:
+            await self.prepare_sandbox(trigger="model_overlap")
+        except BaseException as exc:
+            flight.cancel()
+            result = (await asyncio.gather(flight, return_exceptions=True))[0]
+            if isinstance(exc, Exception) and sink is not None:
+                # Readiness used to fail before an SSE stream existed. With
+                # overlap a visible answer can precede this failure: preserve it
+                # and use the existing terminal error channel so clients expose
+                # a retryable error instead of rendering a successful answer.
+                from agent_base.streaming.types import ErrorDelta
+                sink.emit(ErrorDelta(
+                    agent_uuid=self.agent_uuid, is_final=True, terminal=True,
+                    code=ErrorCode.INTERNAL, message=str(exc),
+                    details={"retriable": bool(getattr(exc, "retriable", False))},
+                ))
+            # A flight that already completed is still recorded in the ordinary
+            # loop before the preparation failure closes the run (unbilled,
+            # matching the existing errored-run accounting policy).
+            if (isinstance(exc, asyncio.CancelledError) and isinstance(result, ProviderTurn)
+                    and not result.was_cancelled):
+                self._record_provider_response(result)
+            if isinstance(exc, Exception) and not isinstance(result, BaseException):
+                self._sandbox_preparation_error = exc
+                return result
+            raise
+        try:
+            return await flight
+        finally:
+            if not flight.done():
+                flight.cancel()
+                await asyncio.gather(flight, return_exceptions=True)
+
+    # ── remote-sandbox lifecycle (no-ops for local backends) ───────────────
+
+    async def ensure_sandbox_running(self, *, trigger: str | None = None) -> None:
+        """Warm the sandbox before a turn: wait for an in-flight turn-end pause,
+        then connect/resume. A remote that vanished meanwhile is re-provisioned
+        and rehydrated from the latest checkpoint.
+
+        ``trigger`` names the caller on the warm's ``sandbox_ready`` span: a
+        consumer may name its warm (``request``, ``attachments``), else it is
+        ``external``. The runtime calls this as ``warm()`` and names its own
+        (``turn_start``, ``relay_resume``, ``deferred_resume``,
+        ``cold_resume``) through ``trace_spans.sandbox_warm_trigger``, so an
+        override that takes no arguments still works. A local sandbox without
+        a coordinator has nothing to warm and leaves no span.
+        """
+        if trigger is None:
+            trigger = sandbox_warm_trigger.get() or "external"
+        if self._sandbox_coordinator is not None and not getattr(self, "_parent_agent_uuid", None):
+            await self._initialize_sandbox(self.agent_uuid, trigger=trigger)
+            return
+        sandbox = self._sandbox
+        if sandbox is None or not sandbox.is_remote:
+            return
+        with self._sandbox_ready_trace(trigger):
+            if self._sandbox_recovery_pending:
+                await self._provision_sandbox(sandbox, self.agent_uuid)
+                return
+            task = self._sandbox_pause_task
+            if task is not None and not task.done():
+                waited = SpanClock()
+                await asyncio.gather(task, return_exceptions=True)
+                trace_safe(
+                    "sandbox_ready.pause_wait",
+                    lambda: report_readiness(pause_wait_ms=round(waited.elapsed_ms(), 3)),
+                )
+            from agent_base.sandbox.sandbox_types import SandboxGone
+
+            try:
+                created = await sandbox.ensure_running()
+            except SandboxGone:
+                trace_safe("sandbox_ready.gone", report_readiness, gone=True)
+                sandbox.forget_remote()
+                await self._provision_sandbox(sandbox, self.agent_uuid)
+            else:
+                trace_safe("sandbox_ready.created", report_readiness, created=bool(created))
+
+    @contextmanager
+    def _sandbox_ready_trace(self, trigger: str, *, traced: bool = True) -> Iterator[None]:
+        """Time the root sandbox warm inside as one ``sandbox_ready`` span.
+
+        For the duration, ``readiness_sink`` is the warm's ``detail``, so
+        what the coordinator (or this runtime) reports through
+        ``report_readiness`` lands on the span; it is reset after. The span
+        is recorded whether the warm returns or raises — then with ``ok``
+        False and the ``error_type`` — and the exception, cancellation
+        included, propagates unchanged. Where it goes is
+        :meth:`_record_span`'s, by ``trigger`` and the consumer's
+        ``trace_entry`` (``core.trace_spans.sandbox_ready_route``). A
+        sub-agent shares its parent's sandbox, so it records none.
+        """
+        if not traced or getattr(self, "_parent_agent_uuid", None):
+            yield
+            return
+        clock = SpanClock()
+        detail: dict[str, Any] = {}
+        token = readiness_sink.set(detail)
+        error: BaseException | None = None
+        try:
+            yield
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            readiness_sink.reset(token)
+            trace_safe(
+                "sandbox_ready.span",
+                self._record_sandbox_ready, trigger, clock, detail, error,
+            )
+
+    def _record_sandbox_ready(
+        self,
+        trigger: str,
+        clock: SpanClock,
+        detail: dict[str, Any],
+        error: BaseException | None,
+    ) -> None:
+        """Build the ``sandbox_ready`` span of the warm ``clock`` timed and
+        keep it where :func:`~agent_base.core.trace_spans.sandbox_ready_route`
+        says."""
+        entry = trace_entrypoint.get()
+        span = sandbox_ready_span(
+            self.agent_uuid or "",
+            trigger,
+            clock,
+            detail,
+            error=error,
+            request_id=entry.get("request_id") if entry else None,
+        )
+        self._record_span(span, route=sandbox_ready_route(trigger, entry))
+
+    async def pause_sandbox(self) -> bool:
+        """Pause a remote sandbox now (eviction / explicit). Never raises."""
+        if self._sandbox_coordinator is not None:
+            return await self._sandbox_coordinator.pause(self)
+        sandbox = self._sandbox
+        if sandbox is None or not sandbox.is_remote:
+            return False
+        task = self._sandbox_pause_task
+        if task is not None and not task.done():
+            await asyncio.gather(task, return_exceptions=True)
+        try:
+            return bool(await sandbox.pause())
+        except Exception:  # noqa: BLE001
+            logger.warning("sandbox_pause_failed", agent_uuid=self.agent_uuid, exc_info=True)
+            from agent_base.observability import emit as _emit
+
+            _emit("sandbox.pause_failed", agent_uuid=self.agent_uuid)
+            return False
+
+    def _schedule_sandbox_pause(self) -> None:
+        """Turn-end hook (called by the actor loop after the mailbox drains):
+        pause the remote sandbox off the request path. Root agents only —
+        sub-agents share the parent's sandbox. The pause is epoch-guarded so
+        a turn that starts meanwhile turns it into a no-op."""
+        sandbox = self._sandbox
+        if sandbox is None or not sandbox.is_remote:
+            return
+        if getattr(self, "_parent_agent_uuid", None):
+            return
+        if len(self._mailbox) != 0 or self._phase != AgentPhase.IDLE:
+            return
+        if getattr(self, "_steer_preempting", False):
+            return  # the steered turn follows at once — never pause just to resume
+        try:
+            from agent_base.await_table import get_await_table
+
+            if get_await_table().walk(self._root_session_id()):
+                return  # parked on a frontend tool — keep running
+        except Exception:  # noqa: BLE001 — never block on introspection
+            pass
+        epoch = sandbox.pause_epoch
+
+        async def _pause() -> None:
+            try:
+                if self._sandbox_coordinator is not None:
+                    await self._sandbox_coordinator.pause(self, epoch=epoch)
+                else:
+                    await sandbox.pause(epoch=epoch)
+            except Exception:  # noqa: BLE001
+                logger.warning("sandbox_pause_failed", agent_uuid=self.agent_uuid, exc_info=True)
+                from agent_base.observability import emit as _emit
+
+                _emit("sandbox.pause_failed", agent_uuid=self.agent_uuid)
+
+        self._sandbox_pause_task = asyncio.create_task(_pause())
+
+    async def destroy_sandbox(self) -> None:
+        """Kill the backing sandbox and forget it in the persisted config.
+        Session DELETE semantics — eviction never calls this."""
+        if self._sandbox_coordinator is not None:
+            # The coordinator owns exclusive activity and authoritative unbinding.
+            # Its durable state can include candidates absent from this process.
+            await self._sandbox_coordinator.destroy(self)
+            return
+        sandbox = self._sandbox
+        if sandbox is None:
+            return
+        from agent_base.sandbox.sandbox_types import SandboxGone
+
+        try:
+            await sandbox.teardown()
+        except SandboxGone:
+            pass
+        if self.agent_config is not None:
+            self.agent_config.sandbox_config = None
+            await self.config_adapter.save(self.agent_config)
 
     # ── initialize / per-run setup ─────────────────────────────────────────
 
@@ -530,7 +935,7 @@ class AnthropicAgent(AgentRuntime):
             else:
                 self.conversation = None  # Created per-run in initialize_run()
 
-            await self._initialize_sandbox(self._agent_uuid)
+            await self._initialize_sandbox_binding(self._agent_uuid, trigger="session_load")
 
             await self._initialize_mcp()
 
@@ -562,7 +967,11 @@ class AnthropicAgent(AgentRuntime):
         self.conversation = None  # Created per-run in initialize_run()
         self._configure_compaction_controller()
 
-        await self._initialize_sandbox(agent_uuid)
+        if self._sandbox_coordinator is not None:
+            # The coordinator's principal-scoped binding CAS needs an identity
+            # row first. Ordinary saves must preserve authoritative bindings.
+            await self.config_adapter.save(self.agent_config)
+        await self._initialize_sandbox_binding(agent_uuid, trigger="session_create")
 
         await self._initialize_mcp()
 
@@ -593,8 +1002,13 @@ class AnthropicAgent(AgentRuntime):
         )
         self.agent_config.conversation_log = ConversationLog()
         self.agent_config.parent_agent_uuid = self._parent_agent_uuid
+        # Warms that ran before this run existed (the session load, the
+        # actor's turn_start, a consumer's own) were buffered for it.
+        trace_safe("initialize_run.adopt_spans", self._adopt_pending_spans, now)
 
-        # Reset step counter.
+        # Reset step counter. This is the ONLY reset site by design —
+        # current_step is the billing-identity stamp (see core/config.py) and
+        # must stay monotonic across every mid-run path (pause, rearm, steer).
         self.agent_config.current_step = 0
 
         # Populate AgentConfig with constructor params. CM-G3b: the active
@@ -629,6 +1043,8 @@ class AnthropicAgent(AgentRuntime):
         self._run_cumulative_usage = Usage()
         self._cumulative_cost = CostBreakdown()
         self._turn_steps = []
+        self._settled_upto = 0  # watermark moves with _turn_steps, always
+        self._restored_settlement = None
         self._ensure_registered_agent()
 
     def _reset_cancellation_state(
@@ -638,6 +1054,7 @@ class AnthropicAgent(AgentRuntime):
         """Start a fresh cooperative-cancellation scope for a new turn."""
         self._cancellation_event = cancellation_event or asyncio.Event()
         self._abort_completion = asyncio.Event()
+        self._abort_pending = None
 
     def _configure_compaction_controller(self) -> None:
         """Compose or clear the inline compaction controller from config state."""
@@ -924,6 +1341,14 @@ class AnthropicAgent(AgentRuntime):
         if not self._initialized:
             await self.initialize()
 
+        if self.has_pending_finalization:
+            await self._recover_pending_finalization()
+
+        if self.defer_sandbox_initialization:
+            # Direct run() and actor-driven turns share the readiness contract.
+            self._sandbox_preparation_pending = True
+            self._sandbox_preparation_error = None
+
         # §5 boundary discipline: a surface change queued while the previous
         # run was active applies HERE — the turn boundary — so this turn's
         # schemas and change notice are consistent.
@@ -946,23 +1371,61 @@ class AnthropicAgent(AgentRuntime):
 
         self.initialize_run(prompt, run_id=pending_run_id)
 
-        self._runtime_contributions = await self._build_runtime_contributions(prompt)
-        self._apply_turn_start_contributions(turn_start_outcome)
-        self._runtime_target_msg_id = prompt.id
+        # The run exists from here on, so a failure before the loop (an
+        # externalized prompt's sandbox write, a contribution, the
+        # run_started emit) closes it as errored too. One the loop met is
+        # closed there already, and the row is saved once.
+        try:
+            self._runtime_contributions = await self._build_runtime_contributions(prompt)
+            self._apply_turn_start_contributions(turn_start_outcome)
+            self._runtime_target_msg_id = prompt.id
 
-        if self._context_externalizer is not None:
-            context_prompt = await self._context_externalizer.externalize_prompt(prompt)
-        else:
-            context_prompt = prompt
+            if (self._sandbox_preparation_pending and self._context_externalizer is not None
+                    and self.provider.token_estimator.estimate_message(prompt)
+                    > self._context_externalizer.config.max_prompt_tokens):
+                await self.prepare_sandbox(trigger="context_externalization")
+            if self._context_externalizer is not None:
+                context_prompt = await self._context_externalizer.externalize_prompt(prompt)
+            else:
+                context_prompt = prompt
 
-        self._append_message_variants(context_prompt, prompt)
+            self._append_message_variants(context_prompt, prompt)
 
-        sink = self._active_sink()
-        if sink is not None:
-            self._emit_run_started(prompt, sink)
+            sink = self._active_sink()
+            if sink is not None:
+                self._emit_run_started(prompt, sink)
 
-        # Agent Loop
-        return await self._resume_loop(sink)
+            # Agent Loop
+            return await self._resume_loop(sink)
+        except _Recompact:
+            raise
+        except Exception as exc:
+            await self._mark_conversation_errored(exc)
+            raise
+
+    async def _coordinated_resume(self, resume):
+        """The runtime's continuation of a re-armed pause, with the errored
+        run's bookkeeping around it.
+
+        The reply resolved the pause, so a run an error closed while the
+        pause was still on record is opened again first
+        (:meth:`_reopen_errored_run`, fail-soft), before the ``cold_resume``
+        warm whose span it keeps.
+
+        The loop closes a run it fails in itself; this covers what runs
+        before the loop does: the warm and, in :meth:`_resume_rearmed`, the
+        reply's reconcile, splice and checkpoint. A run the loop already
+        closed is left as it is, so the row is saved once. The error is
+        re-raised unchanged, for ``_guard_continuation`` to report.
+        """
+        trace_safe("errored_run.reopen", self._reopen_errored_run)
+        try:
+            return await super()._coordinated_resume(resume)
+        except _Recompact:
+            raise
+        except Exception as exc:
+            await self._mark_conversation_errored(exc)
+            raise
 
     async def _resume_rearmed(self) -> "AgentResult | None":
         """Re-enter a cold-rehydrated turn after rehydrate-then-resolve.
@@ -983,12 +1446,32 @@ class AnthropicAgent(AgentRuntime):
         pending = self.agent_config.pending_relay if self.agent_config else None
         self._reset_cancellation_state(None)
 
-        # Per-run tracking state for the resumed run.
+        # Per-run tracking state for the resumed run. The pre-pause leg's
+        # steps died with the old process, but its FACTS survive on the pause
+        # record (leak-2 fix): restore them instead of zeroing, so the run's
+        # single settlement at finalize/abort bills both legs and the
+        # conversation row covers the whole run (incl. sub-agent folds).
+        from agent_base.core.cost import TurnSettlement
+
         self._run_id = (pending.run_id if pending else None) or str(uuid.uuid4())
         self._run_logs = []
-        self._run_cumulative_usage = Usage()
-        self._cumulative_cost = CostBreakdown()
+        self._run_cumulative_usage = (
+            Usage.from_dict(pending.pre_pause_run_usage)
+            if pending is not None and pending.pre_pause_run_usage
+            else Usage()
+        )
+        self._cumulative_cost = (
+            CostBreakdown.from_dict(pending.pre_pause_run_cost)
+            if pending is not None and pending.pre_pause_run_cost
+            else CostBreakdown()
+        )
         self._turn_steps = []
+        self._settled_upto = 0  # watermark moves with _turn_steps, always
+        self._restored_settlement = (
+            TurnSettlement.from_dict(pending.pre_pause_settlement)
+            if pending is not None and pending.pre_pause_settlement
+            else None
+        )
 
         from agent_base.await_table import get_await_table
         from agent_base.core.runtime import _AwaitCancelled
@@ -998,15 +1481,32 @@ class AnthropicAgent(AgentRuntime):
             results = await self._race_join_against_cancel(join)
         except _AwaitCancelled:
             await self._repair_self_chain()
+            # Bill the restored pre-pause leg of a cold-rearmed turn that was
+            # aborted before resuming (leak-1/leak-2 fix). _turn_steps is empty
+            # here, so only the restored settlement can carry spend.
+            await self._settle_and_emit_delta()
             return self._build_aborted_result()
         finally:
             table.pop(join.cid)
+        # The kick (_kick_rearmed_resume) normally closed the pause's relay
+        # span, reloaded with the run; this closes it only if that was lost.
+        trace_safe("resume_rearmed.span", self._stamp_relay_resumed, join.cid)
 
         results = await self._reconcile_relay_reply(
             join.cid, join.tool_use_ids, results
         )
         await self._splice_relay_results(join.cid, results, self._emit_ctx())
-        await self.checkpoint()
+        await self._checkpoint_at_resume()
+
+        # A cold resume never runs initialize_run, and the stored llm_config
+        # loads as the empty base class (no effort, server tools, betas or
+        # max_tokens). Land this process's live config and tool surface — MCP
+        # tools included, registered at load — so the resumed request is the
+        # one a warm resume sends (same cached prefix, same behaviour).
+        self.agent_config.llm_config = self.config
+        if self.tool_registry:
+            self.agent_config.tool_schemas = self.tool_registry.get_schemas()
+            self.agent_config.tool_names = [s.name for s in self.agent_config.tool_schemas]
 
         # Resume the agent loop.
         return await self._resume_loop(self._active_sink())
@@ -1024,7 +1524,8 @@ class AnthropicAgent(AgentRuntime):
         replacement for the deleted ``on_relay_result``) fires per incoming
         ToolResult as a pre-splice transform; ``pending_relay.completed_results``
         + the (possibly transformed) reply land as ONE user message;
-        ``pending_relay`` clears on success.
+        ``pending_relay`` clears on success. The pause's relay span gets its
+        ``spliced_at``.
         """
         del ctx
         pending = self.agent_config.pending_relay
@@ -1067,8 +1568,20 @@ class AnthropicAgent(AgentRuntime):
             context_message = combined_message
 
         self._append_message_variants(context_message, combined_message)
+        trace_safe("relay_splice.span", self._stamp_relay_spliced, cid or pending.cid)
 
         self.agent_config.pending_relay = None
+
+    def _stamp_relay_spliced(self, cid: str | None) -> None:
+        """Stamp ``spliced_at`` on the relay span of the pause on ``cid``
+        (already ``resumed``: the splice follows the wake)."""
+        if cid is None:
+            return
+        stamp_span(
+            self._find_trace_span("relay", cid=cid),
+            spliced_at=utc_now_iso(),
+            outcome=RELAY_RESUMED,
+        )
 
     def _tool_ctx_factory(self):
         """Build a per-call ``ToolContext`` factory for the current run.
@@ -1088,6 +1601,25 @@ class AnthropicAgent(AgentRuntime):
         run_id = self._run_id or ""
         store = self._once_store
 
+        # The sandbox owns where overflow files belong: a layout that moves tool
+        # results has to move emit_capped with it, or the reference the model is
+        # handed points at a path that does not exist.
+        from agent_base.tools.context import (
+            TOOL_RESULTS_DIR,
+            pick_result_loader,
+            pick_result_reader,
+        )
+
+        tool_results_dir = getattr(self._sandbox, "tool_results_dir", None) or TOOL_RESULTS_DIR
+
+        # And the roster owns which tool can READ one (and LOAD a saved JSON
+        # result as data). Resolved per run rather than at construction: a
+        # profile switch recomposes the registry, and a notice naming a tool the
+        # active profile does not carry is worse than one naming no tool at all.
+        registered = getattr(self.tool_registry, "_tools", None) or {}
+        result_reader_tool = pick_result_reader(registered)
+        result_loader_tool = pick_result_loader(registered)
+
         def factory(tc):
             ctx = ToolContext(
                 run_id=run_id,
@@ -1095,6 +1627,9 @@ class AnthropicAgent(AgentRuntime):
                 sandbox=self._sandbox,
                 principal=self.principal,
                 media=self.media_backend,
+                tool_results_dir=tool_results_dir,
+                result_reader_tool=result_reader_tool,
+                result_loader_tool=result_loader_tool,
                 _once_store=store,
             )
             ctx.emit = self._hook_emit
@@ -1103,6 +1638,8 @@ class AnthropicAgent(AgentRuntime):
                 return await self.call_frontend_tool(name, input, ctx=ctx)
 
             ctx.call_frontend_tool = _call_frontend
+            # WT-4: user-facing display line — live TextDelta + replay log entry.
+            ctx.emit_text = self._emit_display_text
             return ctx
 
         return factory
@@ -1136,6 +1673,22 @@ class AnthropicAgent(AgentRuntime):
 
     # ── the loop (written ONCE against the Provider protocol — §2.2) ───────
 
+    def _record_provider_response(self, turn: ProviderTurn) -> None:
+        response_message = turn.message
+        self.agent_config.current_step += 1
+        self._accumulate_usage(response_message.usage)
+        self._turn_steps.append(response_message)
+
+        self.agent_config.context_messages.append(response_message)
+        self._append_message_to_logs(
+            response_message,
+            timing=getattr(turn, "timing", None),
+            cost_usd=trace_safe(
+                "resume_loop.cost_usd", self._step_cost_usd, response_message
+            ),
+            step=self.agent_config.current_step,
+        )
+
     async def _resume_loop(self, sink: "DeltaSink | None" = None) -> AgentResult:
         # Initialize cancellation primitives.
         if self._cancellation_event is None:
@@ -1153,6 +1706,9 @@ class AnthropicAgent(AgentRuntime):
         response_message: Message | None = None
         try:
             while self.agent_config.current_step < self.max_steps:
+                if getattr(self, "_sandbox_resume_warm_pending", False):
+                    self._sandbox_resume_warm_pending = False
+                    await self._warm_sandbox("deferred_resume")
                 self._phase = AgentPhase.STREAMING
 
                 # --- Proactive compaction check (before/after_compact fire,
@@ -1174,6 +1730,11 @@ class AnthropicAgent(AgentRuntime):
 
                 # --- The ONE provider invocation (runtime seam, §2.2) ---
                 try:
+                    # Repair the chain first, so the request sent is the
+                    # repaired one (_provider_turn repairs again: a no-op).
+                    self.agent_config.context_messages[:] = self.provider.sanitize_chain(
+                        self.agent_config.context_messages
+                    )
                     render_view = self._build_render_view(self.agent_config.context_messages)
                     turn: ProviderTurn = await self._provider_turn(
                         render_view=render_view, sink=sink
@@ -1205,14 +1766,33 @@ class AnthropicAgent(AgentRuntime):
 
                 response_message = turn.message
 
-                self.agent_config.current_step += 1
-                self._accumulate_usage(response_message.usage)
-                self._turn_steps.append(response_message)
+                self._record_provider_response(turn)
 
-                self.agent_config.context_messages.append(response_message)
-                self._append_message_to_logs(response_message)
-
+                if self._sandbox_preparation_error is not None:
+                    error, self._sandbox_preparation_error = self._sandbox_preparation_error, None
+                    raise error
                 stop_reason = response_message.stop_reason
+                # A safety decline arrives as a normal response (HTTP 200):
+                # before any output (empty) or mid-stream (partial). Handled
+                # before anything reads the content — a partial tool_use must
+                # never run.
+                if stop_reason == "refusal":
+                    return await self._finalize_refusal(response_message, sink)
+                # The API can close a response with "end_turn" while it still
+                # carries tool_use blocks (seen with claude-sonnet-5). Ending
+                # there orphans the calls — the parked card never gets an
+                # await_input and the chat's next request is rejected — so a
+                # local tool call always takes the tool path. A max_tokens cut
+                # stays terminal: its tool input may be truncated.
+                if stop_reason in ("end_turn", "stop", None) and (
+                    self.provider.extract_tool_calls(response_message)
+                ):
+                    logger.warning(
+                        "tool_use_with_end_turn_stop_reason",
+                        agent_uuid=self.agent_uuid,
+                        stop_reason=stop_reason,
+                    )
+                    stop_reason = "tool_use"
 
                 if stop_reason == "model_context_window_exceeded":
                     if self._compaction_controller is not None:
@@ -1294,10 +1874,7 @@ class AnthropicAgent(AgentRuntime):
 
                     # Check if we were cancelled during tool execution (Scenario B).
                     if self._cancellation_event.is_set():
-                        self._phase = AgentPhase.IDLE
-                        self._abort_completion.set()
-                        await self._persist_state()
-                        return self._build_aborted_result()
+                        return await self._finish_loop_abort("executing_tools")
 
                 elif stop_reason in ("end_turn", "stop", None):
                     should_retry = await self._run_end_turn_hook(
@@ -1324,9 +1901,28 @@ class AnthropicAgent(AgentRuntime):
             # Max steps reached.
             last_message = response_message or Message.assistant("Max steps reached.")
             return await self._finalize_run(last_message, "max_steps", sink)
+        except asyncio.CancelledError:
+            if self._cancellation_event.is_set():
+                # Hard-cancel backstop: the grace expired before the loop reached
+                # its own abort return. Repair and record the turn while this
+                # task still owns it, then let the cancellation propagate.
+                await self._salvage_hard_cancelled_abort()
+            raise
+        except _Recompact:
+            raise  # internal mechanics (I10), never a turn's failure
+        except Exception as exc:
+            # The turn failed: a provider error past its retries, a tool phase
+            # or hook that raised, a save that failed (finalize's included).
+            # Close its run as errored (that row alone, unbilled), then
+            # re-raise the same error, so the driver still reports it
+            # (ErrorReport + RunCompleted('error')).
+            await self._mark_conversation_errored(exc)
+            raise
         finally:
             self._phase = AgentPhase.IDLE
             self._run_task = None
+            if self._cancellation_event.is_set() and self._abort_completion is not None:
+                self._abort_completion.set()  # a loop that exits any other way never makes _do_abort wait
             # Always clear streaming context to avoid stale references.
             self._inject_stream_context_to_tools(None)
 
@@ -1434,6 +2030,9 @@ class AnthropicAgent(AgentRuntime):
         await self._persist_state()
         return True
 
+    def _tool_input_schema(self, tool_name: str) -> dict[str, Any] | None:
+        return self.tool_registry.input_schema_for(tool_name)
+
     async def _run_backend_before_tool(
         self, tool_calls: list[Any]
     ) -> tuple[list[Any], dict[str, ToolResultEnvelope]]:
@@ -1452,11 +2051,14 @@ class AnthropicAgent(AgentRuntime):
                 call=tc,
             )
             if outcome is not None and outcome.decision == "block":
-                denied[tc.tool_id] = ToolResultEnvelope.error(
+                denial = ToolResultEnvelope.error(
                     tc.name,
                     tc.tool_id,
                     outcome.reason or "Tool call blocked by before_tool.",
                 )
+                # It never runs: a zero-length window at the denial.
+                trace_safe("tool_hooks.denied_timing", stamp_never_ran, denial)
+                denied[tc.tool_id] = denial
                 continue
             allowed.append(dataclasses.replace(tc, input=prepared))
         return allowed, denied
@@ -1481,7 +2083,10 @@ class AnthropicAgent(AgentRuntime):
         """``on_tool_error`` (for RAISED executions, update→recovery envelope)
         then ``after_tool`` (PRE-splice, update→ToolResultEnvelope, R10) per
         backend result; ``ctx.switch_profile`` applies once post-composition
-        (O7 — last call in the chain wins)."""
+        (O7 — last call in the chain wins).
+
+        A replacement envelope still stands for the execution it replaces,
+        so it inherits any timing it lacks (``inherit_tool_timing``)."""
         inputs = {tc.tool_id: dict(tc.input or {}) for tc in tool_calls}
         pending_switches: list[str] = []
 
@@ -1500,6 +2105,10 @@ class AnthropicAgent(AgentRuntime):
                     error=raised,
                 )
                 if outcome is not None and outcome.update is not None:
+                    trace_safe(
+                        "tool_hooks.recovery_timing",
+                        inherit_tool_timing, outcome.update, envelope,
+                    )
                     envelope = outcome.update  # synthesized recovery (R10)
             outcome = await self._fire_hooks(
                 "after_tool",
@@ -1510,6 +2119,10 @@ class AnthropicAgent(AgentRuntime):
                 switch_profile=_record_switch,
             )
             if outcome is not None and outcome.update is not None:
+                trace_safe(
+                    "tool_hooks.after_tool_timing",
+                    inherit_tool_timing, outcome.update, envelope,
+                )
                 envelope = outcome.update  # pre-splice transform (R10)
             out.append(envelope)
         if pending_switches:
@@ -1644,7 +2257,16 @@ class AnthropicAgent(AgentRuntime):
         pending_calls = (*frontend_calls, *confirmation_calls)
         if not pending_calls:
             # Every pending call was denied — nothing to relay. Splice the
-            # backend + denied results and continue the loop.
+            # backend + denied results and continue the loop. The backend
+            # calls' timing still has nowhere else to go (they get no
+            # tool_result entry), so it rides a no-pause relay span.
+            if backend_results:
+                trace_safe(
+                    "relay_pause.no_pause",
+                    lambda: self._record_trace_span(no_pause_relay_span(
+                        self.agent_uuid, relay_backend_calls(backend_results)
+                    )),
+                )
             fold = Message.user([
                 block
                 for message in completed_result_messages
@@ -1678,17 +2300,36 @@ class AnthropicAgent(AgentRuntime):
         # parked in RAM; ``submit(ToolReply(cid))`` wakes it in place, and an
         # evicted session rehydrates through the SAME cid (§2.4).
         cid = self._allocate_relay_cid(classification)
+
+        # Leak-2 fix: stamp the pre-pause billing/analytics facts onto the
+        # pause record so a process death while parked cannot erase the leg's
+        # spend. Priced NOW (at generation, D13), billed at finalize — nothing
+        # is emitted here. _resume_rearmed restores these on the cold path; the
+        # hot path keeps _turn_steps in memory and never reads them back.
+        unbilled = (
+            self._price_unbilled_fact() if self._has_unsettled_spend() else None
+        )
         self.agent_config.pending_relay = PendingToolRelay(
             frontend_calls=frontend_calls,
             confirmation_calls=confirmation_calls,
             completed_results=completed_result_messages,
             run_id=self._run_id,
             cid=cid,
+            pre_pause_settlement=unbilled.to_dict() if unbilled else None,
+            pre_pause_run_usage=self._run_cumulative_usage.to_dict(),
+            pre_pause_run_cost=self._cumulative_cost.to_dict(),
+        )
+
+        # The pause's relay span rides the same write, so a cold resume and an
+        # abort find it by cid; await_external stamps it from here on.
+        trace_safe(
+            "relay_pause.span", self._record_relay_pause_span,
+            cid, reason, frontend_calls, confirmation_calls, backend_results,
         )
 
         # Suspend-side checkpoint: the pause must be on disk BEFORE parking so
         # an eviction/crash can cold-resume it (await_external checkpoints the
-        # resume side).
+        # resume side). The pre-pause facts ride the same single write.
         await self._persist_state()
 
         outcome = await self.await_external(
@@ -1705,9 +2346,42 @@ class AnthropicAgent(AgentRuntime):
             self._phase = AgentPhase.IDLE
             if self._abort_completion is not None:
                 self._abort_completion.set()
+            # Bill the pre-pause steps of the hot-aborted parked turn (leak-1
+            # fix). The persisted pre-pause record is never restored on this
+            # path (only _resume_rearmed loads it), so no double-bill.
+            await self._settle_and_emit_delta()
             return self._build_aborted_result()
         # Results spliced in; continue the loop for the next LLM call.
         return None
+
+    def _record_relay_pause_span(
+        self,
+        cid: str,
+        reason: str,
+        frontend_calls: list[Any],
+        confirmation_calls: list[Any],
+        backend_results: list[ToolResultEnvelope],
+    ) -> None:
+        """Keep the relay span of the pause on ``cid``: the calls it waits
+        on and the step's backend calls, whose results ride the splice and
+        so get no tool_result entry of their own (``RelaySpan``)."""
+        span = relay_span(
+            self.agent_uuid,
+            cid,
+            reason,
+            [
+                *(
+                    relay_call(tc.tool_id, tc.name, RELAY_QUEUE_FRONTEND)
+                    for tc in frontend_calls
+                ),
+                *(
+                    relay_call(tc.tool_id, tc.name, RELAY_QUEUE_CONFIRMATION)
+                    for tc in confirmation_calls
+                ),
+            ],
+        )
+        span["backend_calls"] = relay_backend_calls(backend_results)
+        self._record_trace_span(span)
 
     # ── Actor loop & checkpoint ────────────────────────────────────────────
 
@@ -1717,10 +2391,41 @@ class AnthropicAgent(AgentRuntime):
         return None
 
     async def checkpoint(self) -> None:
-        """Persist session state at a turn boundary (the write-through seam)."""
+        """Persist only while owning a current session state and sandbox lease."""
+        await self._coordinated_persist(capture=True)
+
+    async def _checkpoint_at_resume(self) -> None:
+        """The relay-resume persist: the config, row and run logs as
+        :meth:`checkpoint` saves them, but no fork/reset capture.
+
+        The splice has just cleared ``pending_relay``, so the capture's
+        mid-pause guard does not hold here, yet the turn is mid-flight: a
+        capture would re-encode the transcript, snapshot the sandbox and
+        write the turn's checkpoint row at every relay, for the turn end to
+        rewrite it.
+        """
+        await self._coordinated_persist(capture=False)
+
+    async def _coordinated_persist(self, *, capture: bool) -> None:
+        """:meth:`_persist_state` under the coordinator's persist guard."""
         if self.agent_config is None:
             return
-        await self._persist_state()
+        async def persist():
+            if self.has_pending_finalization:
+                from .finalization import _save
+                await _save(self, self.agent_config.extras["pending_finalization"])
+                return  # recovery owns the physical checkpoint, never idle/shutdown
+            await self._persist_state(capture=capture)
+
+        coordinator = self._sandbox_coordinator
+        if coordinator is None or getattr(self, "_parent_agent_uuid", None):
+            await persist()
+            return
+        async with coordinator.exclusive(self, reason="persist_idle"):
+            # Active turn owners may advance their own state. Idle residents
+            # must compare against storage before any persistence side effect.
+            await coordinator.validate_resident(self)
+            await persist()
 
     # ``_actor_loop`` is INHERITED from ``AgentRuntime`` (GF-P6G3 — the
     # single-writer drain was lifted into the base so ``ensure_actor()`` and
@@ -1785,12 +2490,21 @@ class AnthropicAgent(AgentRuntime):
         queued messages, run tool ``on_abort()`` hooks, then wait for the loop
         to self-clean with a bounded hard-cancel backstop (``ABORT_GRACE_MS``).
         """
+        if self.has_pending_finalization:
+            # The answer is already durable. Stop cancels generation, never
+            # interrupts required publication/checkpoint/settlement afterward.
+            return self._build_agent_result(self.conversation.final_response, self.conversation.stop_reason)
         if self._cancellation_event is None:
             self._cancellation_event = asyncio.Event()
 
         async with self._interrupt_lock():
             self._mailbox.freeze()
             try:
+                # Decide the terminal marker before interrupt() closes the awaits
+                # that tell a parked turn apart from a running one.
+                record = self._abort_pending = self._open_abort_record()
+                forced: asyncio.Task | None = None
+
                 # Retire the generation: cancels parked awaits and makes any
                 # racing ToolReply a no-op.
                 from agent_base.await_table import get_await_table
@@ -1824,15 +2538,33 @@ class AnthropicAgent(AgentRuntime):
                             )
                         except asyncio.TimeoutError:
                             task = self._run_task
-                            if task is not None and not task.done():
+                            if task is not None and not task.done() and task is not asyncio.current_task():
                                 task.cancel()
+                                forced = task
                 elif phase == AgentPhase.AWAITING_RELAY or (
                     self.agent_config is not None
                     and self.agent_config.pending_relay is not None
                 ):
                     # Paused (not running): fix up this agent's chain directly.
                     await self._abort_awaiting_relay()
+                # A re-armed join no continuation will take goes with the
+                # pause it belonged to (see _drop_idle_rearmed_join).
+                self._drop_idle_rearmed_join()
 
+                if forced is not None:
+                    # Let the cancelled loop salvage and record its turn (it owns
+                    # the sandbox turn lease) before this abort reports back.
+                    await asyncio.wait({forced}, timeout=self._abort_grace_seconds())
+                    if not forced.done():
+                        forced.add_done_callback(lambda _task: self._rekick_actor())
+
+                # Bill anything still unsettled (leak-1 fix). When the loop's
+                # own abort return already settled, the watermark makes this a
+                # genuine no-op — nothing is emitted, no dedupe reliance.
+                await self._settle_and_emit_delta()
+                if forced is not None:
+                    # The cancelled loop never reached its own marker.
+                    self._emit_abort_marker(record, phase.value, forced=True)
                 return self._build_aborted_result()
             finally:
                 self._mailbox.unfreeze()
@@ -1843,8 +2575,13 @@ class AnthropicAgent(AgentRuntime):
         cancellation_event: asyncio.Event | None = None,
     ) -> AgentResult:
         """Abort the current turn and redirect with a new instruction."""
-        # Step 1: Abort cleanly (produces valid chain)
-        await self._do_abort()
+        # Step 1: Abort cleanly (produces valid chain). The steered turn follows
+        # on the same stream, so the preemption marker is 'steered' (NV-4).
+        self._steer_preempting = True
+        try:
+            await self._do_abort()
+        finally:
+            self._steer_preempting = False
 
         # Step 2: Build a user message with the new instruction
         steer_message = Message.user(new_instruction)
@@ -1871,9 +2608,10 @@ class AnthropicAgent(AgentRuntime):
         patch = self.provider.plan_stream_abort(turn)
         self._append_messages_to_histories(patch.append_messages)
 
-        if sink is not None:
-            # NV-4: a forceful-steer preemption is NOT a terminal abort — the
-            # steered turn follows on the same stream, so the marker differs.
+        if self._abort_pending is None and sink is not None and not getattr(self, "_parent_agent_uuid", None):
+            # No Abort command decided the marker (a direct caller): NV-4 — a
+            # forceful-steer preemption is NOT a terminal abort, the steered
+            # turn follows on the same stream, so the marker differs.
             marker = (
                 "steered"
                 if getattr(self, "_steer_preempting", False)
@@ -1881,12 +2619,295 @@ class AnthropicAgent(AgentRuntime):
             )
             sink.emit_meta(Custom(name=marker, data={"phase": "streaming"}))
 
+        # Bill the aborted turn's completed steps (leak-1 fix). The cancelled
+        # PARTIAL is deliberately not billed: ``turn.was_cancelled`` returns
+        # before the ``current_step += 1`` / ``_turn_steps.append`` pair, so it
+        # never enters the billable list.
+        return await self._finish_loop_abort("streaming")
+
+    def _open_abort_record(self) -> SimpleNamespace:
+        """Decide this abort's terminal marker while the facts still hold.
+
+        Only a running root turn gets one: a sub-agent shares its root's
+        stream, and a parked turn's reader already closed at ``await_input``
+        — a marker there would end the NEXT request's stream at its first
+        frame. The name is fixed now because ``submit(Steer)`` clears
+        ``_steer_preempting`` as soon as ``_do_abort`` returns, and the
+        marker goes only to the reader attached now, never a newer one.
+        """
+        marker = None
+        if not getattr(self, "_parent_agent_uuid", None) and not self._turn_is_parked():
+            marker = "steered" if getattr(self, "_steer_preempting", False) else "aborted"
+        return SimpleNamespace(marker=marker, queue=self._stream_queue, done=False)
+
+    def _turn_is_parked(self) -> bool:
+        if self._phase == AgentPhase.AWAITING_RELAY:
+            return True
+        if self.agent_config is not None and self.agent_config.pending_relay is not None:
+            return True
+        try:
+            from agent_base.await_table import get_await_table
+            from agent_base.await_table.types import AwaitState
+
+            return any(r.state is AwaitState.OPEN for r in get_await_table().walk(self._root_session_id()))
+        except Exception:  # noqa: BLE001 — never block an abort on introspection
+            return False
+
+    def _emit_abort_marker(self, record: SimpleNamespace | None, phase: str, *, forced: bool = False) -> None:
+        """Emit the terminal ``Custom('aborted'|'steered')`` at most once, and
+        only to the reader that was attached when the abort began."""
+        if record is None or record.done or record.marker is None:
+            return
+        record.done = True
+        if self._stream_queue is None or self._stream_queue is not record.queue:
+            return
+        data: dict[str, Any] = {"phase": phase}
+        if forced:
+            data["forced"] = True
+        self._hook_emit(Custom(name=record.marker, data=data))
+
+    def _mark_conversation_aborted(self) -> None:
+        """Close this run's conversation record as aborted (mirrors _finalize_run).
+
+        A pause still open ends here too, never answered: its relay span
+        gets the ``aborted`` outcome (and no ``resumed_at``) before the
+        caller saves the row.
+        """
+        conversation = self.conversation
+        if conversation is None or conversation.completed_at is not None:
+            return
+        trace_safe(
+            "abort.relay_spans",
+            lambda: close_open_relays(conversation.conversation_log.spans, RELAY_ABORTED),
+        )
+        conversation.stop_reason = "aborted"
+        if self.agent_config is not None:
+            conversation.total_steps = self.agent_config.current_step
+            self.agent_config.conversation_log.mark_agent_completed(self.agent_uuid)
+        conversation.usage = self._run_cumulative_usage
+        conversation.cost = self._compute_cost()
+        conversation.completed_at = datetime.now(timezone.utc).isoformat()
+        conversation.conversation_log.mark_agent_completed(self.agent_uuid)
+
+    async def _mark_conversation_errored(self, error: Exception) -> None:
+        """Close this run's conversation record as errored and save that row
+        alone — the error path's counterpart of :meth:`_mark_conversation_aborted`.
+
+        The row gets ``stop_reason='error'``, ``completed_at`` (the error
+        stamp), ``total_steps``, the usage and cost the run had reached,
+        ``extras['error'] = {code, type}`` and a ``turn_error`` span, and a
+        pause still open on it ends with the ``error`` outcome. The error's
+        message is never kept: it may carry user data, and the stream's
+        ``ErrorReport`` already delivered it.
+
+        Nothing else the finalize and abort paths do happens here:
+        ``agent_config`` is not saved, no checkpoint is captured, and the
+        turn is not billed — nothing is settled or reported, and the run's
+        unbilled spend is written off, so no later settle point bills it
+        either (an eviction's abort, or the abort that repairs a pause the
+        error left behind).
+
+        The pause record is left alone. An error that struck while a pause
+        was still on record (after its reply but before the splice, or in a
+        cold continuation's warm) leaves ``pending_relay`` in place, as it
+        always has: the next abort repairs the chain and clears it, and
+        keeps this row's ``error`` (the abort's mark skips a closed row).
+        Where the error came after the reply was taken (a hot resume's
+        reconcile or splice, or a cold one's past its join), a reply
+        re-delivered for the pause re-arms it and resumes the run, which
+        :meth:`_reopen_errored_run` opens again. So does a failed
+        ``cold_resume`` warm: the continuation drops the join it never took
+        once this mark has read the pause record's totals
+        (``_rearmed_continuation``), so the re-delivered reply finds no
+        record and the session manager re-arms the pause.
+
+        The row is closed (and the spend written off) before it is saved,
+        and the save runs with the loop already idle and any abort waiting
+        on it released, as :meth:`_finish_loop_abort` does before its own
+        persist: an abort landing during a slow save must not hard-cancel it
+        and turn the error into an abort.
+
+        A no-op without an open run (see :meth:`_errored_mark_skips`): none
+        yet (the error came before ``initialize_run``), or one already closed
+        (an outer handler of the same error finds the row the loop closed,
+        so it is saved once). Fail-soft: it never masks the error, which the
+        caller re-raises. A failed close is a trace fault and logs once per
+        process; a failed save loses the row, so it logs every time
+        (``errored_run_save_failed``, with the agent and run ids).
+        """
+        conversation = trace_safe("errored_run", self._close_errored_run, error)
+        if conversation is None:
+            return
+        self._phase = AgentPhase.IDLE
+        if self._abort_completion is not None:
+            self._abort_completion.set()
+        try:
+            await self.conversation_adapter.save(conversation)
+        except Exception:
+            # A lost row, not a lost trace fact: logged every time, with the
+            # ids to find it by (trace_safe's warn-once is for span stamps).
+            try:
+                logger.warning(
+                    "errored_run_save_failed",
+                    agent_uuid=self.agent_uuid,
+                    run_id=conversation.run_id,
+                    exc_info=True,
+                )
+            except Exception:  # pragma: no cover - logging must not raise either
+                pass
+
+    def _close_errored_run(self, error: Exception) -> "Conversation | None":
+        """Close the run as errored in memory and write off its unbilled
+        spend; return the row to save, or ``None`` when there is none to
+        close. The body of :meth:`_mark_conversation_errored`, which runs it
+        fail-soft."""
+        conversation = self.conversation
+        if conversation is None or self._errored_mark_skips(conversation):
+            return None
+        steps = self.agent_config.current_step if self.agent_config is not None else 0
+        span = turn_error_span(self.agent_uuid, error, step=steps)
+        usage, cost = self._errored_run_totals()
+
+        def record_spans() -> None:
+            spans = conversation.conversation_log.spans
+            close_open_relays(spans, RELAY_ERROR)
+            conversation.conversation_log.add_span(span)
+
+        trace_safe("errored_run.spans", record_spans)
+        conversation.stop_reason = "error"
+        conversation.total_steps = steps
+        conversation.usage = usage
+        conversation.cost = cost
+        conversation.completed_at = span["at"]
+        conversation.extras["error"] = {
+            "code": span["error_code"],
+            "type": span["error_type"],
+        }
+        conversation.conversation_log.mark_agent_completed(self.agent_uuid)
+        # Written off, never settled: the watermark passes the unbilled steps
+        # and a restored pre-pause leg is dropped, with nothing emitted.
+        self._settled_upto = len(self._turn_steps)
+        self._restored_settlement = None
+        return conversation
+
+    def _errored_mark_skips(self, conversation: "Conversation") -> bool:
+        """Whether the errored mark leaves ``conversation`` as it is.
+
+        An open run (no ``completed_at``) is closed. So is one finalize
+        stamped closed but failed to record: ``completed_at`` is set before
+        the save, so a failed config or row save leaves the row unsaved and
+        the turn unbilled, while the stream reports the error. (The run-log
+        save and the checkpoint capture that follow are fail-soft, see
+        :meth:`_persist_state`: a turn whose config and row are saved is
+        complete.) Left alone: a row
+        already closed as ``error`` (the same error, met again by an outer
+        handler) or ``aborted`` (the abort closed it, and bills it), and a
+        run finalize settled, which was billed as completed whatever failed
+        after.
+        """
+        if self.has_pending_finalization:
+            return True  # preserve the durable answer and recoverable failure
+        if conversation.completed_at is None:
+            return False
+        if conversation.stop_reason in ("error", "aborted"):
+            return True
+        finalized = getattr(self, "_finalized_run_id", None)
+        return finalized is not None and finalized == conversation.run_id
+
+    def _errored_run_totals(self) -> tuple[Usage, CostBreakdown | None]:
+        """The usage and cost the errored run had reached: its accumulators,
+        except for a cold continuation that failed before
+        :meth:`_resume_rearmed` restored them (in its ``cold_resume`` warm),
+        whose totals are still only on the pause record."""
+        pending = self.agent_config.pending_relay if self.agent_config is not None else None
+        if (
+            self._rearmed_join is None
+            or pending is None
+            or pending.run_id != self.conversation.run_id
+        ):
+            return self._run_cumulative_usage, self._compute_cost()
+        usage = (
+            Usage.from_dict(pending.pre_pause_run_usage)
+            if pending.pre_pause_run_usage
+            else Usage()
+        )
+        cost = (
+            CostBreakdown.from_dict(pending.pre_pause_run_cost)
+            if pending.pre_pause_run_cost
+            else None
+        )
+        if cost is not None and cost.total_cost == 0.0 and not cost.breakdown:
+            cost = None  # as _compute_cost reports a run with no spend
+        return usage, cost
+
+    def _reopen_errored_run(self) -> None:
+        """Open the run an error closed again, now that its pause is answered.
+
+        An error can close a run whose pause is still on record (see
+        :meth:`_mark_conversation_errored`), and when it came after the reply
+        was taken, a reply re-delivered for that pause resumes it. The run
+        goes on, so it is open again: it keeps its
+        spans, and closes through finalize or an abort like any run. Its
+        ``extras['error']`` and ``turn_error`` span stay, the record of the
+        leg that failed. Any other run is left as it is.
+        """
+        conversation = self.conversation
+        pending = self.agent_config.pending_relay if self.agent_config is not None else None
+        if (
+            conversation is None
+            or conversation.stop_reason != "error"
+            or pending is None
+            or pending.run_id != conversation.run_id
+        ):
+            return
+        conversation.stop_reason = None
+        conversation.completed_at = None
+        conversation.conversation_log.ensure_agent(agent_uuid=self.agent_uuid, completed=False)
+
+    async def _finish_loop_abort(self, phase: str) -> AgentResult:
+        """The loop's own abort return (streaming or tool execution).
+
+        ``_abort_completion`` is set before the slow persist so a checkpoint
+        never trips the hard-cancel grace; the marker goes out last so no
+        ``UsageReport`` is stranded behind a consumer's stop frame.
+        """
         self._phase = AgentPhase.IDLE
         if self._abort_completion:
             self._abort_completion.set()
-
+        self._mark_conversation_aborted()
         await self._persist_state()
+        await self._settle_and_emit_delta()
+        self._emit_abort_marker(self._abort_pending, phase)
         return self._build_aborted_result()
+
+    async def _salvage_hard_cancelled_abort(self) -> None:
+        """Best-effort repair of a turn hard-cancelled by ``_do_abort``: stop
+        remote commands, repair the chain, record and bill the turn. Each step
+        is independent; the cancellation still propagates afterwards."""
+        async def attempt(step: str, fn: Callable[[], Any]) -> None:
+            try:
+                outcome = fn()
+                if inspect.isawaitable(outcome):
+                    await outcome
+            except Exception:  # noqa: BLE001
+                logger.warning("abort_salvage_step_failed", step=step, agent_uuid=self.agent_uuid, exc_info=True)
+
+        kill = getattr(self._sandbox, "terminate_running_commands", None)
+        if callable(kill):
+            await attempt("terminate_running_commands", kill)
+        config = self.agent_config
+        if config is not None:
+            await attempt("sanitize_chain", lambda: config.context_messages.__setitem__(
+                slice(None), self.provider.sanitize_chain(config.context_messages)))
+        self._phase = AgentPhase.IDLE
+        await attempt("mark_aborted", self._mark_conversation_aborted)
+        await attempt("persist_state", self._persist_state)
+        await attempt("settle", self._settle_and_emit_delta)
+
+    def _rekick_actor(self) -> None:
+        """A steer queued behind a slow hard-cancelled turn runs once it exits."""
+        if len(self._mailbox) != 0 and self._can_auto_drive():
+            self.ensure_actor()
 
     async def _abort_awaiting_relay(self) -> None:
         """Handle abort during relay wait (Scenario C).
@@ -1915,6 +2936,7 @@ class AnthropicAgent(AgentRuntime):
         # Clear pending relay state
         self.agent_config.pending_relay = None
         self._phase = AgentPhase.IDLE
+        self._mark_conversation_aborted()
 
         await self._persist_state()
 
@@ -1932,14 +2954,26 @@ class AnthropicAgent(AgentRuntime):
 
         final_text = self._extract_text(last_msg)
 
+        log = copy.deepcopy(
+            self.agent_config.conversation_log
+            if self.agent_config is not None
+            else ConversationLog()
+        )
+        # agent_config's log never holds spans; carry the run's, so an aborted
+        # sub-agent's cancelled call still reaches its parent's
+        # nested_conversation (as a completed one's does via _finalize_run).
+        if self.conversation is not None:
+            spans = trace_safe(
+                "aborted_result.spans",
+                copy.deepcopy, self.conversation.conversation_log.spans,
+            )
+            if spans:
+                log.spans = spans
+
         return AgentResult(
             final_message=last_msg,
             final_answer=final_text,
-            conversation_log=copy.deepcopy(
-                self.agent_config.conversation_log
-                if self.agent_config is not None
-                else ConversationLog()
-            ),
+            conversation_log=log,
             stop_reason="aborted",
             model=self.agent_config.model if self.agent_config else (self.model or ""),
             provider=self.provider.name,
@@ -1982,7 +3016,16 @@ class AnthropicAgent(AgentRuntime):
         *,
         agent_uuid: str | None = None,
         timestamp: str | None = None,
+        timing: dict[str, Any] | None = None,
+        cost_usd: float | None = None,
+        step: int | None = None,
     ) -> None:
+        """Append ``message`` to BOTH conversation logs.
+
+        ``timing``, ``cost_usd`` and ``step`` are the model-call trace fields
+        (see ``MessageLogEntry``); only the loop's provider-call append passes
+        them.
+        """
         effective_agent_uuid = agent_uuid or self.agent_uuid
         if not effective_agent_uuid:
             return
@@ -1998,13 +3041,160 @@ class AnthropicAgent(AgentRuntime):
             message,
             agent_uuid=effective_agent_uuid,
             timestamp=timestamp,
+            timing=timing,
+            cost_usd=cost_usd,
+            step=step,
         )
         if self.conversation:
             self.conversation.conversation_log.add_message(
                 message,
                 agent_uuid=effective_agent_uuid,
                 timestamp=timestamp,
+                timing=timing,
+                cost_usd=cost_usd,
+                step=step,
             )
+
+    def _step_cost_usd(self, message: Message) -> float | None:
+        """This provider call's cost, priced the way settlement prices a step
+        (``pricing_policy.cost_for_step`` on the message's own model).
+
+        None, not 0, when there is no usage or the model is unpriced, so a
+        reader can tell unknown from free. Informational only: the
+        conversation's ``cost`` (``_cumulative_cost``) and billing are
+        computed as before.
+        """
+        if message.usage is None:
+            return None
+        step_cost = self.pricing_policy.cost_for_step(
+            message.usage, message.model or self.agent_config.model
+        )
+        return step_cost.total_cost if step_cost is not None else None
+
+    def _record_trace_span(self, span: dict[str, Any]) -> None:
+        """Keep a trace span with the run in flight (``AgentRuntime`` seam).
+
+        This agent's spans go to ``self.conversation.conversation_log`` only
+        — the per-run record — never to ``agent_config.conversation_log``.
+        (A sub-agent's reach its parent inside the ``AgentResult`` log that
+        becomes its ``nested_conversation``; see ``_build_aborted_result``.)
+        With no open run there is nothing to attach it to, and the span is
+        dropped.
+        """
+        conversation = self.conversation
+        if conversation is None or conversation.completed_at is not None:
+            return
+        conversation.conversation_log.add_span(span)
+
+    def _find_trace_span(self, kind: str, **match: Any) -> dict[str, Any] | None:
+        """Find a span this agent kept on its open run's conversation log
+        (``AgentRuntime`` seam) — the one reloaded with the run too, on a
+        cold resume. A closed run is not searched, as it is not written."""
+        conversation = self.conversation
+        if conversation is None or conversation.completed_at is not None:
+            return None
+        return conversation.conversation_log.find_span(kind, **match)
+
+    def _record_span(self, span: dict[str, Any], *, route: str) -> None:
+        """Keep a trace span by ``route`` (``core.trace_spans`` routes).
+
+        ``current`` keeps it with the run in flight, as
+        :meth:`_record_trace_span` does (dropped with no open run).
+        ``buffer`` holds it on ``_pending_spans`` for the next
+        :meth:`initialize_run` to adopt — a span that precedes the run it
+        belongs to. The buffer keeps the newest ``PENDING_SPANS_CAP``.
+        Callers go through ``trace_safe``; an override may keep spans
+        elsewhere.
+        """
+        if route == SPAN_ROUTE_BUFFER:
+            self._pending_spans.append(span)
+        else:
+            self._record_trace_span(span)
+
+    def _take_pending_spans(self, started_at: str) -> list[dict[str, Any]]:
+        """Empty the buffer, returning the spans the run that starts at
+        ``started_at`` adopts, in the order they were recorded. One that
+        ended more than ``PENDING_SPAN_MAX_AGE`` earlier was for a request
+        that never became a turn, and is dropped."""
+        pending = self._pending_spans
+        if not pending:
+            return []
+        spans = list(pending)
+        pending.clear()
+        cutoff = datetime.fromisoformat(started_at) - PENDING_SPAN_MAX_AGE
+        return [span for span in spans if not ended_before(span, cutoff)]
+
+    def _adopt_pending_spans(self, started_at: str) -> None:
+        """Move the buffered spans onto the run that starts at ``started_at``
+        (its conversation log); see :meth:`_take_pending_spans`."""
+        log = self.conversation.conversation_log
+        for span in self._take_pending_spans(started_at):
+            log.add_span(span)
+
+    def _build_run_conversation(self, **fields: Any) -> Conversation:
+        """A scripted turn's row (``record_turn``), carrying the warms that
+        were buffered for it.
+
+        A scripted turn is a run too, and the warms that preceded it (the
+        session load of a slash command's request, say) were buffered for
+        it: it adopts them as :meth:`initialize_run` does, so the next model
+        run cannot take them. The base row shares one log across this
+        runtime's scripted turns, so a row that adopts spans gets its own
+        copy of it; with nothing to adopt the row is unchanged.
+        """
+        conversation = super()._build_run_conversation(**fields)
+        trace_safe(
+            "record_turn.adopt_spans",
+            self._adopt_pending_spans_onto_row, conversation, fields["started_at"],
+        )
+        return conversation
+
+    def _adopt_pending_spans_onto_row(self, conversation: Conversation, started_at: str) -> None:
+        spans = self._take_pending_spans(started_at)
+        if not spans:
+            return
+        shared = conversation.conversation_log
+        log = dataclasses.replace(
+            shared,
+            agents=dict(shared.agents),
+            entries=list(shared.entries),
+            spans=list(shared.spans),
+        )
+        for span in spans:
+            log.add_span(span)
+        conversation.conversation_log = log
+
+    # ─── WT-4: display-only emission (live stream + replay log, NEVER context) ───
+
+    def _emit_display_text(self, text: str) -> None:
+        """Stream a user-facing text line AND persist it for history replay.
+
+        WT-4 wired implementation behind ``ctx.emit_text``. Live half: one
+        ``TextDelta`` (``is_final=True``, line rendered as its own paragraph)
+        on the run's stream — lossy-by-policy when no consumer is attached,
+        like every content delta. Replay half: a DISPLAY-ONLY assistant
+        message entry appended to both conversation logs. Neither half
+        touches ``context_messages`` — the model never sees these lines.
+        """
+        if not text:
+            return
+        delta_text = text if text.endswith("\n") else text + "\n\n"
+        self._emit_stream_item(
+            TextDelta(agent_uuid=self.agent_uuid or "", text=delta_text, is_final=True)
+        )
+        self._append_display_message_to_logs(text)
+
+    def _append_display_message_to_logs(self, text: str) -> None:
+        """Append a display-only assistant message to BOTH conversation logs.
+
+        WT-4 replay carrier: deliberately NEVER paired with a
+        ``context_messages`` append (unlike every `_append_message_to_logs`
+        loop call site) — the entry exists only so history replay shows the
+        same conversation the live stream did.
+        """
+        self._append_message_to_logs(
+            Message(role=Role.ASSISTANT, content=[TextContent(text=text)])
+        )
 
     def _append_tool_results_to_logs(
         self,
@@ -2012,6 +3202,12 @@ class AnthropicAgent(AgentRuntime):
         *,
         agent_uuid: str | None = None,
     ) -> None:
+        """Append each result to BOTH conversation logs.
+
+        Every entry of the batch shares one timestamp, taken after the whole
+        batch (hooks included) finished. Each projection also gets its call's
+        own timing and executor (``_stamp_tool_projection``).
+        """
         effective_agent_uuid = agent_uuid or self.agent_uuid
         if not effective_agent_uuid:
             return
@@ -2021,6 +3217,9 @@ class AnthropicAgent(AgentRuntime):
 
         for envelope in envelopes:
             projection = envelope.for_conversation_log()
+            trace_safe(
+                "tool_log.timing", self._stamp_tool_projection, projection, envelope
+            )
             child_agent_uuid = projection.details.get("child_agent_uuid")
             if projection.nested_conversation is not None and child_agent_uuid:
                 child_descriptor = projection.nested_conversation.agents.get(child_agent_uuid)
@@ -2055,6 +3254,36 @@ class AnthropicAgent(AgentRuntime):
                     agent_uuid=effective_agent_uuid,
                     timestamp=timestamp,
                 )
+
+    def _stamp_tool_projection(
+        self, projection: ToolLogProjection, envelope: ToolResultEnvelope
+    ) -> None:
+        """Copy ``envelope``'s trace timing onto its log ``projection``, plus
+        where the tool ran (``ToolRegistry.executor_for``; ``backend`` for an
+        unknown name).
+
+        Done here, where every tool result enters the log, so no
+        ``for_conversation_log`` needs to know about it — a custom one
+        (``SubAgentEnvelope``, a consumer's envelope) included. A value the
+        projection already carries wins.
+        """
+        for name in ("started_at", "ended_at", "queued_ms"):
+            if getattr(projection, name) is None:
+                setattr(projection, name, getattr(envelope, name, None))
+        if projection.executor is None:
+            projection.executor = self.tool_registry.executor_for(envelope.tool_name)
+
+    def log_tool_result_for_replay(self, envelope: ToolResultEnvelope) -> None:
+        """WT-4 public seam: persist a tool result to the conversation logs.
+
+        For workflow-tool bodies that execute tools or sub-agents
+        PROGRAMMATICALLY — outside the model loop, where the loop's own log
+        append never fires. A sub-agent envelope's ``nested_conversation``
+        rides along intact (its ``tool_name`` drives how replay renders it).
+        Touches ONLY the conversation logs (both), never ``context_messages``;
+        persistence rides the normal checkpoint + Conversation-row path.
+        """
+        self._append_tool_results_to_logs([envelope])
 
     def _append_rollback_to_logs(
         self,
@@ -2611,7 +3840,8 @@ class AnthropicAgent(AgentRuntime):
 
         pricing-cost.md §6 / B6 / G0: no ``cost`` / ``cumulative_usage`` —
         per-turn cost rides ``result.settlement`` (attached in
-        ``_finalize_run``); cumulative rides the ``SettlementAggregator``.
+        ``_finalize_run``); cumulative is a consumer-side fold over the
+        per-turn ``UsageReport`` stream.
         """
         final_answer = self._extract_text(response_message)
 
@@ -2640,9 +3870,10 @@ class AnthropicAgent(AgentRuntime):
 
     # ── settlement (pricing-cost.md §2.4 — the unified chokepoint) ─────────
 
-    def _settle_turn(self) -> "TurnSettlement":
-        """Compute the once-per-turn billing fact via pricing's
-        ``settle_turn(ctx, steps)`` (O14d module function)."""
+    def _settle_turn(self, steps: "list[Message] | None" = None) -> "TurnSettlement":
+        """Compute a billing fact for ``steps`` via pricing's
+        ``settle_turn(ctx, steps)`` (O14d module function). Defaults to the
+        whole ``_turn_steps`` list for back-compat callers."""
         ctx = SimpleNamespace(
             pricing_policy=self.pricing_policy,
             model=self.agent_config.model,
@@ -2651,11 +3882,79 @@ class AnthropicAgent(AgentRuntime):
             parent_agent_id=self._parent_agent_uuid,
             principal=self.principal,
         )
-        return settle_turn(ctx, list(self._turn_steps))
+        return settle_turn(ctx, list(self._turn_steps) if steps is None else steps)
+
+    def _settle_delta(self) -> "TurnSettlement":
+        """Settle the UNBILLED tail of ``_turn_steps`` and advance the watermark.
+
+        Two invariants live here (the leak fixes rest on both):
+
+        - **Bill the delta**: only ``_turn_steps[_settled_upto:]`` is priced, so a
+          step is billed at most once no matter how many settle points fire in one
+          run (abort→finalize double-fires, abort-then-steer, pause legs).
+        - **Stamp identity monotonically**: the emitted ``step_count`` is
+          ``agent_config.current_step`` (run-monotonic, persisted, NEVER reset by
+          ``_resume_rearmed``), not ``len(steps)`` (leg-local). Consumers key
+          idempotent billing on (run_id, agent_id, step_count); a leg-local count
+          made two legs of equal length indistinguishable, and the second charge
+          was silently deduplicated away. A billable leg always advances
+          ``current_step``, so billable ⇒ distinct identity. (Field shapes are
+          unchanged — consumers need no change.)
+
+        Folds ``_restored_settlement`` (a pre-pause leg restored on cold resume)
+        into the result exactly once, then clears it.
+        """
+        settlement = self._price_unbilled_fact()
+        self._settled_upto = len(self._turn_steps)
+        self._restored_settlement = None  # fold-once
+        return settlement
+
+    def _price_unbilled_fact(self) -> "TurnSettlement":
+        """Price the run's unbilled spend — the ``_turn_steps`` tail plus any
+        restored pre-pause leg — WITHOUT mutating the watermark or the restored
+        record. Priced at generation (D13): the rate applied is the rate in
+        effect now; the fact never gets re-priced later. Shared by
+        ``_settle_delta`` (which commits the mutation) and the pre-park persist
+        (which must leave in-memory state untouched)."""
+        delta = self._turn_steps[self._settled_upto:]
+        settlement = self._settle_turn(delta)
+
+        restored = self._restored_settlement
+        if restored is not None:
+            settlement = dataclasses.replace(
+                settlement,
+                turn_usage=restored.turn_usage + settlement.turn_usage,
+                turn_cost=restored.turn_cost + settlement.turn_cost,
+            )
+
+        return dataclasses.replace(
+            settlement,
+            step_count=self.agent_config.current_step if self.agent_config else settlement.step_count,
+        )
+
+    def _has_unsettled_spend(self) -> bool:
+        """True when a settle point would bill something new."""
+        return (
+            self._settled_upto < len(self._turn_steps)
+            or self._restored_settlement is not None
+        )
+
+    async def _settle_and_emit_delta(self) -> "TurnSettlement | None":
+        """Settle + emit the unbilled delta; a no-op (``None``, nothing emitted)
+        when there is nothing new to bill. The abort-path settle: a double-fire
+        (loop return + ``_do_abort``) emits exactly once because the first call
+        advances the watermark and the second sees an empty delta."""
+        if not self._has_unsettled_spend():
+            return None
+        settlement = self._settle_delta()
+        await self._emit_usage_report(settlement)
+        return settlement
 
     async def _emit_usage_report(self, settlement: "TurnSettlement") -> None:
-        """Auto-emit ``UsageReport.of(settlement)`` exactly once per turn and
-        deliver to ``on_usage_report`` subscribers (Fork G / B1)."""
+        """Emit ``UsageReport.of(settlement)`` and deliver to ``on_usage_report``
+        subscribers (Fork G / B1). At most once per BILLABLE LEG of a run: the
+        happy path emits once at finalize; an aborted run emits once at the abort
+        (previously: never — aborted turns billed $0)."""
         self._hook_emit(UsageReport.of(settlement))
         for callback in list(self._usage_report_callbacks):
             try:
@@ -2669,7 +3968,67 @@ class AnthropicAgent(AgentRuntime):
                     exc_info=True,
                 )
 
+    @property
+    def has_pending_finalization(self) -> bool:
+        return bool(self.agent_config and self.agent_config.extras.get("pending_finalization"))
+
+    async def _recover_pending_finalization(self) -> None:
+        if self.has_pending_finalization:
+            from .finalization import recover_finalization
+            await recover_finalization(self)
+
+    async def _checkpoint_after_turn(self) -> None:
+        if self.early_answer_completion and self.conversation and self.conversation.extras.get("answer_lifecycle", {}).get("status") == "complete":
+            return  # finalization already captured the required turn boundary
+        await self.checkpoint()
+
     # ── finalize (written ONCE — kills B2's duplication) ───────────────────
+
+    #: What the user reads when the model declines a request.
+    REFUSAL_NOTICE = (
+        "I can't help with this request as written, so I stopped here. "
+        "Rephrasing it, or asking for a narrower part of it, may work."
+    )
+
+    async def _finalize_refusal(
+        self,
+        response_message: Message,
+        sink: "DeltaSink | None" = None,
+    ) -> AgentResult:
+        """End the turn on a safety decline (``stop_reason == "refusal"``).
+
+        The declined message — empty, or a partial the API says to discard —
+        leaves the model context: replayed, an empty assistant message fails
+        every later request and a partial one reads as a finished answer.
+        Dropping the trailing message edits no earlier turn, so preserved
+        thinking is unaffected. It stays in the conversation log, and its
+        usage is already counted (a mid-stream partial is billed).
+
+        The user gets a display-only notice (never in the model context); the
+        turn closes with ``stop_reason="refusal"`` and a ``Custom("refusal")``
+        frame carrying the policy category from ``stop_details``. The same
+        prompt is not retried: the next message starts a normal turn.
+        """
+        context = self.agent_config.context_messages
+        if context and context[-1] is response_message:
+            context.pop()
+        details = response_message.usage_kwargs.get("stop_details")
+        category = details.get("category") if isinstance(details, dict) else None
+        partial = bool(response_message.content)
+        logger.warning(
+            "model_refusal",
+            agent_uuid=self.agent_uuid,
+            category=category,
+            partial=partial,
+        )
+        if sink is not None:
+            sink.emit_meta(
+                Custom(name="refusal", data={"category": category, "partial": partial})
+            )
+        self._emit_display_text(self.REFUSAL_NOTICE)
+        return await self._finalize_run(
+            Message.assistant(self.REFUSAL_NOTICE), "refusal", sink
+        )
 
     async def _finalize_run(
         self,
@@ -2680,6 +4039,17 @@ class AnthropicAgent(AgentRuntime):
         """Finalize the run: flush exports, update memory, settle the turn,
         persist, emit — provider-touch-points reduced to ``provider.name`` /
         ``provider.collect_api_files`` (providers.md §2.2)."""
+        if self._cancellation_event is not None and self._cancellation_event.is_set():
+            # An abort raced the turn's own completion: RunCompleted is the
+            # terminal frame, so _do_abort must neither wait out its grace
+            # (and hard-cancel mid-persist) nor add a marker after it.
+            if self._abort_completion is not None:
+                self._abort_completion.set()
+            if self._abort_pending is not None:
+                self._abort_pending.done = True
+        if self.early_answer_completion and not self._parent_agent_uuid:
+            from .finalization import finalize_answer
+            return await finalize_answer(self, response_message, stop_reason)
         now = datetime.now(timezone.utc).isoformat()
 
         # Flush exported files from sandbox (returns [] if no sandbox attached).
@@ -2740,8 +4110,12 @@ class AnthropicAgent(AgentRuntime):
         # Validate tool_use / tool_result pairing before persisting.
         self._warn_orphaned_tool_uses(self.agent_config.context_messages)
 
-        # Persist state.
-        await self._persist_state()
+        # Persist state. A failed config or row save raises (the turn is not
+        # recorded: it closes as errored); a failed run-log save or checkpoint
+        # capture after them does not undo the saved turn, and is reported.
+        persist_failures = await self._persist_state()
+        if persist_failures:
+            await self._report_persist_failures(persist_failures)
 
         # Auto-generate title on first run if not already set.
         if (
@@ -2766,9 +4140,14 @@ class AnthropicAgent(AgentRuntime):
         result = self._build_agent_result(response_message, stop_reason)
         result.generated_files = generated_files
 
-        # ── Settlement chokepoint (pricing-cost.md §2.4 / B6): settle once,
-        # attach to the result, auto-emit UsageReport exactly once per turn.
-        settlement = self._settle_turn()
+        # ── Settlement chokepoint (pricing-cost.md §2.4 / B6): settle the
+        # unbilled delta, attach to the result, emit UsageReport. Uses
+        # _settle_delta (NOT _settle_and_emit_delta) deliberately: finalize must
+        # produce a settlement even when the delta is empty — RunCompleted below
+        # reads settlement.turn_cost. A prior abort/steer settle point may have
+        # already billed part of this run; the watermark makes this the tail only.
+        settlement = self._settle_delta()
+        self._finalized_run_id = self._run_id
         result.settlement = settlement
         await self._emit_usage_report(settlement)
 
@@ -2822,8 +4201,23 @@ class AnthropicAgent(AgentRuntime):
             return text
         return text[: max_len - 1].rstrip() + "…"
 
-    async def _persist_state(self) -> None:
-        """Save agent config, conversation, and run logs to storage adapters."""
+    async def _persist_state(self, *, capture: bool = True) -> list[dict[str, str]]:
+        """Save agent config, conversation, and run logs to storage adapters,
+        then capture the turn-boundary checkpoint (unless ``capture`` is
+        False: the relay-resume persist, :meth:`_checkpoint_at_resume`).
+
+        The config and conversation-row saves are the record: once they are
+        in, the agent continues from this state, so a failure in either
+        propagates. The run-log save and the checkpoint capture that follow
+        are bookkeeping. A failure in them must not undo what is already
+        saved (finalize would otherwise close a turn whose context and final
+        row are stored as errored, unbilled). Each is logged
+        (``persist_bookkeeping_failed``) and returned as ``{step, type}``,
+        never raised; finalize reports what it gets back
+        (:meth:`_report_persist_failures`), and every other caller only logs.
+        A missing checkpoint degrades fork/reset and sandbox rehydration to
+        the previous one; the next persist at a turn boundary captures again.
+        """
         now = datetime.now(timezone.utc).isoformat()
         self.agent_config.updated_at = now
         if self._sandbox is not None:
@@ -2840,23 +4234,88 @@ class AnthropicAgent(AgentRuntime):
             ],
         )
 
-        await self.config_adapter.save(self.agent_config)
+        from agent_base.observability import span as observation_span
+
+        with observation_span("persistence.config"):
+            await self.config_adapter.save(self.agent_config)
 
         if self.conversation:
-            await self.conversation_adapter.save(self.conversation)
+            with observation_span("persistence.conversation"):
+                await self.conversation_adapter.save(self.conversation)
 
+        failures: list[dict[str, str]] = []
         if self._run_logs:
-            await self.run_adapter.save_logs(
-                self.agent_config.agent_uuid,
-                self._run_id,
-                self._run_logs,
-            )
+            try:
+                with observation_span("persistence.run_logs"):
+                    await self.run_adapter.save_logs(
+                        self.agent_config.agent_uuid,
+                        self._run_id,
+                        self._run_logs,
+                    )
+            except Exception as exc:
+                failures.append(self._persist_bookkeeping_failed("run_logs", exc))
 
         # fork-reset: capture a checkpoint at the quiescent turn boundary. Auto
         # (SPEC §D1) — a single insertion point that covers both the live
         # finalize path and the scripted record_turn path (both reach here via
         # _persist_state). No-op unless a CheckpointAdapter is wired.
-        await self.capture_checkpoint(created_at=now)
+        if not capture:
+            return failures
+        try:
+            await self.capture_checkpoint(created_at=now)
+        except Exception as exc:
+            failures.append(self._persist_bookkeeping_failed("checkpoint", exc))
+        return failures
+
+    def _persist_bookkeeping_failed(self, step: str, exc: Exception) -> dict[str, str]:
+        """Log one failed bookkeeping write of :meth:`_persist_state` and
+        return its ``{step, type}`` (never the message, which may carry user
+        data). A cancellation a coordinator converted into an exception
+        while this task was being cancelled is re-raised, never absorbed."""
+        task = asyncio.current_task()
+        cancelling = getattr(task, "cancelling", None)
+        if callable(cancelling) and cancelling():
+            raise exc
+        logger.warning(
+            "persist_bookkeeping_failed",
+            step=step,
+            agent_uuid=self.agent_uuid,
+            run_id=self._run_id,
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        return {"step": step, "type": type(exc).__name__}
+
+    async def _report_persist_failures(self, failures: list[dict[str, str]]) -> None:
+        """finalize's report of bookkeeping its persist could not do.
+
+        The turn is complete, since its context and row are saved, so it is
+        still settled and ends with ``RunCompleted`` as usual. The row
+        records the gap in ``extras['persist_errors']`` (re-saved, fail-soft)
+        and a non-fatal ``ErrorReport`` goes out, as a failed memory update
+        does.
+        """
+        conversation = self.conversation
+        if conversation is not None:
+            conversation.extras["persist_errors"] = [dict(f) for f in failures]
+            try:
+                await self.conversation_adapter.save(conversation)
+            except Exception:
+                logger.warning(
+                    "persist_errors_save_failed",
+                    agent_uuid=self.agent_uuid,
+                    run_id=self._run_id,
+                    exc_info=True,
+                )
+        labels = {"run_logs": "run-log save", "checkpoint": "checkpoint capture"}
+        failed = " and ".join(labels.get(f["step"], f["step"]) for f in failures)
+        self._hook_emit(
+            ErrorReport(
+                code=ErrorCode.INTERNAL,
+                message=f"the turn was saved, but its {failed} failed",
+                retriable=False,
+            )
+        )
 
     async def _capture_turn_checkpoint(self, conversation: "Conversation") -> None:
         """Scripted-turn capture seam (overrides the base no-op): record_turn
@@ -2869,6 +4328,7 @@ class AnthropicAgent(AgentRuntime):
         conversation: "Conversation | None" = None,
         *,
         created_at: str | None = None,
+        config_snapshot: "AgentConfig | None" = None,
     ) -> "CheckpointRef | None":
         """Capture a fork/reset checkpoint of the agent + sandbox at this turn
         boundary. Core runtime behavior gated on adapter presence (SPEC §D1) —
@@ -2879,10 +4339,17 @@ class AnthropicAgent(AgentRuntime):
         boundary). ``conversation`` defaults to the live ``self.conversation``;
         the scripted path passes its per-run row explicitly.
         """
+        # Abort persistence can run before first readiness. Snapshotting that
+        # unready handle would implicitly create a VM outside the coordinator
+        # and publish a turn checkpoint before the pristine seq-0 barrier.
+        if self._sandbox_preparation_pending and config_snapshot is None:
+            return None
         conversation = conversation if conversation is not None else self.conversation
         if self.checkpoint_adapter is None or conversation is None:
             return None
-        # Turn-boundary only: never checkpoint a paused (mid-relay) state.
+        # Turn-boundary only: never checkpoint a paused (mid-relay) state. The
+        # resume side's persist, after the splice cleared the pause, never
+        # calls here (``_checkpoint_at_resume``).
         if self.agent_config.pending_relay is not None:
             return None
 
@@ -2890,23 +4357,36 @@ class AnthropicAgent(AgentRuntime):
         from agent_base.sandbox.snapshot import SandboxSnapshotter
         from agent_base.storage.checkpoint_codec import split_config_for_checkpoint
 
-        tenant = self.agent_config.owner_tenant or "_"
-        base, transcript_segments, log_segments, codec_v = (
-            await split_config_for_checkpoint(
-                self.agent_config, self._blobs, tenant=tenant
+        checkpoint_config = config_snapshot if config_snapshot is not None else self.agent_config
+        tenant = checkpoint_config.owner_tenant or "_"
+        from agent_base.observability import span as observation_span
+
+        with observation_span("checkpoint.transcript_codec"):
+            base, transcript_segments, log_segments, codec_v = (
+                await split_config_for_checkpoint(
+                    checkpoint_config, self._blobs, tenant=tenant
+                )
             )
-        )
 
         manifest_ref: str | None = None
         fidelity = "full"
         if self._sandbox is not None:
             if self._blobs is not None:
-                _manifest, manifest_ref = await SandboxSnapshotter(
-                    self._sandbox, self._blobs, tenant=tenant
-                ).capture()
-                fidelity = _manifest.fidelity
+                from agent_base.sandbox.coordinator import uncoordinated
+                guard = (
+                    self._sandbox_coordinator.exclusive(self, reason="checkpoint")
+                    if self._sandbox_coordinator is not None else uncoordinated()
+                )
+                async with guard:
+                    with observation_span("checkpoint.sandbox_snapshot"):
+                        _manifest, manifest_ref = await SandboxSnapshotter(
+                            self._sandbox, self._blobs, tenant=tenant, policy=self._snapshot_policy
+                        ).capture(previous=self._last_sandbox_manifest)
+                    self._last_sandbox_manifest = _manifest
+                    if self._sandbox_coordinator is not None:
+                        await self._sandbox_coordinator.record_checkpoint(self, _manifest)
+                    fidelity = _manifest.fidelity
             else:
-                # a workspace exists but no CAS is wired to snapshot it
                 fidelity = "degraded"
 
         checkpoint = Checkpoint(
@@ -2924,7 +4404,8 @@ class AnthropicAgent(AgentRuntime):
             sandbox_manifest_ref=manifest_ref,
             consumer_payload={},   # the consumer reconciles its refs post-hoc
         )
-        await self.checkpoint_adapter.save(checkpoint)
+        with observation_span("checkpoint.row_save"):
+            await self.checkpoint_adapter.save(checkpoint)
         return checkpoint.ref
 
     def _warn_orphaned_tool_uses(self, messages: list[Message]) -> None:

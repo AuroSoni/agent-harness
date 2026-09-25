@@ -275,6 +275,33 @@ class RedisConfigAdapter(AgentConfigAdapter):
     # Implement the remaining abstract methods
 ```
 
+### E2B sandbox (remote micro-VM)
+
+Install the extra (`pip install "agent-base[e2b]"` / `uv sync --extra e2b`) and set
+`E2B_API_KEY`. One VM per session; the remote id is persisted in the session's
+`sandbox_config` so a restarted process reconnects instead of recreating.
+
+```python
+from agent_base.sandbox import E2BSandbox
+
+sandbox = E2BSandbox(
+    sandbox_id=agent_uuid,
+    template="my-template:prod",          # name:tag or name:<build_id>
+    timeout_s=900,                        # idle timeout -> pause (auto-resume on next call)
+    metadata={"agent_uuid": agent_uuid},  # discovery key when the persisted id is lost
+    python_path="/home/user/.venv/bin/python",
+)
+await sandbox.setup()                     # connect / discover / create
+result = await sandbox.run_streaming("python3 build.py", on_output=print, timeout=120, cwd="workspace")
+await sandbox.pause()                     # free while idle; the next call resumes it
+```
+
+- A vanished remote (killed, expired) raises `SandboxGone` from `setup()`; the runtime forgets the id,
+  provisions a fresh VM and rehydrates it from the latest checkpoint (`SandboxSnapshotter`).
+- Checkpoints hash files inside the VM (`sandbox.manifest()`, blake3) and transfer only the delta.
+- The sandbox env is an allow-list (`host_env_allowlist`); secret-looking host keys are rejected.
+- Tests use `set_default_transport_factory(...)` with a fake transport — no API key needed.
+
 ### Custom sandbox
 
 ```python

@@ -308,6 +308,30 @@ class ConversationLog:
         return _stamp({"entries": [e.to_dict() for e in self.entries], ...})
 ```
 
+**AMENDED (2026-09-22, TR-1/TR-2 — trace capture).** Additive, so the log's `_v`
+is unchanged and old readers ignore the new keys:
+
+- `ConversationLog.spans: list[dict]` — timed facts that are not entries
+  (`sandbox_ready`, `relay`, `model_call_failed`, `model_call_cancelled`,
+  `turn_error`), shaped by the `TypedDict`s in `agent_base/core/trace_spans.py`
+  and stamped with their own axis, `v = SPAN_SCHEMA_VERSION`. `to_dict` omits the
+  key while the list is empty (a log without spans serialises exactly as before);
+  `from_dict` defaults it to `[]`; `add_span` / `find_span` write and read them.
+  An agent records its own spans on its run's `Conversation` log only; a
+  sub-agent's ride its tool result's `nested_conversation`. Replay reads
+  `entries` only. Spans hold codes, class names, ids and instants, never an
+  exception's message.
+- `MessageLogEntry.timing` (`{started_at, ended_at, flight_ms}`), `cost_usd` (the
+  call priced on its own model; `None` when unpriced) and `step` (1-based), set on
+  each provider call's entry; `ToolLogProjection.started_at` / `ended_at` /
+  `queued_ms` / `executor`. Each is omitted from `to_dict` while `None`.
+- `stop_reason='error'` rows (TR-5) carry `extras['error'] = {code, type}` and a
+  `turn_error` span; a completed turn whose run-log save or checkpoint capture
+  failed after its row was saved carries `extras['persist_errors'] = [{step,
+  type}]` (TR-7). See pricing-cost.md §2.7 for what either bills.
+
+Specs: `tests/interface/core/test_core_conversation_log_trace.py`.
+
 ### 2.2 Per-turn cost/usage settlement — `TurnSettlement` (the typed half of X9)
 
 A single typed object delivered **once per turn**, identical whether the turn

@@ -498,6 +498,13 @@ from agent_base.core.serializable import CORE_SCHEMA_VERSION   # entry-layout ve
 TERMINAL_STOP_REASONS: frozenset[str] = frozenset({"end_turn", "stop_sequence"})
 def is_error_stop(stop_reason: str | None) -> bool:
     return stop_reason is not None and stop_reason not in TERMINAL_STOP_REASONS
+# AMENDED (2026-09-22, TR-5): errored turns now PERSIST a conversation_history row with
+# stop_reason='error' (completed_at, usage/cost reached, extras['error'] = {code, type}).
+# The taxonomy is unchanged — is_error_stop('error') was already True; only the rows are
+# new (before TR-5 an errored turn left no row, or an open one from its last pause).
+# A row may also carry extras['persist_errors'] = [{step, type}]: a COMPLETED turn whose
+# run-log save or checkpoint capture failed after the row was saved (TR-7); it is not an
+# error stop.
 
 @dataclass(frozen=True)
 class RunFilter:

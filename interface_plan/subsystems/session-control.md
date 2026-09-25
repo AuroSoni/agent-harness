@@ -920,3 +920,26 @@ deleted in the same cut. (5) Drop `extras["owner"]` entirely (no fallback) in th
      INTO `resolve` — one method, not two), so it is enforced regardless of caller; the table holds
      the owner via `AwaitRecord.principal` (gaining a `principal: SessionPrincipal|None` field,
      stamped at `open`). Mismatch there → `REJECTED` (per Q3/R9).
+
+
+### Stale resident invalidation and relay recovery (2026-09-09)
+
+`SessionManager.invalidate_idle(root_session_id, principal=None)` discards an
+idle resident under the normal principal policy without abort, session-end
+hooks, checkpoint, or sandbox pause. It refuses active/queued work. Resource
+cleanup stays under the build lock. This supports consumer detection of stale
+cached session state without overwriting another process's newer transcript.
+Consumers may implement `SandboxCoordinator.validate_resident(agent)` before
+admission and under turn ownership; the harness does not silently reload state.
+
+Hot relay replies are accepted without request-owned warmup. The owning root
+actor warms after the join resolves and before checkpoint/provider continuation.
+Scripted child-task replies defer warmup to the actor's next provider boundary;
+they do not borrow the actor's shared activity lease.
+
+Coordinated `checkpoint()` and normal eviction take exclusive activity and
+validate the resident before persistence. Eviction validates before abort and
+session-end hooks as well, since those hooks may write state. The coordinator
+recognizes an active turn owner whose state legitimately advances and otherwise
+rejects obsolete residents. Rejection preserves the resident for explicit safe
+invalidation; no stale state is written as a side effect of eviction.

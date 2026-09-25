@@ -75,6 +75,12 @@ switch capability). Library auto-emits minimal `ProfileChanged(profile)`.
 - **I9 — `SettlementAggregator`** (homed `agent_base/core/cost.py`, owned by pricing-cost):
   subscribes to the UsageReport channel; `total_by_root(root_session_id) -> CostBreakdown`,
   `totals_by_agent(root) -> dict[agent_id, CostBreakdown]`. Per-turn settlements stay un-rolled.
+  **RESOLVED 2026-07-14: DELETED, not wired.** It was never instantiated in production; its only
+  input seam (`subscribe(channel) → channel.add_subscriber`) had zero production implementors
+  (the real path is the per-agent `on_usage_report` callback list); and its state was two plain
+  in-memory dicts with no serialization — wiring it for billing would have regressed durability
+  from per-turn-durable consumer ledger rows to RAM-until-read. Cumulative-by-root roll-ups
+  belong to the consumer's durable cost-event ledger (spec tracked in the consumer repo).
 - **I10 — overflow routes through `before_compact(trigger="overflow")`.** block = veto (turn fails
   upward with typed error); proceed = compact+retry as today. `_Recompact` stays internal mechanics;
   the trigger value is the seam. `CompactionContext.trigger` gains `"overflow"`.
@@ -787,3 +793,337 @@ Verified against MCP spec rev 2025-11-25 (a backend-resident host is the spec's 
   `ctx.call_frontend_tools([...])` mapping to ONE multi-element `await_external` pause (the
   add-in renders multiple `ask_user_question`s in one pause as a carousel) — mechanical when
   needed, doubles spec surface today.
+
+## Workflow-tool emit/replay seam (WT-4) — 2026-07-13
+
+- **WT-4a — `ctx.emit_text(text)`**: a tool body streams a short USER-FACING display line. The
+  wired implementation (bound per-instance in `_tool_ctx_factory`, same pattern as WT-1) does two
+  things: (a) LIVE — emits one `TextDelta(agent_uuid, text, is_final=True)` via
+  `_emit_stream_item` (line framed as its own paragraph; bare content deltas need no block
+  framing; lossy-by-policy when detached, R21); (b) REPLAY — appends a DISPLAY-ONLY assistant
+  `MessageLogEntry` (content `[TextContent]`) to BOTH conversation logs via
+  `_append_display_message_to_logs`. **Neither half touches `context_messages`** — the model
+  never sees display lines and they cost no context tokens. Empty text is a no-op. Bare
+  `ToolContext.emit_text` keeps the LOUD unwired raise (B8 pattern). Carrier rationale: the
+  consumer replay adapter renders `message` entries identically to live text but DROPS
+  `stream_event` entries (except its own todo kind) — so the display-only message entry is the
+  only zero-consumer-change carrier that survives history replay.
+- **WT-4b — `log_tool_result_for_replay(envelope)`**: public provider-level seam for workflow
+  bodies that execute tools/sub-agents PROGRAMMATICALLY (outside the model loop, where the loop's
+  own log append never fires). Delegates to `_append_tool_results_to_logs([envelope])` — the
+  envelope's `for_conversation_log()` projection (incl. a sub-agent's `nested_conversation` +
+  child descriptor registration) persists to both logs and rides the normal checkpoint +
+  Conversation-row dual persistence. Never touches `context_messages`. Caller contract: a
+  programmatically-built `SubAgentEnvelope` must carry `tool_name="spawn_subagent"` (+ a caller
+  tool_id) — the consumer replay adapter keys nested-rail reconstruction on that name.
+
+## Anthropic adaptive extended thinking (AT-1) — 2026-07-18
+
+- **`AnthropicLLMConfig` gains `effort`** (`Optional[str]`, one of
+  `low|medium|high|xhigh|max`) for ADAPTIVE extended thinking — required by the latest
+  models (`claude-opus-4-8`, `claude-sonnet-5`), which reject the legacy
+  `thinking.type=enabled` budget shape with a hard 400. `_build_request_params` picks the
+  paradigm by WHICH FIELD the caller set — never by model name, keeping the provider
+  model-agnostic: `effort` → `thinking={"type":"adaptive"}` + `output_config={"effort": …}`
+  (adaptive has NO token budget; the server sizes reasoning from the level);
+  `thinking_tokens` → legacy `{"type":"enabled","budget_tokens":N}`; both set → `effort`
+  wins; neither → no thinking. Additive + optional, so old persisted `llm_config` rows
+  deserialize to `effort=None` — llm_config is JSON inside `AgentConfig`, not a column, so
+  **no `LIBRARY_SCHEMA_VERSION` bump**. The request-thinking shape is provider-internal (no
+  red-suite pins it), so this ships a UNIT test
+  (`tests/unit/providers/anthropic/test_request_params.py`), not an interface spec.
+  Live-verified against `claude-opus-4-8` + `claude-sonnet-5`. FOLLOW-UP (not done): the
+  `effort` path needs an `anthropic` SDK carrying `output_config`/adaptive (nova pins
+  `0.111.0`); the pyproject floor `anthropic>=0.75.0` is deliberately NOT bumped here, so a
+  consumer resolving an older SDK + using `effort` fails at call time. (Sits beside the
+  still-open gap that `claude-opus-4-8` has no pricing-CSV row — cost settles silently wrong.)
+
+## SSE keepalive/heartbeat (SSE-1) — 2026-07-19
+
+Found live: nova's add-in aborts any SSE stream silent >120 s (`SSE_IDLE_TIMEOUT_MS`
+watchdog → `ERR_ABORTED`), so multi-minute silent backend tools (a ~4-min Datalab parse,
+an ~8-min builder generation) killed the client mid-turn while the resident actor ran on
+— the pane read dead for a turn that later completed.
+
+- **SSE-1a — idle keepalive frame in `sse_response`**: gains
+  `keepalive_interval: float | None = KEEPALIVE_INTERVAL_S` (15.0; `None` disables;
+  `<= 0` → `ValueError`). While the item iterator yields nothing for ≥ interval, the
+  transport emits `codec.render(codec.encode_keepalive())` (`data: [PING]`), repeatedly
+  until the next item. A `data:` frame, NOT an SSE `:` comment — comments never fire
+  client `onmessage`, so app-level idle watchdogs would still abort. Contract preserved:
+  real frames never delayed/reordered (a ping only lands BETWEEN items, never inside one
+  item's chunk batch); exactly one `[DONE]`, always last, never a ping after it; a source
+  exception still propagates with no trailing `[DONE]`; body cancellation still delivers
+  `CancelledError` into the source iterator at its await point (disconnect ≠ cancel
+  detach handlers unchanged), the pending read is never cancelled on a keepalive tick,
+  and the next read dispatches only after the current item's frames are yielded (zero
+  lookahead — no consume-and-drop on disconnect). Specs:
+  tests/interface/streaming_and_meta/test_streaming_and_meta_transport.py.
+- **SSE-1b — codec-owned ping**: `KEEPALIVE = WireFrame(data="[PING]")` beside
+  `TERMINAL` in wire.py + CONCRETE `WireCodec.encode_keepalive()` returning it (every
+  codec inherits the one ping; `render` stays the single place the transport string
+  lives — D4 upheld; exported from `agent_base.streaming`). Specs:
+  tests/interface/streaming_and_meta/test_streaming_and_meta_wire_codec.py.
+- **SSE-1c — decoder drops `[PING]`**: explicit skip beside the `[DONE]` branch in
+  `SseStreamDecoder.feed_line` (was already tolerated via the foreign-frame
+  `JSONDecodeError` path; now paired explicitly, X5). Specs:
+  tests/interface/streaming_and_meta/test_streaming_and_meta_decoder.py.
+
+
+## E2B reliability coordination and bounded capture (2026-09-09)
+
+Consumers may inject `SandboxCoordinator` and `SnapshotPolicy` into AnthropicAgent.
+The coordinator owns authoritative readiness, activity/turn/exclusive guards,
+checkpoint warnings, idle pause, and deletion. Actor and cold-resume turns hold
+the turn guard through parked frontend awaits and completion independently of SSE.
+Snapshot capture runs under the exclusive guard; coordinators release shared
+activity before requesting exclusivity and fence connection-loss epochs.
+Provisioning/restore/binding failures propagate and cannot imply readiness.
+
+`SnapshotPolicy` keeps library defaults (50 MiB/file, 500 MiB total); consumers
+can supply other bounds. Oversized/unreadable entries are recorded as skipped,
+never silently full; degraded restoration restores stored entries and propagates
+storage/corruption errors. Operational `_nova_lifecycle` data is excluded from
+checkpoint config copies.
+
+`run_streaming(..., capture_limit_bytes=2_000_000)` retains bounded UTF-8 tails
+and reports cumulative `stdout_bytes`, `stderr_bytes`, and `output_truncated` on
+ExecResult. The SDK's per-command accumulators are bounded by an isolated adapter,
+with no global patch. E2B `exec` uses an 8 MiB budget and raises
+SandboxOutputLimitExceeded on overflow so JSON helpers cannot consume truncation.
+E2B configuration round-trips layout, internet access, lifecycle, discovery and
+concurrency policies. Upload retries rewind their stream; uncertain create or
+command-start responses are not blindly replayed.
+
+
+### Stale resident invalidation and relay recovery (2026-09-09)
+
+`SessionManager.invalidate_idle(root_session_id, principal=None)` discards an
+idle resident under the normal principal policy without abort, session-end
+hooks, checkpoint, or sandbox pause. It refuses active/queued work. Resource
+cleanup stays under the build lock. This supports consumer detection of stale
+cached session state without overwriting another process's newer transcript.
+Consumers may implement `SandboxCoordinator.validate_resident(agent)` before
+admission and under turn ownership; the harness does not silently reload state.
+
+Hot relay replies are accepted without request-owned warmup. The owning root
+actor warms after the join resolves and before checkpoint/provider continuation.
+Scripted child-task replies defer warmup to the actor's next provider boundary;
+they do not borrow the actor's shared activity lease.
+
+Coordinated `checkpoint()` and normal eviction take exclusive activity and
+validate the resident before persistence. Eviction validates before abort and
+session-end hooks as well, since those hooks may write state. The coordinator
+recognizes an active turn owner whose state legitimately advances and otherwise
+rejects obsolete residents. Rejection preserves the resident for explicit safe
+invalidation; no stale state is written as a side effect of eviction.
+
+
+### Pending reset through transcript persistence (2026-09-09)
+
+Remote coordinated reset has two phases: `reset(context, manifest_ref=...)`
+restores and validates a pending replacement; `finish_reset(context)` commits
+readiness only after config save and conversation/checkpoint archival succeed.
+The latter receives the restored config and candidate sandbox. Any intervening
+error leaves the durable operation pending for an explicit retry. The finish
+hook is required only for coordinated remote reset; local reset is unchanged.
+
+
+### Upload consumer cancellation (2026-09-09)
+
+MediaBackend.user_upload cancels and drains its storage and sandbox tasks on any
+failure or cancellation before returning control. The tee cannot block cleanup
+on an EOF sentinel after the sandbox reader exits. The public signature and
+successful upload behavior remain unchanged.
+
+
+Public sandbox destruction uses the same injected coordinator as cold deletion.
+No resident handle is required: durable pending candidates must still be retired
+and their authoritative binding cleared under coordinator ownership.
+
+Cold reset supports an optional scoped config adapter `save_reset(config)`
+capability, with `save(config)` fallback. Only reset uses this replacement seam;
+fork and normal runtime saves retain their existing method.
+
+
+## Trace capture and errored turns (TR) — 2026-09-22
+
+Recorded for the trace commits (e681f8a..8b7607b) and their review fixes. The
+facts feed a consumer's trace explorer (Nova's admin); replay and the rest of
+the library read none of them.
+
+- **TR-1 — `ConversationLog.spans`.** A list of plain dicts, one per timed
+  fact that is not a conversation entry: `sandbox_ready`, `relay`,
+  `model_call_failed`, `model_call_cancelled`, `turn_error`. Their shapes are
+  the `TypedDict`s in `agent_base/core/trace_spans.py`, each stamped
+  `v = SPAN_SCHEMA_VERSION` (1). That is the span axis only: the log's `_v`
+  does not change. `to_dict` omits `spans` while empty, so a log without spans
+  serialises exactly as before, and `from_dict` defaults it to `[]`.
+  `add_span` / `find_span` write and read them. An agent records its own spans
+  on its run's `Conversation` log (the `conversation_history` row) alone; a
+  sub-agent's travel inside the `nested_conversation` of its tool result. Spans
+  carry codes, class names, ids and instants, never an exception's message.
+  Specs: tests/interface/core/test_core_conversation_log_trace.py.
+- **TR-2 — additive entry fields**, each omitted from `to_dict` while `None`:
+  `MessageLogEntry.timing` (`{started_at, ended_at, flight_ms}` of the provider
+  call, stamped by `AgentRuntime._provider_turn`), `cost_usd` (the call priced
+  by the settlement policy on the call's own model; `None` when unpriced) and
+  `step` (the run's 1-based `current_step`); `ToolLogProjection.started_at`,
+  `ended_at`, `queued_ms`, `executor`. `ToolResultEnvelope` gains
+  keyword-only `started_at`, `ended_at` and `queued_ms` beside `duration_ms`,
+  stamped by `ToolRegistry`; `TOOL_TIMING_FIELDS` / `inherit_tool_timing`
+  carry them onto an envelope a hook returns in place of the executed one.
+  Additive, so no `CORE_SCHEMA_VERSION` bump; JSON inside existing columns, so
+  no `LIBRARY_SCHEMA_VERSION` bump. Specs: as TR-1.
+- **TR-3 — `ProviderTurn.timing`** is an `InitVar` kept as a plain attribute,
+  not a field. O12(a) pins the provider-neutral field set, and timing is a
+  fact about the call, not part of the turn's value: equality and `repr`
+  ignore it, `dataclasses.replace` carries it. Providers never set it.
+- **TR-4 — sandbox readiness.** `ensure_sandbox_running(*, trigger=None)`: a
+  consumer may name its warm (`request`, `attachments`), else it is
+  `external`. The runtime names its own (`session_load`, `session_create`,
+  `turn_start`, `relay_resume`, `deferred_resume`, `cold_resume`) through the
+  `sandbox_warm_trigger` ContextVar, so an override that takes no arguments
+  keeps working. `agent_base.sandbox.coordinator` gains `readiness_sink` (a
+  ContextVar) and `report_readiness(**detail)`: a coordinator's `ensure_ready`
+  MAY report how the warm went, and the facts land on the `sandbox_ready`
+  span; outside a runtime-timed warm it is a no-op. The `SandboxCoordinator`
+  protocol is unchanged. `trace_entry(kind, request_id=None)` (`run` or
+  `tool_results`) names the request a warm serves; only span routing reads it.
+- **TR-5 — errored turns are persisted.** A turn that fails (a provider error
+  past its retries, a tool phase or hook that raises, a failure between
+  `initialize_run` and the loop, a continuation that cannot resume, a finalize
+  whose config or row save fails) saves its `conversation_history` row with
+  `stop_reason='error'`, `completed_at` at the error stamp, the steps, usage
+  and cost it reached, `extras['error'] = {code, type}` (the `ErrorCode` value
+  and the class name, never the message) and a `turn_error` span. Nothing else
+  of finalize happens (no `agent_config` save, no checkpoint), and the error
+  still propagates, so a driven turn still ends with `ErrorReport` +
+  `RunCompleted('error')`. `'error'` was already in `RunCompleted`'s
+  vocabulary (GF-P6G4) and `is_error_stop('error')` was already true: the
+  rows are new, the taxonomy is not. A resident agent still holds the errored
+  turn's messages in its context (nothing rolls them back), so the next
+  completed turn persists them with its own.
+- **TR-6 — errored spend is written off (a new billing decision).** An errored
+  turn is never settled, and no later settle point (an eviction's abort, the
+  abort that repairs a pause the error left) bills it: the settlement
+  watermark passes its steps and a restored pre-pause leg is dropped. Only the
+  root agent's own spend is written off. A sub-agent or workflow child that
+  completed before the error settled at its own finalize, through the
+  propagated `on_usage_report` callback (GF-P7G1), and stays billed; the root
+  row's `cost` still folds child cost in, so on an errored row it is the spend
+  reached, not the amount charged. Before TR-6 the errored spend was billed
+  only when an abort's settle point came before the session's next turn
+  (`initialize_run` resets the watermark without settling), so this makes an
+  incidental write-off deterministic rather than reversing a documented rule.
+  Specs: tests/interface/pricing_cost/test_pricing_cost_errored_turn.py (the
+  sub-agent case is pinned in tests/unit/providers/anthropic/test_errored_run.py).
+- **TR-7 — a turn whose config and row finalize saved is complete.** The
+  run-log save and the checkpoint capture that follow them in
+  `_persist_state` are fail-soft on every path: each failure is logged
+  (`persist_bookkeeping_failed`, every time, with the agent and run ids) and
+  never raised; a cancellation a coordinator converted into an exception while
+  the task was being cancelled is re-raised. finalize records the gap on the
+  row as `extras['persist_errors'] = [{step, type}]`, emits a non-fatal
+  `ErrorReport(code=internal, retriable=False)`, settles and ends with
+  `RunCompleted('end_turn')`. The next boundary persist captures again; until
+  then fork/reset and rehydration use the previous checkpoint. A failed config
+  or row save still raises and closes the turn as errored (TR-5). A failed
+  save of the errored row itself is logged every time
+  (`errored_run_save_failed`) and never masks the error. Specs: as TR-6.
+- **TR-8 — re-armed joins (relay-await §2.4; a fix, no surface change).**
+  `submit(ToolReply)` kicks a cold continuation only for the join re-armed
+  under the reply's cid. A continuation that failed before `_resume_rearmed`
+  took its join (the `cold_resume` warm, the sandbox turn guard) drops the
+  join and pops its await record, so a reply re-delivered for that pause
+  re-arms it and resumes the run, and the session is evictable again. An abort
+  drops a re-armed join no continuation will take.
+- **Not added: a switch to strip spans from streamed frames.** Every streamed
+  log (`RunCompleted.conversation_log`, `RunStarted`,
+  `ToolResultDelta.envelope_log`) is already gated by
+  `stream_meta_history_and_tool_results`, default `False`. A consumer that
+  opts in gets the spans with the rest of the log and strips what its clients
+  should not see (Nova does, on its member streams).
+
+## 2026-09-24 — E2B export symlink containment
+
+- **EX-1:** E2B export listing, hashing and byte publication must never follow
+  symlinks, including parent/root links and swaps between discovery and reading.
+  Use descriptor-relative `O_NOFOLLOW` opens. Skip rejected discovery entries;
+  direct reads reject with `SandboxPathEscapeError`. Digest unavailability may
+  use a safe byte-read fallback; missing safe execution support fails closed.
+  Spooling plus offsets/terminal checksum prevents partial or replay-corrupted
+  command streams from publishing bytes. Applies to absolute web exports and
+  legacy relative E2B exports; no change to generic workspace/checkpoint APIs.
+  Spec: `tests/interface/sandbox/test_e2b_export_security.py`.
+
+
+### SB-2 — Deferred sandbox preparation (2026-09-24)
+
+`AnthropicAgent(defer_sandbox_initialization=False, before_sandbox_use=None)`
+retains eager initialization by default. Opt-in callers resolve identity, profile,
+tool schemas and a local sandbox handle during initialization, then overlap the
+first provider flight with actor-owned preparation. Only the provider flight runs
+in a scoped child task; cancellation/failure drains it. Tools and finalization
+wait for preparation. `prepare_sandbox(trigger=...)` is the explicit barrier for
+consumer uploads or hooks that require sandbox I/O before inference. Oversized
+prompt externalization crosses that barrier automatically. `before_sandbox_use`
+is an optional async callback called with the agent after remote readiness and
+before mutation; failure fails the turn. Consumers must configure this callback
+before submission and must gate sandbox-backed contributions/hooks themselves.
+
+`capture_checkpoint(..., config_snapshot=None)` can serialize a frozen pre-turn
+config while capturing the now-ready, still-pristine sandbox. The default uses
+the live config as before. `model_overlap` and `context_externalization`
+readiness spans belong to the current run. Eager callers and relay resumes
+retain their existing behavior. No post-turn pause policy changes.
+
+Interface coverage: `tests/interface/sandbox/test_deferred_preparation.py`.
+
+SB-2 cancellation addendum: persistence before readiness keeps the conversation
+but skips physical checkpoint capture; it cannot implicitly provision an unready
+handle. A completed provider flight is recorded before hard-cancel salvage, so
+completed usage follows the existing settlement rules. Preparation failures emit
+the existing terminal error delta (and ordinary error report) for visible retry
+feedback even after partial answer text. Nova retains the pre-first-turn config
+in temporary extensible metadata until the pristine physical seq-0 capture succeeds.
+
+## AC-1 — durable answer completion and resumable web finalization (2026-09-24)
+
+Opt-in root `answer_completed`/`finalization_updated` separate answer activity
+from publication/checkpoint/settlement readiness. Journal/config and conversation
+extras preserve answer and priced usage; actor-owned recovery precedes subsequent
+turns. Keep default/Excel behavior eager. Stamp actual run/parent identities on
+runtime meta envelopes. Stable, atomic export IDs plus consumer billing dedupe
+make retries safe. Checkpoints contain no pending journal; avoid duplicate actor
+checkpoint work after opted-in completion. Tests: `tests/interface/finalization`,
+streaming/meta and media contracts. See subsystem AC-1 sections for failure,
+cancellation, and workspace-loss semantics. No canonical duration change (Stage 5).
+
+## Relay-resume persist and warm (RP) — 2026-09-25
+
+- **RP-1 — no fork/reset capture at a relay's resume.** `await_external` (hot)
+  and `_resume_rearmed` (cold) persist through the `AgentRuntime` seam
+  `_checkpoint_at_resume()` (base: `checkpoint()`). `AnthropicAgent` saves the
+  config, conversation row and run logs there under the same coordinator
+  persist guard as `checkpoint()`, but never calls `capture_checkpoint()`
+  (`_persist_state(capture=False)`). The splice clears `pending_relay` first,
+  so the capture's mid-pause guard could not tell, and every relay re-encoded
+  the transcript, snapshotted the sandbox and wrote the turn's checkpoint row,
+  only for the turn end to rewrite it (Nova's traces: 0.42–1.8 s from the
+  splice to the next model call).
+  Turn ends (finalize, `_checkpoint_after_turn`, aborts) capture as before;
+  an errored turn, which captures nothing, no longer leaves a mid-turn row.
+  The persist stays on the critical path: deferring it would need a
+  consistent snapshot, ordering against the next persist and a task-owned
+  coordinator guard in another task, and its config and row saves are the
+  record, whose failure propagates.
+  Specs: `tests/unit/providers/anthropic/test_relay_resume.py`,
+  `tests/interface/relay_await/test_relay_await_runtime_contract.py`.
+- **RP-2 — a resume's warm runs in the task that holds the turn guard** (the
+  actor, or the cold continuation), as the turn's first warm does; a scripted
+  pause's warm still waits for the loop's next step (`deferred_resume`), in
+  that same task. A coordinator may rely on it to recognise its own live turn:
+  Nova's reuses the handle its turn verified for the rest of the turn, without
+  reconnecting (bounded by the VM's own timeout). No behaviour change in the
+  library. Spec: `test_relay_resume.py`.

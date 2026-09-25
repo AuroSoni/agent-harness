@@ -390,6 +390,9 @@ class _AwaitSelf:
         self.calls.append("splice")
         self.spliced.append((cid, list(results), ctx))
 
+    async def _checkpoint_at_resume(self):
+        return await AgentRuntime._checkpoint_at_resume(self)
+
     async def checkpoint(self):
         self.calls.append("checkpoint")
 
@@ -478,8 +481,9 @@ async def test_await_external_stamps_identity_on_the_open_record():
 async def test_await_external_resumed_path_reconciles_splices_checkpoints():
     # §2.2 resumed path, in order: the REAL _reconcile_relay_reply cleans the
     # raw reply (stale id dropped), _splice_relay_results receives the
-    # reconciled blocks + ctx, checkpoint() persists at the resume boundary,
-    # and the record is popped in the finally.
+    # reconciled blocks + ctx, checkpoint() persists at the resume boundary
+    # (through the base _checkpoint_at_resume seam), and the record is popped
+    # in the finally.
     table = AwaitTable()
     set_await_table(table)
     try:

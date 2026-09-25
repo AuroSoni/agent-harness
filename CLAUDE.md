@@ -72,7 +72,7 @@ agent_base/               # The library package
 │                         # analytics (AnalyticsReader, agent_totals)
 ├── blob_store/           # Content-addressed + keyed blob storage (local, S3)
 ├── media_backend/        # Media persistence + projection (local, S3)
-├── sandbox/              # Path-scoped sandboxes (LocalSandbox, registry, namespacing)
+├── sandbox/              # Sandboxes: LocalSandbox (host dir), E2BSandbox (remote micro-VM, extra `e2b`), registry, snapshot/restore
 ├── python_executors/     # Python code execution (AST evaluator, local executor)
 ├── memory/               # Cross-session memory stores
 ├── pricing/              # Cost calculator, settlement
@@ -168,3 +168,16 @@ Available gstack skills:
 - `/unfreeze`
 - `/gstack-upgrade`
 - `/learn`
+
+## gstack (recommended)
+
+This project uses [gstack](https://github.com/garrytan/gstack) for AI-assisted workflows.
+Install it for the best experience:
+
+```bash
+git clone --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack
+cd ~/.claude/skills/gstack && ./setup --team
+```
+
+Skills like /qa, /ship, /review, /investigate, and /browse become available after install.
+Use /browse for all web browsing (Aside first, the bundled gstack browser as fallback). Use ~/.claude/skills/gstack/... for gstack file paths.
