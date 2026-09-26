@@ -127,6 +127,17 @@ demos/fastapi_server/     # Demo server — public surface only (agent_router.py
 - `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` — S3 blob/media backends
 
 
+## Agentic-system changes and UAT
+
+This library is the agent runtime behind Nova, so many changes here are **agentic-system changes**: they can change quality, cost, latency or what enters the model's context even when every test passes. Examples: request building (thinking, effort, caching, betas, `max_tokens`), the message chain and history replay (byte-stable replay keeps the prompt cache warm), tool execution and result delivery (MCP result conversion and caps, JSON-argument decoding, hooks), refusal and stop-reason handling, subagents, and sandbox lifecycle and export paths that add latency.
+
+UAT (real, high-level user requests through the live Nova agent; blind-judged quality plus time, steps, tool calls and cost against a baseline run) is defined in the consuming repo: the `nova-uat` skill at `.claude/skills/nova-uat/SKILL.md` and the cases, history and archive under `docs/uat/` in the paired `nova_backend` checkout. Nova dev mounts `<backend>/../anthropic-agent-debug-improvements/agent_base` read-only and imports it when `web` starts, so when that path points at this worktree a change can be measured before it is published and pinned; restart `web` after editing. A session opened here does not load the skill unless the backend worktree is added to it: read `.claude/skills/nova-uat/SKILL.md` in that `nova_backend` worktree (the one the add-in's `nova-excel-test` / `nova-web-test` harnesses resolve, `NOVA_BACKEND_DIR` on macOS) and run the UAT scripts from that backend root.
+
+**Working practice**
+1. **Recommend UAT after an agentic-system change**, on the relevant cases only (pick Excel cases by tag in `nova_backend/docs/uat/cases/excel.md` §1). The web corpus (`nova_backend/docs/uat/cases/web.md`) has no tags, no runner and no judge prompt yet and has never been run end to end: pick items by what they test, drive them with the add-in repo's `nova-web-test` harness, judge them against their pass criteria, and say in the estimate that its costs are projections. Present the cases and why, the estimated cost (Nova platform USD from the case table, plus judge tokens: about 0.1M per judge, two judges per case, plus one claim auditor per case when claims are audited, on the developer's Claude plan or API account), the wall time, the upside of running and the downside of skipping, and suggest deferring when more agentic changes are planned before the PR.
+2. **Never run UAT cases, or the judges and claim auditors that score them, without explicit budget approval from the developer**: a Nova platform cap in USD and approval of the judge-token estimate. Ask, wait for an amount, record it, and stop before exceeding either.
+3. **Before opening a PR with an agentic-system change, have fresh UAT results on the relevant cases** (not the full suite for a fractional change), highlighted at the top of the PR description (template: `nova_backend/.claude/skills/nova-uat/references/reporting.md`). When the change reaches Nova through a new `uv.lock` pin, the Nova PR carries the results.
+
 # gstack
 
 Use the `/browse` skill from gstack for **all** web browsing. **Never** use `mcp__claude-in-chrome__*` tools.
