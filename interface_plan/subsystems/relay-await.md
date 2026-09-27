@@ -317,7 +317,9 @@ class AgentRuntime:   # the one provider-agnostic loop class @ agent_base/core/r
         results = await self._reconcile_relay_reply(cid, join.tool_use_ids, results)
 
         await self._splice_relay_results(cid, results, ctx)   # fires after_tool per result (§2.1)
-        await self.checkpoint()                               # persist at the suspend/resume boundary
+        await self._checkpoint_at_resume()                    # persist at the suspend/resume boundary
+        #        └─ RP-1: config/row/run logs as checkpoint() saves them, never a fork/reset
+        #           capture (the turn is mid-flight; its turn end captures).
         return ResumeOutcome(status="resumed", results=results)
 
     async def _race_join_against_cancel(self, join: Join) -> list[ContentBlock]:
@@ -436,6 +438,16 @@ class AgentRuntime:
 The consumer makes **one** call (`submit(ToolReply(cid))`); hot vs cold is invisible, and the
 reply-triggered cold path never re-emits the await frame.
 
+**AMENDED (2026-09-22, TR-8 — the re-armed join is the reply's alone).** The RESOLVED reply
+kicks the cold continuation only when its cid is the re-armed join's; a hot pause's reply never
+starts a continuation on a join it does not own. A continuation that fails before
+`_resume_rearmed` takes its join (the `cold_resume` warm, the sandbox turn guard) drops the join
+and pops its await record once the run is closed as errored, so a reply re-delivered for that
+pause finds no record, is re-armed from `pending_relay` and resumes the run, and the session is
+evictable again. An abort drops a re-armed join no continuation will take (a reply that never
+resolved it, or a re-prompt answered with an abort); while a continuation is live the join stays
+its own, raced against the abort's cancellation in `_resume_rearmed`.
+
 ### 2.5 Library-owned chain integrity at the resume boundary (B1 / C5 / X13)
 
 This is the contract §6 guarantee, and **§3-R18b** confirms this subsystem owns it. The reconcile
@@ -516,8 +528,26 @@ class AgentRuntime:
             outbound=[FrontendCallView(tool_use_id=tool_use_id, tool_name=name, input=prepared)],  # §B7
         )
         return outcome.results        # §B3: ResumeOutcome is a dataclass; [] on "aborted",
-                                      #       the spliced blocks on "resumed". No _last_relay_results.
+                                      #       the RECONCILED blocks on "resumed" (WT-2 — never
+                                      #       spliced on this path). No _last_relay_results.
 ```
+
+**WT-2 / WT-3 (2026-07-07 — SHIPPED, ratifies §I4).** Two mechanics refinements to the seam above:
+
+- **No splice, no checkpoint on scripted resumes (WT-2).** `await_external` skips
+  `_splice_relay_results` + `checkpoint()` when `reason == "scripted"` — the reconciled blocks go
+  back to the calling tool body ONLY (loop reasons keep the splice+checkpoint boundary). Mid-body
+  the chain holds the enclosing turn's dangling `tool_use` blocks, and a scripted pause is
+  RAM-only / not cold-re-armable, so there is nothing correct to persist at that point.
+- **Per-runtime serialization (WT-3).** The whole body (cid mint + `before_tool` + park) runs
+  under `AgentRuntime._scripted_pause_lock` (an `asyncio.Lock`): at most one scripted
+  `AwaitInput` is in flight per agent — the FE holds a single pending relay slot and the HTTP
+  transport stops streaming at the first `await_input`; concurrent callers queue. Abort drains
+  the queue via the shared cancellation event (each waiter parks, loses the race, returns `[]`).
+  Sequential same-name cid reuse (`relay_{run_id}_{name}`) is safe because the `finally`-pop
+  precedes the next `open`; the lock removes the concurrent same-name collision entirely.
+  Batched `ctx.call_frontend_tools([...])` (one multi-element pause) is DEFERRED — see
+  AMENDMENTS WT-3.
 
 ### 2.7 `AwaitInput` / `FrontendCallView` (from streaming/contract §3 — referenced, not redefined)
 

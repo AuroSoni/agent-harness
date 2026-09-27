@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import signal
 import time
 import uuid
 from dataclasses import dataclass
@@ -352,6 +353,7 @@ class LocalSandbox(ConfigDrivenSandbox):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=effective_env,
+                start_new_session=os.name != "nt",
             )
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -359,13 +361,15 @@ class LocalSandbox(ConfigDrivenSandbox):
                     timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()  # drain pipes to prevent resource leak
+                await self._stop_process(proc)
                 return ExecResult(
                     exit_code=-1,
                     timed_out=True,
                     duration_ms=(time.monotonic() - start) * 1000,
                 )
+            except BaseException:
+                await self._stop_process(proc)
+                raise
 
             stdout_text = stdout_bytes.decode("utf-8", errors="replace")
             stderr_text = stderr_bytes.decode("utf-8", errors="replace")
@@ -385,6 +389,125 @@ class LocalSandbox(ConfigDrivenSandbox):
                 stderr=str(exc),
                 duration_ms=(time.monotonic() - start) * 1000,
             )
+
+    async def run_streaming(
+        self,
+        command: str,
+        *,
+        on_output,
+        timeout: float | None = 30.0,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        capture_limit_bytes: int = 2_000_000,
+    ) -> ExecResult:
+        """Stream merged stdout+stderr to ``on_output`` and return the real
+        exit code (the base default cannot). Kills the process on timeout."""
+        effective_timeout = timeout if timeout else self.default_timeout
+        if cwd is not None:
+            work_dir = self._resolve(cwd)
+            self._cwd = work_dir
+        else:
+            work_dir = self._cwd
+        effective_env = {**os.environ, **(env or {})}
+
+        start = time.monotonic()
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(work_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=effective_env,
+            start_new_session=os.name != "nt",
+        )
+        from .output import Utf8Tail
+        collected = Utf8Tail(capture_limit_bytes)
+        import codecs
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+        async def _pump() -> None:
+            assert proc.stdout is not None
+            while raw := await proc.stdout.read(65536):
+                text = decoder.decode(raw)
+                collected.append(text)
+                on_output(text)
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                collected.append(tail)
+                on_output(tail)
+            await proc.wait()
+
+        try:
+            await asyncio.wait_for(_pump(), timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            await self._stop_process(proc)
+            return ExecResult(
+                exit_code=-1,
+                stdout=collected.text(),
+                output_truncated=collected.truncated, stdout_bytes=collected.total_bytes,
+                timed_out=True,
+                duration_ms=(time.monotonic() - start) * 1000,
+            )
+        except BaseException:
+            await self._stop_process(proc)
+            raise
+        return ExecResult(
+            exit_code=proc.returncode if proc.returncode is not None else -1,
+            stdout=collected.text(),
+            output_truncated=collected.truncated, stdout_bytes=collected.total_bytes,
+            stderr="",
+            duration_ms=(time.monotonic() - start) * 1000,
+        )
+
+    async def _stop_process(self, proc: asyncio.subprocess.Process) -> None:
+        """Finish tree termination and pipe draining despite repeated cancellation."""
+        async def stop_and_drain() -> None:
+            await self._kill_process_tree(proc)
+            # A terminated process can still have a full asyncio pipe buffer.
+            # Drain it instead of waiting on process exit alone.
+            await proc.communicate()
+
+        cleanup = asyncio.create_task(stop_and_drain())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        try:
+            cleanup.result()
+        finally:
+            if cancelled:
+                raise asyncio.CancelledError
+
+    @staticmethod
+    async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+        """Kill the owned shell process group, including surviving descendants.
+
+        POSIX subprocesses start a new session, so their PID is also their
+        process-group ID. Kill that group even if the shell has already exited:
+        children can still be running and holding its output pipes open.
+        Windows retains taskkill /T for the equivalent process-tree cleanup.
+        """
+        if os.name == "nt":
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/F", "/T", "/PID", str(proc.pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await killer.wait()
+            except OSError:
+                pass
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
 
     def _extract_cwd(self, stdout: str) -> str:
         """Parse the pwd probe from stdout, update self._cwd, and return clean output."""
@@ -430,15 +553,21 @@ class LocalSandbox(ConfigDrivenSandbox):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,  # merge stderr into stdout
             env=effective_env,
+            start_new_session=os.name != "nt",
         )
         try:
             assert proc.stdout is not None
             deadline = time.monotonic() + effective_timeout
-            async for line in proc.stdout:
-                yield line.decode("utf-8", errors="replace")
-                if time.monotonic() > deadline:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     break
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), remaining)
+                except asyncio.TimeoutError:
+                    break
+                if not line:
+                    break
+                yield line.decode("utf-8", errors="replace")
         finally:
-            if proc.returncode is None:
-                proc.kill()
-            await proc.wait()
+            await self._stop_process(proc)

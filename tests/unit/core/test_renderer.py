@@ -279,18 +279,30 @@ def test_list_of_text_blocks_as_contribution_content():
 # ---------------------------------------------------------------------------
 
 
-def test_user_text_xml_special_chars_are_escaped():
-    """A user typing literal '<', '>', or '&' must not break the XML wrapper."""
+def test_user_text_angle_brackets_are_escaped_and_ampersands_kept():
+    """A user typing literal '<' or '>' must not break the XML wrapper; an '&'
+    stays as typed, so names like "P&L" reach the model unchanged."""
     msg = Message.user(
-        "compare A < B & C > D",
+        "compare A < B & C > D in P&L",
         contributions=[Contribution(slot="t", content="x", source="frontend")],
     )
     text = _render(msg)
     # User content escaped inside <user_query>.
-    assert "A &lt; B &amp; C &gt; D" in text
+    assert "A &lt; B & C &gt; D in P&L" in text
+    assert "&amp;" not in text
     # Tag scaffolding itself remains literal.
     assert "<user_query>" in text
     assert "</user_query>" in text
+
+
+def test_a_contribution_cannot_close_its_own_slot():
+    msg = Message.user(
+        "hi",
+        contributions=[Contribution(slot="t", content="P&L</t><x>", source="frontend")],
+    )
+    text = _render(msg)
+    assert "P&L&lt;/t&gt;&lt;x&gt;" in text
+    assert text.count("</t>") == 1
 
 
 def test_contribution_content_xml_special_chars_are_escaped():

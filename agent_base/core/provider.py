@@ -28,7 +28,7 @@ imports live only inside ``agent_base/providers/<name>/``.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -78,6 +78,37 @@ class ProviderError(Exception):
         Exception.__init__(self, self.message or self.code.value)
 
 
+# The interpreter's own bookkeeping on a raised exception. A frozen dataclass
+# refuses every assignment, so without this a ProviderError raised through a
+# ``@contextmanager`` (contextlib assigns ``__traceback__`` on the way out)
+# became ``FrozenInstanceError: cannot assign to field '__traceback__'`` and
+# the provider failure it carried was lost. The fields stay frozen; a class
+# body may not define ``__setattr__`` on a frozen dataclass, hence the patch.
+_EXCEPTION_BOOKKEEPING = frozenset(
+    {"__traceback__", "__cause__", "__context__", "__suppress_context__", "__notes__"}
+)
+_frozen_setattr = ProviderError.__setattr__
+_frozen_delattr = ProviderError.__delattr__
+
+
+def _provider_error_setattr(self: ProviderError, name: str, value: Any) -> None:
+    if name in _EXCEPTION_BOOKKEEPING:
+        BaseException.__setattr__(self, name, value)
+    else:
+        _frozen_setattr(self, name, value)
+
+
+def _provider_error_delattr(self: ProviderError, name: str) -> None:
+    if name in _EXCEPTION_BOOKKEEPING:
+        BaseException.__delattr__(self, name)
+    else:
+        _frozen_delattr(self, name)
+
+
+ProviderError.__setattr__ = _provider_error_setattr  # type: ignore[method-assign]
+ProviderError.__delattr__ = _provider_error_delattr  # type: ignore[method-assign]
+
+
 @dataclass(frozen=True)
 class ProviderTurn:
     """One assistant turn, normalised (providers.md §2.1; O12a/O12d).
@@ -95,12 +126,23 @@ class ProviderTurn:
     O12(d): a mid-stream failure returns cooperatively — partial content is kept
     on ``message`` and ``partial_error`` is set, so the loop emits an
     ``ErrorReport`` without discarding the partials.
+
+    ``timing`` is ``{started_at, ended_at, flight_ms}`` for the call, stamped
+    by ``AgentRuntime._provider_turn`` with ``dataclasses.replace(turn,
+    timing=...)`` — providers never set it. It is an ``InitVar`` kept as a
+    plain attribute rather than a field: O12(a) pins the provider-neutral
+    field set, and timing is a fact about the call, not part of the turn's
+    value (equality and ``repr`` ignore it). ``replace`` carries it over.
     """
 
     message: "Message"
     was_cancelled: bool = False
     partial_error: "ProviderError | None" = None
     stream_bookkeeping: Any = None
+    timing: InitVar[dict[str, Any] | None] = None
+
+    def __post_init__(self, timing: dict[str, Any] | None) -> None:
+        object.__setattr__(self, "timing", timing)
 
 
 # ---------------------------------------------------------------------------

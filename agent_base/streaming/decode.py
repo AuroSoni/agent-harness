@@ -3,7 +3,7 @@
 The library ships the *inverse* of its own encoder.  ``SseStreamDecoder``
 turns SSE lines back into typed ``StreamItem`` objects, absorbing:
 
-- ``data:`` / ``[DONE]`` stripping,
+- ``data:`` / ``[DONE]`` stripping (and dropping ``[PING]`` keepalives, SSE-1),
 - partial-delta re-accumulation keyed by ``(type, agent_uuid)``
   (plus ``id`` for tool frames),
 - ``MetaEnvelope`` reconstruction across chunked frames (the D2
@@ -103,6 +103,8 @@ class SseStreamDecoder(StreamDecoder):
             return []
         if line == "[DONE]":
             self._done = True
+            return []
+        if line == "[PING]":  # SSE-1 keepalive — transport-level, no StreamItem
             return []
         try:
             obj = json.loads(line)

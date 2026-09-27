@@ -45,6 +45,8 @@ from .types import (
 from .meta import (
     META_BODY_REGISTRY,
     AwaitInput,
+    AnswerCompleted,
+    FinalizationUpdated,
     Custom,
     ErrorReport,
     FilesUpdated,
@@ -60,6 +62,7 @@ from .meta import (
 )
 from .wire import (
     CODECS,
+    KEEPALIVE,
     TERMINAL,
     DeltaSink,
     SseCodec,
@@ -107,6 +110,8 @@ __all__ = [
     "META_BODY_REGISTRY",
     "register_meta_body",
     "AwaitInput",
+    "AnswerCompleted",
+    "FinalizationUpdated",
     "FrontendCallView",
     "ProfileChanged",
     "UsageReport",
@@ -123,6 +128,7 @@ __all__ = [
     "SseCodec",
     "WireFrame",
     "TERMINAL",
+    "KEEPALIVE",
     "CODECS",
     "get_codec",
     "DeltaSink",

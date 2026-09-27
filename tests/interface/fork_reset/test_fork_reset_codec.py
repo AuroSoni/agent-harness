@@ -104,3 +104,44 @@ async def test_inline_fallback_without_a_blob_store(tmp_path):
     restored = await assemble_config_from_checkpoint(_as_cp(base, segs, logs, codec_v), None)
     assert len(restored.context_messages) == 2
     assert len(restored.conversation_log.entries) == 2
+
+
+async def test_transcript_segments_keep_the_message_key_order(tmp_path):
+    """Reset/fork replay these bytes to the model: a re-sorted replay misses the
+    prompt cache and invalidates later thinking blocks."""
+    from agent_base.core.types import ThinkingContent, ToolUseContent
+
+    blobs = LocalBlobStore(base_path=tmp_path)
+    cfg = _config()
+    tool_input = {"sheet_name": "P&L", "range": "A1:B2", "values": [[1, 2]], "audit": {"z": 1, "b": 2}}
+    cfg.context_messages.append(Message.assistant([
+        ThinkingContent(thinking="", signature="sig-1"),
+        ToolUseContent(tool_name="set_cell_range", tool_id="t1", tool_input=tool_input),
+        ThinkingContent(thinking="", signature="sig-2"),
+    ]))
+    base, segs, logs, codec_v = await split_config_for_checkpoint(cfg, blobs, tenant="tenantA")
+    restored = await assemble_config_from_checkpoint(_as_cp(base, segs, logs, codec_v), blobs)
+    [use] = [b for b in restored.context_messages[-1].content if isinstance(b, ToolUseContent)]
+    assert list(use.tool_input) == ["sheet_name", "range", "values", "audit"]
+    assert list(use.tool_input["audit"]) == ["z", "b"]
+    assert [m.to_dict() for m in restored.context_messages] == [m.to_dict() for m in cfg.context_messages]
+
+
+async def test_log_segments_stay_canonical_so_a_reordered_reload_still_dedupes(tmp_path):
+    """conversation_log is jsonb, so a reload hands its entries back re-sorted;
+    canonical log segments keep dedupe intact across that reload."""
+    import json
+
+    from agent_base.storage.checkpoint_codec import canonical_json
+
+    blobs = LocalBlobStore(base_path=tmp_path)
+    cfg = _config()
+    await split_config_for_checkpoint(cfg, blobs, tenant="tenantA")
+    n1 = _count(tmp_path)
+    # A reload in jsonb order: every log entry's keys re-sorted.
+    resorted = json.loads(canonical_json(cfg.conversation_log.to_dict()))
+    from agent_base.core.conversation_log import ConversationLog
+
+    cfg.conversation_log = ConversationLog.from_dict(resorted)
+    await split_config_for_checkpoint(cfg, blobs, tenant="tenantA")
+    assert _count(tmp_path) == n1, "a re-sorted log wrote new blobs"

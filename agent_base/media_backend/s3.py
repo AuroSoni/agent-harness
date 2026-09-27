@@ -213,15 +213,27 @@ class S3MediaBackend(MediaBackend):
     # ─── Storage operations ───────────────────────────────────────────
 
     async def store(
-        self,
-        content: AsyncIterator[bytes],
-        filename: str,
-        mime_type: str,
-        agent_uuid: str,
+        self, content: AsyncIterator[bytes], filename: str, mime_type: str, agent_uuid: str,
+    ) -> MediaMetadata:
+        return await self._store_with_id(content, filename, mime_type, agent_uuid, uuid.uuid4().hex)
+
+    async def store_idempotent(
+        self, content: AsyncIterator[bytes], filename: str, mime_type: str,
+        agent_uuid: str, *, key: str,
+    ) -> MediaMetadata:
+        import hashlib
+        media_id = hashlib.sha256(key.encode()).hexdigest()
+        existing = await self.get_metadata(media_id, agent_uuid)
+        if existing is not None:
+            return existing
+        return await self._store_with_id(content, filename, mime_type, agent_uuid, media_id)
+
+    async def _store_with_id(
+        self, content: AsyncIterator[bytes], filename: str, mime_type: str,
+        agent_uuid: str, media_id: str,
     ) -> MediaMetadata:
         import aioboto3
 
-        media_id = uuid.uuid4().hex
         key = self._build_key(agent_uuid, media_id, filename)
 
         file_obj = _AsyncIteratorAsFileObj(content)

@@ -276,3 +276,48 @@ async def test_cold_reply_for_unknown_cid_is_ignored_stale(fresh_table):
     agent = await manager.get_or_create(root_id)
     assert agent._rearmed_resume_task is None
     assert agent.agent_config.pending_relay is not None  # pause untouched
+
+
+async def test_a_cold_resume_sends_the_live_llm_config(fresh_table):
+    """The stored llm_config loads as the empty base class, and a cold resume
+    never runs initialize_run: without re-landing the live config the resumed
+    request lost effort, server tools, betas and max_tokens — a whole-prompt
+    cache miss and a behaviour change mid-turn."""
+    from agent_base.providers.anthropic import AnthropicLLMConfig
+
+    seed = await _seed_parked_session()
+    root_id = seed.agent_uuid
+    adapters = {
+        "config_adapter": seed.config_adapter,
+        "conversation_adapter": seed.conversation_adapter,
+        "run_adapter": seed.run_adapter,
+    }
+    live = AnthropicLLMConfig(effort="medium", max_tokens=64000)
+    sent = []
+
+    def _factory(root_session_id: str, principal=None) -> AnthropicAgent:
+        a = AnthropicAgent(system_prompt="test", agent_uuid=root_session_id, config=live, **adapters)
+
+        async def _capture(**kwargs):
+            sent.append(kwargs)
+            msg = Message.assistant("done after relay")
+            msg.stop_reason = "end_turn"
+            msg.usage = Usage()
+            return ProviderTurn(message=msg)
+
+        a.provider.generate = _capture          # type: ignore[method-assign]
+        a.provider.generate_stream = _capture   # type: ignore[method-assign]
+        return a
+
+    manager = SessionManager(_factory)
+    await manager.submit(
+        root_id,
+        ToolReply(cid=CID, results=[ToolResultContent(tool_id="t1", tool_result="clicked", tool_name="ui_tool")]),
+    )
+    agent = await manager.get_or_create(root_id)
+    await asyncio.wait_for(agent._rearmed_resume_task, timeout=5)
+
+    [request] = sent
+    assert request["llm_config"].effort == "medium"
+    assert request["llm_config"].max_tokens == 64000
+    assert [t.name for t in request["tool_schemas"]] == [t.name for t in agent.tool_registry.get_schemas()]

@@ -1,12 +1,15 @@
 """Schema generation utilities for tool functions.
 
 Analyzes Python function type hints and Google-style docstrings to produce
-canonical ``ToolSchema`` objects.
+canonical ``ToolSchema`` objects, and reads an input against its schema
+(:func:`decode_json_encoded_arguments`).
 """
 import inspect
+import json
 import types
 import re
 from copy import copy
+from collections.abc import Mapping
 from typing import get_type_hints, get_origin, get_args, Union, Literal, Any, Callable
 
 from .tool_types import ToolSchema
@@ -263,3 +266,63 @@ def generate_tool_schema(func: Callable) -> ToolSchema:
         description=description,
         input_schema=json_schema,
     )
+
+
+# ─── Reading an input against its schema ───────────────────────────────
+
+
+def _json_kinds(schema: Any) -> set[str]:
+    """The JSON types a property schema accepts: its ``type`` (a name or a
+    list of names) and those of its ``anyOf``/``oneOf`` branches. Empty when
+    it names none (``{}``, a bare ``$ref``)."""
+    if not isinstance(schema, Mapping):
+        return set()
+    kinds: set[str] = set()
+    declared = schema.get("type")
+    if isinstance(declared, str):
+        kinds.add(declared)
+    elif isinstance(declared, list):
+        kinds.update(kind for kind in declared if isinstance(kind, str))
+    for key in ("anyOf", "oneOf"):
+        for branch in schema.get(key) or ():
+            kinds |= _json_kinds(branch)
+    return kinds
+
+
+def decode_json_encoded_arguments(
+    tool_input: dict[str, Any], input_schema: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Decode the top-level arguments a model sent as JSON text where the
+    schema asks for an object or an array.
+
+    A model occasionally serializes a large nested argument (a map of cells,
+    a list of entries) into a string. When the schema does not accept a
+    string there and the text parses to the kind it does accept, the intent
+    is unambiguous: decoding spares the model a failed call and a retry.
+    Anything else is left as sent, for validation to report. Returns
+    ``tool_input`` itself when nothing changed, else a decoded copy.
+    """
+    properties = (input_schema or {}).get("properties")
+    if not isinstance(properties, Mapping) or not tool_input:
+        return tool_input
+    decoded: dict[str, Any] | None = None
+    for name, value in tool_input.items():
+        if not isinstance(value, str):
+            continue
+        kinds = _json_kinds(properties.get(name))
+        if "string" in kinds or not kinds & {"object", "array"}:
+            continue
+        text = value.strip()
+        if not text.startswith(("{", "[")):
+            continue
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            continue
+        if (isinstance(parsed, dict) and "object" in kinds) or (
+            isinstance(parsed, list) and "array" in kinds
+        ):
+            if decoded is None:
+                decoded = dict(tool_input)
+            decoded[name] = parsed
+    return tool_input if decoded is None else decoded

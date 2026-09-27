@@ -184,12 +184,15 @@ def _extract_text(blocks_or_str: Any) -> str:
 
 
 def _xml_escape(s: str) -> str:
-    """Escape XML-significant characters in a body string.
+    """Escape the angle brackets in a body string, so its text can never open
+    or close one of the framework's tags.
 
-    Order matters: replace ``&`` first so we don't double-escape the entities
-    we introduce for ``<`` and ``>``. Slot/tag names are framework-controlled
-    and not escaped here — only the body content between tags is.
+    ``&`` stays literal. The model reads these blocks as text, not as XML, and
+    an escaped ampersand reached it as ``&amp;``: a sheet named "P&L" in a
+    context block came back in tool calls as ``"P&amp;L"``, which names no
+    sheet. Slot/tag names are framework-controlled and not escaped here — only
+    the body content between tags is.
     """
     if not s:
         return s
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return s.replace("<", "&lt;").replace(">", "&gt;")

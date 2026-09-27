@@ -358,3 +358,40 @@ class TestReorderUserContent:
         content = []
         result = _reorder_user_content(content)
         assert result is content
+
+
+# ─── repair keeps message identity; Anthropic does not merge user turns ─────
+
+def test_a_rebuilt_message_keeps_its_id_attachments_and_contributions():
+    from agent_base.core.chain import ensure_chain_validity
+    from agent_base.core.messages import Message
+    from agent_base.core.types import TextContent, ToolUseContent
+
+    ask = Message.assistant([ToolUseContent(tool_name="t", tool_id="tu1", tool_input={})])
+    prompt = Message.user([TextContent(text="next")])
+    prompt.contributions = ["ctx-marker"]  # opaque here: only identity matters
+    out = ensure_chain_validity([Message.user("go"), ask, prompt])
+    patched = out[-1]
+    assert patched.id == prompt.id
+    assert patched.contributions == ["ctx-marker"]
+    assert patched.content[0].__class__.__name__ == "ToolResultContent"  # synthetic result first
+
+
+def test_consecutive_user_messages_stay_apart_when_merging_is_off():
+    from agent_base.core.chain import ensure_chain_validity
+    from agent_base.core.messages import Message
+
+    a, b = Message.user("first"), Message.user("second")
+    out = ensure_chain_validity([a, b], merge_consecutive_users=False)
+    assert out == [a, b] and out[0] is a and out[1] is b
+
+
+def test_a_merge_keeps_the_newer_id_and_both_contributions():
+    from agent_base.core.chain import ensure_chain_validity
+    from agent_base.core.messages import Message
+
+    a, b = Message.user("first"), Message.user("second")
+    a.contributions, b.contributions = ["a"], ["b"]
+    [merged] = ensure_chain_validity([a, b])
+    assert merged.id == b.id
+    assert merged.contributions == ["a", "b"]

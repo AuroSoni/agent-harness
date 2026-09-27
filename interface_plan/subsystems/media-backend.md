@@ -637,3 +637,28 @@ The contract (§5) scopes consumer product tables out, **except** as a *reusable
 | `MediaScope`/principal absent → `agent_uuid` namespace. | When a `MediaScope`/principal is present, the blob `namespace` is **derived** from it (I13(a)); `exists`/`find_by_content_hash` are default scope-filtered. | additive when `scope=None` (today's behavior); scope-filtered when present. No cross-tenant existence probe. |
 
 **Deprecation policy (G0):** replaced symbols are **deleted**, not wrapped — there is no `DeprecationWarning` window (preview/unreleased). The single intended behavior change is the B2 delta fix (`flush_exports` returns the delta); a consumer who wants the old full-reupload behavior supplies their own `MediaFlushStrategy` (O3 deleted `FullReuploadFlush`). Nova migrates everything in the same cut.
+
+
+## Upload consumer lifetime amendment (2026-09-09)
+
+`user_upload()` owns both storage and sandbox consumers until both finish. On
+consumer failure or caller cancellation, it cancels and joins both tasks before
+propagating the error, including repeated cancellation during cleanup. Its bounded
+tee emits EOF only on normal exhaustion, avoiding a blocked final sentinel after
+the reader has stopped. Consumers may safely release upload streams and sandbox
+activity guards after the method returns or raises.
+
+## AC-1 — retry-safe export publication
+
+`MediaBackend.store_idempotent(..., key=...)` is an additive opt-in seam. Local and
+S3 implementations use stable identity and atomic publication; retries return
+the complete object. Unsupported custom backends fail explicitly. Legacy
+`store()` and eager consumers retain their behavior. `IncrementalBlake3Flush`
+accepts `idempotent=True` plus a `before_upload` callback with the changed export
+metadata, allowing file-specific readiness without hashing twice. All upload
+children are cancelled and drained before propagating failure/cancellation.
+Web finalization persists its registry in existing extensible config records.
+
+For opt-in answer finalization, provider-hosted Anthropic artifacts also use a
+stable publication key (agent + provider file ID); collection errors propagate
+into the recovery journal. Legacy/default collection remains best effort.

@@ -18,7 +18,8 @@ the runtime populates them at call-time):
   unwired default that raises (B8),
 - ``emit_capped`` / ``emit_capped_bytes`` output budgeting (I5/O11(a) — plain
   kwargs over library default constants; the ``OutputBudget`` dataclass is
-  deleted),
+  deleted), and ``spill``, the persistence step they share with callers that
+  present an overflow their own way (MCP JSON results),
 - ``call_frontend_tool(name, input)`` — the public relay primitive (I4; the
   old public ``await_external`` is runtime-internal only).
 """
@@ -46,6 +47,61 @@ CTX_PARAM_NAME = "ctx"
 DEFAULT_EMIT_MAX_CHARS = 25_000      # chars (the ctx.emit_capped default kwarg)
 DEFAULT_EMIT_MAX_BYTES = 1_200_000   # bytes (the ctx.emit_capped_bytes default kwarg)
 TOOL_RESULTS_DIR = ".tool_results"   # sandbox zone for overflow persistence
+
+#: Tools that can read back an overflow file, in preference order.
+#:
+#: ``emit_capped`` hands the model a path and, until now, told it to "use
+#: read_file to inspect" -- a hard-coded name. A roster without ``read_file``
+#: therefore got a pointer to a real file and an instruction to call a tool
+#: that does not exist, on every truncated result. Naming the tool is worth
+#: keeping (a bare path is an affordance the model may not take), so the name
+#: is RESOLVED against the live registry instead of assumed.
+#:
+#: Deriving it rather than making it a constructor argument is deliberate: the
+#: only thing this sentence has to agree with is the roster, and an argument
+#: would let the two drift exactly as the constant did.
+RESULT_READER_TOOLS = ("read_file", "view")
+
+#: Tools that can LOAD an overflow file as data, in preference order.
+#:
+#: A saved JSON result is read with code (parse it, pick the paths the outline
+#: names), not paged through with a viewer, so its notice names one of these
+#: when the roster has it. Resolved against the live registry like the reader,
+#: for the same reason: the library cannot assume a code tool exists. A shell
+#: comes first: it runs where the sandbox keeps the file, which a tool named
+#: ``code_execution`` (an in-process interpreter, a provider's container) may not.
+RESULT_LOADER_TOOLS = ("bash_tool", "bash", "code_execution")
+
+
+def _pick(tool_names: object, candidates: tuple[str, ...]) -> str:
+    try:
+        available = {str(name) for name in tool_names}  # type: ignore[union-attr]
+    except TypeError:
+        return ""
+    for candidate in candidates:
+        if candidate in available:
+            return candidate
+    return ""
+
+
+def pick_result_reader(tool_names: object) -> str:
+    """The best available reader from ``tool_names``, or ``""`` if none is.
+
+    ``""`` is a supported answer, not a failure: the truncation notice then
+    names the path alone. Accepts any iterable of names and tolerates junk, so
+    a registry shape change degrades to the bare path rather than raising
+    inside a tool result.
+    """
+    return _pick(tool_names, RESULT_READER_TOOLS)
+
+
+def pick_result_loader(tool_names: object) -> str:
+    """The best available loader from ``tool_names``, or ``""`` if none is.
+
+    Same contract as :func:`pick_result_reader`; ``""`` makes a JSON overflow
+    notice fall back to the reader, then to the bare path.
+    """
+    return _pick(tool_names, RESULT_LOADER_TOOLS)
 
 
 def stable_hash(run_id: str, tool_call_id: str) -> str:
@@ -87,6 +143,17 @@ class ToolContext:
     sandbox: "Sandbox | None" = None        # overflow persistence seam (emit_capped*)
     principal: "SessionPrincipal | None" = None  # tenant of the sandbox namespace writes land in
     media: "MediaBackend | None" = None     # emit_capped_bytes delegates here when configured (R16)
+    #: Where overflow files land. A bare module constant would pin this to the
+    #: legacy zone name, so a sandbox whose layout puts tool results elsewhere
+    #: would write somewhere nothing reads.
+    tool_results_dir: str = TOOL_RESULTS_DIR
+    #: Which tool the truncation notice tells the model to read the overflow
+    #: file with. Resolved from the live registry by the runtime; ``""`` means
+    #: no reader is advertised, and the notice names the path alone.
+    result_reader_tool: str = ""
+    #: Which tool a saved JSON result is loaded with (a code runner; see
+    #: ``RESULT_LOADER_TOOLS``). Resolved the same way; ``""`` means none.
+    result_loader_tool: str = ""
 
     _once_store: OnceStore | None = field(default=None, repr=False)
 
@@ -123,6 +190,23 @@ class ToolContext:
         """
         raise RuntimeError("ctx.emit not available in this execution context")
 
+    # ─── emit_text (WT-4): user-facing display line, live + replay ──────────
+
+    def emit_text(self, text: str) -> None:
+        """Stream a short user-facing text line to the live UI AND persist it
+        for history replay (WT-4).
+
+        The wired implementation (a) emits a ``TextDelta`` on the run's
+        stream and (b) appends a DISPLAY-ONLY assistant message entry to the
+        conversation logs — it NEVER touches the model context chain, so the
+        model never sees these lines and they cost no context tokens.
+        Milestone cadence (not interval spam) is the caller's responsibility.
+
+        The unwired default RAISES; the runtime swaps in a wired
+        implementation at call-time.
+        """
+        raise RuntimeError("ctx.emit_text not available in this execution context")
+
     # ─── Budgeting on ctx (I5/O11(a)) — replaces ConfigurableToolBase.emit_capped* ───
 
     async def emit_capped(self, text: str, *, max_chars: int = DEFAULT_EMIT_MAX_CHARS) -> str:
@@ -137,20 +221,39 @@ class ToolContext:
         if len(text) <= max_chars:
             return text
 
+        reference = await self.spill(text)
+        head = text[:max_chars]
+        if not reference:
+            return head + "\n[Truncated. Full result not persisted: no sandbox configured.]"
+        if self.result_reader_tool:
+            return head + (
+                f"\n[Truncated. Full result: {reference} - use "
+                f"{self.result_reader_tool} to inspect]"
+            )
+        return head + f"\n[Truncated. Full result: {reference}]"
+
+    async def spill(self, text: str, *, ext: str = "txt", subdir: str = "") -> str:
+        """Persist the FULL ``text`` via ``ctx.sandbox`` and return where it landed.
+
+        The file is ``<tool_results_dir>/[<subdir>/]<tool_call_id>_<digest>.<ext>``;
+        ``""`` means nothing was persisted (no sandbox configured). Idempotent
+        via :meth:`once`: the same text is written once per call however many
+        times it is spilled, so a caller may re-ask for the path.
+        """
         digest = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+        suffix = ext.lstrip(".") or "txt"
+        folder = self.tool_results_dir
+        if subdir.strip("/"):
+            folder = f"{folder}/{subdir.strip('/')}"
 
         async def _persist() -> str:
             if self.sandbox is None:
                 return ""
-            path = f"{TOOL_RESULTS_DIR}/{self.tool_call_id or 'result'}_{digest}.txt"
+            path = f"{folder}/{self.tool_call_id or 'result'}_{digest}.{suffix}"
             stored = await self.sandbox.write_file(path, text)
             return stored if isinstance(stored, str) else path
 
-        reference = await self.once(f"emit_capped:{digest}:{max_chars}", _persist)
-        head = text[:max_chars]
-        if not reference:
-            return head + "\n[Truncated. Full result not persisted: no sandbox configured.]"
-        return head + f"\n[Truncated. Full result: {reference} - use read_file to inspect]"
+        return await self.once(f"spill:{digest}:{suffix}:{folder}", _persist)
 
     async def emit_capped_bytes(
         self,
@@ -184,7 +287,7 @@ class ToolContext:
                     return ref if isinstance(ref, str) else str(getattr(ref, "key", ref))
             # Sandbox fallback.
             if self.sandbox is not None:
-                path = f"{TOOL_RESULTS_DIR}/{self.tool_call_id or 'result'}_{digest}.{suffix}"
+                path = f"{self.tool_results_dir}/{self.tool_call_id or 'result'}_{digest}.{suffix}"
                 writer = getattr(self.sandbox, "write_bytes", None)
                 if writer is not None:
                     stored = await writer(path, data)
@@ -227,4 +330,8 @@ __all__ = [
     "DEFAULT_EMIT_MAX_CHARS",
     "DEFAULT_EMIT_MAX_BYTES",
     "TOOL_RESULTS_DIR",
+    "RESULT_READER_TOOLS",
+    "RESULT_LOADER_TOOLS",
+    "pick_result_reader",
+    "pick_result_loader",
 ]

@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Union
 from agent_base.await_table import get_await_table
 from agent_base.core.abort_types import AgentPhase
 from agent_base.core.ack import Ack, Disposition
+from agent_base.observability import emit as observe
 from agent_base.core.identity import (
     PrincipalPolicy,
     SessionPrincipal,
@@ -172,17 +173,26 @@ class SessionManager:
         """
         entry = self._sessions.get(root_session_id)
         if entry is not None:
+            observe("session_resident_hit", root_session_id=root_session_id)
             return self._attach(root_session_id, entry, principal)
 
         lock = self._build_locks.get(root_session_id)
         if lock is None:
             lock = asyncio.Lock()
             self._build_locks[root_session_id] = lock
+        lock_wait_started = time.monotonic()
         async with lock:
+            observe(
+                "session_build_lock_wait",
+                root_session_id=root_session_id,
+                wait_ms=(time.monotonic() - lock_wait_started) * 1000,
+            )
             entry = self._sessions.get(root_session_id)
             if entry is not None:
+                observe("session_build_joined", root_session_id=root_session_id)
                 return self._attach(root_session_id, entry, principal)
 
+            build_started = time.monotonic()
             agent = self._call_factory(root_session_id, principal)
             if inspect.isawaitable(agent):
                 agent = await agent
@@ -211,6 +221,12 @@ class SessionManager:
                 agent=agent, principal=principal, last_active=self._now()
             )
             await self._enforce_capacity()
+            observe(
+                "session_built",
+                root_session_id=root_session_id,
+                duration_ms=(time.monotonic() - build_started) * 1000,
+                cold=cold,
+            )
             return agent
 
     def _attach(
@@ -363,7 +379,16 @@ class SessionManager:
                     if callable(rearm):
                         await rearm(reply=command)
 
-        return await agent.submit(command)
+        submit_started = time.monotonic()
+        try:
+            return await agent.submit(command)
+        finally:
+            observe(
+                "session_submit",
+                root_session_id=root_session_id,
+                command=type(command).__name__,
+                duration_ms=(time.monotonic() - submit_started) * 1000,
+            )
 
     async def _probe_non_resident_control(
         self,
@@ -488,6 +513,18 @@ class SessionManager:
         return getattr(agent, "agent_uuid", None)
 
     async def evict(self, root_session_id: str) -> bool:
+        """Validate coordinated residents before any state-writing teardown."""
+        entry = self._sessions.get(root_session_id)
+        if entry is None or not self._is_evictable(entry.agent):
+            return False
+        coordinator = vars(entry.agent).get("_sandbox_coordinator")
+        if coordinator is None:
+            return await self._evict(root_session_id)
+        async with coordinator.exclusive(entry.agent, reason="persist_idle"):
+            await coordinator.validate_resident(entry.agent)
+            return await self._evict(root_session_id)
+
+    async def _evict(self, root_session_id: str) -> bool:
         """Clean teardown of one session: abort → actor-task reap → end-hook →
         checkpoint → unregister + ``drop_tree`` (await table). Refuses while a
         turn is in flight or an await is parked (``_is_evictable``).
@@ -532,6 +569,16 @@ class SessionManager:
             logger.warning(
                 "SessionManager: checkpoint during evict failed for %s", root_session_id
             )
+        # Remote sandboxes: eviction PAUSES (never kills) so the workspace is
+        # free to keep and resumes on the next turn; local backends no-op.
+        try:
+            pause_sandbox = getattr(agent, "pause_sandbox", None)
+            if callable(pause_sandbox):
+                await pause_sandbox()
+        except Exception:  # pragma: no cover - cleanup best-effort
+            logger.warning(
+                "SessionManager: sandbox pause during evict failed for %s", root_session_id
+            )
         # mcp.md E6: close runtime resources (MCP client sessions, stdio
         # children) — no leaked subprocesses past the session actor.
         try:
@@ -545,6 +592,52 @@ class SessionManager:
             )
         get_await_table().drop_tree(root_session_id)
         return True
+
+    async def invalidate_idle(
+        self, root_session_id: str, principal: "SessionPrincipal | None" = None,
+    ) -> bool:
+        """Discard an obsolete resident without writing any cached state.
+
+        Unlike eviction, invalidation must never abort, run end hooks,
+        checkpoint, or pause the sandbox. Those operations can overwrite or
+        interfere with a newer state owned by another backend process.
+        Only idle sessions with no queued work qualify; unauthorized callers
+        receive the ordinary SessionNotFound result.
+        """
+        lock = self._build_locks.setdefault(root_session_id, asyncio.Lock())
+        async with lock:
+            entry = self._sessions.get(root_session_id)
+            if entry is None:
+                return False
+            if not self._principal_policy.authorizes(entry.principal, principal):
+                raise SessionNotFound(root_session_id)
+            agent = entry.agent
+            if not self._is_evictable(agent):
+                return False
+            mailbox = getattr(agent, "_mailbox", None)
+            if mailbox is not None and len(mailbox):
+                return False
+            for name in ("_actor_task", "_rearmed_resume_task"):
+                task = getattr(agent, name, None)
+                if isinstance(task, asyncio.Task) and not task.done():
+                    return False
+            self._sessions.pop(root_session_id, None)
+            # Keep the build lock through teardown so replacement initialization
+            # cannot race resource cleanup or await-tree removal.
+            try:
+                pause_task = getattr(agent, "_sandbox_pause_task", None)
+                if isinstance(pause_task, asyncio.Task) and not pause_task.done():
+                    pause_task.cancel()
+                    await asyncio.gather(pause_task, return_exceptions=True)
+                reap = getattr(type(agent), "_shutdown_actor", None)
+                if callable(reap):
+                    await agent._shutdown_actor()
+                close = getattr(type(agent), "aclose", None)
+                if callable(close):
+                    await agent.aclose()
+            finally:
+                get_await_table().drop_tree(root_session_id)
+            return True
 
     async def evict_idle(self) -> int:
         """Evict every session idle past the TTL (and currently evictable)."""

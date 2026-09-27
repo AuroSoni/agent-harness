@@ -51,14 +51,16 @@ def _json_default(obj: Any) -> Any:
 
 
 def to_jsonb(value: Any) -> str | None:
-    """Serialize a Python object to JSON text for a JSONB column."""
+    """Serialize a Python object to JSON text for a json or jsonb column (key
+    order kept; a json column stores the text verbatim)."""
     if value is None:
         return None
     return json.dumps(value, default=_json_default)
 
 
 def from_jsonb(value: Any) -> Any:
-    """Decode a JSONB column value; passes already-decoded objects through."""
+    """Decode a json or jsonb column value (key order kept as stored); passes
+    already-decoded objects through."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -134,14 +136,18 @@ _CONFIG_COLUMNS: list[tuple[str, str, Callable[[AgentConfig], Any]]] = [
     ("model", "TEXT", lambda c: c.model),
     ("max_steps", "INTEGER", lambda c: c.max_steps),
     ("system_prompt", "TEXT", lambda c: c.system_prompt),
-    ("context_messages", "JSONB",
+    # JSON, not JSONB: these are replayed to the model, and JSONB re-sorts
+    # object keys (and rewrites some numbers), so a reloaded session would send
+    # different bytes — a prompt-cache miss and, on Opus 5.5, invalidated
+    # thinking blocks. Only ever read and written whole.
+    ("context_messages", "JSON",
      lambda c: to_jsonb([m.to_dict() for m in c.context_messages])),
     ("conversation_log", "JSONB",
      lambda c: to_jsonb(c.conversation_log.to_dict())),
-    ("tool_schemas", "JSONB",
+    ("tool_schemas", "JSON",
      lambda c: to_jsonb([dataclasses.asdict(ts) for ts in c.tool_schemas])),
     ("tool_names", "TEXT[]", lambda c: c.tool_names),
-    ("llm_config", "JSONB", lambda c: to_jsonb(c.llm_config.to_dict())),
+    ("llm_config", "JSON", lambda c: to_jsonb(c.llm_config.to_dict())),
     ("formatter", "TEXT", lambda c: c.formatter),
     ("compaction_config", "JSONB",
      lambda c: to_jsonb(
@@ -156,7 +162,7 @@ _CONFIG_COLUMNS: list[tuple[str, str, Callable[[AgentConfig], Any]]] = [
      lambda c: to_jsonb({k: v.to_dict() for k, v in c.media_registry.items()})),
     ("last_known_input_tokens", "INTEGER", lambda c: c.last_known_input_tokens),
     ("last_known_output_tokens", "INTEGER", lambda c: c.last_known_output_tokens),
-    ("pending_relay", "JSONB",
+    ("pending_relay", "JSON",
      lambda c: to_jsonb(_serialize_pending_relay(c.pending_relay))),
     ("current_step", "INTEGER", lambda c: c.current_step),
     ("active_profile", "TEXT", lambda c: c.active_profile),
@@ -277,7 +283,7 @@ def row_to_config(row: Mapping[str, Any]) -> AgentConfig:
         max_steps=_val(row, "max_steps", 50),
         system_prompt=_val(row, "system_prompt"),
         context_messages=[Message.from_dict(m) for m in raw_context],
-        conversation_log=ConversationLog.from_dict(raw_conversation_log),
+        conversation_log=ConversationLog.from_dict(raw_conversation_log, agent_uuid=str(_val(row, "agent_uuid", ""))),
         tool_schemas=[ToolSchema(**ts) for ts in raw_tools],
         tool_names=list(tool_names),
         llm_config=LLMConfig.from_dict(raw_llm),
@@ -323,7 +329,7 @@ def row_to_conversation(row: Mapping[str, Any]) -> Conversation:
         completed_at=iso(_val(row, "completed_at")),
         user_message=Message.from_dict(raw_user) if raw_user else None,
         final_response=Message.from_dict(raw_final) if raw_final else None,
-        conversation_log=ConversationLog.from_dict(raw_conversation_log),
+        conversation_log=ConversationLog.from_dict(raw_conversation_log, agent_uuid=str(_val(row, "agent_uuid", ""))),
         stop_reason=_val(row, "stop_reason"),
         total_steps=_val(row, "total_steps"),
         usage=Usage.from_dict(raw_usage) if raw_usage else Usage(),

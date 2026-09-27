@@ -2,7 +2,7 @@
 
 Naming (`mcp__{key}__{remote}` + sanitization), compile-time filtering,
 destructiveHint → confirmation, schema pass-through, result conversion
-(§6: text, isError, structuredContent, remote raise), E7 (dead server
+(§6: text, isError, a typed result's structured copy, remote raise), E7 (dead server
 degrades the call, never the turn), probe (MC-D10), mcp_status (MC-D13).
 """
 from __future__ import annotations
@@ -96,14 +96,15 @@ async def test_remote_schema_passes_through_verbatim(monkeypatch):
         await source.aclose()
 
 
-async def test_call_returns_text_and_structured_content(monkeypatch):
+async def test_call_returns_a_typed_result_once(monkeypatch):
     source = await _started(monkeypatch)
     try:
         compiled = {f.__tool_schema__.name: f for f in source.compile_tools()}
         envelope = await compiled["mcp__calc__add"](a=20, b=22)
         text = "".join(getattr(b, "text", "") for b in envelope.for_context_window())
-        assert "42" in text
-        assert "```json" in text  # structuredContent → fenced JSON (§6)
+        # FastMCP sends the int as text AND as structuredContent {"result": 42};
+        # the structured copy only repeats the text, so it is dropped (§6).
+        assert text == "42"
     finally:
         await source.aclose()
 

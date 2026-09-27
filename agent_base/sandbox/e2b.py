@@ -1,0 +1,1974 @@
+"""E2B remote sandbox backend — one micro-VM per agent session.
+
+Implements the :class:`~agent_base.sandbox.sandbox_types.Sandbox` contract over
+the E2B SDK through a small **transport seam** (:class:`E2BTransport`) so the
+whole backend is testable hermetically with a fake transport and the SDK is
+imported lazily (the ``agent-base[e2b]`` extra).
+
+Design (docs/design/sandbox-e2b.md in the consumer repo):
+
+* All agent-facing paths stay sandbox-root-relative; ``root_path`` is the
+  absolute directory inside the VM that plays the sandbox root and the zone
+  layout is created under it. ``_abs()``/``_rel()`` map both ways with an
+  escape check so ``..`` and absolute inputs cannot leave the root.
+* The persisted config carries the remote id (``e2b_sandbox_id``). ``setup()``
+  connects when an id is known, otherwise creates a fresh sandbox. A known id
+  the provider no longer recognises raises :class:`SandboxGone` — the runtime
+  forgets the id, provisions a new sandbox, and rehydrates from the latest
+  checkpoint. Nothing here ever silently re-creates.
+* No host environment is forwarded into the VM. ``exec``/``run_streaming``
+  send a small base env plus an explicit allow-list; untrusted strings must
+  ride ``env``, never the command string.
+* ``manifest()`` hashes every file INSIDE the sandbox with one command so the
+  checkpoint snapshotter and the export flush transfer only changed bytes.
+* Commands run as background handles bounded by ``asyncio.wait_for`` + kill:
+  the SDK's ``timeout`` argument bounds the *connection*, not the process,
+  and a non-zero exit raises — both are normalised here into ``ExecResult``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import json
+from datetime import datetime
+import io
+import os
+import posixpath
+import random
+import shlex
+import tempfile
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, runtime_checkable
+
+from agent_base.observability import emit, span
+
+from .config_driven import ConfigDrivenSandbox, register_sandbox
+from .remote_scripts import export_files_source, hash_manifest_source
+from .output import DEFAULT_CAPTURE_BYTES, HELPER_CAPTURE_BYTES, SandboxOutputLimitExceeded, Utf8Tail
+from .sandbox_types import (
+    DEFAULT_ZONE_LAYOUT,
+    MAX_READ_LINES,
+    READ_CHUNK_SIZE,
+    TEXT_EXTENSIONS,
+    TOKEN_COUNTING_SIZE_THRESHOLD,
+    ExecResult,
+    ExportedFileMetadata,
+    FileEntry,
+    SandboxConfig,
+    SandboxGone,
+    SandboxNotATextFileError,
+    SandboxPathEscapeError,
+    ZoneLayout,
+    Zone,
+)
+
+DEFAULT_ROOT_PATH = "/home/user/sandbox"
+HELPER_DIR = ".sbx"
+HASH_SCRIPT_NAME = "hash_manifest.py"
+DEFAULT_TIMEOUT_S = 900
+WALK_DEPTH = 64
+WRITE_BATCH_FILES = 64
+WRITE_BATCH_BYTES = 32 * 1024 * 1024
+SPOOL_MAX_BYTES = 8 * 1024 * 1024
+MANIFEST_TIMEOUT_S = 120.0
+RETRY_ATTEMPTS = 4
+RETRY_BASE_S = 0.5
+CREATE_RATE_LIMIT_RETRIES = 2
+CREATE_RATE_LIMIT_BACKOFF_S = 1.0
+PROCESS_TAG_ENV = "AGENT_BASE_PROCESS_TAG"
+KILL_SIGNAL_TIMEOUT_S = 5.0
+KILL_TREE_TIMEOUT_S = 10.0
+#: A dropped event stream is re-attached this many times before the command is
+#: given up on. Bounded so a persistently broken connection cannot hold a slot
+#: for the whole timeout doing nothing.
+RECONNECT_ATTEMPTS = 3
+RECONNECT_BACKOFF_S = 0.5
+
+_SECRET_KEY_MARKERS = ("_KEY", "_SECRET", "_TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL")
+_SECRET_KEY_PREFIXES = ("AWS_", "E2B_", "STYTCH_", "OPENAI_", "ANTHROPIC_", "DATABASE_")
+
+
+# ─── Transport errors (provider-neutral) ────────────────────────────────
+
+
+class RemoteError(RuntimeError):
+    """Base for transport failures the backend cannot classify further."""
+
+
+class RemoteSandboxNotFound(RemoteError):
+    """The provider does not know the remote sandbox id."""
+
+
+class RemotePathNotFound(RemoteError):
+    """A filesystem path does not exist inside the sandbox."""
+
+
+class RemoteProcessNotFound(RemoteError):
+    """A pid is unknown to the sandbox — the command already exited.
+
+    Distinct from ``RemoteSandboxNotFound`` on purpose: reconnecting to a pid
+    that has finished is an ordinary outcome, while the SDK reports it with the
+    same ``NotFoundException`` that means "this sandbox is gone". Collapsing the
+    two would make the runtime discard a perfectly healthy VM.
+    """
+
+
+class RemoteRateLimited(RemoteError):
+    """The provider rate-limited the call (retryable)."""
+
+
+class RemoteTransportError(RemoteError):
+    """A transient network / 5xx failure (retryable)."""
+
+
+#: The pinned SDK reports a command whose event stream died before the end
+#: event by raising a BARE ``Exception`` with this text (``command_handle.py``:
+#: "If the stream closed without an end event…"). It carries no type of its own,
+#: so without this probe it falls through ``_translate`` to a plain
+#: ``RemoteError`` — indistinguishable from a real command failure, and the
+#: single reason a healthy long-running process used to be killed at ~240 s.
+_STREAM_INTERRUPTED_TEXT = "ended without an end event"
+
+
+def _is_stream_interrupted(exc: BaseException) -> bool:
+    return _STREAM_INTERRUPTED_TEXT in str(exc)
+
+
+def _normalize_abs_dirs(values, *, field: str) -> tuple[str, ...]:
+    """Validate a tuple of absolute in-VM directories.
+
+    Rejects relative entries, ``/`` itself and anything that still contains a
+    ``..`` after normalization, so a caller cannot widen containment by
+    accident. Order-preserving and de-duplicated.
+    """
+    out: list[str] = []
+    for raw in values or ():
+        cleaned = posixpath.normpath(str(raw).replace("\\", "/").strip())
+        if not cleaned.startswith("/") or cleaned == "/":
+            raise ValueError(f"{field} entries must be absolute in-VM directories, got {raw!r}")
+        if ".." in cleaned.split("/"):
+            raise ValueError(f"{field} entries must not contain '..', got {raw!r}")
+        if cleaned not in out:
+            out.append(cleaned)
+    return tuple(out)
+
+
+def _contains(root: str, candidate: str) -> bool:
+    return candidate == root or candidate.startswith(root + "/")
+
+
+# ─── Transport data types ───────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RemoteEntry:
+    name: str
+    path: str
+    is_dir: bool
+    size: int = 0
+
+
+@dataclass(frozen=True)
+class RemoteExit:
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+@dataclass(frozen=True)
+class RemoteInfo:
+    sandbox_id: str
+    template_id: str | None = None
+    template_name: str | None = None
+    state: str | None = None
+    cpu_count: int | None = None
+    memory_mb: int | None = None
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+@runtime_checkable
+class RemoteProcess(Protocol):
+    pid: int
+
+    async def wait(self) -> RemoteExit: ...
+
+    async def kill(self) -> bool: ...
+
+
+@runtime_checkable
+class RemoteHandle(Protocol):
+    """One connected remote sandbox. Every method may raise a ``RemoteError``."""
+
+    sandbox_id: str
+
+    async def pause(self) -> bool: ...
+
+    async def kill(self) -> bool: ...
+
+    async def set_timeout(self, seconds: int) -> None: ...
+
+    async def get_info(self) -> RemoteInfo: ...
+
+    async def read_text(self, path: str) -> str: ...
+
+    async def read_bytes(self, path: str) -> bytes: ...
+
+    async def read_stream(self, path: str) -> AsyncIterator[bytes]: ...
+
+    async def write(self, path: str, data: str | bytes | io.IOBase) -> None: ...
+
+    async def write_files(self, entries: list[tuple[str, bytes]]) -> None: ...
+
+    async def list(self, path: str, depth: int = 1) -> list[RemoteEntry]: ...
+
+    async def get_entry(self, path: str) -> RemoteEntry | None: ...
+
+    async def remove(self, path: str) -> None: ...
+
+    async def make_dirs(self, paths: list[str]) -> None: ...
+
+    async def run_background(
+        self,
+        cmd: str,
+        *,
+        envs: dict[str, str],
+        cwd: str,
+        on_stdout: Callable[[str], Any] | None,
+        on_stderr: Callable[[str], Any] | None,
+        capture_limit_bytes: int = DEFAULT_CAPTURE_BYTES,
+    ) -> RemoteProcess: ...
+
+    async def reconnect(
+        self,
+        pid: int,
+        *,
+        tag: str | None,
+        on_stdout: Callable[[str], Any] | None,
+        on_stderr: Callable[[str], Any] | None,
+        capture_limit_bytes: int = DEFAULT_CAPTURE_BYTES,
+    ) -> RemoteProcess:
+        """Re-attach to a command still running in the sandbox.
+
+        Raises ``RemoteProcessNotFound`` when the pid has already exited.
+        """
+        ...
+
+    async def run_as(self, cmd: str, *, user: str, timeout: float = 120.0) -> RemoteExit:
+        """Run one command as a specific OS user (provisioning only).
+
+        Separate from ``run_background`` on purpose: a privileged, short, fully
+        buffered call that never streams and is never reachable from a tool.
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class RemoteSummary:
+    """One row of a sandbox listing (fleet-level view: janitor, discovery)."""
+
+    sandbox_id: str
+    state: str
+    metadata: dict[str, str]
+    started_at: datetime | None = None
+    end_at: datetime | None = None
+    template_id: str | None = None
+
+
+@runtime_checkable
+class E2BTransport(Protocol):
+    async def create(
+        self,
+        *,
+        template: str,
+        timeout_s: int,
+        metadata: dict[str, str],
+        lifecycle: dict[str, Any] | None,
+        allow_internet_access: bool,
+    ) -> RemoteHandle: ...
+
+    async def connect(self, sandbox_id: str, *, timeout_s: int) -> RemoteHandle: ...
+
+    async def find_by_metadata(self, metadata: dict[str, str]) -> str | None: ...
+
+    async def list_sandboxes(
+        self,
+        *,
+        metadata: dict[str, str] | None = None,
+        states: tuple[str, ...] = ("running", "paused"),
+    ) -> list[RemoteSummary]: ...
+
+    async def kill_sandbox(self, sandbox_id: str) -> bool: ...
+
+
+# ─── SDK transport (lazy import) ────────────────────────────────────────
+
+
+def _load_sdk():
+    try:
+        import e2b  # noqa: F401
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise ImportError(
+            "E2BSandbox requires the E2B SDK. Install the extra: "
+            "`pip install 'agent-base[e2b]'` (or `uv sync --extra e2b`)."
+        ) from exc
+    return e2b
+
+
+class SdkE2BTransport:
+    """The real transport: thin async wrapper over ``e2b.AsyncSandbox``."""
+
+    def __init__(self, api_params: dict[str, Any] | None = None) -> None:
+        self._api_params = dict(api_params or {})
+        self._sdk = None
+
+    def _sdk_module(self):
+        if self._sdk is None:
+            self._sdk = _load_sdk()
+        return self._sdk
+
+    def _translate(self, exc: BaseException, *, path_context: bool) -> RemoteError:
+        sdk = self._sdk_module()
+        ex = sdk.exceptions
+        if isinstance(exc, ex.SandboxNotFoundException):
+            return RemoteSandboxNotFound(str(exc))
+        if isinstance(exc, ex.RateLimitException):
+            return RemoteRateLimited(str(exc))
+        if isinstance(exc, (ex.NotFoundException, ex.FileNotFoundException)):
+            if path_context:
+                return RemotePathNotFound(str(exc))
+            return RemoteSandboxNotFound(str(exc))
+        if isinstance(exc, ex.TimeoutException):
+            return RemoteTransportError(str(exc))
+        if isinstance(exc, (ConnectionError, OSError)):
+            return RemoteTransportError(str(exc))
+        try:  # httpx transport errors are retryable network failures
+            import httpx
+
+            if isinstance(exc, httpx.TransportError):
+                return RemoteTransportError(str(exc))
+        except ImportError:  # pragma: no cover
+            pass
+        if isinstance(exc, ex.SandboxException):
+            text = str(exc)
+            if any(code in text for code in (" 502", " 503", " 504", "502:", "503:", "504:")):
+                return RemoteTransportError(text)
+            # A malformed / unknown id comes back as ``400: Invalid sandbox ID``
+            # rather than a 404 — for the caller it is the same thing: the
+            # remote we were bound to does not exist.
+            if "invalid sandbox id" in text.lower() and not path_context:
+                return RemoteSandboxNotFound(text)
+            return RemoteError(text)
+        if _is_stream_interrupted(exc):
+            return RemoteTransportError(str(exc))
+        return RemoteError(str(exc))
+
+    async def _guard(self, coro: Awaitable[Any], *, path_context: bool = False) -> Any:
+        try:
+            return await coro
+        except RemoteError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — translated below
+            raise self._translate(exc, path_context=path_context) from exc
+
+    async def create(
+        self,
+        *,
+        template: str,
+        timeout_s: int,
+        metadata: dict[str, str],
+        lifecycle: dict[str, Any] | None,
+        allow_internet_access: bool,
+    ) -> RemoteHandle:
+        sdk = self._sdk_module()
+        kwargs: dict[str, Any] = dict(
+            template=template or None,
+            timeout=timeout_s,
+            metadata=metadata or None,
+            envs=None,
+            secure=True,
+            allow_internet_access=allow_internet_access,
+            **self._api_params,
+        )
+        if lifecycle:
+            kwargs["lifecycle"] = lifecycle
+        sbx = await self._guard(sdk.AsyncSandbox.create(**kwargs))
+        return _SdkHandle(self, sbx)
+
+    async def connect(self, sandbox_id: str, *, timeout_s: int) -> RemoteHandle:
+        sdk = self._sdk_module()
+        sbx = await self._guard(
+            sdk.AsyncSandbox.connect(sandbox_id, timeout=timeout_s, **self._api_params)
+        )
+        return _SdkHandle(self, sbx)
+
+    async def find_by_metadata(self, metadata: dict[str, str]) -> str | None:
+        sdk = self._sdk_module()
+        states = [sdk.SandboxState.RUNNING, sdk.SandboxState.PAUSED]
+        paginator = sdk.AsyncSandbox.list(
+            query=sdk.SandboxQuery(metadata=dict(metadata), state=states),
+            limit=5,
+            **self._api_params,
+        )
+        items = await self._guard(paginator.next_items())
+        for item in items:
+            sid = getattr(item, "sandbox_id", None)
+            if sid:
+                return sid
+        return None
+
+
+    async def list_sandboxes(
+        self,
+        *,
+        metadata: dict[str, str] | None = None,
+        states: tuple[str, ...] = ("running", "paused"),
+    ) -> list[RemoteSummary]:
+        """Every sandbox matching ``metadata`` (subset match) in ``states``.
+        Walks the paginator to the end; the fleet is small (hundreds)."""
+        sdk = self._sdk_module()
+        state_enums = [getattr(sdk.SandboxState, s.upper()) for s in states]
+        query = sdk.SandboxQuery(
+            metadata=dict(metadata) if metadata else None, state=state_enums
+        )
+        paginator = sdk.AsyncSandbox.list(query=query, limit=100, **self._api_params)
+        out: list[RemoteSummary] = []
+        try:
+            while paginator.has_next:
+                for info in await paginator.next_items():
+                    state = getattr(info.state, "value", info.state)
+                    out.append(
+                        RemoteSummary(
+                            sandbox_id=info.sandbox_id,
+                            state=str(state).lower(),
+                            metadata=dict(info.metadata or {}),
+                            started_at=getattr(info, "started_at", None),
+                            end_at=getattr(info, "end_at", None),
+                            template_id=getattr(info, "template_id", None),
+                        )
+                    )
+        except Exception as exc:  # noqa: BLE001
+            raise self._translate(exc, path_context=False) from exc
+        return out
+
+    async def kill_sandbox(self, sandbox_id: str) -> bool:
+        """Kill by id without connecting (paused sandboxes included). False
+        when the sandbox no longer exists."""
+        sdk = self._sdk_module()
+        try:
+            return bool(await sdk.AsyncSandbox.kill(sandbox_id, **self._api_params))
+        except Exception as exc:  # noqa: BLE001
+            err = self._translate(exc, path_context=False)
+            if isinstance(err, RemoteSandboxNotFound):
+                return False
+            raise err from exc
+
+
+def _session_command(cmd: str) -> str:
+    """Run ``cmd`` as the leader of its own session and process group.
+
+    envd starts every command inside envd's OWN process group, so the pid it
+    reports can't be group-killed (that group is envd's). ``setsid`` makes that
+    pid lead a fresh session; ``-w`` keeps the wait and exit status should
+    setsid ever have to fork.
+    """
+    q = shlex.quote(cmd)
+    return (
+        f"if command -v setsid >/dev/null 2>&1; then exec setsid -w /bin/bash -c {q}; "
+        f"else exec /bin/bash -c {q}; fi"
+    )
+
+
+def _kill_tree_command(pid: int, tag: str) -> str:
+    """Kill a command's process group, then every process still carrying its
+    env tag (descendants that left the group, e.g. LibreOffice's soffice.bin or
+    ``setsid`` children). Runs via ``sudo -n`` when available so children
+    started with sudo die too. Never reads a pgid from /proc: before ``setsid``
+    runs, the pid still sits in envd's group."""
+    group = f"kill -KILL -- -{pid} 2>/dev/null; " if pid > 1 else ""
+    needle = shlex.quote(f"{PROCESS_TAG_ENV}={tag}")
+    sweep = (
+        f"for e in $(grep -lzxF -- {needle} /proc/[0-9]*/environ 2>/dev/null); do "
+        'p=${e#/proc/}; kill -KILL "${p%/environ}" 2>/dev/null; done; '
+    )
+    q = shlex.quote(group + sweep * 3 + "exit 0")
+    return f"if sudo -n true 2>/dev/null; then sudo -n /bin/bash -c {q}; else /bin/bash -c {q}; fi; exit 0"
+
+
+class _SdkProcess:
+    def __init__(self, transport: SdkE2BTransport, handle: Any, *, sbx: Any = None, tag: str | None = None) -> None:
+        self._t = transport
+        self._h = handle
+        self.pid = int(getattr(handle, "pid", 0) or 0)
+        self._sbx = sbx
+        self.tag = tag
+        self._killing: asyncio.Future[bool] | None = None
+
+    async def wait(self) -> RemoteExit:
+        sdk = self._t._sdk_module()
+        try:
+            result = await self._h.wait()
+        except sdk.CommandExitException as exc:
+            return RemoteExit(
+                exit_code=int(getattr(exc, "exit_code", 1) or 1),
+                stdout=str(getattr(exc, "stdout", "") or ""),
+                stderr=str(getattr(exc, "stderr", "") or ""),
+            )
+        except RemoteError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise self._t._translate(exc, path_context=False) from exc
+        return RemoteExit(
+            exit_code=int(getattr(result, "exit_code", 0) or 0),
+            stdout=str(getattr(result, "stdout", "") or ""),
+            stderr=str(getattr(result, "stderr", "") or ""),
+        )
+
+    async def kill(self) -> bool:
+        """Kill the command and its whole process tree. Concurrent callers (a
+        timeout, a turn cancel, terminate_running_commands) share one kill."""
+        if self._killing is None:
+            self._killing = asyncio.ensure_future(self._kill())
+        return await asyncio.shield(self._killing)
+
+    async def _kill(self) -> bool:
+        killed = False
+        try:
+            try:
+                killed = bool(await asyncio.wait_for(self._h.kill(), KILL_SIGNAL_TIMEOUT_S))
+            except Exception:  # noqa: BLE001 — best-effort; the tree kill still runs
+                pass
+            if self._sbx is not None and self.tag:
+                # Descendants outlive their parent's SIGKILL: always sweep.
+                try:
+                    await asyncio.wait_for(
+                        self._sbx.commands.run(_kill_tree_command(self.pid, self.tag), timeout=KILL_TREE_TIMEOUT_S),
+                        KILL_TREE_TIMEOUT_S + 5,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort
+                    pass
+            return killed
+        finally:
+            # Killing the process alone leaves the SDK event reader alive.
+            # Disconnect only this handle, including timeout/cancellation paths.
+            disconnect = getattr(self._h, "disconnect", None)
+            if callable(disconnect):
+                try:
+                    await disconnect()
+                except Exception:
+                    pass
+
+
+def _bound_sdk_output(handle: Any, limit: int) -> None:
+    """Adapt the pinned SDK's per-handle accumulators before consuming events.
+
+    Its decoder uses append() and join(); retaining its ordinary lists would
+    accumulate unlimited output even with a bounded harness callback.
+    Fail closed if that internal contract changes; never monkeypatch the SDK.
+    """
+    for attr in ("_stdout_chunks", "_stderr_chunks"):
+        current = getattr(handle, attr, None)
+        if not isinstance(current, (list, Utf8Tail)):
+            raise RemoteError("unsupported E2B command handle output buffers")
+        bounded = Utf8Tail(limit)
+        for chunk in current:
+            bounded.append(chunk)
+        setattr(handle, attr, bounded)
+
+
+class _SdkHandle:
+    def __init__(self, transport: SdkE2BTransport, sbx: Any) -> None:
+        self._t = transport
+        self._sbx = sbx
+        self.sandbox_id = str(sbx.sandbox_id)
+
+    async def pause(self) -> bool:
+        return bool(await self._t._guard(self._sbx.pause()))
+
+    async def kill(self) -> bool:
+        return bool(await self._t._guard(self._sbx.kill()))
+
+    async def set_timeout(self, seconds: int) -> None:
+        await self._t._guard(self._sbx.set_timeout(int(seconds)))
+
+    async def get_info(self) -> RemoteInfo:
+        info = await self._t._guard(self._sbx.get_info())
+        state = getattr(info, "state", None)
+        state_value = getattr(state, "value", state)
+        return RemoteInfo(
+            sandbox_id=str(getattr(info, "sandbox_id", self.sandbox_id)),
+            template_id=getattr(info, "template_id", None),
+            template_name=getattr(info, "name", None),
+            state=str(state_value) if state_value is not None else None,
+            cpu_count=getattr(info, "cpu_count", None),
+            memory_mb=getattr(info, "memory_mb", None),
+            metadata=dict(getattr(info, "metadata", None) or {}),
+        )
+
+    async def read_text(self, path: str) -> str:
+        return await self._t._guard(self._sbx.files.read(path, format="text"), path_context=True)
+
+    async def read_bytes(self, path: str) -> bytes:
+        data = await self._t._guard(self._sbx.files.read(path, format="bytes"), path_context=True)
+        return bytes(data)
+
+    async def read_stream(self, path: str) -> AsyncIterator[bytes]:
+        return await self._t._guard(self._sbx.files.read(path, format="stream"), path_context=True)
+
+    async def write(self, path: str, data: str | bytes | io.IOBase) -> None:
+        await self._t._guard(self._sbx.files.write(path, data), path_context=True)
+
+    async def write_files(self, entries: list[tuple[str, bytes]]) -> None:
+        payload = [{"path": p, "data": d} for p, d in entries]
+        await self._t._guard(self._sbx.files.write_files(payload), path_context=True)
+
+    def _entry(self, info: Any) -> RemoteEntry:
+        kind = getattr(info, "type", None)
+        kind_value = str(getattr(kind, "value", kind) or "").lower()
+        return RemoteEntry(
+            name=str(getattr(info, "name", "")),
+            path=str(getattr(info, "path", "")),
+            is_dir=kind_value == "dir",
+            size=int(getattr(info, "size", 0) or 0),
+        )
+
+    async def list(self, path: str, depth: int = 1) -> list[RemoteEntry]:
+        infos = await self._t._guard(self._sbx.files.list(path, depth=depth), path_context=True)
+        return [self._entry(i) for i in infos]
+
+    async def get_entry(self, path: str) -> RemoteEntry | None:
+        try:
+            info = await self._t._guard(self._sbx.files.get_info(path), path_context=True)
+        except RemotePathNotFound:
+            return None
+        return self._entry(info)
+
+    async def remove(self, path: str) -> None:
+        await self._t._guard(self._sbx.files.remove(path), path_context=True)
+
+    async def make_dirs(self, paths: list[str]) -> None:
+        # One round trip each; concurrently, since make_dir creates parents too.
+        await asyncio.gather(*(self._t._guard(self._sbx.files.make_dir(p), path_context=True) for p in paths))
+
+    async def run_background(
+        self,
+        cmd: str,
+        *,
+        envs: dict[str, str],
+        cwd: str,
+        on_stdout: Callable[[str], Any] | None,
+        on_stderr: Callable[[str], Any] | None,
+        capture_limit_bytes: int = DEFAULT_CAPTURE_BYTES,
+    ) -> RemoteProcess:
+        # Tag the tree so a kill can find descendants that leave the group.
+        tag = uuid.uuid4().hex
+        handle = await self._t._guard(
+            self._sbx.commands.run(
+                _session_command(cmd),
+                background=True,
+                envs={**envs, PROCESS_TAG_ENV: tag},
+                cwd=cwd,
+                on_stdout=on_stdout,
+                on_stderr=on_stderr,
+                timeout=0,
+            )
+        )
+        process = _SdkProcess(self._t, handle, sbx=self._sbx, tag=tag)
+        try:
+            _bound_sdk_output(handle, capture_limit_bytes)
+        except Exception:
+            await process.kill()
+            raise
+        return process
+
+    async def run_as(self, cmd: str, *, user: str, timeout: float = 120.0) -> RemoteExit:
+        try:
+            result = await self._t._guard(
+                self._sbx.commands.run(cmd, user=user, timeout=timeout)
+            )
+        except RemoteError as exc:
+            # The SDK RAISES on a non-zero exit, so without this a provisioning
+            # step could never see the status it is checking -- it got a
+            # RemoteError whose message is "Command exited with code 1 and
+            # error:" with the stderr already consumed. The caller wants the
+            # code and the output; a transport failure still propagates.
+            original = exc.__cause__
+            code = getattr(original, "exit_code", None)
+            if code is None:
+                raise
+            return RemoteExit(
+                exit_code=int(code),
+                stdout=str(getattr(original, "stdout", "") or ""),
+                stderr=str(getattr(original, "stderr", "") or ""),
+            )
+        return RemoteExit(
+            exit_code=int(getattr(result, "exit_code", 0) or 0),
+            stdout=str(getattr(result, "stdout", "") or ""),
+            stderr=str(getattr(result, "stderr", "") or ""),
+        )
+
+    async def reconnect(
+        self,
+        pid: int,
+        *,
+        tag: str | None,
+        on_stdout: Callable[[str], Any] | None,
+        on_stderr: Callable[[str], Any] | None,
+        capture_limit_bytes: int = DEFAULT_CAPTURE_BYTES,
+    ) -> RemoteProcess:
+        sdk = self._t._sdk_module()
+        try:
+            handle = await self._sbx.commands.connect(
+                pid, timeout=0, on_stdout=on_stdout, on_stderr=on_stderr
+            )
+        except sdk.exceptions.NotFoundException as exc:
+            # The command finished while the stream was down. That is a normal
+            # outcome, NOT a missing sandbox — see RemoteProcessNotFound.
+            raise RemoteProcessNotFound(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise self._t._translate(exc, path_context=False) from exc
+        # Carry the ORIGINAL tag: _SdkProcess._kill guards its /proc environ
+        # sweep on it, so a reconnect with tag=None would silently stop killing
+        # descendants that left the process group.
+        process = _SdkProcess(self._t, handle, sbx=self._sbx, tag=tag)
+        try:
+            _bound_sdk_output(handle, capture_limit_bytes)
+        except Exception:
+            await process.kill()
+            raise
+        return process
+
+
+# ─── Default transport hook ─────────────────────────────────────────────
+
+_default_transport_factory: Callable[[dict[str, Any] | None], E2BTransport] | None = None
+
+
+def set_default_transport_factory(
+    factory: Callable[[dict[str, Any] | None], E2BTransport] | None,
+) -> None:
+    """Override how instances built WITHOUT an explicit ``transport`` (e.g. by
+    ``sandbox_from_config`` on a cold load) obtain one. ``None`` restores the
+    SDK transport. Intended for tests and for hosts that want one shared
+    client; production leaves it unset."""
+    global _default_transport_factory
+    _default_transport_factory = factory
+
+
+def _make_default_transport(api_params: dict[str, Any] | None) -> E2BTransport:
+    if _default_transport_factory is not None:
+        return _default_transport_factory(api_params)
+    return SdkE2BTransport(api_params)
+
+
+# ─── Config ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class E2BSandboxConfig(SandboxConfig):
+    """Serializable configuration for :class:`E2BSandbox`.
+
+    ``e2b_sandbox_id`` is the REMOTE id (``None`` until a sandbox is created);
+    the runtime re-persists the config after provisioning so the id survives a
+    process restart. ``template`` is the template reference the sandbox was
+    created from (``name:tag`` or ``name:<build_id>``); ``template_build_id``
+    is filled from the provider after creation for provenance.
+    """
+
+    sandbox_type: str = "e2b"
+    sandbox_id: str = ""
+    e2b_sandbox_id: str | None = None
+    template: str = ""
+    template_build_id: str | None = None
+    root_path: str = DEFAULT_ROOT_PATH
+    timeout_s: int = DEFAULT_TIMEOUT_S
+    metadata: dict[str, str] = field(default_factory=dict)
+    default_timeout: float = 30.0
+    extra_zones: tuple[str, ...] = ()
+    host_env_allowlist: tuple[str, ...] = ()
+    python_path: str = "python3"
+    layout: ZoneLayout | dict[str, Any] | None = None
+    max_concurrent_ops: int = 8
+    allow_internet_access: bool = True
+    on_timeout: str = "pause"
+    auto_resume: bool = True
+    discover_by_metadata: bool = True
+    #: Absolute in-VM directories OUTSIDE ``root_path`` that this sandbox may
+    #: address. Empty keeps the historical behaviour exactly: ``root_path`` is
+    #: the only reachable tree. See ``_abs``.
+    open_roots: tuple[str, ...] = ()
+    #: Absolute in-VM directories ``setup()`` creates in addition to the zone
+    #: layout. Root-owned trees belong to template/provisioning, never here:
+    #: ``setup()`` runs unprivileged and would fail on every turn.
+    provision_dirs: tuple[str, ...] = ()
+    #: ``HOME`` for every command. Empty derives it from ``root_path`` as before.
+    home: str = ""
+    #: Semantic anchors. Empty falls back to the zone layout, so an existing
+    #: deployment is byte-identical.
+    work_dir: str = ""
+    exports_dir: str = ""
+    uploads_dir: str = ""
+    #: Where ``emit_capped`` persists overflow. Empty keeps the library default.
+    tool_results_dir: str = ""
+    #: Where the manifest helper lives. Relative (the default ``.sbx``) keeps it
+    #: under ``root_path``, written by ``setup()`` on every new handle.
+    #:
+    #: An ABSOLUTE value means the directory is managed from OUTSIDE the
+    #: sandbox: ``setup()`` neither creates nor writes it, and whoever does owns
+    #: keeping it current. That is how a deployment puts the helper somewhere
+    #: the model cannot reach. The distinction matters because a modified helper
+    #: that returns ``{}`` yields an empty, ``"full"`` manifest -- verification
+    #: checks the entries that are listed, not the ones that are missing -- and
+    #: the VM could then be retired with files absent from its backup.
+    helper_dir: str = ""
+    #: Absolute trees the checkpoint captures. Declared by the sandbox
+    #: because the layout is the sandbox's, not the snapshot policy's.
+    capture_roots: tuple[str, ...] = ()
+
+
+# ─── Backend ────────────────────────────────────────────────────────────
+
+
+@register_sandbox("e2b")
+class E2BSandbox(ConfigDrivenSandbox):
+    """Remote sandbox on E2B — see the module docstring."""
+
+    config_class = E2BSandboxConfig
+
+    def __init__(
+        self,
+        sandbox_id: str,
+        e2b_sandbox_id: str | None = None,
+        template: str = "",
+        template_build_id: str | None = None,
+        root_path: str = DEFAULT_ROOT_PATH,
+        timeout_s: int = DEFAULT_TIMEOUT_S,
+        metadata: dict[str, str] | None = None,
+        default_timeout: float = 30.0,
+        extra_zones: tuple[str, ...] = (),
+        host_env_allowlist: tuple[str, ...] = (),
+        python_path: str = "python3",
+        *,
+        layout: ZoneLayout | None = None,
+        transport: E2BTransport | None = None,
+        api_params: dict[str, Any] | None = None,
+        max_concurrent_ops: int = 8,
+        allow_internet_access: bool = True,
+        on_timeout: str = "pause",
+        auto_resume: bool = True,
+        discover_by_metadata: bool = True,
+        open_roots: tuple[str, ...] = (),
+        provision_dirs: tuple[str, ...] = (),
+        home: str = "",
+        work_dir: str = "",
+        exports_dir: str = "",
+        uploads_dir: str = "",
+        tool_results_dir: str = "",
+        helper_dir: str = "",
+        capture_roots: tuple[str, ...] = (),
+    ) -> None:
+        if not sandbox_id:
+            raise ValueError("sandbox_id must not be empty")
+        if "/" in sandbox_id or "\\" in sandbox_id:
+            raise ValueError("sandbox_id must not contain path separators")
+        root = posixpath.normpath(root_path.replace("\\", "/"))
+        if not root.startswith("/") or root == "/":
+            raise ValueError("root_path must be an absolute directory inside the VM")
+
+        self.sandbox_id = sandbox_id
+        self.e2b_sandbox_id = e2b_sandbox_id or None
+        self.template = template
+        self.template_build_id = template_build_id
+        self.root_path = root
+        self.timeout_s = int(timeout_s)
+        self.metadata = dict(metadata or {})
+        self.default_timeout = float(default_timeout)
+        self.extra_zones = tuple(extra_zones)
+        self.host_env_allowlist = tuple(host_env_allowlist)
+        self.python_path = python_path
+
+        if isinstance(layout, dict):
+            layout = ZoneLayout(**{
+                **layout,
+                "zones": tuple(Zone(**z) if isinstance(z, dict) else z for z in layout.get("zones", DEFAULT_ZONE_LAYOUT.zones)),
+            })
+        self._layout = (layout or DEFAULT_ZONE_LAYOUT).with_extra_zones(*self.extra_zones)
+
+        # Absolute in-VM trees. Every one of these defaults to the historical
+        # behaviour, so an existing config produces a byte-identical sandbox.
+        self.open_roots = _normalize_abs_dirs(open_roots, field="open_roots")
+        self.provision_dirs = _normalize_abs_dirs(provision_dirs, field="provision_dirs")
+        # HOME was derived as dirname(root_path). That is right only while the
+        # root sits directly under the home directory; passing it explicitly
+        # stops a root_path move from silently relocating HOME.
+        self.home = posixpath.normpath(home) if home else (self.root_path.rsplit("/", 1)[0] or "/home/user")
+        self.work_dir = posixpath.normpath(work_dir) if work_dir else self._layout.workspace
+        self.exports_dir = posixpath.normpath(exports_dir) if exports_dir else self._layout.exports
+        self.uploads_dir = (
+            posixpath.normpath(uploads_dir) if uploads_dir
+            else f"{self._layout.workspace}/{self._layout.imported_subdir}"
+        )
+        self.tool_results_dir = posixpath.normpath(tool_results_dir) if tool_results_dir else ""
+        self.helper_dir = posixpath.normpath(helper_dir) if helper_dir else HELPER_DIR
+        self.capture_roots = _normalize_abs_dirs(capture_roots, field="capture_roots")
+
+        if max_concurrent_ops < 1:
+            raise ValueError("max_concurrent_ops must be positive")
+        self.max_concurrent_ops = max_concurrent_ops
+        self.allow_internet_access = allow_internet_access
+        self.on_timeout = on_timeout
+        self.auto_resume = auto_resume
+        self.discover_by_metadata = discover_by_metadata
+        self._transport: E2BTransport = transport or _make_default_transport(api_params)
+        self._ops = asyncio.Semaphore(max_concurrent_ops)
+        self._lifecycle_lock = asyncio.Lock()
+        self._allow_internet_access = allow_internet_access
+        self._on_timeout = on_timeout
+        self._auto_resume = auto_resume
+        self._discover_by_metadata = discover_by_metadata
+
+        self._handle: RemoteHandle | None = None
+        self._state: str = "new"  # new | running | paused | killed
+        self._created_last_setup = False
+        self._helper_ready = False
+        self._pause_epoch = 0
+        self._processes: dict[int, RemoteProcess] = {}
+
+    # ─── Layout / identity ─────────────────────────────────────────────
+
+    @property
+    def layout(self) -> ZoneLayout:
+        return self._layout
+
+    @property
+    def _helper_is_external(self) -> bool:
+        """Whether the manifest helper is managed from outside the sandbox.
+
+        An absolute ``helper_dir`` says so. The sandbox then neither creates nor
+        writes it, because the point of moving it out of ``root_path`` is to put
+        it somewhere the model cannot write either.
+        """
+        return self.helper_dir.startswith("/")
+
+    @property
+    def helper_path(self) -> str:
+        """The directory holding ``hash_manifest.py``, as the VM sees it."""
+        return self.helper_dir if self._helper_is_external else self._abs(self.helper_dir)
+
+    async def run_as(self, command: str, *, user: str, timeout: float = 120.0) -> ExecResult:
+        """Run one command inside the VM as ``user`` (root provisioning).
+
+        Deliberately NOT on any tool path: the model reaches the VM only
+        through ``run_streaming``, which accepts no user. This exists so a
+        caller does not have to reach through ``_handle._sbx`` -- a private
+        attribute that the transport seam swaps out in tests.
+        """
+        await self.ensure_running()
+        assert self._handle is not None
+        runner = getattr(self._handle, "run_as", None)
+        if runner is None:
+            raise RemoteError("transport does not support run_as")
+        started = time.monotonic()
+        exit_info = await runner(command, user=user, timeout=timeout)
+        return ExecResult(
+            exit_code=exit_info.exit_code,
+            stdout=exit_info.stdout,
+            stderr=exit_info.stderr,
+            duration_ms=(time.monotonic() - started) * 1000,
+        )
+
+    @property
+    def capture_excludes(self) -> tuple[str, ...]:
+        """Absolute dirs inside a capture root that are NOT user data.
+
+        ``root_path`` holds the manifest helper and verb scratch; it is
+        rewritten on every ``setup()``, so capturing it would hash control-plane
+        files every turn and let a restore overwrite them.
+        """
+        return (self.root_path,)
+
+    @property
+    def is_remote(self) -> bool:
+        return True
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def pause_epoch(self) -> int:
+        return self._pause_epoch
+
+    def created_on_last_setup(self) -> bool:
+        return self._created_last_setup
+
+    def _attrs(self, **extra: Any) -> dict[str, Any]:
+        base = {
+            "sandbox_id": self.sandbox_id,
+            "e2b_sandbox_id": self.e2b_sandbox_id,
+            "template": self.template,
+            "template_build_id": self.template_build_id,
+        }
+        base.update(extra)
+        return base
+
+    # ─── Paths ─────────────────────────────────────────────────────────
+
+    def abs_path(self, sandbox_path: str) -> str:
+        """Absolute in-VM path for a sandbox-root-relative path (public helper
+        for consumers that hand paths to in-sandbox scripts)."""
+        return self._abs(sandbox_path)
+
+    def _abs(self, rel: str) -> str:
+        """Resolve an agent path to an absolute in-VM path, or refuse it.
+
+        Containment is a CLOSED SET, not a prefix test that can be opted out
+        of: ``root_path`` plus any explicitly declared ``open_roots``. Widening
+        that set is what lets a sandbox address trees outside its root (e.g.
+        ``/mnt/user-data/outputs``) without making every path unchecked --
+        ``..`` is still collapsed first, so nothing escapes by traversal.
+        """
+        cleaned = str(rel).replace("\\", "/").strip()
+        if cleaned.startswith("/"):
+            candidate = posixpath.normpath(cleaned)
+        else:
+            candidate = posixpath.normpath(posixpath.join(self.root_path, cleaned or "."))
+        if _contains(self.root_path, candidate):
+            return candidate
+        for root in self.open_roots:
+            if _contains(root, candidate):
+                return candidate
+        raise SandboxPathEscapeError(rel)
+
+    def _rel(self, abs_path: str) -> str:
+        """Inverse of ``_abs`` for keys the caller will see.
+
+        A path under ``root_path`` becomes root-relative, as always. A path in
+        an open root stays ABSOLUTE rather than being stripped to a bogus
+        relative one: with several reachable trees a root-relative key is
+        ambiguous, and mixing the two forms in a single walk silently produces
+        a manifest whose keys mean different things.
+        """
+        normalized = posixpath.normpath(str(abs_path).replace("\\", "/"))
+        if normalized == self.root_path:
+            return ""
+        prefix = self.root_path + "/"
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):]
+        return normalized
+
+    @staticmethod
+    def _entry_from_remote(entry: RemoteEntry) -> FileEntry:
+        ext = "" if entry.is_dir else posixpath.splitext(entry.name)[1]
+        tokens = None
+        if (
+            not entry.is_dir
+            and ext.lower() in TEXT_EXTENSIONS
+            and entry.size <= TOKEN_COUNTING_SIZE_THRESHOLD
+        ):
+            tokens = entry.size // 3
+        return FileEntry(
+            name=entry.name,
+            is_dir=entry.is_dir,
+            size_bytes=0 if entry.is_dir else entry.size,
+            extension=ext,
+            tokens=tokens,
+        )
+
+    # ─── Lifecycle ─────────────────────────────────────────────────────
+
+    def _lifecycle(self) -> dict[str, Any] | None:
+        if not self._on_timeout:
+            return None
+        lifecycle: dict[str, Any] = {"on_timeout": self._on_timeout}
+        if self._on_timeout == "pause":
+            lifecycle["auto_resume"] = bool(self._auto_resume)
+        return lifecycle
+
+    async def _discover_remote(self) -> str | None:
+        if not self._discover_by_metadata or not self.metadata:
+            return None
+        finder = getattr(self._transport, "find_by_metadata", None)
+        if finder is None:
+            return None
+        return await finder(dict(self.metadata))
+
+    async def ensure_running(self) -> bool:
+        """Connect to the remembered remote sandbox, or create one.
+
+        Returns True when a NEW sandbox was created. Raises ``SandboxGone``
+        when the remembered id is unknown to the provider.
+        """
+        async with self._lifecycle_lock:
+            self._pause_epoch += 1
+            if self._state == "killed":
+                raise SandboxGone(self.sandbox_id, self.e2b_sandbox_id)
+            if self._state == "running" and self._handle is not None:
+                return False
+
+            if self.e2b_sandbox_id:
+                with span("sandbox.connect", **self._attrs()):
+                    try:
+                        self._handle = await self._retry(
+                            "connect",
+                            lambda: self._transport.connect(
+                                self.e2b_sandbox_id, timeout_s=self.timeout_s
+                            ),
+                        )
+                    except RemoteSandboxNotFound as exc:
+                        emit("sandbox.gone", **self._attrs())
+                        raise SandboxGone(self.sandbox_id, self.e2b_sandbox_id) from exc
+                self._state = "running"
+                return False
+
+            discovered = await self._discover_remote()
+            if discovered:
+                with span("sandbox.connect", discovered=True, **self._attrs()):
+                    try:
+                        self._handle = await self._retry(
+                            "connect",
+                            lambda: self._transport.connect(discovered, timeout_s=self.timeout_s),
+                        )
+                        self.e2b_sandbox_id = discovered
+                        self._state = "running"
+                        return False
+                    except RemoteSandboxNotFound:
+                        pass  # raced with a kill — fall through to create
+
+            with span("sandbox.create", **self._attrs()):
+                # Create has no provider idempotency token: retrying a timed-out
+                # create may duplicate the VM. The coordinator rediscovers by
+                # persisted operation metadata on the next request. A rate-limit
+                # rejection is a definite no-create, so only that is retried.
+                for attempt in range(CREATE_RATE_LIMIT_RETRIES + 1):
+                    try:
+                        handle = await self._transport.create(
+                                template=self.template,
+                                timeout_s=self.timeout_s,
+                                metadata=dict(self.metadata),
+                                lifecycle=self._lifecycle(),
+                                allow_internet_access=self._allow_internet_access,
+                        )
+                        break
+                    except RemoteRateLimited:
+                        if attempt == CREATE_RATE_LIMIT_RETRIES:
+                            raise
+                        emit("sandbox.retry", op="create", attempt=attempt + 1,
+                             error_type="RemoteRateLimited", **self._attrs())
+                        await asyncio.sleep(CREATE_RATE_LIMIT_BACKOFF_S * (attempt + 1))
+            self._handle = handle
+            self.e2b_sandbox_id = handle.sandbox_id
+            self._state = "running"
+            self._helper_ready = False
+            try:
+                info = await handle.get_info()
+                if info.template_id:
+                    self.template_build_id = info.template_id
+            except RemoteError:
+                pass
+            emit("sandbox.created", **self._attrs())
+            return True
+
+    async def setup(self) -> None:
+        created = await self.ensure_running()
+        self._created_last_setup = created
+        assert self._handle is not None
+        zones = [self._abs(z.name) for z in self._layout.zones]
+        zones += [self._abs(d) for d in self.provision_dirs]
+        external = self._helper_is_external
+        helper_dir = self.helper_dir if external else self._abs(self.helper_dir)
+        with span("sandbox.setup", created=created, **self._attrs()):
+            # An externally managed helper directory is root-owned by design:
+            # creating it here would fail, and creating it SUCCESSFULLY would
+            # mean it was writable, which is the thing being avoided.
+            targets = list(zones) if external else [*zones, helper_dir]
+            await self._call("make_dirs", lambda h: h.make_dirs(targets))
+            if not external and (created or not self._helper_ready):
+                script = posixpath.join(helper_dir, HASH_SCRIPT_NAME)
+                # Refresh the helper on each newly reconstructed handle; an
+                # older VM must not keep a manifest script that silently omits
+                # unreadable files when deciding whether it is safe to retire.
+                await self._call("write", lambda h: h.write(script, hash_manifest_source()))
+                self._helper_ready = True
+
+    async def teardown(self) -> None:
+        async with self._lifecycle_lock:
+            handle = self._handle
+            if handle is not None and self._state != "killed":
+                with span("sandbox.kill", **self._attrs()):
+                    try:
+                        await handle.kill()
+                    except RemoteSandboxNotFound:
+                        pass
+            elif self.e2b_sandbox_id and self._state != "killed":
+                # Rebuilt from a persisted config and never connected (the
+                # cold destroy verb, the janitor): kill by id — connecting
+                # first would resume a paused VM just to kill it.
+                kill_by_id = getattr(self._transport, "kill_sandbox", None)
+                with span("sandbox.kill", **self._attrs()):
+                    try:
+                        if kill_by_id is not None:
+                            await kill_by_id(self.e2b_sandbox_id)
+                        else:
+                            h = await self._transport.connect(
+                                self.e2b_sandbox_id, timeout_s=self.timeout_s
+                            )
+                            await h.kill()
+                    except RemoteSandboxNotFound:
+                        pass
+            self._handle = None
+            self._state = "killed"
+            self.e2b_sandbox_id = None
+            self._helper_ready = False
+
+    async def pause(self, *, epoch: int | None = None) -> bool:
+        async with self._lifecycle_lock:
+            if epoch is not None and epoch != self._pause_epoch:
+                return False  # touched since the pause was scheduled
+            if self._state != "running" or self._handle is None:
+                return False
+            with span("sandbox.pause", **self._attrs()):
+                await self._retry("pause", self._handle.pause)
+            self._state = "paused"
+            return True
+
+    def forget_remote(self) -> None:
+        self._handle = None
+        self.e2b_sandbox_id = None
+        self._state = "new"
+        self._helper_ready = False
+
+    async def remote_info(self) -> dict[str, Any] | None:
+        if self._handle is None:
+            return None
+        info = await self._call("get_info", lambda h: h.get_info())
+        return {
+            "sandbox_id": info.sandbox_id,
+            "template_id": info.template_id,
+            "template_name": info.template_name,
+            "state": info.state,
+            "cpu_count": info.cpu_count,
+            "memory_mb": info.memory_mb,
+            "metadata": dict(info.metadata),
+        }
+
+    # ─── Call plumbing: ensure running + concurrency cap + retry ───────
+
+    async def _retry(self, op: str, fn: Callable[[], Awaitable[Any]]) -> Any:
+        delay = RETRY_BASE_S
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                return await fn()
+            except (RemoteRateLimited, RemoteTransportError) as exc:
+                if attempt == RETRY_ATTEMPTS:
+                    raise
+                emit(
+                    "sandbox.retry",
+                    op=op,
+                    attempt=attempt,
+                    error_type=type(exc).__name__,
+                    **self._attrs(),
+                )
+                await asyncio.sleep(delay + random.uniform(0, delay / 2))
+                delay *= 2
+        raise AssertionError("unreachable")
+
+    async def _call(self, op: str, fn: Callable[[RemoteHandle], Awaitable[Any]]) -> Any:
+        if self._state != "running" or self._handle is None:
+            await self.ensure_running()
+        handle = self._handle
+        assert handle is not None
+        async with self._ops:
+            try:
+                return await self._retry(op, lambda: fn(handle))
+            except RemoteSandboxNotFound as exc:
+                emit("sandbox.gone", op=op, **self._attrs())
+                raise SandboxGone(self.sandbox_id, self.e2b_sandbox_id) from exc
+
+    async def _classify_path_error(
+        self, rel: str, exc: RemoteError, *, expect_dir: bool
+    ) -> Exception:
+        if isinstance(exc, RemotePathNotFound):
+            return FileNotFoundError(f"Not found: '{rel}'")
+        try:
+            entry = await self._call("get_entry", lambda h: h.get_entry(self._abs(rel)))
+        except Exception:  # noqa: BLE001 — classification is best-effort
+            return exc
+        if entry is None:
+            return FileNotFoundError(f"Not found: '{rel}'")
+        if expect_dir and not entry.is_dir:
+            return NotADirectoryError(f"Not a directory: '{rel}'")
+        if not expect_dir and entry.is_dir:
+            return IsADirectoryError(f"Is a directory: '{rel}'")
+        return exc
+
+    # ─── Filesystem ────────────────────────────────────────────────────
+
+    async def read_file(self, path: str, offset: int = 0, limit: int | None = None) -> str:
+        target = self._abs(path)
+        ext = posixpath.splitext(target)[1].lower()
+        if ext and ext not in TEXT_EXTENSIONS:
+            raise SandboxNotATextFileError(path, ext)
+        try:
+            text = await self._call("read_text", lambda h: h.read_text(target))
+        except RemoteError as exc:
+            raise await self._classify_path_error(path, exc, expect_dir=False) from exc
+        effective_limit = min(limit, MAX_READ_LINES) if limit is not None else MAX_READ_LINES
+        lines = text.splitlines(keepends=True)
+        return "".join(lines[offset : offset + effective_limit])
+
+    async def write_file(self, path: str, content: str) -> None:
+        target = self._abs(path)
+        await self._call("write", lambda h: h.write(target, content))
+
+    async def write_bytes(self, path: str, data: bytes) -> str:
+        target = self._abs(path)
+        await self._call("write", lambda h: h.write(target, bytes(data)))
+        return path
+
+    async def read_file_bytes(self, path: str) -> AsyncIterator[bytes]:
+        target = self._abs(path)
+        try:
+            stream = await self._call("read_stream", lambda h: h.read_stream(target))
+        except RemoteError as exc:
+            raise await self._classify_path_error(path, exc, expect_dir=False) from exc
+        buffer = bytearray()
+        try:
+            async for chunk in stream:
+                buffer.extend(chunk)
+                while len(buffer) >= READ_CHUNK_SIZE:
+                    yield bytes(buffer[:READ_CHUNK_SIZE])
+                    del buffer[:READ_CHUNK_SIZE]
+        except RemoteError as exc:
+            raise await self._classify_path_error(path, exc, expect_dir=False) from exc
+        if buffer:
+            yield bytes(buffer)
+
+    async def write_file_bytes(self, path: str, data: AsyncIterator[bytes]) -> None:
+        target = self._abs(path)
+        spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES, mode="w+b")
+        try:
+            async for chunk in data:
+                spool.write(chunk)
+            size = spool.tell()
+            spool.seek(0)
+            if size <= SPOOL_MAX_BYTES:
+                payload: bytes | io.IOBase = spool.read()
+            else:
+                payload = spool
+            async def _write(handle: RemoteHandle) -> None:
+                if isinstance(payload, io.IOBase):
+                    payload.seek(0)
+                await handle.write(target, payload)
+            await self._call("write", _write)
+        finally:
+            spool.close()
+
+    async def _bulk_write_many(self, items: list[tuple[str, bytes]]) -> None:
+        batch: list[tuple[str, bytes]] = []
+        batch_bytes = 0
+        for sandbox_path, data in items:
+            entry = (self._abs(sandbox_path), bytes(data))
+            if batch and (
+                len(batch) >= WRITE_BATCH_FILES or batch_bytes + len(entry[1]) > WRITE_BATCH_BYTES
+            ):
+                await self._flush_batch(batch)
+                batch, batch_bytes = [], 0
+            batch.append(entry)
+            batch_bytes += len(entry[1])
+        if batch:
+            await self._flush_batch(batch)
+
+    async def _flush_batch(self, batch: list[tuple[str, bytes]]) -> None:
+        payload = list(batch)
+        await self._call("write_files", lambda h: h.write_files(payload))
+
+    async def list_dir(self, path: str = ".") -> list[FileEntry]:
+        target = self._abs(path)
+        try:
+            entries = await self._call("list", lambda h: h.list(target, 1))
+        except RemoteError as exc:
+            raise await self._classify_path_error(path, exc, expect_dir=True) from exc
+        out = [self._entry_from_remote(e) for e in entries]
+        out.sort(key=lambda e: e.name)
+        return out
+
+    async def file_exists(self, path: str) -> tuple[bool, FileEntry | None]:
+        try:
+            target = self._abs(path)
+        except SandboxPathEscapeError:
+            return (False, None)
+        entry = await self._call("get_entry", lambda h: h.get_entry(target))
+        if entry is None:
+            return (False, None)
+        return (True, self._entry_from_remote(entry))
+
+    async def delete(self, path: str) -> bool:
+        target = self._abs(path)
+        entry = await self._call("get_entry", lambda h: h.get_entry(target))
+        if entry is None:
+            return False
+        try:
+            await self._call("remove", lambda h: h.remove(target))
+        except RemotePathNotFound:
+            return False
+        return True
+
+    async def walk(self, path: str = ".") -> list[FileEntry]:
+        # rstrip only: a LEADING slash is meaningful now (an open root is an
+        # absolute path), and strip("/") used to turn /mnt/user-data/outputs
+        # into a relative "mnt/user-data/outputs" under the sandbox root.
+        base = "" if path in (".", "", "/") else path.rstrip("/")
+        target = self._abs(base or ".")
+        try:
+            entries = await self._call("list_deep", lambda h: h.list(target, WALK_DEPTH))
+        except RemotePathNotFound:
+            return []
+        except RemoteError:
+            return await super().walk(path)
+        # Key semantics are decided ONCE per walk, by where the base is.
+        # Walking an open root (outside root_path) must key every entry
+        # absolutely -- including any that happen to sit under root_path --
+        # or a single walk returns a mix of absolute and root-relative keys
+        # that mean different things.
+        absolute_keys = not _contains(self.root_path, target)
+        out: list[FileEntry] = []
+        for entry in entries:
+            if entry.is_dir:
+                continue
+            fe = self._entry_from_remote(entry)
+            fe.relpath = (
+                posixpath.normpath(entry.path) if absolute_keys else self._rel(entry.path)
+            )
+            out.append(fe)
+        out.sort(key=lambda e: e.relpath)
+        return out
+
+    # ─── File coordination ─────────────────────────────────────────────
+
+    async def import_file(self, filename: str, data: AsyncIterator[bytes]) -> str:
+        name = posixpath.basename(filename.replace("\\", "/")) or "upload"
+        sandbox_path = f"{self.uploads_dir}/{name}"
+        await self.write_file_bytes(sandbox_path, data)
+        return sandbox_path
+
+    def _export_command(self, mode: str, path: str = "") -> tuple[str, dict[str, str]]:
+        # Inline trusted code also protects already-running VMs whose installed
+        # manifest helper predates export symlink protection.
+        return (
+            f"{shlex.quote(self.python_path)} -I -B -c {shlex.quote(export_files_source())}",
+            {"SBX_EXPORT_ROOT": self._abs(self.exports_dir),
+             "SBX_EXPORT_MODE": mode, "SBX_EXPORT_PATH": path},
+        )
+
+    async def _export_index(self, mode: str) -> dict[str, tuple[str | None, int]] | None:
+        command, env = self._export_command(mode)
+        try:
+            result = await self.exec(command, env=env, cwd=".", timeout=MANIFEST_TIMEOUT_S)
+        except SandboxOutputLimitExceeded:
+            result = None
+            reason = "output_limit"
+        else:
+            if result.exit_code == 4:
+                raise SandboxPathEscapeError(self.exports_dir)
+            reason = "timeout" if result.timed_out else "nonzero_exit"
+        if result is not None and not result.timed_out and result.exit_code == 0:
+            try:
+                raw = json.loads(result.stdout)
+                files = raw["files"]
+                if raw.get("rejected_count"):
+                    emit("sandbox.export_rejected", count=raw["rejected_count"], **self._attrs())
+                return {name: (value[0], int(value[1])) for name, value in files.items()}
+            except (ValueError, KeyError, TypeError):
+                reason = "bad_json"
+        if mode == "manifest":
+            emit("sandbox.manifest_unavailable", reason=reason, **self._attrs())
+            return None
+        # No unchecked SDK walk/read fallback: without the safe helper we
+        # cannot establish whether a path traverses a symlink.
+        raise RuntimeError(f"Safe export listing unavailable ({reason}); retry sandbox preparation")
+
+    async def _export_manifest(self) -> dict[str, tuple[str | None, int]] | None:
+        return await self._export_index("manifest")
+
+    async def list_exported_files(self) -> list[str]:
+        return sorted(await self._export_index("list") or {})
+
+    def _export_rel(self, path: str) -> str:
+        exports = self.exports_dir
+        cleaned = path.replace("\\", "/")
+        joined = posixpath.normpath(f"{exports}/{cleaned}")
+        if joined == exports or not joined.startswith(exports + "/"):
+            raise SandboxPathEscapeError(path)
+        return joined
+
+    async def get_exported_file(self, path: str) -> AsyncIterator[bytes]:
+        rel = posixpath.relpath(self._export_rel(path), self.exports_dir)
+        command, env = self._export_command("read", rel)
+        # Spool before yielding: a failure or truncated command stream must not
+        # publish a partial file. RAM remains bounded for large exports.
+        with tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES, mode="w+b") as spool:
+            pending = ""
+            final = None
+            digest = hashlib.sha256()
+
+            def consume(chunk: str) -> None:
+                nonlocal pending, final
+                pending += chunk
+                while "\n" in pending:
+                    line, pending = pending.split("\n", 1)
+                    try:
+                        record = json.loads(line)
+                    except ValueError as exc:
+                        raise RuntimeError("Safe export reader returned invalid data") from exc
+                    if "data" in record:
+                        data = base64.b64decode(record["data"], validate=True)
+                        offset = record["offset"]
+                        if offset < spool.tell() and offset + len(data) <= spool.tell():
+                            continue  # command reattachment may replay output
+                        if offset != spool.tell():
+                            raise RuntimeError("Safe export reader lost data")
+                        spool.write(data)
+                        digest.update(data)
+                    else:
+                        final = record
+                if len(pending) > 65536:
+                    raise RuntimeError("Safe export reader exceeded its record limit")
+
+            with span("sandbox.export_read", **self._attrs()):
+                result = await self.run_streaming(
+                    command, env=env, cwd=".", timeout=MANIFEST_TIMEOUT_S,
+                    on_output=consume, capture_limit_bytes=1024,
+                )
+            if result.exit_code == 4:
+                raise SandboxPathEscapeError(path)
+            if result.exit_code == 5:
+                raise FileNotFoundError(f"Exported file not found: '{path}'")
+            if (result.timed_out or result.exit_code != 0 or pending or not final
+                    or final.get("size") != spool.tell()
+                    or final.get("sha256") != digest.hexdigest()):
+                raise RuntimeError("Safe export read failed or was incomplete; retry the export")
+            emit("sandbox.export_read_complete", size_bytes=spool.tell(), **self._attrs())
+            spool.seek(0)
+            while chunk := spool.read(READ_CHUNK_SIZE):
+                yield chunk
+
+    async def get_exported_file_metadata(self) -> list[ExportedFileMetadata]:
+        manifest = await self._export_manifest()
+        results: list[ExportedFileMetadata] = []
+        if manifest is None:
+            emit("sandbox.export_metadata_fallback", reason="manifest_unavailable", **self._attrs())
+            for rel in await self.list_exported_files():
+                data = b"".join([c async for c in self.get_exported_file(rel)])
+                results.append(
+                    ExportedFileMetadata(
+                        filename=posixpath.basename(rel),
+                        extension=posixpath.splitext(rel)[1],
+                        size_bytes=len(data),
+                        blake3_hash=self._blake3_hex(data),
+                        path=rel,
+                    )
+                )
+            return results
+        for inner, (digest, size) in sorted(manifest.items()):
+            self._export_rel(inner)
+            if digest is None:  # helper could not hash it — read safely and hash here
+                data = b"".join([c async for c in self.get_exported_file(inner)])
+                digest = self._blake3_hex(data)
+                size = len(data)
+            results.append(
+                ExportedFileMetadata(
+                    filename=posixpath.basename(inner),
+                    extension=posixpath.splitext(inner)[1],
+                    size_bytes=size,
+                    blake3_hash=digest,
+                    path=inner,
+                )
+            )
+        return results
+
+    # ─── Manifest (sandbox-side hashing) ───────────────────────────────
+
+    async def manifest(
+        self,
+        zones: tuple[str, ...] | list[str],
+        *,
+        max_file_bytes: int | None = None,
+        capture_roots: tuple[str, ...] | list[str] = (),
+    ) -> dict[str, tuple[str | None, int]] | None:
+        if not zones and not capture_roots:
+            return {}
+        script = posixpath.join(self.helper_path, HASH_SCRIPT_NAME)
+        # Absolute mode keys every entry by its ABSOLUTE in-VM path: with more
+        # than one reachable tree a root-relative key does not say which tree
+        # it belongs to, and two roots could collide on the same suffix.
+        if capture_roots:
+            env = {
+                "SBX_CAPTURE_ROOTS": ":".join(capture_roots),
+                "SBX_CAPTURE_EXCLUDE": ":".join(self.capture_excludes),
+            }
+        else:
+            env = {
+                "SBX_ROOT": self.root_path,
+                "SBX_ZONES": ":".join(zones),
+            }
+        if max_file_bytes is not None:
+            env["SBX_MAX_FILE_BYTES"] = str(int(max_file_bytes))
+        # -I for the same reason the verb runner uses it, and it matters MORE
+        # here. The helper decides what a checkpoint contains, so it is
+        # installed root-owned where the model cannot rewrite the FILE -- but
+        # protecting the file is not enough. Without isolation CPython runs
+        # `sitecustomize` from PYTHONPATH at startup, and PYTHONPATH points at
+        # the model's own writable package overlay. A three-line sitecustomize
+        # that prints `{}` and calls os._exit(0) yields an EMPTY but "full"
+        # manifest, exit code 0 -- reproduced. Verification checks the entries
+        # that are listed, not the ones that are missing, so the VM could then
+        # be retired with every file absent from its backup.
+        #
+        # -I implies -E, which ignores PYTHON* variables only: os.environ still
+        # carries SBX_CAPTURE_ROOTS and friends, which this helper reads.
+        # Verified, not assumed.
+        command = f"{shlex.quote(self.python_path)} -I -B {shlex.quote(script)}"
+        try:
+            with span("sandbox.manifest", zones=len(zones), **self._attrs()):
+                result = await self.exec(command, timeout=MANIFEST_TIMEOUT_S, cwd=".", env=env)
+        except SandboxOutputLimitExceeded:
+            # A very large tree can push the JSON past exec's capture ceiling.
+            # ``manifest()``'s contract is "None when the sandbox cannot compute
+            # it", and the snapshotter then falls back to reading every file.
+            # Letting the raise escape instead kills the whole checkpoint.
+            emit("sandbox.manifest_unavailable", reason="output_limit", **self._attrs())
+            return None
+        if result.timed_out or result.exit_code != 0:
+            emit(
+                "sandbox.manifest_unavailable",
+                reason="timeout" if result.timed_out else "nonzero_exit",
+                exit_code=result.exit_code,
+                timed_out=result.timed_out,
+                **self._attrs(),
+            )
+            return None
+        import json
+
+        try:
+            raw = json.loads(result.stdout or "{}")
+        except ValueError:
+            emit("sandbox.manifest_unavailable", reason="bad_json", **self._attrs())
+            return None
+        out: dict[str, tuple[str | None, int]] = {}
+        if capture_roots:
+            # The helper reports {root_index: {path_relative_to_that_root: info}}.
+            # The HOST builds the key, so nothing in the VM has to know the
+            # declared root name and the walk base never has to equal it.
+            roots = list(capture_roots)
+            for index, group in raw.items():
+                if not isinstance(group, dict):
+                    continue
+                try:
+                    base = roots[int(index)]
+                except (ValueError, IndexError):
+                    continue
+                for rel, info in group.items():
+                    if not isinstance(info, dict):
+                        continue
+                    key = base if rel == "." else f"{base}/{rel}"
+                    out[key] = (info.get("blake3"), int(info.get("size", 0) or 0))
+            return out
+        for rel, info in raw.items():
+            if not isinstance(info, dict):
+                continue
+            out[str(rel)] = (info.get("blake3"), int(info.get("size", 0) or 0))
+        return out
+
+    # ─── Execution ─────────────────────────────────────────────────────
+
+    def _guard_env(self, env: dict[str, str] | None) -> dict[str, str]:
+        clean: dict[str, str] = {}
+        for key, value in (env or {}).items():
+            upper = str(key).upper()
+            if upper.startswith(_SECRET_KEY_PREFIXES) or any(
+                marker in upper for marker in _SECRET_KEY_MARKERS
+            ):
+                raise ValueError(
+                    f"refusing to forward secret-looking env var {key!r} into the sandbox"
+                )
+            clean[str(key)] = str(value)
+        return clean
+
+    def _exec_envs(self, env: dict[str, str] | None) -> dict[str, str]:
+        home = self.home
+        base = {
+            "HOME": home,
+            "LANG": "C.UTF-8",
+            "PYTHONUNBUFFERED": "1",
+            "SANDBOX_ROOT": self.root_path,
+        }
+        for key in self.host_env_allowlist:
+            value = os.environ.get(key)
+            if value is not None:
+                base[key] = value
+        base.update(self._guard_env(env))
+        return base
+
+    async def terminate_running_commands(self) -> None:
+        """Best-effort cancellation used when a coordinator loses ownership."""
+        await asyncio.gather(
+            *(self._stop_process(p) for p in tuple(self._processes.values())), return_exceptions=True
+        )
+
+    @staticmethod
+    async def _stop_process(process: RemoteProcess) -> None:
+        """Finish killing a command's tree despite repeated cancellation: a
+        half-done kill leaves descendants running in the VM."""
+        cleanup = asyncio.ensure_future(process.kill())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        if not cleanup.cancelled():
+            cleanup.exception()  # best-effort, like the kill itself; never re-raised
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def run_streaming(
+        self,
+        command: str,
+        *,
+        on_output: Callable[[str], Any],
+        timeout: float = 30.0,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        capture_limit_bytes: int = DEFAULT_CAPTURE_BYTES,
+    ) -> ExecResult:
+        effective_timeout = float(timeout) if timeout else self.default_timeout
+        work_dir = self._abs(cwd if cwd is not None else self.work_dir)
+        envs = self._exec_envs(env)
+        stdout_parts = Utf8Tail(capture_limit_bytes)
+        stderr_parts = Utf8Tail(capture_limit_bytes)
+
+        def _stdout(chunk: str) -> Any:
+            stdout_parts.append(chunk)
+            return on_output(chunk)
+
+        def _stderr(chunk: str) -> Any:
+            stderr_parts.append(chunk)
+            return on_output(chunk)
+
+        started = time.monotonic()
+        timed_out = False
+        exit_code = -1
+
+        def _remaining() -> float:
+            # Always measured against the ORIGINAL start. A flapping connection
+            # must not silently turn the caller's 300 s budget into 900 s.
+            return max(effective_timeout - (time.monotonic() - started), 0.0)
+
+        with span("sandbox.exec", cwd=work_dir, timeout_s=effective_timeout, **self._attrs()):
+            # STARTING a command is side-effectful and must never be replayed on
+            # an uncertain transport response — which is why this path does not
+            # go through ``_retry``. RE-ATTACHING to a command already started is
+            # not a replay, and is what the reconnect loop below does.
+            await self.ensure_running()
+            assert self._handle is not None
+            async with self._ops:
+                process = await self._handle.run_background(
+                    command, envs=envs, cwd=work_dir, on_stdout=_stdout,
+                    on_stderr=_stderr, capture_limit_bytes=capture_limit_bytes,
+                )
+            self._processes[id(process)] = process
+            attempts = 0
+            try:
+                while True:
+                    try:
+                        exit_info = await asyncio.wait_for(process.wait(), timeout=_remaining())
+                        exit_code = exit_info.exit_code
+                        if not stdout_parts:
+                            stdout_parts.append(exit_info.stdout)
+                        if not stderr_parts:
+                            stderr_parts.append(exit_info.stderr)
+                        break
+                    except asyncio.TimeoutError:
+                        await self._stop_process(process)
+                        timed_out = True
+                        break
+                    except RemoteError as exc:
+                        # The STREAM died; the PROCESS is presumed alive. Killing
+                        # here is the defect this loop exists to fix: a silent
+                        # long-running command loses its event stream and used to
+                        # be destroyed along with it.
+                        #
+                        # ``_translate`` classifies the SDK's bare stream-drop
+                        # exception as a transport error, but the text probe is
+                        # repeated here so a transport that does not translate
+                        # still recovers rather than killing the command. A gone
+                        # sandbox and anything else stay fatal.
+                        if isinstance(exc, RemoteSandboxNotFound) or not (
+                            isinstance(exc, RemoteTransportError) or _is_stream_interrupted(exc)
+                        ):
+                            raise
+                        attempts += 1
+                        emit(
+                            "sandbox.exec_reconnect", attempt=attempts,
+                            pid=getattr(process, "pid", 0),
+                            error_type=type(exc).__name__, **self._attrs(),
+                        )
+                        if attempts > RECONNECT_ATTEMPTS or not _remaining():
+                            raise
+                        await asyncio.sleep(min(RECONNECT_BACKOFF_S * attempts, _remaining()))
+                        self._processes.pop(id(process), None)
+                        # The REATTACH gets the same retry budget and the same
+                        # deadline as the wait it is recovering. It used to sit
+                        # bare in this except block, so a transport error here
+                        # could not be caught by the try above it -- Python does
+                        # not route an exception raised in an `except` back to
+                        # its own `try` -- and fell to `except BaseException`,
+                        # which SIGKILLs the healthy command and re-raises.
+                        #
+                        # That made the effective coverage (1 - P(reattach
+                        # fails)) rather than the three attempts it advertises,
+                        # and the reattach fires ~0.5 s after envd reset the
+                        # connection, which is exactly when it is most likely to
+                        # fail again. `sandbox.exec_reconnect attempt=N` could
+                        # never log N>1 for this cause.
+                        #
+                        # Both halves land together on purpose: retrying without
+                        # the deadline would let 3 attempts x the SDK's 60 s
+                        # request timeout overrun the caller's budget by minutes.
+                        try:
+                            process = await asyncio.wait_for(
+                                self._handle.reconnect(
+                                    getattr(process, "pid", 0),
+                                    tag=getattr(process, "tag", None),
+                                    on_stdout=_stdout, on_stderr=_stderr,
+                                    capture_limit_bytes=capture_limit_bytes,
+                                ),
+                                timeout=_remaining(),
+                            )
+                        except asyncio.TimeoutError:
+                            await self._stop_process(process)
+                            timed_out = True
+                            break
+                        except RemoteError as reattach_exc:
+                            # RemoteProcessNotFound stays fatal: the command
+                            # finished while the stream was down, and retrying
+                            # only re-raises it. See the known-gap test.
+                            if isinstance(
+                                reattach_exc,
+                                (RemoteSandboxNotFound, RemoteProcessNotFound),
+                            ) or not (
+                                isinstance(reattach_exc, RemoteTransportError)
+                                or _is_stream_interrupted(reattach_exc)
+                            ):
+                                raise
+                            continue  # same counter, same cap, same deadline
+                        self._processes[id(process)] = process
+            except BaseException:
+                # Cancellation, abort, a genuinely gone sandbox, and a command
+                # that finished while we were re-attaching all land here.
+                await self._stop_process(process)
+                raise
+            finally:
+                self._processes.pop(id(process), None)
+        result = ExecResult(
+            exit_code=exit_code,
+            stdout=stdout_parts.text(), stderr=stderr_parts.text(),
+            timed_out=timed_out, duration_ms=(time.monotonic() - started) * 1000,
+            output_truncated=stdout_parts.truncated or stderr_parts.truncated,
+            stdout_bytes=stdout_parts.total_bytes, stderr_bytes=stderr_parts.total_bytes,
+        )
+        emit(
+            "sandbox.exec_end", exit_code=result.exit_code,
+            timed_out=result.timed_out, duration_ms=result.duration_ms,
+            stdout_bytes=result.stdout_bytes, stderr_bytes=result.stderr_bytes,
+            output_truncated=result.output_truncated, **self._attrs(),
+        )
+        return result
+
+    async def exec(
+        self,
+        command: str,
+        timeout: float = 30.0,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        *,
+        capture_limit_bytes: int = HELPER_CAPTURE_BYTES,
+    ) -> ExecResult:
+        result = await self.run_streaming(
+            command, on_output=lambda _chunk: None, timeout=timeout, cwd=cwd,
+            env=env, capture_limit_bytes=capture_limit_bytes,
+        )
+        if result.output_truncated:
+            raise SandboxOutputLimitExceeded(
+                f"sandbox command output exceeded {capture_limit_bytes} bytes per stream"
+            )
+        return result
+
+    async def exec_stream(
+        self,
+        command: str,
+        timeout: float = 30.0,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> AsyncIterator[str]:
+        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=128)
+        pending = ""
+
+        def _enqueue(value: str | None) -> None:
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait(value)
+
+        def _on_output(chunk: str) -> None:
+            nonlocal pending
+            pending = (pending + chunk)[-16384:]
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                _enqueue(line + "\n")
+
+        async def _runner() -> None:
+            try:
+                await self.run_streaming(
+                    command, on_output=_on_output, timeout=timeout, cwd=cwd, env=env
+                )
+            finally:
+                if pending:
+                    _enqueue(pending)
+                _enqueue(None)
+
+        task = asyncio.create_task(_runner())
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield item
+            await task
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
+__all__ = [
+    "DEFAULT_ROOT_PATH",
+    "E2BSandbox",
+    "E2BSandboxConfig",
+    "E2BTransport",
+    "RemoteEntry",
+    "RemoteError",
+    "RemoteExit",
+    "RemoteHandle",
+    "RemoteInfo",
+    "RemotePathNotFound",
+    "RemoteProcess",
+    "RemoteRateLimited",
+    "RemoteSandboxNotFound",
+    "RemoteTransportError",
+    "SdkE2BTransport",
+    "set_default_transport_factory",
+]

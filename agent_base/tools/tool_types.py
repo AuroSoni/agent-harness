@@ -46,6 +46,15 @@ class ToolResultEnvelope(ABC):
     is_error: bool = False
     error_message: str | None = None
     duration_ms: float | None = None
+    # Trace timing, stamped by ``ToolRegistry`` beside ``duration_ms``: the
+    # wall-clock UTC instants bracketing the execution (the interval
+    # ``duration_ms`` measures) and how long the call queued for a parallel
+    # slot before it started. The loop copies them onto the call's log
+    # projection; the projections below never read them. Keyword-only, so a
+    # subclass's own fields keep their positional places in ``__init__``.
+    started_at: str | None = field(default=None, kw_only=True)
+    ended_at: str | None = field(default=None, kw_only=True)
+    queued_ms: float | None = field(default=None, kw_only=True)
 
     # CM-G4: when tool execution RAISED (vs returning an error result), the
     # registry stamps the live exception onto the instance so the loop's
@@ -150,7 +159,7 @@ class ToolResultEnvelope(ABC):
         log = self.for_conversation_log()
         return _StructuredEnvelope(
             tool_name=self.tool_name, tool_id=self.tool_id, is_error=self.is_error,
-            duration_ms=self.duration_ms,
+            **self._timing(),
             _context_blocks=[TextContent(text=text)],
             _log_summary=log.summary,
             _log_blocks=log.content_blocks,
@@ -165,12 +174,37 @@ class ToolResultEnvelope(ABC):
         log = self.for_conversation_log()
         return _StructuredEnvelope(
             tool_name=self.tool_name, tool_id=self.tool_id, is_error=self.is_error,
-            duration_ms=self.duration_ms,
+            **self._timing(),
             _context_blocks=[*self.for_context_window(), TextContent(text=text)],
             _log_summary=log.summary,
             _log_blocks=log.content_blocks,
             _details=log.details,
         )
+
+    def _timing(self) -> dict[str, Any]:
+        """This execution's timing, for a rebuilt envelope to carry over."""
+        return {name: getattr(self, name, None) for name in TOOL_TIMING_FIELDS}
+
+
+#: The envelope fields that time one execution. A rebuilt or hook-replaced
+#: envelope still stands for that execution, so it carries them over.
+TOOL_TIMING_FIELDS: tuple[str, ...] = ("duration_ms", "started_at", "ended_at", "queued_ms")
+
+
+def inherit_tool_timing(replacement: Any, original: Any) -> None:
+    """Give ``replacement`` each timing field it lacks from ``original``.
+
+    For an envelope a hook returns in place of an executed one: builders like
+    ``from_blocks`` start with no timing, but the result still stands for the
+    execution ``original`` timed. A field the replacement already set wins.
+    """
+    if replacement is original:
+        return
+    for name in TOOL_TIMING_FIELDS:
+        if getattr(replacement, name, None) is None:
+            value = getattr(original, name, None)
+            if value is not None:
+                setattr(replacement, name, value)
 
 
 @dataclass

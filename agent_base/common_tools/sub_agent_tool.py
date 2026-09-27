@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from agent_base.core.conversation_log import ConversationLog, ToolLogProjection
+from agent_base.core.trace_spans import SpanClock, trace_safe
 from agent_base.core.types import ContentBlock, TextContent
 from agent_base.tools import ConfigurableToolBase
 from agent_base.tools.tool_types import ToolResultEnvelope, ToolSchema
@@ -201,6 +202,17 @@ class SubAgentEnvelope(ToolResultEnvelope):
         )
 
 
+def _stamp_dispatch_window(envelope: ToolResultEnvelope, clock: SpanClock) -> None:
+    """Time a directly dispatched subagent's envelope from ``clock``, ending
+    now. Fields already set are kept; ``queued_ms`` stays unknown (a
+    caller's own wait for a slot is outside the dispatch)."""
+    started_at, ended_at, elapsed_ms = clock.window()
+    if envelope.started_at is None and envelope.ended_at is None:
+        envelope.started_at, envelope.ended_at = started_at, ended_at
+    if envelope.duration_ms is None:
+        envelope.duration_ms = elapsed_ms
+
+
 ChildAgentBuilder = Callable[
     [SubAgentSpec, str | None, SubAgentParentContext],
     "AnthropicAgent",
@@ -337,6 +349,24 @@ Args:
         task: str,
         resume_agent_uuid: str | None = None,
     ) -> ToolResultEnvelope:
+        # No docstring: ``run``'s docstring is the tool schema's fallback.
+        # The envelope carries the dispatch's own window (``started_at``,
+        # ``ended_at``, ``duration_ms``) on every return, so a caller that
+        # dispatches directly rather than through ``ToolRegistry.execute`` (a
+        # workflow running its children, then logging them with
+        # ``log_tool_result_for_replay``) still logs a timed child. Through
+        # the registry, the registry's own stamp replaces it.
+        clock = SpanClock()
+        envelope = await self._dispatch(agent_name, task, resume_agent_uuid)
+        trace_safe("sub_agent.run.window", _stamp_dispatch_window, envelope, clock)
+        return envelope
+
+    async def _dispatch(
+        self,
+        agent_name: str,
+        task: str,
+        resume_agent_uuid: str | None,
+    ) -> ToolResultEnvelope:
         if agent_name not in self.specs:
             available = ", ".join(self.specs.keys())
             return ToolResultEnvelope.error(
@@ -404,8 +434,8 @@ Args:
         # them again to grandchildren at THEIR spawn. Timing contract:
         # propagation happens at child build — subscribers registered on the
         # parent AFTER a child was already built do NOT retro-attach to that
-        # child (the next spawn picks them up). No SettlementAggregator here
-        # (that stays AMENDMENTS-I9 future work).
+        # child (the next spawn picks them up). (The I9 SettlementAggregator
+        # this once deferred to was deleted 2026-07-14 — see core/cost.py.)
         if parent_agent is not None:
             for callback in list(
                 getattr(parent_agent, "_usage_report_callbacks", None) or []

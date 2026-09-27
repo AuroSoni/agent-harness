@@ -85,3 +85,17 @@ async def test_cooperative_steer_never_sets_the_preemption_flag():
         Steer(instruction=Message.user("later"), mode=SteerMode.COOPERATIVE)
     )
     assert getattr(agent, "_steer_preempting", False) is False
+
+
+async def test_tool_phase_abort_ends_with_the_same_terminal_marker():
+    # B1: an abort landing while a backend tool runs returns through the same
+    # finish as the streaming path — its reader gets Custom('aborted') too,
+    # instead of idling on keepalives forever.
+    agent = await _agent()
+    agent.attach_stream()
+    agent._abort_pending = agent._open_abort_record()
+    await agent._finish_loop_abort("executing_tools")
+    queue = agent._stream_queue
+    bodies = [queue.get_nowait().body for _ in range(queue.qsize())]
+    markers = [(b.name, b.data) for b in bodies if getattr(b, "name", None) in ("aborted", "steered")]
+    assert markers == [("aborted", {"phase": "executing_tools"})]

@@ -79,12 +79,14 @@ async def test_actor_loop_reentrancy_guard(agent):
 async def test_checkpoint_delegates_to_persist_state(agent):
     called = []
 
-    async def fake_persist():
-        called.append(True)
+    async def fake_persist(*, capture: bool):
+        called.append(capture)
 
     agent._persist_state = fake_persist
     await agent.checkpoint()
-    assert called == [True]
+    await agent._checkpoint_at_resume()
+    # The relay-resume persist leaves the fork/reset capture to the turn end.
+    assert called == [True, False]
 
 
 # ── GF-P6G3: public drive surface (auto-kick + ensure_actor + wait_idle) ────

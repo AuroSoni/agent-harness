@@ -18,7 +18,9 @@ Serialization is handled by `storage/serialization.py`.
 ### PostgreSQL Schema (typed columns)
 
 Each `AgentConfig` field maps to its own column. Scalar fields use native SQL
-types; complex nested objects (messages, tool schemas, etc.) use JSONB.
+types; complex nested objects use JSONB, except the columns replayed to the model
+(`context_messages`, `tool_schemas`, `llm_config`, `pending_relay`), which are JSON: JSONB
+re-sorts object keys, and a reloaded session must replay the exact bytes it sent.
 
 ```sql
 CREATE TABLE agent_config (
@@ -30,16 +32,16 @@ CREATE TABLE agent_config (
     max_steps        INTEGER NOT NULL DEFAULT 50,
     system_prompt    TEXT,
 
-    -- LLM context (complex nested — JSONB)
-    context_messages      JSONB NOT NULL DEFAULT '[]',
+    -- LLM context (replayed to the model — JSON keeps key order)
+    context_messages      JSON NOT NULL DEFAULT '[]',
     conversation_history  JSONB NOT NULL DEFAULT '[]',
 
     -- Tools
-    tool_schemas     JSONB NOT NULL DEFAULT '[]',
+    tool_schemas     JSON NOT NULL DEFAULT '[]',
     tool_names       TEXT[] NOT NULL DEFAULT '{}',
 
-    -- Provider config (provider-specific subclass — JSONB)
-    llm_config       JSONB NOT NULL DEFAULT '{}',
+    -- Provider config (provider-specific subclass — JSON)
+    llm_config       JSON NOT NULL DEFAULT '{}',
 
     -- Components
     formatter           TEXT,
@@ -53,8 +55,8 @@ CREATE TABLE agent_config (
     last_known_input_tokens   INTEGER NOT NULL DEFAULT 0,
     last_known_output_tokens  INTEGER NOT NULL DEFAULT 0,
 
-    -- Tool relay state (nullable complex object — JSONB)
-    pending_relay    JSONB,
+    -- Tool relay state (nullable complex object — JSON)
+    pending_relay    JSON,
 
     -- Run tracking
     current_step     INTEGER NOT NULL DEFAULT 0,

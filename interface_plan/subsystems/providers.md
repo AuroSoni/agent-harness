@@ -100,6 +100,13 @@ class ProviderTurn:
                                            #   that provider's plan_stream_abort(turn). Carries the
                                            #   provider-specific completed-block / completed-tool-call
                                            #   detail that used to be shared fields (O12a).
+    timing: InitVar[dict | None] = None    # AMENDED (2026-09-22, TR-3): {started_at, ended_at,
+                                           #   flight_ms} of the call, stamped by the runtime's
+                                           #   _provider_turn via dataclasses.replace; providers never
+                                           #   set it. An InitVar kept as a plain attribute, NOT a
+                                           #   field: the O12(a) field set stays as pinned, and
+                                           #   equality/repr ignore it (a fact about the call, not
+                                           #   part of the turn's value).
 
 
 @dataclass(frozen=True)

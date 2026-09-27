@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import hashlib
 import mimetypes
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -122,7 +123,9 @@ class IncrementalBlake3Flush(MediaFlushStrategy):
     This is exactly nova_agent._incremental_flush_exports, promoted & generalized.
     """
 
-    def __init__(self, registry: MediaFlushRegistry | None = None) -> None:
+    def __init__(self, registry: MediaFlushRegistry | None = None, *, idempotent: bool = False, before_upload=None) -> None:
+        self.idempotent = idempotent
+        self.before_upload = before_upload
         self._registry = registry  # None ⇒ backend supplies its default registry
 
     def _reg(self, backend: "MediaBackend") -> MediaFlushRegistry:
@@ -152,7 +155,9 @@ class IncrementalBlake3Flush(MediaFlushStrategy):
                     continue
             to_upload.append(em)
 
-        delta = await self._store_many(backend, sandbox, agent_uuid, to_upload, max_concurrent)
+        if self.before_upload is not None:
+            await self.before_upload(to_upload)
+        delta = await self._store_many(backend, sandbox, agent_uuid, to_upload, max_concurrent, idempotent=self.idempotent)
 
         # Build the new registry: one entry per live export path.
         upload_by_path = {em.path: mm for em, mm in zip(to_upload, delta)}
@@ -188,6 +193,8 @@ class IncrementalBlake3Flush(MediaFlushStrategy):
         agent_uuid: str,
         exports: list[Any],
         max_concurrent: int,
+        *,
+        idempotent: bool = False,
     ) -> list["MediaMetadata"]:
         if not exports:
             return []
@@ -201,14 +208,25 @@ class IncrementalBlake3Flush(MediaFlushStrategy):
                     mimetypes.guess_type(em.filename)[0] or "application/octet-stream"
                 )
                 stream = await _open_export_stream(sandbox, em.path)
-                metadata = await backend.store(stream, em.filename, mime_type, agent_uuid)
+                if idempotent:
+                    key = hashlib.sha256(f"{agent_uuid}\0{em.path}\0{em.blake3_hash}".encode()).hexdigest()
+                    metadata = await backend.store_idempotent(stream, em.filename, mime_type, agent_uuid, key=key)
+                else:
+                    metadata = await backend.store(stream, em.filename, mime_type, agent_uuid)
                 metadata.extras["export_path"] = em.path
                 metadata.extras["blake3_hash"] = em.blake3_hash
                 if metadata.content_hash is None:
                     metadata.content_hash = em.blake3_hash
                 results[index] = metadata
 
-        await asyncio.gather(
-            *[asyncio.create_task(_store_one(i, em)) for i, em in enumerate(exports)]
-        )
+        tasks = [asyncio.create_task(_store_one(i, em)) for i, em in enumerate(exports)]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            # A failed upload must not outlive the actor lease or overlap a
+            # recovery retry, sandbox pause, or reset.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         return [r for r in results if r is not None]
