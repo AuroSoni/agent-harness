@@ -64,8 +64,14 @@ bring_in() {
   local source="$root/$path"
 
   if [[ -e "$path" && ! -L "$path" ]]; then
-    echo "  skip $path: already exists in the workspace"
-    return 0
+    # Conductor copies .env files into a new workspace before this script runs. Swap a copy
+    # that still matches the main checkout for a link; keep one with changes of its own.
+    if [[ $mode == link && -f "$path" && -f "$source" ]] && cmp -s "$path" "$source"; then
+      rm "$path"
+    else
+      echo "  skip $path: already exists in the workspace"
+      return 0
+    fi
   fi
   if [[ ! -e "$source" ]]; then
     if [[ $mode != link-dir ]]; then
