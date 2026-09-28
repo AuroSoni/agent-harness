@@ -268,16 +268,21 @@ class FakeHandle:
         host_cwd = self._host(cwd)
         host_cwd.mkdir(parents=True, exist_ok=True)
         argv = shlex.split(cmd)
-        # Route the sandbox interpreter to the host's, and map VM-absolute
-        # paths inside the argv onto the fake host tree.
-        if argv and argv[0] in ("python3", "python", "/home/user/.venv/bin/python"):
-            argv[0] = sys.executable
+        # Map VM-absolute paths inside the argv onto the fake host tree, then
+        # route the sandbox interpreter to the host's. The host interpreter
+        # itself (tests pass it as python_path and in commands) is never
+        # mapped: in a Linux checkout under /home it would land in the fake tree.
+        interpreter = bool(argv) and argv[0] in (
+            "python3", "python", "/home/user/.venv/bin/python", sys.executable
+        )
         argv = [
             str(self._host(a))
             if a.startswith("/home/") or a.startswith("/opt/") or a.startswith("/mnt/")
             else a
             for a in argv
         ]
+        if interpreter:
+            argv[0] = sys.executable
         env = dict(envs)
         # The fake maps the VM root onto a host directory: translate the
         # helper-script environment so hash_manifest walks the host tree.
