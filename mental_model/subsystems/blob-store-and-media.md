@@ -71,8 +71,8 @@ A user message carries `attachments`, each with a filename, media type and a sou
 
 | `source_type` | The model receives |
 |---|---|
-| `base64`, `url`, `file_id` | An image, document or attachment block, plus a `<user_upload>` line naming the file |
-| `file` (a path in the sandbox) | Only the `<user_upload>` line. The agent reads the file with its tools |
+| `base64`, `url`, `file_id` | An image, document or attachment block, plus a `<user_upload>` line carrying the attachment's `data` (the payload, URL or file id), or its filename when `data` is empty |
+| `file` (a path in the sandbox) | Only the `<user_upload>` line, carrying the path. The agent reads the file with its tools |
 
 The message is stored as sent; the blocks are built at [render time](../features/run.md#what-the-model-actually-receives), on every step.
 

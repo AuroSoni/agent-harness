@@ -26,7 +26,8 @@ The class `Conversation` (`core/config.py`) is one run's row, not a whole conver
 | `conversation_log` | The log below | Throughout |
 | `final_response` | The last assistant message | End. Absent on an aborted run |
 | `stop_reason` | `end_turn`, `max_tokens`, `max_steps`, `refusal`, `context_window_exceeded`, `aborted`, `error` | End |
-| `total_steps`, `usage`, `cost` | Run totals, sub-agents included | End |
+| `total_steps` | The agent's own steps in the run | End |
+| `usage`, `cost` | Run totals, sub-agents included | End |
 | `generated_files` | Files the run produced | End |
 | `completed_at` | Close time | End |
 | `archived` | Hidden by a [reset](../features/fork-and-reset.md) | Reset |
@@ -60,7 +61,7 @@ A response's metadata:
 
 - `usage`: `input_tokens`, `output_tokens`, `cache_write_tokens`, `cache_read_tokens`, `thinking_tokens`, `raw_usage`.
 - `timing`: `started_at`, `ended_at`, `flight_ms` of the provider call.
-- `cost_usd`: null when the model has no price row.
+- `cost_usd`: omitted when the model has no price row.
 - `step`: 1-based.
 
 **A tool result** in the log (`ToolLogProjection`) is richer than what the model saw:

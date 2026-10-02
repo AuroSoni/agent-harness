@@ -27,11 +27,11 @@ That freedom has a cost the consumer pays at its next pin: a breaking change her
 | | |
 |---|---|
 | Name, version | `agent-base`, `0.5.0` (`pyproject.toml`, `agent_base.__version__`) |
-| Python | 3.10 or newer |
+| Python | Declared as 3.10 or newer. Three modules import `typing.Self`, so it needs 3.11 in practice; the repo's `.python-version` is 3.12 |
 | Build | `hatchling`; the wheel contains `agent_base/` only |
 | Dependency manager | `uv`. `demos/fastapi_server` is a workspace member |
 | Extras | `mcp` (the [MCP](../subsystems/mcp.md) client), `e2b` (the [remote sandbox](../subsystems/sandbox.md)) |
-| Core dependencies | `anthropic`, `litellm`, `asyncpg`, `boto3` / `aioboto3`, `blake3`, `structlog`, `pillow`, `pymupdf`, `pyyaml` |
+| Core dependencies | `anthropic`, `litellm`, `asyncpg`, `boto3` / `aioboto3`, `aiofiles`, `blake3`, `structlog`, `pillow`, `pymupdf`, `pyyaml`, `python-dotenv` |
 
 Where each part of the package is told:
 

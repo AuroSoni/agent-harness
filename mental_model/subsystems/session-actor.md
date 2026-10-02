@@ -49,7 +49,7 @@ Leaving memory:
 | `evict_idle()` | The host calls it; nothing in the library does | Evicts evictable sessions idle longer than `idle_ttl_s` |
 | `evict(id)` | The host asks | Abort, stop the actor, `on_session_end`, checkpoint, pause the sandbox, close, drop the session's awaits |
 | `invalidate_idle(id)` | The host knows its copy is out of date | Stops the actor, closes the agent and drops its awaits. Nothing else |
-| `shutdown()` | Process exit | Evicts every resident session |
+| `shutdown()` | Process exit | Evicts every resident session that is evictable. One with a run in flight or parked on a pause is skipped |
 
 - **Evictable** means: no actor running, phase `IDLE`, and no open await for the session. A session parked on a pause is never evicted.
 - `detach()` is a no-op. A client disconnecting does not cancel a run.
@@ -59,7 +59,7 @@ Leaving memory:
 
 ### The attach check
 
-Attaching to a resident session runs `principal_policy.authorizes(owner, claimant)`. A failure raises `SessionNotFound`, which `SessionManager.submit` turns into `NOT_FOUND`: a caller who may not address a session cannot tell it from one that does not exist. The rule itself is in [Identity](identity.md).
+Attaching to a resident session runs `principal_policy.authorizes(owner, claimant)`. A failure raises `SessionNotFound`, which `SessionManager.submit` turns into `NOT_FOUND`. The rule itself is in [Identity](identity.md).
 
 > **Why the check always runs:** a missing claimant is treated as anonymous. Skipping the check when no principal is given is an auth bypass by omission.
 
@@ -77,7 +77,7 @@ ack = await agent.submit(command)                                # in process
 | `Abort()` | 3. Control | Now | Tears down the run in flight and waits for the teardown |
 | `Steer(instruction, mode)` | 3. Control | Now | `FORCEFUL` (default): the same teardown, then the instruction is queued as a `UserMessage`. `COOPERATIVE`: only queues it |
 
-- The mailbox is a FIFO of 32. When it is full, or frozen during a teardown, a new message is refused with `REJECTED`; it is never accepted and then lost to overflow. An abort is the one thing that discards messages already queued.
+- The mailbox is a FIFO of 32. When it is full, or frozen during a teardown, a new `UserMessage` is refused with `REJECTED`. An abort discards the messages already queued.
 - Control commands address the root only. A sub-agent's runtime answers `REJECTED` with detail `not_root`.
 - `SessionManager.submit` answers `Abort` and `Steer` for a session that is not resident without loading it: `NOT_FOUND` if nothing is saved, `NOT_RUNNING` for an `Abort` on a saved session. A `Steer` on a saved session loads it and proceeds.
 - What the teardown does in each phase is in [Abort and steer](../features/abort-and-steer.md).
@@ -93,15 +93,15 @@ ack = await agent.submit(command)                                # in process
 | `CANCELLING` | Abort done | 202 |
 | `STEERING` | Steer accepted | 202 |
 | `IGNORED_STALE` | Reply for an unknown cid or a retired generation | 200 |
-| `IGNORED_DUP` | Reply for an await already resolved | 200 |
+| `IGNORED_DUP` | Reply for an await already resolved whose run has not woken yet | 200 |
 | `NOT_RUNNING` | Nothing in flight to abort | 409 |
 | `NOT_FOUND` | No such session for this caller | 404 |
-| `REJECTED` | Mailbox full, wrong owner on a reply, or not the root | 422 |
+| `REJECTED` | Mailbox full, a reply whose claimant the await's owner does not authorize, or not the root | 422 |
 | `MISDIRECTED` | Nothing produces it | unmapped (500) |
 
 - `seq` is the order commands were submitted in, for audit. It is not the order they take effect: a reply at seq 5 acts before a message at seq 3 that is still queued.
 - Every command and its disposition is recorded in an in-memory audit log, stamped with the session's principal.
-- A late or duplicate reply is a harmless no-op, so a client can retry one safely.
+- A late or duplicate reply is answered `IGNORED_STALE` or `IGNORED_DUP` and wakes nothing.
 
 > **Why `Ack` carries no completion future:** `wait_idle()` is the one way to wait for a run to finish. One pattern, not two.
 
@@ -186,6 +186,6 @@ Part of the [`agent-base` package contract](../infrastructure/packaging-and-rele
 What the host must do, because the library does not:
 
 - Call `evict_idle()` on a timer. No background task does it.
-- Call `shutdown()` on exit, so resident sessions are checkpointed and their sandboxes paused.
+- Call `shutdown()` on exit, so idle resident sessions are checkpointed and their sandboxes paused. It does not stop a run in flight; abort those first.
 - Map `SessionNotFound`, `SessionBlocked` and `PrincipalConflict` from `get_or_create` to HTTP itself. `ack_to_http` covers only an `Ack`.
 - Run one process per session at a time, or call `invalidate_idle` when another process may hold newer state.

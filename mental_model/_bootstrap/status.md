@@ -6,7 +6,7 @@ Read this first when resuming. Working state for the mental-model bootstrap of t
 
 | | |
 |---|---|
-| Phase | 4 and 5: **writing the model**. Checkpoints 1 and 2 are answered. Auro's instruction at Checkpoint 2 was "Make your best guesses and proceed", so the work does not wait at Checkpoint 3 |
+| Phase | 8: **the model is written and verified; waiting on Auro's review.** `_bootstrap/` stays until he has looked at the pilot; then delete it and mark the PR ready |
 | Branch | `AuroSoni/mental-model` (the Conductor workspace branch; the handoff's default name `mental-model-bootstrap` is not used) |
 | PR | [#13](https://github.com/AuroSoni/agent-harness/pull/13), draft, base `dev` |
 | Surveyed at | `71ecf49` (= `origin/dev`), 2 Oct 2026 |
@@ -32,13 +32,18 @@ Nothing blocks the work. Open with him:
 - **Checkpoint 1, 2 Oct 2026, in chat:** all of Q1 to Q15. Recorded verbatim in [1-characters-and-map.md](1-characters-and-map.md) section 5; what they settle is section 6; his statements are rows A1 to A11 of [sources.md](sources.md).
 - **Checkpoint 2, 2 Oct 2026, in chat:** "Make your best guesses and proceed." Recorded in [2-plot.md](2-plot.md) under "Answers"; rows A12 to A18 of `sources.md`. No S row was struck.
 
+## Done
+
+- Phases 4 and 5: 21 model files, `mental_model/CLAUDE.md`, `planned_items/.gitkeep`, the mental-model section in the root `CLAUDE.md`, the `merge-mental-model` skill.
+- Phase 6: [docs-reconciliation.md](docs-reconciliation.md). Proposals only; nothing moved or deleted.
+- Phase 7: links, anchors, index and Mermaid checked by script; no future tense outside whys; all 45 whys matched to `sources.md` (S37 reworded to match the code); five independent accuracy audits against the code, about 60 corrections applied; one fresh-eyes read from the model alone, its unclear spots filled in.
+- Phase 8: the PR description is the chapter, with the why-to-source table and the follow-ups.
+
 ## Next
 
-1. Pilot: `subsystems/session-actor.md` and `features/pause-and-resume.md`, committed on their own.
-2. Phase 5: the remaining files, `mental_model/CLAUDE.md`, `planned_items/.gitkeep`, the root `CLAUDE.md` section, the merge skill.
-3. Phase 6: sort the existing docs; propose, do not move or delete.
-4. Phase 7: verify (links, index, Mermaid, tense, sources, accuracy, fresh eyes).
-5. Phase 8: the PR description. Keep `_bootstrap/` and the draft state until Auro has looked at the pilot.
+1. Apply Auro's feedback on the pilot to every file.
+2. Act on the docs proposals he approves.
+3. Delete `mental_model/_bootstrap/` and mark the PR ready.
 
 ## Notes for whoever resumes
 
@@ -58,3 +63,4 @@ Nothing blocks the work. Open with him:
 | [sources.md](sources.md) | Why-to-source table: Auro's statements (A), candidates sent at Checkpoint 2 (B), dropped (C) |
 | [1-characters-and-map.md](1-characters-and-map.md) | Checkpoint 1, **answered** |
 | [2-plot.md](2-plot.md) | Checkpoint 2, **answered**: 40 reasons (none struck), 13 questions, and his answer |
+| [docs-reconciliation.md](docs-reconciliation.md) | Phase 6: every existing doc sorted, with a proposal for each |

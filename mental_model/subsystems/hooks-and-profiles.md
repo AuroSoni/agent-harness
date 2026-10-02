@@ -32,12 +32,12 @@ flowchart LR
 | `on_subagent_end` | A sub-agent finished or failed | Observe |
 | `before_compact` | Before compaction. `trigger` is `auto` or `overflow` | Veto an `auto` compaction; a veto on `overflow` fails the run |
 | `after_compact` | After compaction | Observe |
-| `on_abort` | An abort, a forceful steer or an eviction tears down a run | Observe |
+| `on_abort` | An abort or a forceful steer tears down a run. Also on every eviction, which goes through the same teardown | Observe |
 | `on_profile_changed` | The active profile changed, or was first announced | Observe |
 
 - `on_turn_start` fires once per run, not per step, and not when a run resumes from a pause.
 - Tool hooks match on tool name, `on_subagent_*` on agent type, compaction hooks on trigger, session hooks on source or reason, `on_profile_changed` on the new profile's name. Patterns are globs; none means all. `on_turn_start`, `on_turn_end` and `on_abort` take no matcher.
-- A relayed tool goes through `before_tool` and `after_tool` like a backend one. See [Pause and resume](../features/pause-and-resume.md#what-pauses-a-run).
+- A relayed tool goes through `before_tool` and `after_tool` like a backend one, and never through `on_tool_error`. See [Pause and resume](../features/pause-and-resume.md#what-pauses-a-run).
 - `before_tool` sees a copy of the input. See [the tool round](turn-loop.md#the-tool-round).
 
 ## What a hook receives and returns
@@ -49,9 +49,9 @@ flowchart LR
 | Field | Effect |
 |---|---|
 | `decision="block"`, `reason` | Stops the action. `reason` is the text surfaced |
-| `update` | The replacement: a message, a tool input, a result, a spec |
+| `update` | The replacement: a message (`on_turn_start`), a tool call object with an `.input` (`before_tool`; a bare dict is ignored), a result (`after_tool`, `on_tool_error`), a spec (`on_subagent_start`) |
 | `additional_context` | Text shown to the model with the user message. `on_turn_start` only |
-| `events` | Meta bodies to emit on the stream |
+| `events` | Meta bodies to emit on the stream. Ignored for `on_session_start`, `on_session_end` and `on_profile_changed` |
 
 `TurnStartOutcome` adds `prompt_prefix` and `prompt_suffix`. `EndTurnOutcome` adds `action="continue"` and `continue_prompt`.
 
@@ -67,7 +67,7 @@ flowchart LR
 | `on_subagent_start` | The spawn returns an error result |
 | `before_compact` | `auto`: compaction is skipped. `overflow`: the run fails with `CONTEXT_OVERFLOW` |
 
-`ctx.emit(body)` puts a meta frame on the [stream](streaming.md). It is synchronous and never raises; if no reader is attached the frame is dropped.
+`ctx.emit(body)` puts a meta frame on the [stream](streaming.md). It is synchronous and never raises; after a `detach_stream()` the frame is dropped.
 
 ## Registering and composing
 
@@ -82,7 +82,7 @@ When several hooks match:
 - **All of them run.** A block does not stop the rest; the first block's reason is kept.
 - **`update`:** each update is written into the context the next hook sees; the last one wins.
 - **`additional_context`** is joined; **`events`** are concatenated.
-- **A hook that raises fails the run.** There is no isolation, except for `on_session_end`, whose errors are logged.
+- **A hook that raises is not isolated.** Inside a run it fails the run. `on_session_start` fails `get_or_create`; `on_subagent_start` and `on_subagent_end` fail only the spawn, as an error tool result; `on_abort` raises to whoever submitted the abort. Only `on_session_end`, and `on_abort` during an eviction, are caught and logged.
 
 ## Profiles
 
@@ -99,7 +99,7 @@ Profile(name="analyst", tools=[...], frontend_tools=[...], system_prompt="…", 
 | `on_turn_start` | For the first step of this run |
 | `after_tool` | At the next step of the same run |
 
-- **Persisted** as `agent_config.active_profile`, and restored when the session is loaded, if that profile is still declared.
+- **Persisted** as `agent_config.active_profile`, and restored when the session is loaded, if that profile is declared on the constructor. Profiles declared by `on_session_start` arrive after the restore has run: the session starts on the first of them, and the saved choice is overwritten.
 - **Announced** with a `profile_changed` frame and the `on_profile_changed` hook, whose `source` is `session_default`, `restore` or `hook_switch`.
 
 `agent.reconfigure(tools, frontend_tools)` changes the tools directly. It does not change the active profile and announces nothing.

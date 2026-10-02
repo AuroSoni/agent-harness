@@ -100,6 +100,7 @@ Everything else is a `MetaEnvelope`: one header, one typed body in `payload`.
 | `compaction_start`, `compaction_end` | `reason`, plus counts on end |
 | `mcp_server_state` | `server`, `state`, `error`, `server_info` |
 | `meta_todo` | `operation`, `todo` or `todo_id` |
+| `meta_end_turn_validation` | `status`, `result`, `hook`. Sent around each call of the older [`end_turn_hook`](hooks-and-profiles.md#an-older-mechanism), whose own events also go out as `custom` frames under their own names |
 
 Hooks and tools emit their own with `ctx.emit(Custom(name=..., data=...))`.
 
@@ -112,7 +113,7 @@ Hooks and tools emit their own with `ctx.emit(Custom(name=..., data=...))`.
 | Ending | Frames, in order |
 |---|---|
 | Completed | `usage_report`, `files_updated` (if any), `run_completed` |
-| With answer finalization | `answer_completed`, `usage_report`, `finalization_updated`…, `files_updated`, `finalization_updated`, `run_completed` |
+| With answer finalization | `answer_completed`, `usage_report`, `finalization_updated`, `files_updated` (if any), `finalization_updated` twice, `run_completed` |
 | Aborted | `usage_report`, `custom` `aborted` |
 | Errored | `error_report`, `run_completed` with `stop_reason: "error"` |
 | Paused | `await_input` |
@@ -121,6 +122,8 @@ Hooks and tools emit their own with `ctx.emit(Custom(name=..., data=...))`.
 
 A sub-agent emits its own `run_started`, `usage_report` and `run_completed` into the same stream, with its own `agent_id` and its parent's id in `parent_agent_id`. The root's frames are the ones whose `parent_agent_id` is null.
 
+A sub-agent is handed its parent's queue when it is spawned. A re-attach on the root is not passed on to a tool that already holds the old queue.
+
 ## Framing
 
 `sse_response(item_iter)` turns the reader's iterator into a `text/event-stream` response.
@@ -128,7 +131,7 @@ A sub-agent emits its own `run_started`, `usage_report` and `run_completed` into
 - **One frame:** `data: {json}` followed by a blank line.
 - **End:** exactly one `data: [DONE]`, last. If the source raises, there is no `[DONE]`.
 - **Keepalive:** `data: [PING]` whenever nothing was sent for 15 seconds.
-- **Chunking:** frames are kept to 2,048 bytes (`MAX_FRAME_BYTES`): the payload slice a frame may carry is that minus the size of its header.
+- **Chunking:** a long payload is cut into slices of at most 2,048 bytes of raw text (`MAX_FRAME_BYTES`), less the size of the frame's header. The frame itself can come out larger once the slice is JSON-escaped. `citation` and `error` frames are never split.
   - A long content frame is split into several frames that repeat the header and carry a slice of `delta`; only the last has the original `final`.
   - A meta envelope whose payload does not fit is sent as frames carrying the header, a slice of the payload JSON in `delta`, and `final: true` on the last. An envelope that fits has `payload` as an object and no `delta`.
   - A split never cuts a multi-byte character.

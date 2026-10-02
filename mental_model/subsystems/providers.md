@@ -68,7 +68,7 @@ When both fields are set, `effort` wins.
 | Native event | Frame |
 |---|---|
 | Text and thinking deltas | `text`, `thinking` frames as they arrive, then one closing frame per block |
-| Tool call input | Buffered; one `tool_call` frame with the full arguments when the block ends |
+| Tool call input | Buffered; one `tool_call` frame (`server_tool_call` for a server tool) with the full arguments when the block ends |
 | Server tool results | `server_tool_result` frames, when `stream_meta_history_and_tool_results` is on |
 | Citations | `citation` frames when the block ends |
 | A stream `error` event | A non-terminal `error` frame |
@@ -86,7 +86,7 @@ Frame shapes are in [Streaming](streaming.md).
 | Other status errors | `PROVIDER_STATUS` |
 | Anything else | `INTERNAL` |
 
-- **Retried inside the provider:** rate limits, connection errors, timeouts, 5xx and overloaded, with exponential backoff from `base_delay` (plus jitter when streaming).
+- **Retried inside the provider:** rate limits, connection errors, timeouts, 5xx and overloaded, and any exception that is not one of the API's own non-retryable errors, with exponential backoff from `base_delay` (plus jitter when streaming). A retried streaming call streams again into the same reader.
 - **Fallback keys:** with `fallback_api_keys`, a request rejected for exhausted credit moves to the next key, and that key stays in use.
 - **Overflow** is not retried by the provider. The loop compacts and retries the step.
 

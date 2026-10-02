@@ -1,6 +1,6 @@
 # Billing a run
 
-Every provider call is priced when it completes, at the rate then in effect, and is not re-priced later. The library never charges anyone: it hands the host a **settlement**, a priced record of the steps not yet billed, and the host's ledger does the rest. A step is settled at most once.
+Every provider call's usage is recorded when it completes. The library never charges anyone: it hands the host a **settlement**, a priced record of the steps not yet billed, and the host's ledger does the rest. A step is settled at most once.
 
 ```mermaid
 flowchart LR
@@ -19,7 +19,7 @@ flowchart LR
 
 - **Row lookup:** exact `model_id`, else the longest `model_id` contained in the model name. An unknown model logs a warning and costs nothing.
 - **Rates** are per million tokens: input, cache write (5 minute and 1 hour), cache read, output; plus per-request rates for web search and web fetch.
-- **Multipliers** stack: fast mode, long context (above the row's threshold), batch, and US data residency.
+- **Multipliers:** fast mode, or else long context (above the row's threshold, with separate input and output multipliers); then batch and US data residency on top.
 - The result is a `CostBreakdown`: `total_cost`, `currency` (USD) and a per-component `breakdown`.
 
 `pricing_policy=` on the agent replaces this calculator for settlements. The default, `CsvPricingPolicy`, calls it.
@@ -36,7 +36,7 @@ A settle point prices the steps since the last one, advances a watermark (how ma
 
 Not settle points:
 
-- **A [pause](pause-and-resume.md).** The spend so far is priced and stored on the pause record, and billed at the next settle point. If the process dies while parked, a cold resume restores it from the record.
+- **A [pause](pause-and-resume.md).** The spend so far is priced and stored on the pause record, and billed at the next settle point. If the process dies while parked, a cold resume restores it from the record. Only a resume restores it: a paused session that is loaded from storage and then aborted or evicted before a reply arrives is not billed for its pre-pause steps.
 - **The start of a run,** which only resets the watermark.
 
 The stretch between two settle points is a **leg**. Most runs have one leg and one settlement. Where more than one settle point fires in a run, the watermark puts each step in exactly one settlement.
@@ -57,7 +57,7 @@ The stretch between two settle points is a **leg**. Most runs have one leg and o
 
 Delivered two ways, from the same object:
 
-- **`on_usage_report(callback)`**: the host's hook for its ledger. Callbacks run in registration order; one that raises is logged and skipped.
+- **`on_usage_report(callback)`**: the host's hook for its ledger. Callbacks run in registration order; one that raises is logged and skipped. (Within [answer finalization](answer-finalization.md) it instead fails the stage.)
 - **`usage_report` frame**: `{kind, usage, cost}` for the client. See [Streaming](../subsystems/streaming.md).
 
 Order at the end of a run: persist, settle, `usage_report`, callbacks, `files_updated`, `run_completed`.

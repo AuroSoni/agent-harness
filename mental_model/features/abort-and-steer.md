@@ -65,9 +65,9 @@ await agent.submit(Steer(instruction=Message.user("…"), mode=SteerMode.FORCEFU
 | Mode | What happens |
 |---|---|
 | `FORCEFUL` (default) | The teardown above, then the instruction is queued as a `UserMessage` and the actor started. It runs as a new run with a new `run_id` |
-| `COOPERATIVE` | Only queues the instruction. The run in flight finishes first; the instruction is the next run |
+| `COOPERATIVE` | Only queues the instruction, behind any messages already waiting. Nothing is torn down, and open awaits stay open |
 
-- The ack is `STEERING` in both modes, whether or not anything was running.
+- The ack is `STEERING` in both modes, whether or not anything was running. `Steer` does not check that the mailbox took the instruction: with a full mailbox the ack is still `STEERING`.
 - A forceful steer's marker is `custom` `steered`, with the same `data` as `aborted`.
 
 > **Why `steered` and not `aborted`:** consumers close their stream on `aborted`, and the steered run's frames were then dropped.

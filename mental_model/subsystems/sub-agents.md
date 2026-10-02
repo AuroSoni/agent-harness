@@ -34,7 +34,7 @@ agent = AnthropicAgent(..., subagents={"researcher": SubAgentSpec(description="â
 |---|---|
 | The sandbox | `agent_uuid` (new, or the one being resumed) |
 | Storage adapters, media backend | Its config, context and `Conversation` rows |
-| The stream queue | Its tool registry, built from the spec |
+| The stream queue, as the parent held it when the child was spawned | Its tool registry, built from the spec |
 | The cancellation event | Its provider and model |
 | The principal and the root session id | An empty hook engine: the parent's hooks and profiles do not apply inside it |
 | The usage callbacks | |
@@ -66,7 +66,7 @@ A child that raises becomes an error tool result, `Subagent '<name>' error: â€¦`
 - **Pauses:** a child's frontend tool call [pauses](../features/pause-and-resume.md#sub-agents) on the session's await table. The reply goes to the session and wakes the child in place.
 - **Abort:** one [abort](../features/abort-and-steer.md#sub-agents) of the root stops every child. Control commands cannot be addressed to a child.
 - **Billing:** a child settles its own steps and reports them through the parent's usage callbacks. See [Billing a run](../features/billing-a-run.md#sub-agents).
-- **Sandbox:** a child uses the parent's sandbox as it is. It takes no part in warming, pausing, coordinating or checkpointing it.
+- **Sandbox:** a child works in the parent's sandbox. Its own start-up calls `setup()` on it; it never pauses, coordinates or checkpoints it.
 - **Stream end:** a child sends its own `run_completed`, never an abort marker.
 
 ## Contracts

@@ -61,7 +61,7 @@ The zone layout is the default and the [common tools](tools.md#the-common-tools)
 | Where | `<base_dir>/<agent_uuid>` on the host | A micro-VM, files under `root_path` |
 | Isolation | None beyond the path checks. Commands run as the host process's user | The VM |
 | Commands | A subprocess in its own session | A background command in the VM |
-| Environment | The host's environment plus the call's | A small base set plus an allow-list. Variables that look like secrets are refused |
+| Environment | The host's environment plus the call's | A small base set, the host variables on an allow-list, and the call's. The call's variables are refused if their names look like secrets; the allow-list is not checked |
 | Pause and resume | Not applicable | Paused when idle, resumed on demand |
 | `manifest()` | None; snapshots read every file | A helper script in the VM hashes files |
 | `teardown` | Deletes the directory | Kills the VM |
@@ -88,16 +88,16 @@ stateDiagram-v2
 | Moment | What the runtime does |
 |---|---|
 | Session create or load | Binds the sandbox: the constructor's instance, else the saved `sandbox_config`, else `sandbox_factory(agent_uuid)`, else a `LocalSandbox`. Then `setup()` |
-| With `defer_sandbox_initialization` | Only binds. `setup()` runs concurrently with the first provider call of the next run, after an optional `before_sandbox_use` callback |
+| With `defer_sandbox_initialization` | Only binds. In each run, `setup()` and then an optional `before_sandbox_use` callback run concurrently with the first provider call, in place of the warm at the start of the run |
 | Start of each run | Warms it: resumes a paused VM, or recovers a lost one |
-| Resume from a [pause](../features/pause-and-resume.md) | Warms it again; it may have been paused while the run was parked |
+| Resume from a [pause](../features/pause-and-resume.md) | A resume after a restart warms it. A resume in memory warms it only for a root agent with a coordinator |
 | After the last queued run | Schedules a pause, if the session is idle and nothing is parked. It is not awaited, so `run_completed` is never held up |
 | Eviction | Checkpoint, then pause. Never a teardown |
 | `destroy_sandbox()`, `destroy_session_sandbox(...)` | The only paths that tear it down |
 
-- **A stale pause cannot stop a busy sandbox.** Each use bumps a pause epoch; a pause carries the epoch it was scheduled at and is ignored if the sandbox has been used since.
+- **A stale pause cannot stop a busy sandbox.** Each `ensure_running()` (at setup, at the warm that starts a run, before each command) bumps a pause epoch; a pause carries the epoch it was scheduled at and is ignored if the epoch has moved since.
 - **A lost sandbox** (`SandboxGone`) is replaced: a new one is created and its files are restored from the session's latest [checkpoint](../features/fork-and-reset.md). Changes made since that checkpoint, and any running processes, are gone.
-- **A [sub-agent](sub-agents.md)** uses its parent's sandbox as it is and takes no part in any of this.
+- **A [sub-agent](sub-agents.md)** works in its parent's sandbox. Its own start-up calls `setup()` on it; it never pauses, coordinates or checkpoints it.
 - Each warm of a root agent's sandbox is timed as a `sandbox_ready` [trace span](conversation-log.md#trace-spans).
 
 ## The coordinator
@@ -125,7 +125,7 @@ stateDiagram-v2
 - **What is captured:** the zones (or the `capture_roots`), within `SnapshotPolicy`: 50 MiB per file, 500 MiB in total.
 - **The manifest** maps each path to a content hash, a size and a status (`stored` or `skipped`). The manifest is itself a blob; its key is what a checkpoint records.
 - **Capture** uploads only blobs the store does not already have. With a `manifest()` from the sandbox, unchanged files are not even read.
-- **Skipped:** files over the caps, symlinks and other non-regular files. Any skip makes the snapshot's fidelity `degraded`.
+- **Skipped:** files over the caps. When the sandbox supplies the manifest (E2B), symlinks and other non-regular files are skipped too; the read-every-file path used for a local sandbox follows symlinks. Any skip makes the snapshot's fidelity `degraded`.
 - **Materialize** clears the captured directories and writes the stored files back in batches.
 
 > **Why a content manifest, not a git-like repo per session:** a repo adds a binary dependency and leaks `.git` into the agent's own workspace.

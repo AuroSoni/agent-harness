@@ -39,7 +39,7 @@ flowchart LR
 |---|---|
 | `SessionManager` | Passed to the host's factory, then bound with `set_principal`. Checked on every attach to a resident session |
 | The runtime | `agent.principal`. Rebinds its storage adapters and stamps `owner_tenant` and `owner_subject` on the config |
-| Storage adapters | `for_principal(p)` returns a copy that scopes its queries to `p`. See [Storage](storage.md#tenant-scoping) |
+| Storage adapters | `for_principal(p)` returns a copy bound to `p`. The Postgres adapters scope their queries by it once the host has added `principal_columns()`; the in-memory adapters do not filter. See [Storage](storage.md#tenant-scoping) |
 | Await table | The owner is stamped on each record when a pause opens, and checked when a reply resolves it |
 | Hooks and tools | `ctx.principal`, claims included |
 | Settlement | `TurnSettlement.principal`; serialized as `tenant` and `subject` |
@@ -79,18 +79,18 @@ A session's owner is fixed once it is named.
 | Named | Different scope key | `PrincipalConflict` |
 | Anything | None or anonymous | No change. A session never silently loses its owner |
 
-On load, an anonymous runtime adopts the owner saved on the config; a named one that differs raises `PrincipalConflict`.
+On load, the same rule is applied to the owner on the loaded config: an anonymous runtime adopts it, and a named one that differs raises `PrincipalConflict`. That needs an adapter that keeps the owner on the config, as the in-memory ones do. With the Postgres adapters the owner lives in filter columns: a row owned by someone else is not returned by the load at all, and the session is built as new.
 
 ## What a mismatch looks like
 
 | Gate | Result | HTTP |
 |---|---|---|
 | `get_or_create` on a resident session | `SessionNotFound` | The host maps it |
-| `get_or_create` loading from storage | `PrincipalConflict` | The host maps it |
+| `get_or_create` loading from storage | Postgres adapters: the row is not found. Adapters that keep the owner on the config: `PrincipalConflict` | The host maps it |
 | `SessionManager.submit` | `Ack` with `NOT_FOUND` | 404 |
-| A reply from the wrong owner | `Ack` with `REJECTED`; the pause stays open | 422 |
+| A reply resolved by a runtime whose principal differs from the pause's owner | `Ack` with `REJECTED`; the pause stays open | 422 |
 
-The first and third answer exactly as they do for a session that does not exist.
+The fourth is not reachable through `SessionManager`, which stops a caller who does not own the session at the attach check and always resolves with the runtime's own principal.
 
 ## Contracts
 

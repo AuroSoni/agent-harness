@@ -29,14 +29,16 @@ sequenceDiagram
 
 | Cause | Declared as | `reason` on the await |
 |---|---|---|
-| A frontend tool | `@tool(executor="frontend")`, or a schema passed in `frontend_tools=` | `frontend_tool` |
+| A frontend tool | `@tool(executor="frontend")` on a function registered with the agent | `frontend_tool` |
 | A tool that needs approval | `@tool(needs_user_confirmation=True)` | `confirmation` |
-| A scripted pause | Code calls `ctx.call_frontend_tool(name, input)` | `scripted` |
+| A scripted pause | Code calls `call_frontend_tool(name, input)` | `scripted` |
 
 - The registry sorts each step's tool calls into backend, frontend and confirmation. Any frontend or confirmation call makes the step a relay step.
 - A confirmation call travels exactly like a frontend call: it is sent to the client, and the client's reply is its result. The loop does not run the tool's own function afterwards.
 
-> **Why relay is an execution mode, not a hook family:** a tool with `executor="frontend"` goes through the same `before_tool`, `after_tool` and `on_tool_error` as a backend tool.
+> **Why relay is an execution mode, not a hook family:** a tool with `executor="frontend"` goes through the same `before_tool` and `after_tool` as a backend tool.
+
+`on_tool_error` is the exception: it fires only for a backend tool that raised. An error result from the client reaches `after_tool` like any other result.
 
 ## The pause, step by step
 
@@ -94,7 +96,7 @@ The reply is untrusted. Before it reaches the context, `_reconcile_relay_reply`:
 - drops results for server tools (`srvtoolu_*`);
 - adds an error result, "No result returned for this tool call.", for every call the reply left out.
 
-So the model's tool calls are always answered, and delivering the same reply twice changes nothing.
+So the model's tool calls are always answered, and a result the context already has is never added twice.
 
 ## Resume
 
@@ -129,10 +131,11 @@ A resume never resets `current_step`; billing depends on that. See [Billing a ru
 
 | Reply | Disposition | Effect |
 |---|---|---|
-| Arrives twice | `IGNORED_DUP` | None |
+| Arrives twice | `IGNORED_DUP` if the run has not woken yet, `IGNORED_STALE` once it has (the record is gone) | None |
 | Names an unknown cid | `IGNORED_STALE` | None |
-| Arrives after an abort or steer | `IGNORED_STALE` | None. The pause was already closed |
-| Comes from another owner | `REJECTED` | None. The await stays open for the real owner |
+| Arrives after an abort or a forceful steer | `IGNORED_STALE` | None. The pause was already closed |
+| Comes from a caller who does not own the session | `NOT_FOUND`, from the manager's attach check | None. The await stays open |
+| Is resolved by a runtime whose principal differs from the one the pause was opened with | `REJECTED`, from the await table | None. The await stays open |
 
 The session's generation is what makes a late reply harmless. See [the await table](../subsystems/session-actor.md#the-await-table).
 
@@ -145,11 +148,11 @@ The session's generation is what makes a late reply harmless. See [the await tab
 3. Its steps so far are billed: the usage callbacks run and `usage_report` is emitted.
 4. No `aborted` frame is sent for a parked run.
 
-A saved pause counts as in flight even when nothing is in memory, so an `Abort` after a restart still repairs the chain. See [Abort and steer](abort-and-steer.md).
+On a session that is in memory, a saved pause counts as in flight even when no run is parked on it, so an `Abort` still repairs the chain. For a session that is not resident, the manager answers `NOT_RUNNING` without loading it, and the saved pause is left as it is. See [Abort and steer](abort-and-steer.md).
 
 ## Scripted pauses
 
-`ctx.call_frontend_tool(name, input)` lets code ask the client for something without the model calling a tool. It is available to a tool body through its [`ToolContext`](../subsystems/tools.md) and to a host through `agent.scripted_ctx()`.
+`call_frontend_tool(name, input)` lets code ask the client for something without the model calling a tool. A tool body calls it on its [`ToolContext`](../subsystems/tools.md): `ctx.call_frontend_tool(name, input)`. A host calls it on the agent, with an emit-only context: `agent.call_frontend_tool(name, input, ctx=agent.scripted_ctx())`.
 
 - It mints its own tool-use id and a cid of `relay_{run_id}_{name}`, fires `before_tool`, parks on the same await table, and returns the reply's results to the caller. It returns `[]` if the pause is aborted.
 - The results are **not** spliced into the context and nothing is saved. A scripted pause lives in memory only and cannot be resumed after a restart.

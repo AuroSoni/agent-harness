@@ -21,7 +21,7 @@ flowchart LR
 |---|---|---|---|
 | Anthropic Messages API | [Providers](../subsystems/providers.md) | Running `AnthropicAgent` | The `anthropic` SDK. The key is resolved by the SDK from `ANTHROPIC_API_KEY`, or the host injects a client; `fallback_api_keys` adds spares |
 | Other model APIs | [Providers](../subsystems/providers.md) | Running `LiteLLMAgent` | `litellm`, which resolves each provider's key itself |
-| PostgreSQL | [Storage](../subsystems/storage.md) | Using the Postgres adapters | The host creates an `asyncpg` pool and passes it in. The library reads no connection string from the environment |
+| PostgreSQL | [Storage](../subsystems/storage.md) | Using the Postgres adapters | The host creates an `asyncpg` pool and passes it in, or gives an adapter a DSN (`from_dsn`) and lets it own a pool. The library reads no connection string from the environment |
 | S3, or an S3-compatible store | [Blob store and media](../subsystems/blob-store-and-media.md) | Using the S3 implementations | `boto3` / `aioboto3`, with the default AWS credential chain. The host passes the bucket |
 | E2B | [Sandbox](../subsystems/sandbox.md) | Using `E2BSandbox` (extra `e2b`) | The `e2b` SDK, which resolves its own API key |
 | MCP servers | [MCP](../subsystems/mcp.md) | Passing `mcp_servers=` (extra `mcp`) | The `mcp` SDK; each server's URL or command and its auth come from the host |
@@ -41,7 +41,7 @@ The library reads almost nothing from the environment itself.
 
 `.env.example` at the repo root lists the conventional names.
 
-A [local sandbox](../subsystems/sandbox.md#the-two-implementations) runs commands with the host process's whole environment. An E2B sandbox gets only a small base set plus the variables the host allow-lists, and refuses names that look like credentials.
+A [local sandbox](../subsystems/sandbox.md#the-two-implementations) runs commands with the host process's whole environment. An E2B sandbox gets only a small base set plus the host variables on its allow-list. A variable passed with a single command is refused if its name looks like a credential; allow-listed host variables are not checked.
 
 ## Failure behaviour
 

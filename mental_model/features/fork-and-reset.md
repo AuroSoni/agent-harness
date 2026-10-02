@@ -33,7 +33,9 @@ flowchart LR
 
 **When one is taken:** at the end of every run, completed or aborted, and after a [scripted run](run.md#scripted-runs). Repeated captures within a run overwrite the same row.
 
-**When one is not:** while a pause is pending, on an errored run, and on a resume. A checkpoint exists only at a run boundary.
+**When one is not:** while a pause is pending, at the moment a run errors, and on a resume.
+
+So a checkpoint normally sits at a run boundary. Two cases put one elsewhere: a hook that makes the loop continue (`on_turn_end` answering `continue`, or an `end_turn_hook` retry) persists mid-run and captures, to be overwritten at the run's end; and an eviction after an errored run captures at that run's sequence number.
 
 > **Why the transcript is stored as content-addressed segments:** a full serialized config per run is O(n²). With segments, an unchanged prefix costs nothing and a fork is a pointer copy.
 
@@ -50,7 +52,7 @@ Without a blob store, the transcript and log stay inline in the row and the sand
 ## Fork
 
 ```python
-new_uuid = await fork_session(handles, source_uuid, at_sequence, new_uuid, principal, ...)
+new_uuid = await fork_session(handles, source_uuid=..., at_sequence=..., new_uuid=..., principal=...)
 ```
 
 Works on storage alone; no session needs to be in memory.
@@ -65,7 +67,7 @@ No blob is written and no sandbox is created. The fork's sandbox is provisioned 
 ## Reset
 
 ```python
-ref = await reset_session(handles, agent_uuid, to_sequence, principal, sessions=manager, ...)
+ref = await reset_session(handles, agent_uuid=..., to_sequence=..., principal=..., sessions=manager)
 ```
 
 1. If the session is resident, evict it. A session that cannot be evicted (a run in flight, or parked on a pause) raises `SessionBusy`.

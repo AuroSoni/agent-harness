@@ -91,7 +91,7 @@ A tool returns a string, or a `ToolResultEnvelope` when the model and the log sh
 |---|---|---|
 | `from_text(summary, details=...)` | The text | The first 200 characters as summary, plus `details` |
 | `from_blocks(context_blocks, log_summary, log_blocks, details, ...)` | `context_blocks` | `log_summary`, `log_blocks`, `details` |
-| `error(tool_name, tool_id, message)` | `Error: <message>` | The same, with `is_error` |
+| `error(tool_name, tool_id, message)` | `Error: <message>` | The bare message, with `is_error` |
 
 - Images go to the model as `ImageContent` blocks; `image_block(bytes)` builds one within a size budget.
 - The envelope also carries timing (`started_at`, `ended_at`, `duration_ms`, `queued_ms`), which lands on the log's projection.

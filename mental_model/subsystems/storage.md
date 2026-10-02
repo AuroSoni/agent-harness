@@ -29,7 +29,7 @@ flowchart LR
 | `agent_checkpoints` | A restore point of a session at a run boundary | `(agent_uuid, sequence_number)` | At each run end, when a checkpoint adapter is set. See [Fork and reset](../features/fork-and-reset.md) |
 | `agent_runs` | One `LogEntry`: a line of a run's step log | none; indexed on `(agent_uuid, run_id)` | Not written by the turn loop today. Despite the name, runs are rows of `conversation_history` |
 
-Nothing is written at the start of a run or per step. A run's progress reaches the database at a pause, at its end, or when it is aborted.
+Nothing is written at the start of a run or per step. A run's progress reaches the database at a pause, at its end, or when it is aborted. Two things write mid-run: a hook that makes the loop continue, and a remote sandbox being created or replaced (the config is saved with the new binding).
 
 ### What `agent_config` holds
 
@@ -106,13 +106,13 @@ There are three independent version numbers; do not confuse them:
 `agent.initialize()` on a session with a saved config:
 
 1. Load the config row. No row means a new session.
-2. Reconcile the [principal](identity.md#binding-and-conflicts) with the saved owner.
+2. Reconcile the [principal](identity.md#binding-and-conflicts) with the owner on the loaded config.
 3. Restore session usage, the compaction settings and the [active profile](hooks-and-profiles.md#profiles).
 4. If the config has a `pending_relay`, load that run's row so the run can [resume](../features/pause-and-resume.md#resume).
 5. Bind the [sandbox](sandbox.md) from the saved `sandbox_config`.
 6. Connect [MCP](mcp.md) servers. Their specs come from the constructor, not from storage.
 
-Loading writes nothing.
+Loading writes nothing, unless it had to create or replace a remote sandbox.
 
 Readers are tolerant of older rows: unknown `llm_config` keys are dropped, a pre-typed conversation log is accepted as a list of messages, and old media metadata key names are mapped.
 
@@ -130,14 +130,14 @@ Readers are tolerant of older rows: unknown `llm_config` keys are dropped, a pre
 | `subagent_fanout` | Children per parent |
 | `distinct_principals` | Owners present |
 
-It counts a run as an error when its `stop_reason` is anything but `end_turn` or `stop_sequence`. Its costs are `Conversation.cost`, not settlements: see [Billing a run](../features/billing-a-run.md#two-totals-for-the-same-run).
+It counts a run as an error when its `stop_reason` is set and is neither `end_turn` nor `stop_sequence`. Its costs are `Conversation.cost`, not settlements: see [Billing a run](../features/billing-a-run.md#two-totals-for-the-same-run).
 
 ## Contracts
 
 - **Tables:** `agent_config`, `conversation_history`, `agent_runs`, `agent_checkpoints`, `_agent_base_schema_version`; their base columns; `LIBRARY_SCHEMA_VERSION`.
 - **Interfaces:** `AgentConfigAdapter`, `ConversationAdapter`, `AgentRunAdapter`, `CheckpointAdapter`, `StorageHandles`.
 - **Postgres:** the `Pg*AdapterBase` classes, `ColumnSpec`, `principal_columns`, `create_adapters_from_pool`, `ensure_all_schemas`, `PgAnalyticsReader`.
-- **Entities:** `AgentConfig`, `Conversation`, `PendingToolRelay`, and their `to_dict` forms.
+- **Entities:** `AgentConfig`, `Conversation`, `PendingToolRelay`, and their stored forms (`serialize_config`, `Conversation.to_dict`).
 
 ## Depends on
 

@@ -6,7 +6,7 @@ Every `> **Why …:**` callout in the model must trace to something Auro wrote o
 - **Section B** is reasons found written down in the repo. Auro said such text was "written by agents and may be out of date", so each is a candidate. Each was checked against the code on 2 Oct 2026 and sent to him at Checkpoint 2 as a row to strike or confirm.
 - **Section C** is candidates that were dropped.
 
-Status values for section B: `confirmed`, `reworded`, `struck`. All 40 rows were confirmed in bulk on 2 Oct 2026 (row A12), not one by one.
+Status values for section B: `confirmed`, `reworded`, `struck`. All 40 rows were confirmed in bulk on 2 Oct 2026 (row A12), not one by one. One row (S37) was later reworded to match the code.
 
 ## A. Auro's words on record
 
@@ -74,7 +74,7 @@ The S numbers are the rows of [2-plot.md](2-plot.md) Part A, where each candidat
 | S34 | Answer finalization | `agent_base/providers/anthropic/finalization.py:1-6` | Comment | confirmed |
 | S35 | Sandbox | `agent_base/sandbox/coordinator.py:1-5` | Comment | confirmed |
 | S36 | Sandbox | `agent_base/sandbox/e2b.py:471-476` | Comment | confirmed |
-| S37 | Tools, hooks | `interface_plan/subsystems/agent-loop-hooks.md:541-542` | Doc | confirmed |
+| S37 | Tools, hooks | `interface_plan/subsystems/agent-loop-hooks.md:541-542` | Doc | reworded: `on_tool_error` dropped from the list. The accuracy audit found it fires only for a backend tool that raised, never for a frontend call. The reason itself is unchanged |
 | S38 | Sub-agents | `agent_base/common_tools/sub_agent_tool.py:28-33`; ledger GF-P8G1 | Comment, ledger | confirmed |
 | S39 | MCP | Ledger MC-D3 | Ledger | confirmed |
 | S40 | MCP, tools | `interface_plan/subsystems/mcp.md:647` (MC-D12) | Doc | confirmed |

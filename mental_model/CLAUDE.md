@@ -108,7 +108,7 @@ Pausing:
 - **Relay**: the feature; a run pauses for a tool the client runs. **Pause** is the plain word for it. [features/pause-and-resume.md](features/pause-and-resume.md).
 - **Await**: the mechanism; a record in the await table that a reply resolves.
 - **cid**: correlation id, the key of an await and the token the client echoes back.
-- **Join**: the plane-2 command (`ToolReply`) that resolves an await.
+- **Join**: what a parked run waits on (`Join` in the code). Plane 2 is named for it: a `ToolReply` arriving there resolves the join.
 - **Generation**: a per-session counter that an abort bumps, so late replies are ignored.
 - **Re-arm**: reopening a saved pause's await after the process lost it, so the reply can still resolve it.
 - **Splice**: adding a pause's results to the context as one user message.

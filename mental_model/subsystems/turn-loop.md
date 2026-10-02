@@ -78,7 +78,7 @@ The LiteLLM provider still merges them.
 
 ## Keeping the context in the window
 
-Two mechanisms, both optional.
+Two mechanisms.
 
 **Compaction** replaces the older part of the context with a summary. It exists only when a `CompactionConfig` is given.
 
@@ -91,20 +91,20 @@ Two mechanisms, both optional.
 
 The summarizing call's usage is not billed and is not a step.
 
-**Externalization** moves an oversized block out of the context into a sandbox file, leaving a reference. It exists only when the agent has a sandbox.
+**Externalization** moves an oversized block out of the context into a sandbox file, leaving a reference. It is always on: every agent has a sandbox, a local one by default.
 
 | What | Limit | Goes to |
 |---|---|---|
 | The user message | 80,000 tokens | `.context/prompt_<id>.txt` |
 | One tool result | `max_tool_result_tokens` (25,000) | `.context/tool_result_<tool_id>.txt` |
-| All results of a step together | 5 times the per-result limit | The remaining results are externalized too |
+| All results of a step together | The per-result limit times `max_parallel_tool_calls` (so 125,000 by default) | The remaining results are externalized too |
 
 The logs keep the original; only the context gets the reference. Tools can also cap their own output before this backstop: see [Tools](tools.md#large-results).
 
 ## Errors
 
 - **Provider errors** are classified and retried by the [provider](providers.md#errors-and-retries). What survives the retries reaches the loop.
-- **A request that is too large** triggers an `overflow` compaction and a retry of the step, when compaction is configured.
+- **A request that is too large** triggers an `overflow` compaction and a retry of the step, when compaction is configured. If compaction changes nothing, the error stands and the run ends as errored.
 - **Anything else** ends the run as [errored](../features/run.md#an-errored-run). That includes an exception from a hook.
 - **A tool that raises** is not a loop error. Its exception becomes an error result the model sees.
 

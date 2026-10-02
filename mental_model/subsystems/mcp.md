@@ -34,7 +34,7 @@ McpServerSpec(
 |---|---|
 | `transport` | `McpStdioSpec(command, args, env, cwd)`, `McpHttpSpec(url, headers, auth)` or `McpSseSpec(url, headers, auth)` |
 | `include_tools`, `exclude_tools` | Filter by the server's own tool names |
-| `confirm_destructive` | Tools the server marks destructive need user confirmation, so they [pause](../features/pause-and-resume.md) |
+| `confirm_destructive` | Tools the server marks destructive become confirmation tools, so a call [pauses](../features/pause-and-resume.md). As for any confirmation tool, the client's reply is the result; the loop does not call the server afterwards |
 | `tool_timeout_s` | Per call |
 | `required` | If the server is not connected after start-up, `initialize()` raises |
 | `reconnect` | `McpReconnectPolicy(max_attempts=5, base_delay_s=0.5, max_delay_s=30.0)` |
@@ -99,7 +99,7 @@ Output over 25,000 characters is capped. Over-long JSON is saved whole to the sa
 | `mcp_statuses` | Current state of each |
 
 - A change takes effect at once when no run is active, otherwise at the start of the next run. The registry is rebuilt, not edited: see [Tools](tools.md#the-registry).
-- The model is told. The next run's user message carries a note, "MCP servers changed since your last turn:", listing added, removed and changed tools. The note is not persisted.
+- The model is told. The next run's user message carries a note, "MCP servers changed since your last turn:", with one line per server that connected, disconnected or changed, and its tool count. The note is not persisted.
 
 `probe(transport, auth)` connects once to a server without registering anything and returns its state, its tools and any auth challenge.
 

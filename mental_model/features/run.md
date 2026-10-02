@@ -74,11 +74,12 @@ Each step is one provider call followed by whatever the response asks for. `curr
 | Output limit reached | `max_tokens` | `run_completed` |
 | `max_steps` reached (default 50) | `max_steps` | `run_completed` |
 | The model refused | `refusal` | `custom` `refusal`, then `run_completed` |
-| Context still too large after compaction | `context_window_exceeded` | `run_completed` |
-| [Abort or forceful steer](abort-and-steer.md) | `aborted` | `usage_report`, then `custom` `aborted` or `steered` |
+| The model stops for a full context window and compaction changes nothing | `context_window_exceeded` | `run_completed` |
+| [Abort or forceful steer](abort-and-steer.md) | `aborted` | `usage_report` (when there is unbilled spend), then `custom` `aborted` or `steered` |
 | An error | `error` | `error_report`, then `run_completed` with `stop_reason: "error"` |
 
-- A completed or errored run always ends with `run_completed`. An aborted one ends with the `aborted` marker and has no `run_completed`.
+- A completed or errored run always ends with `run_completed`. An aborted one has no `run_completed`; it ends with the marker, except that a run aborted while paused, and a sub-agent, send no marker.
+- A provider error that says the request is too large is a different path from the stop reason above: if compaction cannot shrink the context, the run ends as errored.
 - `on_turn_end` fires when the model finishes. A hook that answers `continue` appends a hidden user message and the loop carries on; only `max_steps` bounds this.
 - A refusal's response is removed from the context, so it is not replayed to the model on the next run.
 
@@ -93,8 +94,6 @@ Every run that is not aborted or errored goes through `_finalize_run`, in this o
 5. **Settle.** The steps not yet billed are priced into a settlement; `usage_report` is emitted and the usage callbacks run. See [Billing a run](billing-a-run.md).
 6. **`files_updated`** if there are files, then **`run_completed`**.
 
-The first run of a session also derives a title from the user message, up to 72 characters.
-
 With `early_answer_completion`, a root agent ends its runs through [answer finalization](answer-finalization.md) instead, which tells the client the answer is ready before the slow steps.
 
 ## An errored run
@@ -105,7 +104,7 @@ A caller that awaits `agent.run()` directly, without the actor, gets the excepti
 
 ## Scripted runs
 
-`agent.record_turn(user_message, assistant_message)` records a run the model did not produce: a canned reply, or an exchange the host scripted with [`call_frontend_tool`](pause-and-resume.md#scripted-pauses).
+`agent.record_turn(user_message, assistant_blocks, stop_reason="end_turn")` records a run the model did not produce: a canned reply, or an exchange the host scripted with [`call_frontend_tool`](pause-and-resume.md#scripted-pauses).
 
 - It emits `run_started` and `run_completed`, fires `on_turn_start` and `on_turn_end`, adds both messages to the context, saves a `Conversation` row and takes a checkpoint.
 - It makes no provider call, costs nothing, and emits no `usage_report`.
