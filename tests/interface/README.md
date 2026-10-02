@@ -4,11 +4,6 @@ Behavioural specs for the public surface of `agent_base`. This suite is the
 contract in executable form: what it pins is what a consumer may rely on. See
 `mental_model/infrastructure/packaging-and-release.md`.
 
-The suite was written test-first, against the design in `interface_plan/`.
-`mental_model/` has since replaced that folder. Comments here still cite its
-sections and ledger ids (`GF-P8G3`, `O12`, `relay-await §2.4`, …); the files
-are in git history (`git log -- interface_plan`).
-
 ## Running
 
 The default `pytest` run does **not** collect this tree (`testpaths` in

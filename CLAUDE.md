@@ -41,9 +41,7 @@ uv run --directory demos/fastapi_server uvicorn main:app --reload --port 8000
   public surface.
 - `mental_model/` tells how each subsystem behaves and why. It replaced
   `interface_plan/` (the subsystem docs and the `AMENDMENTS.md` decision
-  ledger) in October 2026. Comments in the code still cite `interface_plan`
-  sections and ledger ids (`GF-P8G3`, `O12`, `relay-await §2.4`, …); those
-  files are in git history (`git log -- interface_plan`).
+  ledger), which git history keeps.
 - Any interface change updates the matching `tests/interface/<package>/` and
   the mental model in the same PR.
 - **nova_backend** consumes this repo: it pins a commit, and in development it
@@ -57,9 +55,9 @@ uv run --directory demos/fastapi_server uvicorn main:app --reload --port 8000
 
 This repo keeps a shared mental model of the product in `mental_model/`. It tells the story of the product's characters (its domain concepts, subsystems and infrastructure): how they behave, how they relate, and why they are the way they are. It is how everyone on the team, people and agents, shares one understanding of the product. `mental_model/CLAUDE.md` explains how the model is organised and how to write in it.
 
-**Read before you plan.** Before planning or designing a change, read `mental_model/CLAUDE.md` and the files your change touches. Also check `mental_model/planned_items/` for work already planned in the same area. If the product spans several repos, check the home repo's `planned_items/` too. The code tells you what the system does; the model tells you why, and what must not break. Code that looks unnecessary may be there on purpose, so check the model before simplifying it. If the code and the model disagree, say so rather than silently picking one.
+**Read before you plan.** Before planning or designing a change, read `mental_model/CLAUDE.md` and the files your change touches. Also check `mental_model/planned_items/` for work already planned in the same area, and `nova_backend`'s `planned_items/`, where work that crosses repos is planned. The code tells you what the system does; the model tells you why, and what must not break. Code that looks unnecessary may be there on purpose, so check the model before simplifying it. If the code and the model disagree, say so rather than silently picking one.
 
-**Respect repo boundaries.** If the product spans several repos, `mental_model/CLAUDE.md` says where this repo fits and how to read the others' models. Plan any work that crosses repos in the home repo. Before changing anything marked as a cross-repo contract, find who depends on it: start with the product map, then read those repos' Depends on sections and code. Name every affected repo in the planned item. Never describe another repo's behaviour from memory or guesswork; read its model, or ask.
+**Respect repo boundaries.** Nova spans three repos; `mental_model/CLAUDE.md` says where this one fits and how to read the others' models. Plan any work that crosses repos in `nova_backend`. Before changing anything marked as a cross-repo contract, find who depends on it: start with the product map, then read those repos' Depends on sections and code. Name every affected repo in the planned item. Never describe another repo's behaviour from memory or guesswork; read its model, or ask.
 
 **Speak in the model's terms.** Use the model's names for things in plans, explanations, commit messages and PR descriptions. Don't invent new names for existing concepts.
 
@@ -75,7 +73,13 @@ This repo keeps a shared mental model of the product in `mental_model/`. It tell
 
 **Suggest improvements freely.** A more elegant architecture or more efficient code is welcome. Raise it with the developer, and if it is taken up, it becomes a planned item.
 
-**Until they are adapted, the mental-model conventions take precedence over these skills:** `create-pr`, and gstack's `/spec`, `/autoplan`, `/plan-eng-review`, `/ship` and `/document-release`. Where one of them writes a plan outside `mental_model/planned_items/`, or a PR description that is not told as a chapter, follow this section and `mental_model/CLAUDE.md` instead.
+**Skills set the method; the mental model sets what is written.** The gstack skills are external and are not adapted to this repo. Follow a skill's method where the task calls for one: how to review a plan, how to investigate, how to test, how to ship. Follow this repo's conventions for everything written into the repo or said about it:
+
+- A plan for a feature or subsystem is a planned item in `mental_model/planned_items/`, not a plan file of the skill's own (`/spec`, `/plan-eng-review`, `/plan-ceo-review`, `/autoplan`).
+- A change to how the library works updates the story, through the `merge-mental-model` skill (`/ship`, `/document-release`).
+- A PR description, a commit message and an explanation tell the change as a chapter, in the model's terms, not as a list drawn from the diff (`/ship`, `create-pr`).
+
+Where a skill's output format and these conventions disagree, the conventions win. `create-pr` is being updated separately; until then the same rule applies to it.
 
 ## Architecture
 
@@ -223,7 +227,7 @@ Use /browse for all web browsing (Aside first, the bundled gstack browser as fal
 
 ## Skill routing
 
-When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
+When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill. The skill supplies the method; what it writes to the repo, and how the change is described, follows the **Mental model** section above.
 
 Key routing rules:
 - Product ideas/brainstorming → invoke /office-hours

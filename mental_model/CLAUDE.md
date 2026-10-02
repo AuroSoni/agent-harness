@@ -19,11 +19,11 @@ There is no `product/` folder. This repo is not a home repo of the product.
 
 This repo is the **agent runtime library** of **Nova**. It ships as the Python package `agent-base` and runs inside the Nova backend's process. It is a provider only: it depends on no other repo of the product.
 
-The product has two home repos, **[nova_backend](https://github.com/Project-Hedge/nova_backend)** and **[nova_excel_addin](https://github.com/Project-Hedge/nova_excel_addin)**. Each holds:
+The product has two home repos, **[nova_backend](https://github.com/Project-Hedge/nova_backend)** and **[nova_excel_addin](https://github.com/Project-Hedge/nova_excel_addin)**. Between them they hold:
 
-- the product map ([backend's copy](https://github.com/Project-Hedge/nova_backend/blob/main/mental_model/product/map.md), [add-in's copy](https://github.com/Project-Hedge/nova_excel_addin/blob/main/mental_model/product/map.md)): every repo, its role, and the contracts between them;
-- the end-to-end features;
-- the planned items for any work that crosses repos.
+- **the product map,** in both repos ([backend's copy](https://github.com/Project-Hedge/nova_backend/blob/main/mental_model/product/map.md), [add-in's copy](https://github.com/Project-Hedge/nova_excel_addin/blob/main/mental_model/product/map.md)): every repo, its role, and the contracts between them. The two copies say the same thing;
+- **the end-to-end features that cross repos,** in `nova_backend`. Three of them pass through this library: a run, fork and reset, and billing. This repo tells the library's part of each, in [features/run.md](features/run.md), [features/fork-and-reset.md](features/fork-and-reset.md) and [features/billing-a-run.md](features/billing-a-run.md);
+- **the planned items for any work that crosses repos,** in `nova_backend`.
 
 Both are private. This repo is public, so this model names Nova as the consumer and describes the contracts it provides, and carries nothing else about Nova: no business logic, no deployment detail.
 
@@ -36,9 +36,9 @@ This repo provides two of the product's contracts:
 
 No character here uses another repo's contract, so the Depends on sections in this repo name external services only.
 
-**To read another repo's model,** read its default branch, not whatever happens to be checked out locally:
+**To read another repo's model,** read its default branch (`main` for both), not whatever happens to be checked out locally. All three repos take work on `dev` before `main`, so a model file or a planned item that is not on `main` yet is on `origin/dev`; read it there, and say that you did.
 
-1. Find a local checkout. If the product's repos are cloned side by side, it is at `../<repo>`.
+1. Find a local checkout. If the product's repos are cloned side by side, it is at `../nova_backend` or `../nova_excel_addin`.
 2. Run `git -C <checkout> fetch origin`, then `git -C <checkout> show origin/main:mental_model/<path>`.
 3. Without a local checkout, use `gh api repos/Project-Hedge/<repo>/contents/mental_model/<path> -H "Accept: application/vnd.github.raw"`.
 
@@ -213,8 +213,8 @@ When the product spans several repos, each repo's model tells the story of its o
   > **Cross-repo contract:** other repos depend on this. Before changing it, check the product map, then those repos' Depends on sections and code.
 
   Which repos depend on it is recorded in the product map, so the callout never goes stale.
-- **Tell end-to-end features once, in the home repo,** at the level of which repo does what. Each step links to the file in the repo that implements it.
-- **Never copy another repo's story.** Summarise it in a line and link to it; a copy goes stale without anyone noticing.
+- **An end-to-end feature that crosses repos is told once, in `nova_backend`,** at the level of which repo does what. Each step links to the file in the repo that implements it.
+- **Never copy another repo's story.** Summarise it in a line and link to it; a copy goes stale without anyone noticing. The one planned duplicate is the product map, which both home repos carry.
 
 A consumer's Depends on section:
 
@@ -226,7 +226,7 @@ A consumer's Depends on section:
 - **[Upload queue](../subsystems/upload-queue.md)**: retries failed uploads, so this screen never retries on its own.
 ```
 
-**The product map** (`product/map.md`, home repo only) shows each repo, its role, and the contracts between repos. It is one Mermaid diagram with each edge labelled by its contract, plus a table of the same edges. It changes only when a dependency between repos appears or goes away, so it stays small:
+**The product map** (`product/map.md`, in the two home repos only) shows each repo, its role, and the contracts between repos. It is one Mermaid diagram with each edge labelled by its contract, plus a table of the same edges. It changes only when a dependency between repos appears or goes away, so it stays small. A change to it is made in both home repos:
 
 ```mermaid
 flowchart LR
@@ -287,8 +287,9 @@ In the PR that completes the work, the `merge-mental-model` skill weaves the pla
 
 ### Work that crosses repos
 
-- **Plan it in a home repo,** whichever repos it touches, so every cross-repo plan is in one place. One planned item covers the whole change: each repo's part, the end-to-end flow if a feature changes, and any change to the product map. Its `Touches:` line lists files in other repos as `<repo>:<path>`.
-- **Split a part out only if it needs its own review.** That part then gets its own planned item in its repo, linked from the home one. A change that is only to this library is planned here.
+- **Plan it in `nova_backend`,** whichever repos it touches, so every cross-repo plan is in one place. One planned item covers the whole change: each repo's part, the end-to-end flow if a feature changes, and any change to the product map. Its `Touches:` line lists files in other repos as `<repo>:<path>`.
+- **Split a part out only if it needs its own review.** That part then gets its own planned item in its repo, linked from the one in `nova_backend`. A change that is only to this library is planned here.
 - **For a contract change,** name every consuming repo. Find them from the product map, then the consumers' Depends on sections and code.
-- **Each repo updates its own story in the PR that completes its part,** reading its part from the home repo's planned item. A part has shipped when its code is merged to its repo's default branch.
-- **The home repo's planned item is merged and deleted in one home-repo PR, once every part has shipped.** That PR is usually opened by the developer who ships the last part. If the home repo's own part ships earlier, merge that part then and leave the rest of the planned item in place.
+- **Each repo updates its own story in the PR that completes its part,** reading its part from the planned item in `nova_backend`. A part has shipped when its code is merged to its repo's default branch.
+- **The planned item in `nova_backend` is merged and deleted in one PR there, once every part has shipped.** That PR is usually opened by the developer who ships the last part.
+- **A change to the product map is made in both home repos.** This repo has no copy.

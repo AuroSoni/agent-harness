@@ -68,6 +68,12 @@ The zone layout is the default and the [common tools](tools.md#the-common-tools)
 
 > **Why each E2B command runs under `setsid` with a process tag:** E2B starts every command inside its own daemon's process group, so the pid it reports cannot be group-killed.
 
+The scripts `E2BSandbox` runs inside the VM ship with the library, in `sandbox/remote_scripts/`:
+
+- **The manifest helper** is written into the VM by `setup()`: when the VM is created, and once for each new connection to an existing one. A change to it in the library therefore reaches VMs that are already running.
+- An absolute `helper_dir` marks the helper as managed outside the sandbox. `setup()` then neither creates that directory nor writes the script.
+- **The export helper** is never installed. Its source is sent inline with each export command.
+
 A kill signals the command's own process group, then sweeps for any process still carrying the tag.
 
 Cancelling a tool call kills its command: the kill completes even though the caller is being cancelled, then the cancellation continues. A streaming command whose connection drops is re-attached to by pid, up to three times, without restarting it.
