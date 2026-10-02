@@ -29,7 +29,8 @@ One queue per session, one live reader.
 | `stream()` | First attach; raises if a reader already claimed the stream |
 
 - Nothing is replayed. Frames a previous reader consumed are gone.
-- The queue is not closed when a run ends. A reader stops when it sees a terminal frame: `run_completed`, `await_input`, or `custom` `aborted`.
+- The queue is not closed when a run ends. A reader stops when it sees a terminal frame: `run_completed`, `await_input`, or `custom` `aborted`. `custom` `steered` ends a run but not the read: the steered run's frames follow on the same stream.
+- A host attaches before it submits: `get_or_create`, `attach_stream()`, `submit(UserMessage)`, then read to a terminal frame. Frames produced before the first attach are buffered.
 - Whether the provider is called in streaming mode is decided when the run starts: with no queue yet, the call is non-streaming and no content frames exist.
 
 > **Why one live reader and no replay:** the run is the record. It carries on to its end whether or not anyone is reading, and the [conversation log](conversation-log.md) is persisted. The stream is a live view of it; replay waits for Rung 2.
@@ -47,7 +48,7 @@ The model's own output. Every frame has this header:
 | `text` | `delta` | As text arrives; one empty frame with `final: true` closes each block |
 | `thinking` | `delta` | Same |
 | `tool_call`, `server_tool_call` | `id`, `name`, `delta` (the arguments as a JSON string) | Once per call, complete, `final: true` |
-| `tool_result`, `server_tool_result` | `id`, `name`, `delta` (result text), `envelope_log` when set | Once per result, `final: true`. Only with `stream_meta_history_and_tool_results` |
+| `tool_result`, `server_tool_result` | `id`, `name`, `delta` (result text), `envelope_log` when set | Once per result, `final: true`. Only when the agent is built with `stream_meta_history_and_tool_results=True` |
 | `citation` | `delta` (a JSON string) | When the cited block ends |
 | `error` | `code`, `message`, `retriable`, `terminal`, `details` | A provider stream error, or a failed sandbox preparation |
 

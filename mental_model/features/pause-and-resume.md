@@ -46,7 +46,7 @@ Anchor: `AnthropicAgent._run_relay_pause`, then `AgentRuntime.await_external`.
 2. **`before_tool` fires for each frontend and confirmation call.** An `update` changes the input the client receives. A `block` answers that call with an error result instead of sending it.
 3. **If every pending call was blocked,** the results are added to the context and the loop continues. There is no pause.
 4. **The phase becomes `AWAITING_RELAY`** and the cid is minted: `relay_{run_id}_{current_step}`.
-5. **The pause is saved** as `agent_config.pending_relay`, before parking.
+5. **The pause is saved** before parking: the config, with `agent_config.pending_relay` set, and the run's row.
 6. **The await opens** in the [await table](../subsystems/session-actor.md#the-await-table), stamped with the session's principal and generation.
 7. **`await_input` is emitted** and the run parks.
 
@@ -105,7 +105,7 @@ So the model's tool calls are always answered, and delivering the same reply twi
 3. Fire `after_tool` for each result, with `executor="frontend"`.
 4. Splice: the backend results of the step and the reply go into the context as **one** user message. `pending_relay` is cleared.
 5. Save.
-6. The loop continues with the next provider call, in the same run.
+6. The loop continues with the next provider call, in the same run. No `run_started` is emitted again, and the client's results are not echoed back as frames.
 
 **Cold path: the process lost the session.** A parked session is never evicted, so this happens only after a restart or when another process takes the reply.
 
@@ -141,8 +141,9 @@ The session's generation is what makes a late reply harmless. See [the await tab
 `submit(Abort())` on a parked session closes the await and wakes the run as aborted:
 
 1. The context gets one user message: the backend results of the step, plus an error result, "Tool execution was aborted by the user.", for each call that was waiting.
-2. `pending_relay` is cleared, the run is closed with `stop_reason="aborted"`, and its steps so far are billed.
-3. No `aborted` frame is sent for a parked run.
+2. `pending_relay` is cleared and the run is closed with `stop_reason="aborted"`.
+3. Its steps so far are billed: the usage callbacks run and `usage_report` is emitted.
+4. No `aborted` frame is sent for a parked run.
 
 A saved pause counts as in flight even when nothing is in memory, so an `Abort` after a restart still repairs the chain. See [Abort and steer](abort-and-steer.md).
 

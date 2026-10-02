@@ -37,7 +37,7 @@ flowchart LR
 `get_or_create(root_session_id, principal)`:
 
 1. **Resident:** run the attach check (below) and return the live agent.
-2. **Not resident:** under a per-id build lock, call the factory, probe storage for saved state, `initialize()` the agent, bind the principal.
+2. **Not resident:** under a per-id build lock, call the factory, probe storage for saved state, `initialize()` the agent, bind the principal. A new session's config row is saved here; a loaded one is not written.
 3. Fire `on_session_start` with `source="create"` (nothing saved) or `"resume"` (saved state loaded). A hook that blocks closes the agent and raises `SessionBlocked`.
 4. Announce the initial [profile](hooks-and-profiles.md), publish the session, then enforce capacity.
 
@@ -77,7 +77,7 @@ ack = await agent.submit(command)                                # in process
 | `Abort()` | 3. Control | Now | Tears down the run in flight and waits for the teardown |
 | `Steer(instruction, mode)` | 3. Control | Now | `FORCEFUL` (default): the same teardown, then the instruction is queued as a `UserMessage`. `COOPERATIVE`: only queues it |
 
-- The mailbox is a FIFO of 32. When it is full, or frozen during a teardown, the message is refused, never dropped silently.
+- The mailbox is a FIFO of 32. When it is full, or frozen during a teardown, a new message is refused with `REJECTED`; it is never accepted and then lost to overflow. An abort is the one thing that discards messages already queued.
 - Control commands address the root only. A sub-agent's runtime answers `REJECTED` with detail `not_root`.
 - `SessionManager.submit` answers `Abort` and `Steer` for a session that is not resident without loading it: `NOT_FOUND` if nothing is saved, `NOT_RUNNING` for an `Abort` on a saved session. A `Steer` on a saved session loads it and proceeds.
 - What the teardown does in each phase is in [Abort and steer](../features/abort-and-steer.md).
@@ -114,9 +114,9 @@ One task per session (`agent:{root}:actor`) drains the mailbox. `ensure_actor()`
 For each message, in order:
 
 1. If an [answer finalization](../features/answer-finalization.md) was interrupted, finish it first.
-2. Take the sandbox's turn guard (when a [sandbox coordinator](sandbox.md) is set) and warm the sandbox.
+2. Enter the [sandbox coordinator](sandbox.md#the-coordinator)'s `turn` guard, when one is set, and warm the sandbox.
 3. Run one [run](../features/run.md) on the message.
-4. Persist.
+4. Persist once more. The run's own finalize has already saved; the actor saves again at the boundary.
 5. When the mailbox is empty, schedule the sandbox pause and exit.
 
 A failure inside a run never escapes the task: the stream gets `ErrorReport` then `RunCompleted(stop_reason="error")`, the task exits, and the messages still queued wait until the actor is next started.
@@ -135,7 +135,7 @@ stateDiagram-v2
   AWAITING_RELAY --> IDLE: abort
 ```
 
-`wait_idle()` returns when the phase is `IDLE`, the mailbox is empty and no actor or resume task is alive. A run parked on a pause is in flight, so `wait_idle()` keeps waiting through it. It never raises for a failed run; failures surface on the stream.
+`wait_idle()` returns when the phase is `IDLE`, the mailbox is empty and neither the actor task nor a cold-resume task is alive. A run parked on a pause is in flight, so `wait_idle()` keeps waiting through it. It never raises for a failed run; failures surface on the stream.
 
 ## The await table
 
@@ -181,7 +181,7 @@ Part of the [`agent-base` package contract](../infrastructure/packaging-and-rele
 - **`SessionManager`**: `get_or_create`, `submit`, `status`, `detach`, `evict`, `evict_idle`, `invalidate_idle`, `shutdown`; errors `SessionNotFound`, `SessionBlocked`.
 - **Commands**: `UserMessage`, `ToolReply`, `Abort`, `Steer`, `SteerMode`, `CommandMeta`, `Target`.
 - **`Ack`, `Disposition`**, and `ack_to_http(ack)` returning `(status, {"seq", "disposition", "detail"})`.
-- **On the agent**: `submit`, `say`, `reply`, `ensure_actor`, `wait_idle`, `attach_stream`, `detach_stream`.
+- **On the agent**: `submit`, `ensure_actor`, `wait_idle`, `attach_stream`, `detach_stream`; and `say(text)` and `reply(cid, results)`, thin wrappers that submit a `UserMessage` and a `ToolReply`.
 
 What the host must do, because the library does not:
 

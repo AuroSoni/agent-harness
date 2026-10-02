@@ -26,7 +26,7 @@ flowchart LR
 
 ## Settle points
 
-A settle point prices the steps since the last one, advances a watermark, and delivers the settlement.
+A settle point prices the steps since the last one, advances a watermark (how many of the run's steps have been settled), and delivers the settlement.
 
 | Settle point | When |
 |---|---|
@@ -39,7 +39,7 @@ Not settle points:
 - **A [pause](pause-and-resume.md).** The spend so far is priced and stored on the pause record, and billed at the next settle point. If the process dies while parked, a cold resume restores it from the record.
 - **The start of a run,** which only resets the watermark.
 
-The stretch between two settle points is a **leg**. A run that is aborted, steered or resumed can have more than one, and so more than one settlement.
+The stretch between two settle points is a **leg**. Most runs have one leg and one settlement. Where more than one settle point fires in a run, the watermark puts each step in exactly one settlement.
 
 ## The settlement
 

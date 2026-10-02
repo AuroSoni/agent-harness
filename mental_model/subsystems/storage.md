@@ -1,6 +1,6 @@
 # Storage
 
-Where a session lives between requests and across restarts. The library defines four adapter interfaces and four Postgres tables behind them; the host supplies the database and the connection pool. With no adapters given, an agent keeps everything in memory.
+Where a session lives between requests and across restarts. The library defines four adapter interfaces and four Postgres tables behind them; the host supplies the database and the connection pool. With no adapters given, an agent keeps everything in memory (`storage/adapters/memory.py`).
 
 The tables and their schema version are part of the [`agent-base` package contract](../infrastructure/packaging-and-release.md): the host's database holds them, and the host's own code reads them.
 
@@ -27,7 +27,7 @@ flowchart LR
 | `agent_config` | A session: its `AgentConfig` | `agent_uuid` | At session create, each pause and resume, each run end, eviction |
 | `conversation_history` | A run: the `Conversation` class | `(agent_uuid, run_id)`, with a `sequence_number` assigned on first save | With the config, and alone when a run errors |
 | `agent_checkpoints` | A restore point of a session at a run boundary | `(agent_uuid, sequence_number)` | At each run end, when a checkpoint adapter is set. See [Fork and reset](../features/fork-and-reset.md) |
-| `agent_runs` | One step-log entry of a run | none; indexed on `(agent_uuid, run_id)` | Not written by the turn loop today. Its name is historical: runs are rows of `conversation_history` |
+| `agent_runs` | One `LogEntry`: a line of a run's step log | none; indexed on `(agent_uuid, run_id)` | Not written by the turn loop today. Despite the name, runs are rows of `conversation_history` |
 
 Nothing is written at the start of a run or per step. A run's progress reaches the database at a pause, at its end, or when it is aborted.
 

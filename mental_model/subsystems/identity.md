@@ -48,7 +48,7 @@ flowchart LR
 
 ## The rule
 
-`PrincipalPolicy` is a protocol with one method, `authorizes(owner, claimant)`. The default is `StrictScopePolicy`:
+`PrincipalPolicy` is a protocol with one method, `authorizes(owner, claimant)`: the owner is the principal a session or a pause was stamped with, the claimant is the principal of whoever is asking. The default is `StrictScopePolicy`:
 
 | Owner | Claimant | Allowed |
 |---|---|---|

@@ -52,7 +52,7 @@ The class `Conversation` (`core/config.py`) is one run's row, not a whole conver
 | `message` | `role`, `content`, `attachments`, `contributions`, `stop_reason`, `usage`, `provider`, `model`; on a model response also `timing`, `cost_usd`, `step` | A user message is added, or a provider call completes |
 | `tool_result` | `tool` (below) | A backend tool call finishes, in a step that does not pause |
 | `rollback` | `message`, `code`, `details`, `targets_previous_assistant_message` | The previous answer was rejected |
-| `stream_event` | `stream_type`, `payload` | A hook asked for one of its stream events to be kept |
+| `stream_event` | `stream_type`, `payload` | The older [`end_turn_hook`](hooks-and-profiles.md#an-older-mechanism) marked one of its events to be kept |
 
 In a step that [pauses](../features/pause-and-resume.md), the step's backend results and the client's reply are logged together as one user `message` entry whose content is tool-result blocks. They get no `tool_result` entries.
 

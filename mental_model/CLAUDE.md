@@ -98,6 +98,7 @@ Driving a session:
 
 - **Session actor**: the single task that runs a session's runs one at a time. [subsystems/session-actor.md](subsystems/session-actor.md).
 - **Plane**: one of the three ways `submit` treats a command: mailbox (queued), joins (resolves a wait), control (preempts).
+- **Phase**: what a session is doing right now: `IDLE`, `STREAMING`, `EXECUTING_TOOLS` or `AWAITING_RELAY`.
 - **Ack**, **disposition**: `submit`'s immediate answer, and its verdict on the command.
 - **Resident**: a session that is live in process memory.
 - **Rung**: a tier of the runtime's scaling plan. Rung 1 (one process per session) is what is built.
@@ -109,6 +110,8 @@ Pausing:
 - **cid**: correlation id, the key of an await and the token the client echoes back.
 - **Join**: the plane-2 command (`ToolReply`) that resolves an await.
 - **Generation**: a per-session counter that an abort bumps, so late replies are ignored.
+- **Re-arm**: reopening a saved pause's await after the process lost it, so the reply can still resolve it.
+- **Splice**: adding a pause's results to the context as one user message.
 - **Scripted pause**, **scripted run**: a pause or a run produced by code, not by the model.
 - **Frontend tool**, **confirmation tool**, **server tool**: a tool the client runs; a tool the client must approve; a tool the model provider runs.
 

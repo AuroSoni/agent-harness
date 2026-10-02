@@ -31,7 +31,7 @@ sequenceDiagram
 3. **Drop queued messages.** An abort discards the user messages waiting in the mailbox.
 4. **Set the cancellation event,** which the loop, the tools and any sub-agents share.
 5. **Fire `on_abort`,** then each tool instance's own `on_abort()` cleanup.
-6. **Wait for the loop to clean up,** up to the grace period (5 seconds). If it has not, the loop's task is cancelled; the marker frame then carries `forced: true`.
+6. **Wait for the loop to clean up,** up to the grace period: 5 seconds (`ABORT_GRACE_MS`). The `grace_ms` field of the `Abort` command is not read. If it has not, the loop's task is cancelled; the marker frame then carries `forced: true`.
 7. **Bill** the steps that completed.
 
 ## What it does in each phase
@@ -52,7 +52,7 @@ The transcript is always left valid: every tool call has a result, so the next r
 - **Billed:** yes, for completed steps. `usage_report` is emitted and the usage callbacks run.
 - **Stream:** `usage_report`, then `custom` with `name: "aborted"` and `data: {"phase": "streaming" | "executing_tools"}`. There is no `run_completed`. The marker goes only to the reader attached when the abort began, and is not sent for a parked run or by a sub-agent.
 - **If the run finished or failed first,** `run_completed` is the terminal frame and no marker is sent.
-- **`AgentResult`:** `stop_reason="aborted"`, `was_aborted=True`, no settlement.
+- **`AgentResult`:** `stop_reason="aborted"`, `was_aborted=True`. It carries no `settlement`; the settlement reaches the host through the callbacks and the frame.
 
 During an [answer finalization](answer-finalization.md) an abort does nothing: the answer is already saved, and the teardown returns it.
 
