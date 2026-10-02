@@ -27,16 +27,16 @@ If you're an AI startup building an agentic product, this is your day-one codeba
 |---|---|
 | **Multi-provider agents** | Anthropic (native) + OpenAI, Gemini, etc. via LiteLLM |
 | **Tool execution engine** | `@tool` decorator, auto-schema generation, sync & async support |
-| **Sandboxed execution** | Local, Docker, or E2B cloud sandboxes — swap with one line |
+| **Sandboxed execution** | Local or E2B cloud sandboxes — swap with one line |
 | **Persistent storage** | Memory, filesystem, or PostgreSQL — three-adapter pattern |
-| **Media backend** | Local filesystem, S3, or in-memory — with caching layer |
-| **Streaming** | XML, JSON, or raw formatters piped to `asyncio.Queue` |
-| **Context management** | Sliding window, LLM summarization, or tool-result removal compaction |
+| **Media backend** | Local filesystem or S3 |
+| **Streaming** | Typed JSON frames over Server-Sent Events — encoder and decoder ship together |
+| **Context management** | LLM-summarization compaction, and oversized tool results moved out to sandbox files |
 | **Cost tracking** | Per-run token counting and cost calculation |
 | **Session resumption** | Reload full agent state from storage by UUID |
 | **Subagent orchestration** | Compose agents that delegate to specialized child agents |
 | **Frontend tool relay** | Pause execution, relay tool calls to a UI, resume on response |
-| **Built-in common tools** | Code execution, file ops, grep, glob, patch, todos, planning |
+| **Built-in common tools** | Code execution, file ops, grep, glob, patch, todos |
 | **Structured logging** | Production-grade JSON logging via structlog |
 
 ## Quick Start
@@ -45,8 +45,8 @@ If you're an AI startup building an agentic product, this is your day-one codeba
 
 ```bash
 # Clone the repo
-git clone https://github.com/anthropics/agent-base.git
-cd agent-base
+git clone https://github.com/AuroSoni/agent-harness.git
+cd agent-harness
 
 # Install with uv (recommended)
 uv sync
@@ -132,23 +132,29 @@ result = await resumed_agent.run("What did we calculate before?")
 
 ### Stream responses
 
+A session produces typed frames: the model's output as content frames, and
+everything about the run as meta frames. Become the reader, submit the message,
+and read until the frame that ends the run.
+
 ```python
-import asyncio
+from agent_base.core.commands import UserMessage
+from agent_base.core.messages import Message
+from agent_base.streaming import MetaEnvelope, TextDelta
 
-queue = asyncio.Queue()
+await agent.initialize()
+stream = agent.attach_stream()          # attach before submitting
+await agent.submit(UserMessage(message=Message.user("Explain quantum computing")))
 
-async def print_stream():
-    while True:
-        chunk = await queue.get()
-        if chunk is None:
-            break
-        print(chunk, end="", flush=True)
-
-printer = asyncio.create_task(print_stream())
-result = await agent.run("Explain quantum computing", queue)
-await queue.put(None)
-await printer
+async for frame in stream:
+    if isinstance(frame, TextDelta):
+        print(frame.text, end="", flush=True)
+    elif isinstance(frame, MetaEnvelope) and frame.kind == "run_completed":
+        break                           # the stream stays open across runs
 ```
+
+A server keeps sessions in a `SessionManager` and sends the frames with
+`sse_response()`; `demos/fastapi_server/` shows the whole flow, including
+pausing for a tool the client runs.
 
 ### Use any LLM provider
 
@@ -167,48 +173,28 @@ agent = LiteLLMAgent(model="anthropic/claude-sonnet-4-5", tools=[multiply])
 
 ## Architecture
 
+How the library works, and why it is built the way it is, is told in
+[`mental_model/`](mental_model/CLAUDE.md): one file per subsystem and per
+flow. A good first read is [a run](mental_model/features/run.md), then
+[the session actor](mental_model/subsystems/session-actor.md).
+
 ```
 agent_base/
-├── core/                  # Provider-agnostic domain model & contracts
-│   ├── agent.py           # Agent ABC — the run loop
-│   ├── provider.py        # Provider ABC — LLM interface
-│   ├── messages.py        # Canonical Message & Usage types
-│   ├── config.py          # AgentConfig, Conversation dataclasses
-│   └── types.py           # ContentBlock hierarchy
-│
-├── providers/             # LLM provider implementations
-│   ├── anthropic/         # Native Anthropic SDK integration
-│   └── litellm/           # LiteLLM (OpenAI, Gemini, Mistral, etc.)
-│
-├── tools/                 # Tool infrastructure
-│   ├── decorators.py      # @tool decorator & schema generation
-│   ├── registry.py        # ToolRegistry — register, execute, export
-│   └── base.py            # ConfigurableToolBase ABC
-│
-├── common_tools/          # Ready-to-use tool implementations
-│   ├── code_execution     # Sandboxed Python/shell execution
-│   ├── read_file          # File reading with line ranges
-│   ├── apply_patch        # Unified diff patching
-│   ├── glob_file_search   # Fast file pattern matching
-│   ├── grep_search        # Content search with regex
-│   ├── todo_write         # Task management
-│   └── sub_agent_tool     # Subagent delegation
-│
-├── sandbox/               # Execution isolation
-│   ├── local.py           # LocalSandbox — path-restricted, ~1ms setup
-│   ├── docker.py          # DockerSandbox — container isolation
-│   └── e2b.py             # E2BSandbox — cloud VM isolation
-│
-├── media_backend/         # Media storage & resolution
-│   ├── local.py           # Local filesystem
-│   ├── s3.py              # AWS S3
-│   └── memory.py          # In-memory (testing)
-│
-├── storage/               # Persistence (three-adapter pattern)
-│   └── adapters/          # Memory, Filesystem, PostgreSQL
-│
-├── streaming/             # Stream formatters (XML, JSON, raw)
-├── pricing/               # Token cost calculation
+├── core/                  # Provider-agnostic domain model: messages, content blocks,
+│                          # AgentConfig, commands, hooks, identity, the Provider protocol
+├── session/               # SessionManager: sessions resident in memory, and submit()
+├── await_table/           # Pause and resume, keyed by correlation id
+├── providers/             # anthropic/ (native, and the turn loop), litellm/, any_llm/
+├── streaming/             # Frames, the SSE encoder and decoder, sse_response()
+├── tools/                 # @tool decorator, schema generation, ToolRegistry, ToolContext
+├── common_tools/          # read_file, apply_patch, glob, grep, todos, code execution,
+│                          # sub-agent delegation
+├── mcp/                   # Tools from external MCP servers (extra: mcp)
+├── sandbox/               # LocalSandbox, E2BSandbox (extra: e2b), snapshots
+├── storage/               # Adapters: memory, filesystem, PostgreSQL
+├── blob_store/            # Keyed blobs: local, S3
+├── media_backend/         # Media storage: local, S3
+├── pricing/               # Token cost calculation and settlement
 ├── memory/                # Cross-session memory stores
 └── logging/               # Structured logging via structlog
 ```
@@ -217,7 +203,7 @@ agent_base/
 
 1. **Provider-agnostic core** — The canonical model (`ContentBlock`, `Message`, `AgentConfig`) lives in `core/`. Provider-specific translation lives in `providers/<name>/`.
 2. **Composition over inheritance** — The agent is assembled from swappable components: `Provider`, `Sandbox`, `MediaBackend`, `Compactor`, storage adapters. All wired at construction time.
-3. **Tools never touch the OS directly** — All file I/O and command execution flows through a `Sandbox`. Swap `LocalSandbox` for `DockerSandbox` by changing config, not code.
+3. **Tools never touch the OS directly** — All file I/O and command execution flows through a `Sandbox`. Swap `LocalSandbox` for `E2BSandbox` by changing config, not code.
 4. **Adapter pattern everywhere** — Storage, media, sandboxing, compaction, memory — every subsystem follows the same pattern: ABC defines the interface, concrete classes implement per backend.
 
 ## Interactive Notebooks
@@ -305,22 +291,24 @@ await sandbox.pause()                     # free while idle; the next call resum
 ### Custom sandbox
 
 ```python
-from agent_base.sandbox.types import Sandbox
+from agent_base.sandbox import Sandbox
 
 class KubernetesSandbox(Sandbox):
     async def setup(self): ...
-    async def exec(self, command): ...
+    async def exec(self, command, timeout=30.0, cwd=None, env=None): ...
     async def teardown(self): ...
+    # Implement the remaining abstract methods (file I/O, exports)
 ```
 
 ### Custom media backend
 
 ```python
-from agent_base.media_backend.types import MediaBackend
+from agent_base.media_backend import MediaBackend
 
 class GCSMediaBackend(MediaBackend):
-    async def store(self, media_id, data, metadata): ...
-    async def retrieve(self, media_id): ...
+    async def store(self, content, filename, mime_type, agent_uuid): ...
+    async def retrieve(self, media_id, agent_uuid): ...
+    # Implement the remaining abstract methods
 ```
 
 ## Environment Variables
@@ -350,6 +338,9 @@ uv sync
 
 # Run tests
 pytest -v --tb=short
+
+# Run the interface suite: the contract for the public surface
+uv run --all-extras --all-packages pytest tests/interface
 
 # Run integration tests (requires API keys)
 pytest -v -m integration
