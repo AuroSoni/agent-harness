@@ -1,10 +1,8 @@
 # Checkpoint 1: the characters and the map
 
-For Auro. This proposes the cast, the map, and the file layout for this repo's mental model, then asks 15 questions. Nothing else gets written until the characters and their names are settled, because every later file is written in these names.
+**Status: answered by Auro on 2 Oct 2026.** His answers are in section 5, verbatim. Section 6 lists what they settle. Sections 1 to 4 are kept as they were asked; where they disagree with section 6, section 6 wins.
 
-**How to answer:** reply in chat or inline on the PR, by question number. "Confirm", "correct: …" or "leave it out" is enough. The evidence behind this file is in [survey.md](survey.md).
-
-**The three questions that block the most:** Q1 (which repo is the product's home), Q2 (where the turn loop lives and what to call it), Q3 (how the model sits beside `interface_plan/` and `AMENDMENTS.md`).
+The evidence behind this file is in [survey.md](survey.md).
 
 ---
 
@@ -294,6 +292,72 @@ Guess: one model, for the library.
 
 ---
 
-## Held for Checkpoint 2
+## 5. Answers (Auro, in chat, 2 Oct 2026)
 
-The plot questions: decisions, competing patterns and history. The raw list is in [survey.md](survey.md) section 5. The largest are the two Postgres adapter families, the two end-of-turn hook mechanisms, the two tool-result overflow paths, the unused extension points, and the consumer knowledge inside the library (`_nova_lifecycle`, the `STYTCH_` prefix).
+Copied verbatim.
+
+> 1. Both nova_backend and nova_excel_addin should be considered as product home and they will both contain the product map.
+> 2. Confirm
+> 3. Correct. The mental model replaces the subsystem docs, tests remain, ledger can be removed as long as the as-built mental model is captured.
+> 4. correct
+> 5. Agree. Read the backend agent mental first though to confirm and align with that.
+> 6. Yes.
+> 7. yes, leave out planned items and demos from the mental model right now.
+> 8. Agree
+> 9. Agree with the layout.
+> 10. Correct.
+> 11. Agree.
+> 12. Yes. Later on the library name will also be updated to agent-harness.
+> 13, Agree. Adapt later.
+> 14. Agree
+> 15. Yes. Its all me.
+
+## 6. What the answers settle
+
+### The product
+
+- **Product:** Nova. **Homes:** `nova_backend` and `nova_excel_addin`; both carry the product map (Q1). This repo is a provider only and has no `product/` folder.
+- The backend run's settled map names the two contracts this repo provides. This model uses those names:
+  - **`agent-base` package**: the public Python surface of `agent_base`, plus the library-owned tables. Consumer: the backend.
+  - **Wire protocol**: typed JSON frames over SSE and the conversation log shape. Consumer: the add-in, through the backend.
+- The backend's draft still says the home is `nova_backend` alone. That is a note for the two home runs, not something this run edits.
+- This repo is public, so its model names Nova as the consumer and describes contracts only (Q11).
+
+### Names
+
+Read from the backend run's Checkpoint 1 (its sections 6 and 7), as Q5 asked.
+
+| Term | Meaning |
+|---|---|
+| **Session** | One main agent id (`agent_uuid`). A resident session is one whose agent is alive in the process. |
+| **Conversation** | What is said within a single session. The library class `Conversation` is narrower: one run's record. |
+| **Turn** | A user turn (the user enters a prompt) or an agent turn (the agent calls tools and gives a final response). |
+| **Run** | The agent turn as it runs after the user submits a prompt. Its id is `run_id`. A conversation has many runs. |
+| **Step** | One provider call inside a run. |
+| **Leg** | A stretch of a run between settle points. |
+| **Relay** | The feature: a frontend-tool pause (Q4). "Pause" is the plain word for it. |
+| **Await** | The mechanism: the `AwaitTable` record and its cid (Q4). |
+| **Join** | Plane 2: the command that resolves an await (Q4). |
+| **Finalize** | The step that ends every run (Q6). |
+| **Answer finalization** | The opt-in durable answer boundary (Q6). |
+| **Profile** | The concept. `mode` is only the consumer's wire field. |
+| **agent-base** | The library (package `agent_base`). `agent-harness` is the repo. |
+
+Where sections 1 to 4 say "turn" for the library's work on one prompt, read **run**.
+
+### Everything else
+
+- **Turn loop (Q2):** the model describes what is built. `AgentRuntime` owns the actor, `submit`, awaits, hooks and the stream; `AnthropicAgent` owns the loop. Lifting the loop into `AgentRuntime` with the provider as an injected value is the direction, and it is unfinished.
+- **Existing design docs (Q3):** the mental model replaces the subsystem docs. `tests/interface/` remains the contract. The ledger can be removed once the as-built model captures what it holds.
+- **Left out (Q7):** planned work (`providers/any_llm/`, the workflows plan, the cost ledger plan) and the demos. The legacy `Postgres*Adapter` family and the filesystem adapters are leftover and go to the PR as a follow-up. Memory, Python executors, observability and logging get cast lines only.
+- **Friction and pilot (Q8):** pause and resume; the sandbox lifecycle; finalize, settlement and trace capture; chain repair and replay. Pilot: `subsystems/session-actor.md` and `features/pause-and-resume.md`.
+- **Layout (Q9):** agreed. One rename follows from Q5: `features/a-turn.md` becomes `features/run.md`, matching the backend's file.
+- **Sources (Q10):** every written reason in the repo is a candidate for Auro to confirm at Checkpoint 2. In the backend run he added that such text was "written by agents and may be out of date", so each candidate is checked against today's code first.
+- **Skills (Q13):** adapted later. The root `CLAUDE.md` section gets a line giving the mental-model conventions precedence over `create-pr` and the gstack plan and ship skills until then.
+- **One model (Q14)**, for the library.
+- **Identities (Q15):** `Auro Soni`, `AuroSoni` and `Enter the DOJO` are all Auro. There is no separate walkthrough; his decisions in the backend run are the reference.
+
+### Still open after this round
+
+- What to call the thing that runs a run: "the turn loop", "the runtime" or "the agent" (Q2's second half). Asked again at Checkpoint 2.
+- The direction in Q12: the library will later be renamed to `agent-harness`. Recorded; nothing changes now.
