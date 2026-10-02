@@ -1,59 +1,68 @@
-# Interface red suite (TDD)
+# Interface suite (the living spec)
 
-Behavioral test specs for the redesigned `agent_base` interfaces defined in
-`interface_plan/` (15 subsystem docs + `DESIGN_CONTRACT.md`, amended per
-`AMENDMENTS.md` — the canonical decision ledger).
+Behavioural specs for the public surface of `agent_base`. This suite is the
+contract in executable form: what it pins is what a consumer may rely on. See
+`mental_model/infrastructure/packaging-and-release.md`.
 
-These tests are written **before** the implementation exists. They are expected
-to fail (mostly with `ImportError`/`AttributeError`) until each interface is
-built. That is the point: implementation proceeds test-first against this suite.
+The suite was written test-first, against the design in `interface_plan/`.
+`mental_model/` has since replaced that folder. Comments here still cite its
+sections and ledger ids (`GF-P8G3`, `O12`, `relay-await §2.4`, …); the files
+are in git history (`git log -- interface_plan`).
 
 ## Running
 
 The default `pytest` run does **not** collect this tree (`testpaths` in
-`pyproject.toml` covers `tests/unit` and `tests/integration` only), so the
-existing suite stays usable while this one is red.
+`pyproject.toml` covers `tests/unit` and `tests/integration` only), so target
+it:
 
 ```bash
-# Run the red suite (collection errors are expected pre-implementation)
-uv run pytest tests/interface --continue-on-collection-errors -q
+# The whole suite
+uv run --all-extras --all-packages pytest tests/interface -q
 
-# Run one subsystem
-uv run pytest tests/interface/relay_await --continue-on-collection-errors -q
+# One subsystem
+uv run --all-extras --all-packages pytest tests/interface/relay_await -q
 ```
+
+The `mcp/` tests need the `mcp` extra, and the SSE transport tests need
+`fastapi` or `starlette`, which the demo workspace member brings. Without them
+those files fail at import.
 
 ## Layout
 
-One package per subsystem, mirroring `interface_plan/subsystems/*.md`:
+One package per subsystem. "Told in" is the file under `mental_model/` that
+describes the behaviour the package pins.
 
-| Package | Interface doc | Owns (deep-tests) |
+| Package | Told in | Owns (deep-tests) |
 |---|---|---|
-| `tenancy_principal/` | `tenancy-principal.md` | `SessionPrincipal`, `PrincipalPolicy`, `StrictScopePolicy` |
-| `storage/` | `storage.md` | `ColumnSpec` registry, adapters, `for_principal`, `runs_matching` |
-| `agent_loop_hooks/` | `agent-loop-hooks.md` | 12-hook catalog, `HookOutcome`, observer hooks |
-| `streaming_and_meta/` | `streaming-and-meta.md` | `MetaEnvelope`/`MetaBody`, `StreamDelta`, wire + decoder |
-| `relay_await/` | `relay-await.md` | `AwaitTable`, `await_external`, `ResumeOutcome` |
-| `session_control/` | `session-control.md` | `SessionManager`, `OpenAwait`, submit/eviction |
-| `tools/` | `tools.md` | `@tool`, registry, `ToolContext`, `ExecutorPolicy` |
-| `sandbox/` | `sandbox.md` | sandbox FS surface, namespacing |
-| `media_backend/` | `media-backend.md` | `BlobStore`, `BlobRef`, flush strategies |
-| `memory/` | `memory.md` | memory stores, `MemoryContribution` |
-| `providers/` | `providers.md` | `Provider` value, `RetryPolicy`, `make_llm_config` |
-| `core/` | `core.md` | `AgentRuntime`, `record_turn`, `ErrorCode` |
-| `pricing_cost/` | `pricing-cost.md` | `TurnSettlement`, `SettlementAggregator`, `cost_for_turn` |
-| `python_executors/` | `python-executors.md` | executor interfaces |
-| `logging/` | `logging.md` | structlog config, never-log-claims invariant |
+| `tenancy_principal/` | `subsystems/identity.md` | `SessionPrincipal`, `PrincipalPolicy`, `StrictScopePolicy` |
+| `storage/` | `subsystems/storage.md` | `ColumnSpec` registry, adapters, `for_principal`, `runs_matching` |
+| `agent_loop_hooks/` | `subsystems/hooks-and-profiles.md` | the hook catalog, `HookOutcome`, observer hooks |
+| `streaming_and_meta/` | `subsystems/streaming.md` | `MetaEnvelope`/`MetaBody`, `StreamDelta`, wire + decoder |
+| `relay_await/` | `features/pause-and-resume.md` | `AwaitTable`, `await_external`, `ResumeOutcome` |
+| `session_control/` | `subsystems/session-actor.md` | `SessionManager`, `OpenAwait`, submit/eviction |
+| `tools/` | `subsystems/tools.md` | `@tool`, registry, `ToolContext`, `ExecutorPolicy` |
+| `mcp/` | `subsystems/mcp.md` | `McpServerSpec`, connect and compile, auth, the result budget |
+| `sandbox/` | `subsystems/sandbox.md` | sandbox FS surface, namespacing |
+| `media_backend/` | `subsystems/blob-store-and-media.md` | `BlobStore`, `BlobRef`, flush strategies |
+| `fork_reset/` | `features/fork-and-reset.md` | `fork_session`, `reset_session`, `CheckpointAdapter`, the checkpoint codec, sandbox snapshots |
+| `finalization/` | `features/answer-finalization.md` | `early_answer_completion`, the finalization journal |
+| `memory/` | `CLAUDE.md` (characters without a file) | memory stores, `MemoryContribution` |
+| `providers/` | `subsystems/providers.md` | `Provider` value, `RetryPolicy`, `make_llm_config` |
+| `core/` | `subsystems/turn-loop.md`, `features/run.md` | `AgentRuntime`, `record_turn`, `ErrorCode` |
+| `pricing_cost/` | `features/billing-a-run.md` | `TurnSettlement`, `SettlementAggregator`, `cost_for_turn` |
+| `python_executors/` | `CLAUDE.md` (characters without a file) | executor interfaces |
+| `logging/` | `infrastructure/external-services.md` | structlog config, never-log-claims invariant |
 
 Shared types are deep-tested only in their owning package; elsewhere they are
 used as collaborators.
 
 ## Conventions
 
-- Imports target the **future** canonical homes (e.g.
-  `agent_base.core.identity`, `agent_base.streaming.meta`) per the
-  "Canonical homes for new symbols" table in `interface_plan/AMENDMENTS.md`.
-- No `xfail`, no `skip`, no `importorskip`, no `try/except ImportError` —
-  red means red.
+- An interface change updates the matching package here and the mental model
+  in the same PR.
+- Imports target the canonical homes (e.g. `agent_base.core.identity`,
+  `agent_base.streaming.meta`).
+- No `xfail`, no `skip`, no `importorskip`, no `try/except ImportError`.
 - Async tests are plain `async def` (asyncio_mode=auto).
-- File names are unique suite-wide: `test_<subsystem>_<topic>.py`.
-- Deleted symbols (see AMENDMENTS deletions) must never be imported here.
+- File names are unique suite-wide, usually `test_<subsystem>_<topic>.py`.
+- A symbol removed from the public surface is never imported here.

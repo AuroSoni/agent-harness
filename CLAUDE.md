@@ -6,14 +6,15 @@
 Async-first with streaming, tool execution, state persistence, and multimodal
 support. Fully redesigned in June 2026 around a **single-writer session actor**:
 one `submit(AgentInput)` front door routing three planes (mailbox / joins /
-control), a cid-keyed `AwaitTable` for pause/resume, and `AgentRuntime` as the
-one turn loop.
+control), a cid-keyed `AwaitTable` for pause/resume, and one turn loop. The
+loop lives in `AnthropicAgent` (`_resume_loop`); `AgentRuntime` is the base
+that holds the session machinery, and its own `run` is not implemented.
 
-**The real package is `agent_base/`.** The `anthropic_agent/` directory at the
-repo root is the stale pre-redesign package — do not edit it or take guidance
-from it. The same goes for the legacy top-level design docs
-(`AGENT_ARCHITECTURE*.md`, `NEW_CONSOLIDATEED_ARCHITECTURE*.md` — design
-history only) and the loose notebooks at the repo root.
+**The package is `agent_base/`.** How it works, and why, is told in
+`mental_model/` (see "Mental model" below). `NEW_CONSOLIDATEED_ARCHITECTURE.md`
+is design history: the redesign proposal, and the only description of Rungs 2
+to 4. Do not take guidance on the as-built system from it, or from the loose
+notebooks at the repo root.
 
 The API is **unreleased — breaking changes are allowed freely**; compat shims
 are deletion candidates.
@@ -36,16 +37,18 @@ uv run --directory demos/fastapi_server uvicorn main:app --reload --port 8000
 
 ## Living-Spec Discipline (read this first)
 
-- `tests/interface/` (15 packages, ~1,700 specs) **is the contract** for the
+- `tests/interface/` (18 packages, ~1,900 specs) **is the contract** for the
   public surface.
-- `interface_plan/subsystems/*.md` are the subsystem design docs;
-  `interface_plan/AMENDMENTS.md` is the **canonical decision ledger** — it
-  overrides subsystem docs on conflict.
-- Any interface change must update all three together: the subsystem doc, the
-  matching `tests/interface/<package>/`, and an AMENDMENTS.md entry.
-- **nova_backend** (`D:\Nova Labs\Repos\nova_backend`) consumes this repo as an
-  editable uv source — a breaking library change breaks its suite immediately.
-  Run both suites when touching the public surface.
+- `mental_model/` tells how each subsystem behaves and why. It replaced
+  `interface_plan/` (the subsystem docs and the `AMENDMENTS.md` decision
+  ledger) in October 2026. Comments in the code still cite `interface_plan`
+  sections and ledger ids (`GF-P8G3`, `O12`, `relay-await §2.4`, …); those
+  files are in git history (`git log -- interface_plan`).
+- Any interface change updates the matching `tests/interface/<package>/` and
+  the mental model in the same PR.
+- **nova_backend** consumes this repo: it pins a commit, and in development it
+  can point at a local checkout, where a breaking library change breaks its
+  suite at once. Run both suites when touching the public surface.
 - Schema rule: any new DB column must bump `LIBRARY_SCHEMA_VERSION`
   (`agent_base/storage/pg/`) **and** ship an idempotent ALTER migration in the
   same cut.
@@ -78,17 +81,19 @@ This repo keeps a shared mental model of the product in `mental_model/`. It tell
 
 ```
 agent_base/               # The library package
-├── core/                 # AgentRuntime (the one turn loop), commands (UserMessage/
-│                         # Steer/Abort/ToolReply), AgentConfig/Conversation, hooks/,
+├── core/                 # AgentRuntime (the session machinery under every agent),
+│                         # commands (UserMessage/Steer/Abort/ToolReply),
+│                         # AgentConfig/Conversation, hooks/,
 │                         # identity (SessionPrincipal), provider protocol (ProviderTurn/
 │                         # RetryPolicy), chain repair, cost/TurnSettlement, errors
-├── providers/            # anthropic/ (AnthropicAgent, AnthropicLLMConfig),
-│                         # litellm/ (LiteLLM agent + config)
+├── providers/            # anthropic/ (AnthropicAgent with the turn loop, AnthropicLLMConfig),
+│                         # litellm/ (LiteLLM agent + config), any_llm/
 ├── session/              # SessionManager (actor lifecycle), mailbox, http (ack_to_http)
 ├── await_table/          # cid-keyed AwaitTable, await_external (pause/resume planes)
 ├── streaming/            # meta frames (RunStarted/RunCompleted/MetaEnvelope), deltas,
 │                         # wire types, sse_response transport
 ├── tools/                # @tool decorator, registry, bundles, ToolContext, media helpers
+├── mcp/                  # Tools from external MCP servers (extra `mcp`)
 ├── common_tools/         # Built-ins: read/grep/glob/patch/todos/code-exec,
 │                         # sub_agent_tool (SubAgentSpec/SubAgentTool)
 ├── storage/              # StorageHandles, adapters/ (memory, ...), pg/ (PgPool,
@@ -101,9 +106,10 @@ agent_base/               # The library package
 ├── memory/               # Cross-session memory stores
 ├── pricing/              # Cost calculator, settlement
 ├── logging/              # Structured logging via structlog (get_logger, bind_context)
+├── observability.py      # Optional sink for timed events
 └── profiles.py           # Profile system (modes)
 
-interface_plan/           # Subsystem docs + AMENDMENTS.md (canonical ledger)
+mental_model/             # How the library works and why (start at mental_model/CLAUDE.md)
 tests/
 ├── unit/                 # Default suite
 ├── integration/          # Marked `integration`, deselected by default
@@ -113,26 +119,24 @@ demos/fastapi_server/     # Demo server — public surface only (agent_router.py
 
 ## Key Runtime Patterns
 
-- **Session actor flow:** `SessionManager.get_or_create` → `attach_stream()` →
-  `submit(UserMessage)` (auto-kicks the actor) → consume SSE frames until
-  `RunCompleted` / `await_input` / `aborted`. `RunCompleted` is always emitted
-  at turn end. `wait_idle()` awaits quiescence.
-- **Pause/resume:** frontend-tool pauses park on `await_external` with a cid;
-  resume via `submit(ToolReply(cid, results))`. A bare `await agent.run()`
-  parks forever on a pause — use the pause-aware pattern.
-- **Streaming:** `attach_stream()` is single-live-reader — attaching steals the
-  stream from the prior reader and migrates the undelivered tail; no replay.
-  Frames emitted with no consumer attached are **dropped by design**.
-- **Identity/billing:** pass `principal=` at construction (or `set_principal()`);
-  usage settles via `on_usage_report` / `TurnSettlement`. Plane-2 `ToolReply`
-  self-resolves as owner — see the claimant interlock spec in
+Each is told in `mental_model/`; read the file before touching the area.
+
+- **Driving a session** (`SessionManager.get_or_create` → `attach_stream()` →
+  `submit(UserMessage)` → read to a terminal frame; `wait_idle()`):
+  `subsystems/session-actor.md`, `features/run.md`.
+- **Pause/resume** (`await_input` with a cid; `submit(ToolReply(cid, results))`):
+  `features/pause-and-resume.md`.
+- **Streaming** (one live reader, no replay; the frames and their order):
+  `subsystems/streaming.md`.
+- **Identity/billing** (`principal=`, `on_usage_report`, `TurnSettlement`):
+  `subsystems/identity.md`, `features/billing-a-run.md`. See the claimant
+  interlock spec in
   `tests/interface/relay_await/test_relay_await_plane2_claimant.py` before
   touching principal threading.
-- **Scripted turns:** `agent.scripted_ctx()` + `record_turn()` for
-  non-provider turns (checkpoints + Conversation row; no settlement).
-- Tools defined with `@tool` decorator — docstrings become schema descriptions.
-- Sub-agents via `SubAgentSpec` (field-aware deepcopy: data fields copied,
-  runtime resources like tools/memory_store kept by reference).
+- **Scripted runs and pauses** (`scripted_ctx()`, `record_turn()`):
+  `features/run.md`, `features/pause-and-resume.md`.
+- **Tools** (`@tool`; docstrings become schema descriptions): `subsystems/tools.md`.
+- **Sub-agents** (`SubAgentSpec`): `subsystems/sub-agents.md`.
 
 ## Conventions
 
@@ -142,7 +146,7 @@ demos/fastapi_server/     # Demo server — public surface only (agent_router.py
 - **Dataclasses** for data structures, **Protocol** classes for interfaces
 - Imports: stdlib > third-party > relative
 - Build backend is **hatchling**; `demos/fastapi_server` is a uv workspace member
-- Default Anthropic model: `claude-sonnet-4-5`
+- Default Anthropic model: `claude-sonnet-5`
 
 ## Environment Variables
 
