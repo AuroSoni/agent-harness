@@ -170,6 +170,7 @@ The session lives in one process (Rung 1). Cross-process tiers (a shared session
 - `CommandMeta` (`command_id`, `client_seq`) on every command: recorded in the audit log, not used to dedupe or order.
 - `Disposition.MISDIRECTED`, `Target` (one member, `ROOT`), `Abort.grace_ms`.
 - `set_await_table()`, which swaps the process-wide table.
+- On [`ToolContext`](tools.md#toolcontext): `idempotency_key`, `attempt`, `replay_reason` and `once()`. Nothing replays a tool call.
 
 > **Why they stay:** the command and cid protocol is final at Rung 1, so that a cross-process tier changes no consumer call. Rungs 2 to 4 are gated, not scheduled: climbed only when a metric forces it.
 

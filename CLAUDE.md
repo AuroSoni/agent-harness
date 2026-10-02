@@ -50,6 +50,30 @@ uv run --directory demos/fastapi_server uvicorn main:app --reload --port 8000
   (`agent_base/storage/pg/`) **and** ship an idempotent ALTER migration in the
   same cut.
 
+## Mental model
+
+This repo keeps a shared mental model of the product in `mental_model/`. It tells the story of the product's characters (its domain concepts, subsystems and infrastructure): how they behave, how they relate, and why they are the way they are. It is how everyone on the team, people and agents, shares one understanding of the product. `mental_model/CLAUDE.md` explains how the model is organised and how to write in it.
+
+**Read before you plan.** Before planning or designing a change, read `mental_model/CLAUDE.md` and the files your change touches. Also check `mental_model/planned_items/` for work already planned in the same area. If the product spans several repos, check the home repo's `planned_items/` too. The code tells you what the system does; the model tells you why, and what must not break. Code that looks unnecessary may be there on purpose, so check the model before simplifying it. If the code and the model disagree, say so rather than silently picking one.
+
+**Respect repo boundaries.** If the product spans several repos, `mental_model/CLAUDE.md` says where this repo fits and how to read the others' models. Plan any work that crosses repos in the home repo. Before changing anything marked as a cross-repo contract, find who depends on it: start with the product map, then read those repos' Depends on sections and code. Name every affected repo in the planned item. Never describe another repo's behaviour from memory or guesswork; read its model, or ask.
+
+**Speak in the model's terms.** Use the model's names for things in plans, explanations, commit messages and PR descriptions. Don't invent new names for existing concepts.
+
+**Tell a change as a chapter, not a scene.** When you explain what you did or propose to do, describe it as a change to the story: which characters changed, how their behaviour changed, and why. For example: "Resolution now trusts the registry over the vendor feed when they disagree, because the feed's identifiers proved unstable." Not: "Modified the resolver and added a cache layer." Use whatever form the reader takes in fastest, whether a sentence, a list or a before/after diagram. Name files and functions afterwards, as anchors for the reader.
+
+**New features and subsystems start as planned items.** Draft the model for the work in `mental_model/planned_items/` and get it reviewed in its own PR before writing code. In the PR that completes the work, run the `merge-mental-model` skill so the code and the updated story land together.
+
+**Keep the story true.** A change outside any planned item that still alters how the product works updates the story in the same PR; the `merge-mental-model` skill handles that too. Work that belongs to a planned item updates the story only in the PR that completes it.
+
+**Fix only plain factual errors directly.** Where the story is simply out of date, such as a renamed file or a moved function, fix it and mention the fix in the PR. Any other mismatch, one that touches behaviour, a boundary, a name or a why, may be drift in the code rather than an error in the story. Raise it instead of rewriting either side.
+
+**Never write a why you inferred.** Reasons in the model come from people, as `mental_model/CLAUDE.md` describes. If you think you know why something is the way it is, ask.
+
+**Suggest improvements freely.** A more elegant architecture or more efficient code is welcome. Raise it with the developer, and if it is taken up, it becomes a planned item.
+
+**Until they are adapted, the mental-model conventions take precedence over these skills:** `create-pr`, and gstack's `/spec`, `/autoplan`, `/plan-eng-review`, `/ship` and `/document-release`. Where one of them writes a plan outside `mental_model/planned_items/`, or a PR description that is not told as a chapter, follow this section and `mental_model/CLAUDE.md` instead.
+
 ## Architecture
 
 ```

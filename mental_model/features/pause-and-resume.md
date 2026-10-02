@@ -119,7 +119,7 @@ The cold path covers the root agent's own pause: the manager checks the root's `
 
 > **Why a resume takes no fork/reset checkpoint:** each one re-encoded the transcript, snapshotted the sandbox and wrote the checkpoint row, only for the end of the run to rewrite it. A resume saves the config and the run's row; [checkpoints](fork-and-reset.md) are taken at the end of a run.
 
-> **Why `current_step` only grows within a run:** resume, re-arm and steer never reset it, because consumers key idempotent billing on `(run_id, agent_id, step_count)`. A reset makes two legs indistinguishable and silently drops charges.
+A resume never resets `current_step`; billing depends on that. See [Billing a run](billing-a-run.md#the-settlement).
 
 ## Replies that do not resume
 
@@ -130,7 +130,7 @@ The cold path covers the root agent's own pause: the manager checks the root's `
 | Arrives after an abort or steer | `IGNORED_STALE` | None. The pause was already closed |
 | Comes from another owner | `REJECTED` | None. The await stays open for the real owner |
 
-> **Why a late reply is ignored:** the generation decides whether a reply still counts. Once an abort or steer retires a generation, a late reply for it returns `IGNORED_STALE` and never wakes the run.
+The session's generation is what makes a late reply harmless. See [the await table](../subsystems/session-actor.md#the-await-table).
 
 ## Abort while paused
 
