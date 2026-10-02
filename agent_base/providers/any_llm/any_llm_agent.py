@@ -1,4 +1,4 @@
-"""``AnyLLMAgent`` — Style-3 factory subclass (providers.md §2.4 / Fork P-A).
+"""``AnyLLMAgent`` — Style-3 factory subclass.
 
 Mirrors ``LiteLLMAgent`` exactly: no loop/finalize/emit/abort overrides —
 all shared runtime machinery lives in ``AnthropicAgent`` / ``AgentRuntime``
@@ -46,7 +46,7 @@ class AnyLLMAgent(AnthropicAgent):
 
     1. Build ``provider = AnyLLMProvider(formatter=AnyLLMMessageFormatter(),
        retry_policy=RetryPolicy(max_retries=DEFAULT_MAX_RETRIES,
-       base_delay=DEFAULT_BASE_DELAY))`` — O12(c): the retry budget rides
+       base_delay=DEFAULT_BASE_DELAY))`` — the retry budget rides
        the provider value, no ctor scalars.
     2. Call ``super().__init__(..., config=config if config is not None
        else AnyLLMConfig(), provider_value=provider)`` forwarding every
@@ -74,7 +74,7 @@ class AnyLLMAgent(AnthropicAgent):
         sandbox_factory: Callable[[str], "Sandbox"] | None = None,
         end_turn_hook: EndTurnHook | None = None,
         agent_uuid: str | None = None,
-        # Declarative profiles + hook registry (contract §6 / §2.2; CM-G3d).
+        # Declarative profiles + hook registry.
         profiles: "list[Any] | None" = None,
         default_profile: str | None = None,
         hooks: "dict[str, list[Any]] | None" = None,

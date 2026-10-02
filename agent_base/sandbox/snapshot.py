@@ -1,4 +1,4 @@
-"""Sandbox snapshot — content-addressed manifest for fork/reset (SPEC §F3).
+"""Sandbox snapshot — content-addressed manifest for fork/reset.
 
 Captures the agent's workspace into the content-addressed blob store as a
 ``SandboxManifest`` (``relpath -> {content_hash, size, status}``) plus one blob
@@ -8,7 +8,7 @@ unchanged turn writes nothing. ``materialize()`` restores a checkpoint's exact
 file set by clearing the in-scope zones, re-running ``setup()`` to recreate the
 zone skeleton, then atomically (and hash-verified) rewriting from the CAS.
 
-Captures the ENTIRE sandbox by default (SPEC §D2); a client may narrow the
+Captures the ENTIRE sandbox by default; a client may narrow the
 captured zone set via ``zones=``. Files over the per-file or running-total cap
 are recorded ``status="skipped"`` and downgrade the manifest to
 ``fidelity="degraded"`` (surfaced on the checkpoint).
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from agent_base.blob_store.base import KeyedBlobStore
     from agent_base.sandbox.sandbox_types import Sandbox
 
-#: Entire sandbox by default (SPEC §D2). ``workspace`` covers ``workspace/.imported``.
+#: Entire sandbox by default. ``workspace`` covers ``workspace/.imported``.
 DEFAULT_ZONES: tuple[str, ...] = (
     "workspace", ".exports", ".plans", ".context", ".tool_results",
 )

@@ -1,6 +1,6 @@
-"""``RunCompleted`` is ALWAYS emitted at turn end (GF-P6G4).
+"""``RunCompleted`` is ALWAYS emitted at turn end.
 
-Covers the amended streaming-and-meta.md §2.2/§6 guarantee: the terminal
+Covers the amended guarantee: the terminal
 ``RunCompleted`` meta frame is UNCONDITIONAL on the live loop — for the plain
 LLM turn AND the ToolReply-continuation turn — whenever a stream consumer is
 attached. The ``stream_meta_history_and_tool_results`` flag (which previously
@@ -110,7 +110,7 @@ async def test_flag_on_still_carries_the_conversation_log():
 
 
 async def test_run_completed_drops_with_no_consumer_attached():
-    """R21 stands: the guarantee is 'always EMITTED on the stream' — with the
+    """The guarantee is 'always EMITTED on the stream' — with the
     reader explicitly detached nothing buffers."""
     agent = AnthropicAgent(system_prompt="t")
     _stub_provider(agent)
@@ -167,7 +167,7 @@ async def test_run_completed_for_a_tool_reply_continuation_turn():
 
     manager = SessionManager(factory)
     agent = await manager.get_or_create(seed.agent_uuid)
-    reader = agent.attach_stream()  # attach BEFORE the reply (D3 hand-off)
+    reader = agent.attach_stream()  # attach BEFORE the reply (hand-off)
 
     ack = await manager.submit(
         seed.agent_uuid,

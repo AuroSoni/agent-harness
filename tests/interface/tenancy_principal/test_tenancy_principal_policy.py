@@ -1,13 +1,13 @@
 """Interface spec — ``PrincipalPolicy`` protocol + ``StrictScopePolicy`` default.
 
-Covers interface_plan/subsystems/tenancy-principal.md:
-  - §2.0 "PrincipalPolicy + StrictScopePolicy (the reply-auth SEAM — I1)":
+Covers:
+  - "PrincipalPolicy + StrictScopePolicy (the reply-auth SEAM)":
     both homed at ``agent_base/core/identity.py``; ``authorizes(owner, claimant)
     -> bool``; keyword-or-positional signature.
   - StrictScopePolicy semantics: unscoped/anonymous owner enforces nothing;
     None claimant denied against a scoped owner; otherwise exact (tenant,
     subject) match required; claims never participate.
-  - AMENDMENTS.md I1: ``SessionPrincipal.authorizes`` / ``DefaultPrincipalPolicy``
+  - ``SessionPrincipal.authorizes`` / ``DefaultPrincipalPolicy``
     are deleted — this suite never references them; the protocol is the seam.
 """
 from __future__ import annotations

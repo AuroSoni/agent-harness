@@ -56,7 +56,7 @@ def evaluate_python_code(
             The print outputs will be stored in the state under the key "_print_outputs".
         limits (`tuple[int, int]`, *optional*):
             A ``(max_operations, max_while_iterations)`` pair threaded into the evaluator instead of the module-level
-            ``MAX_OPERATIONS`` / ``MAX_WHILE_ITERATIONS`` globals (U2). ``None`` falls back to those globals, so
+            ``MAX_OPERATIONS`` / ``MAX_WHILE_ITERATIONS`` globals. ``None`` falls back to those globals, so
             unconfigured behavior is identical.
     """
     # First, check if the code is a valid Python expression
@@ -80,7 +80,7 @@ def evaluate_python_code(
     state["_print_outputs"] = PrintContainer()
     state["_operations_count"] = {"counter": 0}
 
-    # U2: thread per-run resource limits into state; fall back to the globals when limits is None.
+    # Thread per-run resource limits into state; fall back to the globals when limits is None.
     max_operations, max_while_iterations = limits if limits is not None else (MAX_OPERATIONS, MAX_WHILE_ITERATIONS)
     state["_max_operations"] = max_operations
     state["_max_while_iterations"] = max_while_iterations
@@ -128,7 +128,7 @@ class ExecutorResult:
     """
     The output of a single code-execution action.
 
-    Was ``CodeOutput``; the alias is deleted under G0 (breaking allowed).
+    Was ``CodeOutput``; the alias is deleted (breaking allowed).
 
     Args:
         output (`Any`):
@@ -139,9 +139,9 @@ class ExecutorResult:
             Whether the current code execution step produced the final answer.
         truncated (`bool`):
             Whether the print buffer reached ``max_output_chars`` — lets the tool
-            skip re-truncation (F6).
+            skip re-truncation.
         error (`InterpreterError | None`):
-            Structured error instead of raise-only (O14): ``run()``/``arun()``
+            Structured error instead of raise-only: ``run()``/``arun()``
             never raise an ``InterpreterError``; they set this field instead.
     """
     output: Any
@@ -156,7 +156,7 @@ class PythonExecutor(Protocol):
     """Contract every executor (local AST, Docker, E2B, remote) satisfies.
 
     Promoted from an empty marker class to a ``@runtime_checkable`` ``Protocol``
-    (U1) so a consumer can write ``class MyDockerExecutor(PythonExecutor)`` and
+    so a consumer can write ``class MyDockerExecutor(PythonExecutor)`` and
     have the type checker enforce the surface, instead of subclassing an empty
     marker.
     """
@@ -167,7 +167,7 @@ class PythonExecutor(Protocol):
         """Make agent tools callable from executed code. Replaces ``send_tools()``;
         builtins/extra_builtins are folded in by the executor, not the caller.
 
-        O14(c): COMPOSES by default — a second ``bind_tools`` call adds to the
+        COMPOSES by default — a second ``bind_tools`` call adds to the
         already-bound tools rather than clobbering them. Pass ``replace=True`` to
         drop the prior set first (the old ``send_tools`` always replaced)."""
         ...
@@ -181,9 +181,9 @@ class PythonExecutor(Protocol):
         async convenience wrapper. ``ctx`` is OPTIONAL and READ-ONLY: the executor
         consumes only identity/idempotency off it (``ctx.principal``,
         ``ctx.idempotency_key``) for scoped namespacing. It NEVER calls
-        ``ctx.emit``, never returns an Ack, and works with ``ctx=None`` (R3).
+        ``ctx.emit``, never returns an Ack, and works with ``ctx=None``.
 
-        O14: NO-RAISE structured-error contract — ``run()`` returns an
+        NO-RAISE structured-error contract — ``run()`` returns an
         ``ExecutorResult`` with ``error`` set on an ``InterpreterError`` instead of
         raising. ``arun()`` shares the SAME contract."""
         ...
@@ -191,7 +191,7 @@ class PythonExecutor(Protocol):
     async def arun(self, code: str, *, ctx: "ToolContext | None" = None) -> ExecutorResult:
         """Default mixin: ``await asyncio.to_thread(self.run, code, ctx=ctx)``.
         Removes the thread-trampoline consumers hand-roll for async embedding.
-        Shares ``run()``'s no-raise structured-error contract (O14)."""
+        Shares ``run()``'s no-raise structured-error contract."""
         ...
 
     def reset(self) -> None:
@@ -202,7 +202,7 @@ class PythonExecutor(Protocol):
     def __subclasshook__(cls, other: type) -> Any:
         # A runtime_checkable Protocol with a non-method member (``policy``) would
         # otherwise refuse ``issubclass()`` entirely. Support BOTH the explicit
-        # subclass path (§2.4) and the structural path (§3.4) here:
+        # subclass path and the structural path here:
         #   - explicit subclass: PythonExecutor in the MRO -> True.
         #   - structural: all five lifecycle methods present somewhere in the MRO.
         if cls is not PythonExecutor:
@@ -274,7 +274,7 @@ class LocalPythonExecutor(PythonExecutor):
     def bind_tools(self, tools: Mapping[str, Callable], *, replace: bool = False) -> None:
         """Make agent tools callable from executed code.
 
-        O14(c): COMPOSE by default; ``replace=True`` drops the prior bound set first.
+        COMPOSE by default; ``replace=True`` drops the prior bound set first.
         Builtins (base tools + ``extra_builtins``) always survive — they are not
         "prior tools".
         """
@@ -288,10 +288,10 @@ class LocalPythonExecutor(PythonExecutor):
         self.state.update(variables)
 
     def run(self, code: str, *, ctx: "ToolContext | None" = None) -> ExecutorResult:
-        """Execute one code action under the no-raise structured-error contract (O14).
+        """Execute one code action under the no-raise structured-error contract.
 
         ``ctx`` is accepted for interface parity; the local executor ignores it
-        (R3: read-only identity/idempotency only — never ``ctx.emit``).
+        (read-only identity/idempotency only — never ``ctx.emit``).
         """
         try:
             output, is_final_answer = evaluate_python_code(
@@ -321,7 +321,7 @@ class LocalPythonExecutor(PythonExecutor):
             )
 
     async def arun(self, code: str, *, ctx: "ToolContext | None" = None) -> ExecutorResult:
-        """Async convenience wrapper: awaits ``run`` off-thread (R36).
+        """Async convenience wrapper: awaits ``run`` off-thread.
 
         Shares ``run()``'s no-raise structured-error contract.
         """

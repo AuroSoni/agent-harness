@@ -1,9 +1,9 @@
-"""Connect + compile against the in-process fake server (mcp.md §5/§6/§7).
+"""Connect + compile against the in-process fake server.
 
 Naming (`mcp__{key}__{remote}` + sanitization), compile-time filtering,
 destructiveHint → confirmation, schema pass-through, result conversion
-(§6: text, isError, a typed result's structured copy, remote raise), E7 (dead server
-degrades the call, never the turn), probe (MC-D10), mcp_status (MC-D13).
+(text, isError, a typed result's structured copy, remote raise), a dead server
+degrades the call (never the turn), probe, mcp_status.
 """
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ async def test_remote_schema_passes_through_verbatim(monkeypatch):
         schema = compiled["mcp__calc__add"].__tool_schema__.input_schema
         assert schema["type"] == "object"
         assert set(schema["properties"]) == {"a", "b"}
-        assert compiled["mcp__calc__add"].__mcp_server__ == "calc"  # MC-D12 marker
+        assert compiled["mcp__calc__add"].__mcp_server__ == "calc"  # marker
     finally:
         await source.aclose()
 
@@ -103,7 +103,7 @@ async def test_call_returns_a_typed_result_once(monkeypatch):
         envelope = await compiled["mcp__calc__add"](a=20, b=22)
         text = "".join(getattr(b, "text", "") for b in envelope.for_context_window())
         # FastMCP sends the int as text AND as structuredContent {"result": 42};
-        # the structured copy only repeats the text, so it is dropped (§6).
+        # the structured copy only repeats the text, so it is dropped.
         assert text == "42"
     finally:
         await source.aclose()

@@ -1,10 +1,10 @@
 """Control vocabulary: ``AgentInput`` commands and ``Ack`` (shipped, ratified public).
 
-Covers session-control.md §2.0 (shared contract types — ``agent_base/core/commands.py``
-is co-owned by this subsystem; ``agent_base/core/ack.py`` is owned by it), §2.3 (plane
-classification carried by the command types), the DESIGN_CONTRACT §1.5 shapes
+Covers the shared contract types (``agent_base/core/commands.py``
+is co-owned by this subsystem; ``agent_base/core/ack.py`` is owned by it), the plane
+classification carried by the command types, the shapes
 (``submit(AgentInput) -> Ack``; ``Ack{seq, disposition, detail}``; ``ToolReply(cid,
-results)`` as THE reply primitive), and R7 (``ToolReply`` stays principal-free).
+results)`` as THE reply primitive), and ``ToolReply`` staying principal-free.
 
 These types are ratified "shipped refactors to keep" — most tests here are expected
 to pass already; they pin the contract so the relocation/promotion work cannot
@@ -34,7 +34,7 @@ from agent_base.core.types import TextContent
 
 
 def test_agent_input_union_is_sealed():
-    """§1.5: AgentInput = UserMessage | ToolReply | Abort | Steer — exactly four."""
+    """AgentInput = UserMessage | ToolReply | Abort | Steer — exactly four."""
     assert get_origin(AgentInput) is Union
     assert set(get_args(AgentInput)) == {UserMessage, ToolReply, Abort, Steer}
 
@@ -66,7 +66,7 @@ def test_command_meta_defaults_and_unique_ids():
 
 
 def test_tool_reply_is_principal_free():
-    """R7: ToolReply gains NO auth field — the claimant rides submit(sid, ..., principal=)."""
+    """ToolReply gains NO auth field — the claimant rides submit(sid, ..., principal=)."""
     field_names = {f.name for f in dataclasses.fields(ToolReply)}
     assert field_names == {"cid", "results", "meta", "is_error"}
 
@@ -94,7 +94,7 @@ def test_steer_shape_and_defaults():
     instr = Message.user("change course")
     cmd = Steer(instruction=instr)
     assert cmd.instruction is instr
-    assert cmd.mode is SteerMode.FORCEFUL  # default per §2.3
+    assert cmd.mode is SteerMode.FORCEFUL  # default
     assert cmd.target is Target.ROOT
     with pytest.raises(FrozenInstanceError):
         cmd.mode = SteerMode.COOPERATIVE  # type: ignore[misc]
@@ -110,7 +110,7 @@ def test_steer_mode_and_target_string_values():
 
 
 def test_ack_shape():
-    """§1.5/§2.0: Ack{seq, disposition, detail=None}, frozen value object."""
+    """Ack{seq, disposition, detail=None}, frozen value object."""
     ack = Ack(seq=3, disposition=Disposition.ACCEPTED)
     assert ack.seq == 3
     assert ack.disposition is Disposition.ACCEPTED
@@ -121,7 +121,7 @@ def test_ack_shape():
 
 
 def test_shipped_disposition_members():
-    """§2.1 '--- shipped ---' block: the seven Rung-1 values, as a str-enum."""
+    """'--- shipped ---' block: the seven Rung-1 values, as a str-enum."""
     expected = {
         "ACCEPTED": "accepted",
         "RESOLVED": "resolved",

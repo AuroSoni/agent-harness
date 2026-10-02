@@ -1,6 +1,6 @@
-"""``LiteLLMAgent`` — Style-3 factory subclass (providers.md §2.4 / Fork P-A).
+"""``LiteLLMAgent`` — Style-3 factory subclass.
 
-The P-A lift collapses B2: ``LiteLLMAgent`` no longer re-overrides the loop,
+``LiteLLMAgent`` no longer re-overrides the loop,
 finalize, emit, result-building, abort or tool-call extraction — all of that
 is the shared runtime machinery written once in ``AnthropicAgent`` /
 ``AgentRuntime`` against the ``Provider`` protocol.  This subclass only:
@@ -66,7 +66,7 @@ class LiteLLMAgent(AnthropicAgent):
         sandbox_factory: Callable[[str], "Sandbox"] | None = None,
         end_turn_hook: EndTurnHook | None = None,
         agent_uuid: str | None = None,
-        # Declarative profiles + hook registry (contract §6 / §2.2; CM-G3d).
+        # Declarative profiles + hook registry.
         profiles: "list[Any] | None" = None,
         default_profile: str | None = None,
         hooks: "dict[str, list[Any]] | None" = None,
@@ -75,7 +75,7 @@ class LiteLLMAgent(AnthropicAgent):
         run_adapter: "AgentRunAdapter | None" = None,
         media_backend: "MediaBackend | None" = None,
     ) -> None:
-        # O12(c): the retry budget rides the provider value — no ctor scalars.
+        # The retry budget rides the provider value — no ctor scalars.
         provider = LiteLLMProvider(
             formatter=LiteLLMMessageFormatter(),
             retry_policy=RetryPolicy(
@@ -132,7 +132,7 @@ class LiteLLMAgent(AnthropicAgent):
             self._compaction_controller = None
             return
 
-        # O12(c): no retry scalars — the provider reads self.retry_policy.
+        # No retry scalars — the provider reads self.retry_policy.
         self._compaction_controller = CompactionController(
             config=resolved_config,
             provider=self.provider,

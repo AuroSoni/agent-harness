@@ -1,4 +1,4 @@
-"""Transcript codec for fork/reset checkpoints (the hybrid model — SPEC §F1).
+"""Transcript codec for fork/reset checkpoints (the hybrid model).
 
 A literal full ``serialize_config()`` per turn is O(n²): the provider transcript
 (``context_messages``) and the rich UI log (``conversation_log.entries``) grow
@@ -9,7 +9,7 @@ checkpoint row carrying ordered segment-key arrays. An unchanged prefix dedupes
 to **zero** new blobs (``exists_key`` short-circuits ``put_at``), so steady-state
 checkpoint storage is O(distinct bytes) and a fork is a pointer copy.
 
-Correctness invariants (SPEC §2 correctness notes):
+Correctness invariants:
 - Serialize via ``serialize_config`` (the codec path), NOT ``config_to_row`` —
   the PG ``_CONFIG_COLUMNS`` set omits ``agent_phase``.
 - **Transcript segments keep the message's own key order** (``segment_json``):
@@ -27,7 +27,7 @@ Correctness invariants (SPEC §2 correctness notes):
   the assembled config and the next ``SessionManager.get_or_create`` →
   ``AnthropicAgent.initialize()`` re-lands it via ``provider.make_llm_config``.
 
-Compaction caveat (SPEC §8): when compaction fires, ``context_messages`` is
+Compaction caveat: when compaction fires, ``context_messages`` is
 reassigned to ``[summary] + recent`` so the prefix shifts and dedupe drops for
 that one checkpoint — correct and bounded; the codec never assumes a monotonic
 prefix.

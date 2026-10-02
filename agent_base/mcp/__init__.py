@@ -1,6 +1,6 @@
-"""External MCP servers (interface_plan/subsystems/mcp.md; ledger MC-D1..D14).
+"""External MCP servers.
 
-Optional extra (``agent-base[mcp]``, MC-D7): ``spec``/``auth`` are SDK-free
+Optional extra (``agent-base[mcp]``): ``spec``/``auth`` are SDK-free
 and import eagerly (specs and auth providers are constructible without the
 extra); everything that touches the ``mcp`` SDK (``source``, ``oauth``,
 ``convert``) loads lazily via module ``__getattr__`` so the ImportError
@@ -67,8 +67,8 @@ _LAZY_EXPORTS: dict[str, str] = {
 def require_mcp_sdk() -> None:
     """Raise an actionable ImportError when the ``mcp`` SDK is missing.
 
-    Called at agent construction when ``mcp_servers=`` is passed (MC-D7:
-    the error fires at construction, not at first call).
+    Called at agent construction when ``mcp_servers=`` is passed (the
+    error fires at construction, not at first call).
     """
     try:
         import mcp  # noqa: F401

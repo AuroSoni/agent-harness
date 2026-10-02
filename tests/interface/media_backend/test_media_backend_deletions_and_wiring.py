@@ -1,12 +1,12 @@
-"""Red-suite specs for media-backend deletions + cross-subsystem wiring.
+"""Interface specs for media-backend deletions + cross-subsystem wiring.
 
 Covers:
-  - §2.4 Variant A "Shape": `MediaBackend.__init__` gains an optional
+  - `MediaBackend.__init__` gains an optional
     `blob_store: BlobStore | None`, exposed as `MediaBackend.blob_store`.
-  - O3 deletion guard: `FullReuploadFlush` never re-appears anywhere in the
+  - Deletion guard: `FullReuploadFlush` never re-appears anywhere in the
     media surface (also covered narrowly in test_media_backend_flush.py; here
     we assert package-level absence as a regression fence).
-  - Package export surface: the canonical public symbols listed in the doc are
+  - Package export surface: the canonical public symbols are
     importable from `agent_base.media_backend` and `agent_base.blob_store`.
 
 These are deletion/absence + wiring guards, not behavioural duplicates.
@@ -33,18 +33,18 @@ class _NullBlobStore(BlobStore):
         return False
 
 
-# ─── §2.4 Variant A "Shape": MediaBackend.blob_store slot ──────────────────
+# ─── MediaBackend.blob_store slot ──────────────────
 
 
 def test_media_backend_init_accepts_optional_blob_store() -> None:
-    """§2.4 (Variant A): MediaBackend.__init__ gains optional blob_store=None."""
+    """MediaBackend.__init__ gains optional blob_store=None."""
     sig = inspect.signature(MediaBackend.__init__)
     assert "blob_store" in sig.parameters
     assert sig.parameters["blob_store"].default is None
 
 
 def test_media_backend_exposes_blob_store_attribute() -> None:
-    """ctx.media.blob_store is a documented cross-subsystem handle (§5)."""
+    """ctx.media.blob_store is a documented cross-subsystem handle."""
 
     class _Backend(MediaBackend):
         async def store(self, content, filename, mime_type, agent_uuid): ...
@@ -64,7 +64,7 @@ def test_media_backend_exposes_blob_store_attribute() -> None:
     assert backend.blob_store is blobs
 
 
-# ─── O3 / package-level deletion fences ───────────────────────────────────
+# ─── Package-level deletion fences ───────────────────────────────────
 
 
 def test_full_reupload_flush_absent_from_media_package() -> None:
@@ -73,7 +73,7 @@ def test_full_reupload_flush_absent_from_media_package() -> None:
 
 
 def test_media_scope_is_not_org_member_tuple() -> None:
-    """§2.0: MediaBackend did NOT grow an (org, member) tuple — that was the smell.
+    """MediaBackend did NOT grow an (org, member) tuple — that was the smell.
     Identity lives in MediaScope.principal, never as standalone org/member fields."""
     import dataclasses
     names = {f.name for f in dataclasses.fields(MediaScope)}
@@ -83,7 +83,7 @@ def test_media_scope_is_not_org_member_tuple() -> None:
     assert "member_id" not in names
 
 
-# ─── Public export surface (§2 / §5) ──────────────────────────────────────
+# ─── Public export surface ──────────────────────────────────────
 
 
 def test_media_package_exports_canonical_symbols() -> None:

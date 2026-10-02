@@ -1,14 +1,13 @@
-"""``status()`` peek, ``SessionStatus`` and ``OpenAwait`` (§2.2, §2.4, I8, O15d).
+"""``status()`` peek, ``SessionStatus`` and ``OpenAwait``.
 
-Covers session-control.md §2.2 (the ``SessionStatus`` frozen snapshot with
-``open_awaits: tuple[OpenAwait, ...]`` per §I8 and the DERIVED ``in_flight``
-property per §O15d; ``OpenAwait`` shape with an open-vocabulary ``reason: str``
-per relay-await §O9) and §2.4 (``status()`` is a non-materializing peek that
+Covers the ``SessionStatus`` frozen snapshot with
+``open_awaits: tuple[OpenAwait, ...]`` and the DERIVED ``in_flight``
+property; the ``OpenAwait`` shape with an open-vocabulary ``reason: str``;
+and ``status()``, a non-materializing peek that
 reports ``resident=False, phase=IDLE, in_flight=False`` for an absent session —
-the seam that drives ``NOT_RUNNING``).
+the seam that drives ``NOT_RUNNING``.
 
-Canonical home for both types: ``agent_base/session/manager.py`` (AMENDMENTS
-canonical-homes table).
+Canonical home for both types: ``agent_base/session/manager.py``.
 """
 from __future__ import annotations
 
@@ -51,7 +50,7 @@ def _status(**overrides) -> SessionStatus:
 
 
 async def test_status_unknown_session_is_idle_and_never_builds():
-    """§2.4: absent ⇒ resident=False, phase=IDLE, in_flight=False — and NO build."""
+    """Absent ⇒ resident=False, phase=IDLE, in_flight=False — and NO build."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
     st = await manager.status("never-created")
@@ -100,7 +99,7 @@ async def test_status_reflects_non_idle_phase():
 
 
 async def test_status_surfaces_a_live_parked_await():
-    """§I8 wiring: a REAL parked await on the live table must show up on the
+    """Wiring: a REAL parked await on the live table must show up on the
     peek — has_open_await=True and an OpenAwait carrying the parked cid +
     tool_use_ids. (reason/tool_names VALUE stamping needs the amended
     AwaitTable.open surface and stays pinned by the relay_await suite; the
@@ -127,7 +126,7 @@ async def test_status_surfaces_a_live_parked_await():
 
 
 def test_in_flight_is_derived_truth_table():
-    """§O15d: in_flight == actor_running OR phase is non-IDLE."""
+    """in_flight == actor_running OR phase is non-IDLE."""
     assert _status(actor_running=True, phase=AgentPhase.IDLE).in_flight is True
     assert _status(actor_running=False, phase=AgentPhase.STREAMING).in_flight is True
     assert _status(actor_running=False, phase=AgentPhase.AWAITING_RELAY).in_flight is True
@@ -135,7 +134,7 @@ def test_in_flight_is_derived_truth_table():
 
 
 def test_in_flight_is_not_an_init_field():
-    """§O15d: derived @property — passing it to the constructor is a TypeError."""
+    """Derived @property — passing it to the constructor is a TypeError."""
     with pytest.raises(TypeError):
         SessionStatus(
             resident=True,
@@ -155,7 +154,7 @@ def test_session_status_is_frozen():
 
 
 def test_session_status_carries_open_awaits_tuple():
-    """§I8: SessionStatus.open_awaits is a tuple[OpenAwait, ...] mirrored by has_open_await."""
+    """SessionStatus.open_awaits is a tuple[OpenAwait, ...] mirrored by has_open_await."""
     oa = OpenAwait(
         cid="cid-1",
         tool_use_ids=("tu_1", "tu_2"),
@@ -173,7 +172,7 @@ def test_session_status_carries_open_awaits_tuple():
 
 
 def test_open_await_shape():
-    """§I8: OpenAwait = {cid, tool_use_ids, tool_names, reason, opened_at}."""
+    """OpenAwait ={cid, tool_use_ids, tool_names, reason, opened_at}."""
     oa = OpenAwait(
         cid="cid-7",
         tool_use_ids=("tu_a",),
@@ -208,7 +207,7 @@ def test_open_await_is_frozen():
 
 
 def test_open_await_reason_is_open_string_vocabulary():
-    """Relay-await §O9 (consumed here): reason is a plain str — custom values legal,
+    """Reason is a plain str — custom values legal,
     no enum coercion."""
     oa = OpenAwait(
         cid="cid-x",

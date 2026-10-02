@@ -1,9 +1,9 @@
-"""Red-suite specs — storage §2.6: ensure_schema() + migrations (fixes E6).
+"""Interface specs — storage: ensure_schema() + migrations.
 
 Covers:
-- interface_plan/subsystems/storage.md §2.6 (``agent_base/storage/pg/schema.py``):
+- ``agent_base/storage/pg/schema.py``:
   ``LIBRARY_SCHEMA_VERSION`` (the DDL/migration axis, distinct from
-  CORE_SCHEMA_VERSION and WIRE_PROTOCOL_VERSION per R12 — distinctness is a
+  CORE_SCHEMA_VERSION and WIRE_PROTOCOL_VERSION — distinctness is a
   doc invariant, not numerically assertable), frozen ``Migration`` records,
   forward-only contiguous ``LIBRARY_MIGRATIONS``, idempotent
   ``ensure_schema()`` driven by the ColumnRegistry (consumer extra columns
@@ -140,11 +140,11 @@ def test_pg_schema_surface_is_async():
 
 
 # ---------------------------------------------------------------------------
-# GF-SCHEMA4 — active_profile bump (live-found heal gap)
+# active_profile bump (live-found heal gap)
 # ---------------------------------------------------------------------------
 
 def test_library_schema_version_is_at_least_4_for_active_profile():
-    # GF-SCHEMA4: active_profile joined the agent_config CREATE set (CM-G3e) but
+    # active_profile joined the agent_config CREATE set but
     # the version stayed 3, so DBs stamped v3 before that landed could never heal.
     # The bump (+ 3->4 migration) is what makes ensure_schema() able to add it.
     assert LIBRARY_SCHEMA_VERSION >= 4
@@ -178,7 +178,7 @@ async def test_ensure_schema_fresh_create_stamps_current_version():
 
 
 async def test_ensure_schema_v3_db_applies_active_profile_alter():
-    # A DB stamped v3 (before CM-G3e) heals via the 3->4 ALTER — the bug fix.
+    # A DB stamped v3 heals via the 3->4 ALTER — the bug fix.
     conn = _FakeConn()
     conn.fetchval_result = 3                     # recorded at v3
     adapter = PgConfigAdapterBase(_FakePool(conn))
@@ -206,7 +206,7 @@ async def test_ensure_schema_emits_create_table_ddl_for_its_table():
 
 
 async def test_ensure_schema_includes_registry_extra_columns_in_ddl():
-    # §2.6 scope guard: org/member reach the library DDL only via the
+    # Scope guard: org/member reach the library DDL only via the
     # consumer's extra_columns()/principal_columns() — through the registry.
     conn = _FakeConn()
     adapter = _OrgScopedConfigAdapter(_FakePool(conn))
@@ -223,7 +223,7 @@ async def test_ensure_schema_records_version_in_version_table():
 
 
 async def test_ensure_schema_is_idempotent_across_boots():
-    # §2.6: once the version is recorded, a later boot is a no-op — it must NOT
+    # Once the version is recorded, a later boot is a no-op — it must NOT
     # re-run the CREATE path for the library table nor re-run migrations.
     conn = _FakeConn()
     adapter = PgConfigAdapterBase(_FakePool(conn))
@@ -239,7 +239,7 @@ async def test_ensure_schema_is_idempotent_across_boots():
 
 
 async def test_ensure_schema_runs_pending_migrations_when_behind():
-    # §2.6 upgrade branch: 0 < current < LIBRARY_SCHEMA_VERSION runs the
+    # Upgrade branch: 0 < current < LIBRARY_SCHEMA_VERSION runs the
     # pending LIBRARY_MIGRATIONS forward instead of the fresh CREATE-all path.
     if LIBRARY_MIGRATIONS:
         final = LIBRARY_MIGRATIONS[-1]                 # from_version == LIBRARY_SCHEMA_VERSION - 1
@@ -266,6 +266,6 @@ async def test_ensure_all_schemas_covers_exactly_the_three_library_tables():
     assert "agent_config" in sql
     assert "conversation_history" in sql
     assert "agent_runs" in sql
-    # consumer product tables are NOT library DDL (§2.6 scope guard)
+    # consumer product tables are NOT library DDL (scope guard)
     assert "workbook_snapshot" not in sql
     assert "skill_" not in sql

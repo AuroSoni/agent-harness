@@ -1,17 +1,17 @@
 """Interface spec — typed owner fields on entities + principal-stamped audit.
 
-Covers interface_plan/subsystems/tenancy-principal.md:
-  - §B.1 (Variant B behavior, decided composition §4): ``AgentConfig`` gains
+Covers:
+  - ``AgentConfig`` gains
     ``owner_tenant``/``owner_subject`` + a ``.principal`` bridging property;
     ``Conversation`` gains ``owner_tenant``/``owner_subject``; ``extras`` is
     genuinely ad-hoc (no required ``extras["owner"]`` dict — that smell is gone).
-  - §A.6: ``CommandAuditRecord`` gains ``tenant``/``subject`` so the audit log
+  - ``CommandAuditRecord`` gains ``tenant``/``subject`` so the audit log
     answers "who issued this?" without a side table.
-  - §5 cross-deps / R7: ``ToolReply`` stays principal-free — the claimant rides
+  - ``ToolReply`` stays principal-free — the claimant rides
     ``submit(..., principal=)``, never the reply payload.
 
 NOTE on deletions honored here: ``extras["owner"]`` is never written or read;
-no ``Scope``/``set_scope``/``Scoped*Adapter`` appears anywhere in this suite (O2).
+no ``Scope``/``set_scope``/``Scoped*Adapter`` appears anywhere in this suite.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from agent_base.core.config import AgentConfig, Conversation
 from agent_base.core.identity import SessionPrincipal
 
 
-# ─── AgentConfig owner fields (§B.1) ─────────────────────────────────
+# ─── AgentConfig owner fields ────────────────────────────────────────
 
 
 def test_agent_config_owner_fields_default_to_none():
@@ -70,7 +70,7 @@ def test_agent_config_extras_is_adhoc_and_independent_of_ownership():
     assert cfg.extras == {}
 
 
-# ─── Conversation owner fields (§B.1) ────────────────────────────────
+# ─── Conversation owner fields ───────────────────────────────────────
 
 
 def test_conversation_owner_fields_default_to_none():
@@ -96,7 +96,7 @@ def test_conversation_owner_fields_are_first_class_typed_fields():
     assert "owner_subject" in names
 
 
-# ─── CommandAuditRecord principal stamp (§A.6) ───────────────────────
+# ─── CommandAuditRecord principal stamp ──────────────────────────────
 
 
 def test_audit_record_tenant_subject_default_to_none():
@@ -146,14 +146,14 @@ def test_audit_record_remains_frozen_with_identity_fields():
 
 
 def test_audit_record_stamps_only_scope_key_never_claims():
-    # B2-consistent: audit carries tenant/subject only — no claims field exists.
+    # Audit carries tenant/subject only — no claims field exists.
     names = {f.name for f in dataclasses.fields(CommandAuditRecord)}
     assert "tenant" in names
     assert "subject" in names
     assert "claims" not in names
 
 
-# ─── ToolReply stays principal-free (R7) ─────────────────────────────
+# ─── ToolReply stays principal-free ──────────────────────────────────
 
 
 def test_tool_reply_shape_is_cid_results_meta_is_error():
@@ -170,7 +170,7 @@ def test_tool_reply_shape_is_cid_results_meta_is_error():
 
 
 def test_tool_reply_carries_no_principal_field():
-    # R7: the claimant identity rides SessionManager.submit(..., principal=);
+    # The claimant identity rides SessionManager.submit(..., principal=);
     # the reply primitive itself is principal-free (shipped shape kept).
     names = {f.name for f in dataclasses.fields(ToolReply)}
     assert "principal" not in names

@@ -1,12 +1,12 @@
-"""Red-suite specs for ``ExecutorPolicy`` — the one config object.
+"""Interface specs for ``ExecutorPolicy`` — the one config object.
 
-Covers python-executors.md:
-  - §2.1 ``ExecutorPolicy`` (frozen dataclass, EXACTLY 6 fields, defaults sourced
+Covers:
+  - ``ExecutorPolicy`` (frozen dataclass, EXACTLY 6 fields, defaults sourced
     from the module globals, ``effective_imports`` property, ``build_builtins()``).
-  - O14(a)/(b) deletions: ``base_imports`` / ``unblock_functions`` /
+  - Deletions: ``base_imports`` / ``unblock_functions`` /
     ``block_extra_functions`` / ``block_extra_modules`` / ``evolve()`` are GONE.
-  - §6 migration "still-true": module globals remain the policy-field defaults.
-  - §5 layer table: ``max_output_chars`` default is 50_000 (the layer-1 char cap).
+  - Migration "still-true": module globals remain the policy-field defaults.
+  - ``max_output_chars`` default is 50_000 (the layer-1 char cap).
 
 Imports target the future canonical homes in ``agent_base.python_executors``.
 The implementation does not exist yet; ImportError/AttributeError at runtime is
@@ -54,13 +54,13 @@ def test_executor_policy_default_construction():
 
 
 def test_executor_policy_output_char_default_is_fifty_thousand():
-    # §5 layer-1 (upstream char cap) is 50_000.
+    # Layer-1 (upstream char cap) is 50_000.
     assert DEFAULT_MAX_LEN_OUTPUT == 50_000
     assert ExecutorPolicy().max_output_chars == 50_000
 
 
 def test_executor_policy_resource_limit_defaults_match_globals():
-    # §6 migration "still-true": the module globals remain the policy defaults.
+    # Migration "still-true": the module globals remain the policy defaults.
     assert MAX_OPERATIONS == 10_000_000
     assert MAX_WHILE_ITERATIONS == 1_000_000
     policy = ExecutorPolicy()
@@ -164,7 +164,7 @@ def test_build_builtins_does_not_mutate_base_python_tools():
     assert BASE_PYTHON_TOOLS == before
 
 
-# --- deletions (O14): dropped fields and evolve() must NOT exist -----------
+# --- deletions: dropped fields and evolve() must NOT exist -----------------
 
 
 def test_dropped_policy_fields_are_absent():

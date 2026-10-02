@@ -1,9 +1,9 @@
 """Scope-safe correlation binding for structured logging.
 
-This module ships the logging subsystem's two owned pieces (logging.md §2.1/§2.2):
+This module ships the logging subsystem's two owned pieces:
 
-* ``principal_fields`` — flatten a :class:`SessionPrincipal` into log fields. Per
-  Fork K (variant A, v1) ``claims`` are NEVER logged (token/email/PII risk); only
+* ``principal_fields`` — flatten a :class:`SessionPrincipal` into log fields.
+  ``claims`` are NEVER logged (token/email/PII risk); only
   ``tenant``/``subject`` are surfaced.
 * ``correlation_scope`` — a context manager that binds correlation fields for the
   duration of a block and restores the PREVIOUS context EXACTLY on exit (token-based
@@ -11,8 +11,8 @@ This module ships the logging subsystem's two owned pieces (logging.md §2.1/§2
   clobber each other's context.
 
 The identity + correlation field-name constants are NOT redeclared here. They live in
-the single vocabulary home, ``agent_base/core/identity.py`` (R34), and are RE-EXPORTED
-directly (O5: the ``LogField`` accessor class is DELETED — library code uses the bare
+the single vocabulary home, ``agent_base/core/identity.py``, and are RE-EXPORTED
+directly (the ``LogField`` accessor class is DELETED — library code uses the bare
 constants, which are the exact strings storage indexes on and the ``MetaEnvelope``
 header stamps).
 """
@@ -21,7 +21,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from agent_base.core.identity import (  # §1.1 / R34 — the single vocabulary home
+from agent_base.core.identity import (  # the single vocabulary home
     AGENT_ID,
     EVENT_ID,
     PARENT_AGENT_ID,
@@ -35,7 +35,7 @@ from agent_base.core.identity import (  # §1.1 / R34 — the single vocabulary 
 from .context import _set_context_snapshot, get_context
 
 __all__ = [
-    # Re-exported identity/correlation constants (O5: no LogField wrapper).
+    # Re-exported identity/correlation constants (no LogField wrapper).
     "RUN_ID",
     "AGENT_ID",
     "PARENT_AGENT_ID",
@@ -52,9 +52,9 @@ __all__ = [
 def principal_fields(p: SessionPrincipal | None) -> dict[str, str]:
     """Flatten a :class:`SessionPrincipal` into log fields.
 
-    Fork K (DECIDED, v1 = variant A): ``claims`` are NEVER logged (token/email/PII
+    ``claims`` are NEVER logged (token/email/PII
     risk) — only ``tenant``/``subject`` are surfaced. A configurable
-    ``LogConfig.claims_allowlist`` (variant B) is explicitly deferred.
+    ``LogConfig.claims_allowlist`` is explicitly deferred.
 
     Args:
         p: the principal to flatten, or ``None``.

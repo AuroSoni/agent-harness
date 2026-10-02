@@ -1,9 +1,9 @@
-"""Red-suite specs — storage §2.5: media-metadata-by-id lookup (fixes E5).
+"""Interface specs — storage: media-metadata-by-id lookup.
 
 Covers:
-- interface_plan/subsystems/storage.md §2.5: ``get_media_metadata`` /
+- ``get_media_metadata`` /
   ``find_generated_file`` ship as CONCRETE default implementations on the
-  ABCs (R26 — never bare @abstractmethod, so existing custom adapters keep
+  ABCs (never bare @abstractmethod, so existing custom adapters keep
   working), with optimized Postgres overrides.
 - "Newest run wins" for ``find_generated_file``; canonical ``media_id`` only
   (legacy key spellings are normalized upstream by MediaMetadata — a media
@@ -85,7 +85,7 @@ class _MemoryConversationAdapter(ConversationAdapter):
 
 
 # ---------------------------------------------------------------------------
-# Concrete default: AgentConfigAdapter.get_media_metadata (R26)
+# Concrete default: AgentConfigAdapter.get_media_metadata
 # ---------------------------------------------------------------------------
 
 async def test_default_get_media_metadata_reads_media_registry():
@@ -109,7 +109,7 @@ async def test_default_get_media_metadata_missing_agent_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# Concrete default: ConversationAdapter.find_generated_file (R26)
+# Concrete default: ConversationAdapter.find_generated_file
 # ---------------------------------------------------------------------------
 
 async def test_default_find_generated_file_scans_conversations():
@@ -219,7 +219,7 @@ async def test_pg_find_generated_file_returns_typed_metadata_by_media_id():
     assert found.media_id == "m1"
     assert found.storage_location == "s3://hit"
     # the canonical media_id is bound into the query (no key-spelling
-    # reconciliation in the consumer — E5)
+    # reconciliation in the consumer)
     bound_args = [a for _, _, args in conn.calls for a in args]
     assert "m1" in bound_args
 

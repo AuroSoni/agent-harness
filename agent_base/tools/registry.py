@@ -90,7 +90,7 @@ class ToolCallInfo:
 
     def with_input(self, new_input: dict[str, Any]) -> "ToolCallInfo":
         """Return a copy with ``input`` replaced — the documented
-        ``before_tool`` enrichment idiom (agent-loop-hooks §3.2):
+        ``before_tool`` enrichment idiom:
         ``return HookOutcome(update=ctx.call.with_input({**ctx.tool_input, ...}))``.
         """
         return dataclass_replace(self, input=dict(new_input))
@@ -108,7 +108,7 @@ class ToolCallClassification:
         return bool(self.frontend_calls or self.confirmation_calls)
 
 
-# ─── Toolish coercion (tools.md §2.3) ──────────────────────────────────
+# ─── Toolish coercion ──────────────────────────────────────────────────
 
 def _coerce_to_callables(item: "Toolish") -> list[Callable]:
     """Coerce one ``Toolish`` item into registry-ready callables.
@@ -175,7 +175,7 @@ class ToolRegistry:
         ``Toolish = Callable (has __tool_schema__) | ConfigurableToolBase | ToolBundle``.
         For an instance, the registry calls ``.as_tool()`` internally — NO
         consumer-side ``.get_tool()`` plumbing. For a ``ToolBundle``, it
-        expands ``.tools()`` (tools.md §2.3).
+        expands ``.tools()``.
 
         Raises:
             ValueError: If an item is not registrable.
@@ -219,12 +219,12 @@ class ToolRegistry:
             if instance and callable(getattr(instance, "set_sandbox", None)):
                 instance.set_sandbox(sandbox)
 
-    # ─── Execution-mode read (tools.md §2.3) ───────────────────────
+    # ─── Execution-mode read ───────────────────────────────────────
 
     def executor_for(self, tool_name: str) -> ExecutorType:
         """Public read of a tool's execution mode — the value ``ctx.executor``
         exposes to ``before_tool``/``after_tool``/``on_tool_error`` so a hook
-        can branch (contract §2.1). Unknown names default to ``"backend"``.
+        can branch. Unknown names default to ``"backend"``.
         """
         registered = self._tools.get(tool_name)
         return registered.executor if registered else "backend"
@@ -294,7 +294,7 @@ class ToolRegistry:
 
         except Exception as e:
             envelope = ToolResultEnvelope.error(tool_name, tool_id, str(e))
-            # CM-G4: retain runtime-only raised exception for hooks.
+            # Retain runtime-only raised exception for hooks.
             envelope.raised_error = e
 
         envelope.duration_ms = (time.monotonic() - start) * 1000
@@ -421,7 +421,7 @@ class ToolRegistry:
                             failed = ToolResultEnvelope.error(
                                 tc.name, tc.tool_id, "Tool execution failed.",
                             )
-                            failed.raised_error = task_exc  # CM-G4 (see execute())
+                            failed.raised_error = task_exc  # (see execute())
                             trace_safe(
                                 "registry.execute_tools.failed",
                                 _stamp_stand_in, failed, tc.tool_id,

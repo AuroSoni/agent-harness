@@ -70,7 +70,7 @@ class CompactionController:
         provider: "AnyLLMProvider",
         token_estimator: "AnyLLMTokenEstimator",
     ) -> None:
-        # O12(c): no retry scalars — the provider reads self.retry_policy.
+        # No retry scalars — the provider reads self.retry_policy.
         self.config = config
         self.provider = provider
         self.token_estimator = token_estimator

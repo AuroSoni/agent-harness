@@ -2,17 +2,16 @@
 
 ``AgentPhase`` tracks where the agent is in its execution lifecycle; the
 abort path uses it to pick the right cleanup, and the session subsystem's
-``SessionStatus`` derives ``in_flight`` from it (session-control.md §2.2 /
-§O15d).
+``SessionStatus`` derives ``in_flight`` from it.
 
 The legacy ``AbortSteerRegistry`` and its ``RunningAgentHandle`` value are
-RETIRED (G0 — session-control.md §1 A1/A4/A9, §6): abort/steer now flow
+RETIRED: abort/steer now flow
 through ``submit(Abort()/Steer())`` on the runtime, routed by
 ``SessionManager`` — no caller-owned task/queue/cancellation-event handle
 remains.
 
-The per-provider ``StreamResult`` dataclasses are DELETED (providers.md
-§6 / O12a / G0) — the loop consumes the shared ``ProviderTurn`` from
+The per-provider ``StreamResult`` dataclasses are DELETED —
+the loop consumes the shared ``ProviderTurn`` from
 ``agent_base.core.provider``.
 """
 from __future__ import annotations

@@ -1,18 +1,18 @@
-"""Collaborator fakes for the session_control interface red suite.
+"""Collaborator fakes for the session_control interface suite.
 
 This module deliberately imports ONLY shipped symbols (``agent_base.core.ack``,
 ``agent_base.core.abort_types``) so that importing it never adds a collection
 failure of its own. The type under test (``SessionManager``) is always the real
 class; ``FakeAgentRuntime`` stands in for the *collaborator* the factory builds
-(an ``AgentRuntime`` per R29), recording every call the manager makes so tests
+(an ``AgentRuntime``), recording every call the manager makes so tests
 can assert the documented firing points and ordering invariants of
-``interface_plan/subsystems/session-control.md`` §2.2/§2.5.
+``mental_model/subsystems/session-actor.md``.
 
-The fake exposes exactly the seams the doc names:
+The fake exposes exactly these seams:
 
 - ``has_persisted_state()`` / ``initialize()`` / ``_initialized``  (create-vs-resume probe)
-- ``set_principal(principal)``                                      (contract §4 threading)
-- ``_make_session_context(**kw)`` / ``_run_hook(name, ctx)``        (R19 hook machinery)
+- ``set_principal(principal)``                                      (threading)
+- ``_make_session_context(**kw)`` / ``_run_hook(name, ctx)``        (hook machinery)
 - ``aclose()``                                                       (block ⇒ discard)
 - ``submit(command) -> Ack``                                         (manager routing)
 - ``checkpoint()`` / ``_do_abort()``                                 (evict teardown)
@@ -69,12 +69,12 @@ class FakeAgentRuntime:
         self.calls.append(("initialize", None))
         self._initialized = True
 
-    # ── principal threading (contract §4) ───────────────────────────────────
+    # ── principal threading ─────────────────────────────────────────────────
     def set_principal(self, principal: Any) -> None:
         self.calls.append(("set_principal", principal))
         self.principal = principal
 
-    # ── hook machinery (R19; owned by lifecycle-hooks, consumed here) ───────
+    # ── hook machinery (owned by lifecycle-hooks, consumed here) ────────────
     def _make_session_context(self, **kwargs: Any) -> Any:
         self.calls.append(("_make_session_context", kwargs))
         self.session_context_kwargs.append(kwargs)
@@ -135,7 +135,7 @@ def make_recording_factory(**agent_kwargs: Any):
 
 
 class RecordingPolicy:
-    """In-file fake of the ``PrincipalPolicy`` protocol (I1 collaborator)."""
+    """In-file fake of the ``PrincipalPolicy`` protocol (collaborator)."""
 
     def __init__(self, allow: bool = True) -> None:
         self.allow = allow

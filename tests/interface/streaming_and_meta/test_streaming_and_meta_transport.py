@@ -1,14 +1,14 @@
-"""Red-suite interface specs: the SSE transport factory.
+"""Interface specs: the SSE transport factory.
 
-Covers interface_plan/subsystems/streaming-and-meta.md:
-- §2.5 ``sse_response(item_iter, *, codec=None, keepalive_interval=15.0)`` +
+Covers:
+- ``sse_response(item_iter, *, codec=None, keepalive_interval=15.0)`` +
   ``SSE_HEADERS`` — the one Layer-C framing owner (per-item encode→render,
-  exactly one terminal [DONE], canonical headers) — resolves D4,
-- §2.5 the idle keepalive frame (AMENDMENTS SSE-1a): ``data: [PING]`` while
+  exactly one terminal [DONE], canonical headers),
+- The idle keepalive frame: ``data: [PING]`` while
   the item iterator is idle; ``None`` disables; ``<= 0`` ValueError; contract
   preserved (no ping after the terminal, source exception → no [DONE],
   disconnect still cancels INTO the source iterator),
-- §3.3 consumer example (return sse_response(agent.stream()); zero framing
+- Consumer example (return sse_response(agent.stream()); zero framing
   code in the consumer).
 """
 from __future__ import annotations
@@ -94,7 +94,7 @@ async def test_sse_response_round_trips_items_through_the_shipped_decoder():
 
 
 async def test_sse_response_threads_the_explicit_codec_through_all_three_seams():
-    # §2.5 (D4): the supplied codec OWNS encode → render → encode_terminal.
+    # The supplied codec OWNS encode → render → encode_terminal.
     # A codec with an observable render difference proves the argument is
     # actually used, not silently replaced by the default SseCodec.
     class _MarkedCodec(SseCodec):
@@ -127,14 +127,14 @@ async def test_sse_response_threads_the_explicit_codec_through_all_three_seams()
 
 
 # ---------------------------------------------------------------------------
-# SSE-1: the idle keepalive frame
+# The idle keepalive frame
 # ---------------------------------------------------------------------------
 
 _PING_FRAME = "data: [PING]\n\n"
 
 
 def test_keepalive_default_interval_is_fifteen_seconds():
-    # SSE-1a: sized well under app-level client watchdogs (nova aborts at 120 s).
+    # Sized well under app-level client watchdogs (nova aborts at 120 s).
     assert KEEPALIVE_INTERVAL_S == 15.0
 
 
@@ -160,7 +160,7 @@ async def test_keepalive_ping_fires_while_idle_and_item_still_flows_after():
     # the gated item arrived intact after the ping; [DONE] last and exactly once
     assert body.endswith("data: [DONE]\n\n")
     assert body.count("[DONE]") == 1
-    run = decode_sse_text(body)  # the shipped decoder drops the ping (SSE-1c)
+    run = decode_sse_text(body)  # the shipped decoder drops the ping
     assert len(run.deltas) == 1 and run.deltas[0].text == "before"
     assert run.run_completed == RunCompleted(stop_reason="end_turn", total_steps=1)
 
@@ -188,7 +188,7 @@ async def test_keepalive_none_disables_the_heartbeat():
         yield _completed_envelope(seq=2)
 
     body = await _consume_body(sse_response(_items(), keepalive_interval=None))
-    assert "[PING]" not in body  # byte-identical to the pre-SSE-1 transport
+    assert "[PING]" not in body  # byte-identical to the pre-keepalive transport
     assert body.count("[DONE]") == 1
 
 
@@ -199,8 +199,8 @@ async def test_keepalive_zero_or_negative_interval_raises(bad):
 
 
 async def test_keepalive_ping_is_rendered_by_the_supplied_codec():
-    # SSE-1b: the ping rides encode_keepalive → render — the codec owns EVERY
-    # frame on the wire, keepalives included (D4 upheld).
+    # The ping rides encode_keepalive → render — the codec owns EVERY
+    # frame on the wire, keepalives included.
     class _MarkedCodec(SseCodec):
         def __init__(self):
             super().__init__()
@@ -232,7 +232,7 @@ async def test_keepalive_ping_is_rendered_by_the_supplied_codec():
 
 
 async def test_keepalive_disconnect_still_cancels_into_the_source_iterator():
-    # The A8 contract (disconnect ≠ cancel): cancelling the response body must
+    # The contract (disconnect ≠ cancel): cancelling the response body must
     # deliver CancelledError INSIDE the source generator at its await point —
     # nova's _stream_until_terminal detach handler rides on exactly this.
     started = asyncio.Event()

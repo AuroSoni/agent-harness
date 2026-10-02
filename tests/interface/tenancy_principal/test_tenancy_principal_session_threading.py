@@ -1,23 +1,21 @@
 """Interface spec — principal threading through ``SessionManager``.
 
-Covers interface_plan/subsystems/tenancy-principal.md:
-  - §A.1: ``AgentFactory = (root_session_id, SessionPrincipal) -> agent``; the
+Covers:
+  - ``AgentFactory = (root_session_id, SessionPrincipal) -> agent``; the
     factory always receives a principal (never None — anonymous when unsupplied);
     ``get_or_create(root_session_id, principal=None)`` enforces resident-session
-    attach auth via the ONE ctor-injected ``PrincipalPolicy`` (I1).
-  - R9 (session layer): a session-addressing principal mismatch RAISES
+    attach auth via the ONE ctor-injected ``PrincipalPolicy``.
+  - Session layer: a session-addressing principal mismatch RAISES
     ``SessionNotFound`` at ``get_or_create``; at ``submit`` the rejection is
-    mapped to ``Ack(disposition=NOT_FOUND)`` (session-control.md §2.2 "no
-    information leak"; tenancy-principal.md's own §A.4 note and §5 agree).
-  - §A.1 ``submit(root_session_id, command, *, principal=None)``: the claimant
+    mapped to ``Ack(disposition=NOT_FOUND)`` ("no information leak").
+  - ``submit(root_session_id, command, *, principal=None)``: the claimant
     identity rides the MANAGER-level submit only. RECONCILED (2026-06-10,
-    maintainer-ratified; tenancy §A.1 amended): session-control.md §2.2 pins
-    ``AgentRuntime.submit(self, command)`` with NO principal param (§6 bans
-    arity-inspection compat) — at Rung 1 the manager's session-addressing
-    policy check is the reply-auth gate, and the per-call claimant seam on
-    ``AwaitTable.resolve(principal=, policy=)`` stays available at the cid
-    layer (specced in the await file).
-  - §6 migration: the legacy 1-arg factory is REMOVED — the 2-arg factory is
+    maintainer-ratified): ``AgentRuntime.submit(self, command)`` takes
+    NO principal param (arity-inspection compat is banned) — at Rung 1 the
+    manager's session-addressing policy check is the reply-auth gate, and
+    the per-call claimant seam on ``AwaitTable.resolve(principal=, policy=)``
+    stays available at the cid layer (specced in the await file).
+  - Migration: the legacy 1-arg factory is REMOVED — the 2-arg factory is
     the only shape this suite constructs.
 
 ``SessionManager`` lifecycle (eviction, residency caps, status) belongs to the
@@ -50,14 +48,14 @@ class _FakeAgent:
         self._initialized = True
 
     async def submit(self, command) -> Ack:
-        # session-control.md §2.2 (RECONCILED): agent.submit takes the command
+        # RECONCILED: agent.submit takes the command
         # only — the manager never forwards a principal kwarg into it.
         self.submitted.append(command)
         return Ack(seq=len(self.submitted), disposition=Disposition.RESOLVED)
 
 
 class _RecordingFactory:
-    """2-arg AgentFactory (§A.1) that records every build call."""
+    """2-arg AgentFactory that records every build call."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, SessionPrincipal]] = []
@@ -81,7 +79,7 @@ class _DenyAllPolicy:
         return False
 
 
-# ─── Factory threading (§A.1) ────────────────────────────────────────
+# ─── Factory threading ───────────────────────────────────────────────
 
 
 async def test_factory_receives_root_id_and_supplied_principal():
@@ -111,7 +109,7 @@ async def test_factory_not_rebuilt_for_resident_session():
     assert len(factory.calls) == 1
 
 
-# ─── Resident-session attach auth (§A.1, R9 session layer) ───────────
+# ─── Resident-session attach auth (session layer) ────────────────────
 
 
 async def test_attach_with_matching_principal_returns_resident_agent():
@@ -122,7 +120,7 @@ async def test_attach_with_matching_principal_returns_resident_agent():
 
 
 async def test_attach_with_mismatched_principal_raises_session_not_found():
-    # R9: a hijack attempt surfaces as NOT-FOUND, never "owned by someone else".
+    # A hijack attempt surfaces as NOT-FOUND, never "owned by someone else".
     mgr = SessionManager(_RecordingFactory())
     await mgr.get_or_create("root-1", OWNER)
     with pytest.raises(SessionNotFound):
@@ -145,12 +143,11 @@ async def test_attach_to_anonymous_session_allows_any_claimant():
 
 
 async def test_attach_without_principal_is_checked_as_anonymous_claimant():
-    # ADJUDICATED: session-control.md §2.5 owns the attach check (tenancy's
-    # own Wiring(I1) note: "the session subsystem owns that ctor and the
-    # get_or_create attach check") and pins it UNCONDITIONAL — a None
+    # ADJUDICATED: the session subsystem owns that ctor and the
+    # get_or_create attach check, and pins it UNCONDITIONAL — a None
     # claimant is consulted as anonymous, never silently waved through.
-    # (tenancy §A.1's `if principal is not None and ...` pseudocode was the
-    # stale draft: skip-on-None would be auth bypass by omission.)
+    # (Skip-on-None, i.e. an `if principal is not None and ...` guard, would be
+    # auth bypass by omission.)
     class _RecordingAllowPolicy:
         def __init__(self) -> None:
             self.calls: list[tuple[object, object]] = []
@@ -176,7 +173,7 @@ async def test_attach_without_principal_is_checked_as_anonymous_claimant():
         await strict.get_or_create("root-2")
 
 
-# ─── I1: the ONE ctor-injected policy ────────────────────────────────
+# ─── The ONE ctor-injected policy ────────────────────────────────────
 
 
 async def test_default_policy_is_strict_scope():
@@ -218,13 +215,13 @@ async def test_injected_deny_policy_rejects_even_the_exact_owner():
         await mgr.get_or_create("root-1", OWNER)
 
 
-# ─── submit(..., principal=) threading (§A.1) ────────────────────────
+# ─── submit(..., principal=) threading ───────────────────────────────
 
 
 async def test_submit_delivers_the_command_to_the_resident_agent():
-    # §A.1 (RECONCILED — see module docstring): the claimant rides
+    # (RECONCILED — see module docstring): the claimant rides
     # submit(..., principal=) at the MANAGER layer only; agent.submit receives
-    # the bare command (session-control §2.2). claimant→AwaitTable.resolve
+    # the bare command. claimant→AwaitTable.resolve
     # threading is asserted at the cid layer in the await suite instead.
     factory = _RecordingFactory()
     mgr = SessionManager(factory)
@@ -236,9 +233,9 @@ async def test_submit_delivers_the_command_to_the_resident_agent():
 
 
 async def test_submit_with_mismatched_principal_returns_not_found_ack():
-    # R9 session layer: the addressing check fires BEFORE any cid-level auth —
-    # submit maps the rejection to Ack(disposition=NOT_FOUND) (session-control
-    # §2.2; tenancy §A.4 note + §5 agree — only get_or_create raises). The
+    # Session layer: the addressing check fires BEFORE any cid-level auth —
+    # submit maps the rejection to Ack(disposition=NOT_FOUND) (only
+    # get_or_create raises). The
     # intruder learns nothing about the session, and the agent sees nothing.
     factory = _RecordingFactory()
     mgr = SessionManager(factory)

@@ -2,7 +2,7 @@
 
 Cross-session knowledge stores that operate at run boundaries only. Independent of
 context compaction. The store contract is a ``@runtime_checkable`` Protocol
-(``MemoryStore``); registration is an **open registry** (X3 fix) so consumers add
+(``MemoryStore``); registration is an **open registry** so consumers add
 custom stores without editing library source.
 
 Usage::
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class _StoreRegistration:
-    """Private backing record: the store class plus its O13 ``strict`` flag.
+    """Private backing record: the store class plus its ``strict`` flag.
 
     ``strict`` flips a ``retrieve()`` failure from best-effort swallow+log to
     turn-fatal. It is recorded here at registration; the runtime call site reads it.
@@ -57,7 +57,7 @@ def register_memory_store(
 ) -> Any:
     """Register a ``MemoryStore`` (Protocol-conforming) under ``name``.
 
-    Usable as a decorator or imperatively. ``strict=False`` (O13, default):
+    Usable as a decorator or imperatively. ``strict=False`` (default):
     ``retrieve()`` failures are swallowed+logged. ``strict=True``: a ``retrieve()``
     failure is turn-fatal. ``update()`` is never turn-fatal regardless of ``strict``.
 

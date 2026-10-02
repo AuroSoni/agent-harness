@@ -1,6 +1,6 @@
 """Phase 1 — submit() three-plane routing + friendly wrappers.
 
-GF-P6G3: plane-1 submits auto-kick the actor, so the fixture stubs the
+Plane-1 submits auto-kick the actor, so the fixture stubs the
 provider — an auto-driven turn must never reach the network in a unit test.
 """
 import pytest
@@ -39,7 +39,7 @@ async def test_user_message_accepted_and_enqueued(agent):
 
 
 async def test_mailbox_backpressure_rejects(agent):
-    # session-control.md SS2.3: the bounded plane-1 mailbox is fixed at
+    # The bounded plane-1 mailbox is fixed at
     # construction (AgentRuntime owns it) -- swap the instance to shrink it.
     agent._mailbox = Mailbox(capacity=1)
     a1 = await agent.submit(UserMessage(message=Message.user("a")))
@@ -55,8 +55,8 @@ async def test_tool_reply_unknown_cid_is_stale(agent):
 
 
 async def test_abort_idle_returns_not_running_and_wrapper_returns_result(agent):
-    # session-control.md SS2.4: submit(Abort()) with nothing in flight returns
-    # a typed NOT_RUNNING WITHOUT running the teardown (closes A10).
+    # submit(Abort()) with nothing in flight returns
+    # a typed NOT_RUNNING WITHOUT running the teardown.
     ack = await agent.submit(Abort())
     assert ack.disposition is Disposition.NOT_RUNNING
     result = await agent.abort()  # back-compat wrapper
@@ -78,5 +78,5 @@ async def test_seq_increments_and_commands_audited(agent):
     assert snap[0].kind == "UserMessage"
     assert snap[0].disposition == "accepted"
     assert snap[1].kind == "Abort"
-    # SS2.4: with a queued (not in-flight) message the idle Abort is typed.
+    # With a queued (not in-flight) message the idle Abort is typed.
     assert snap[1].disposition == "not_running"

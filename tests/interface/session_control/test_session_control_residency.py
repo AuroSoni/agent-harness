@@ -1,10 +1,10 @@
 """``SessionManager`` residency: get_or_create, the principal-aware factory, atomic build.
 
-Covers session-control.md §2.2 (constructor defaults, ``AgentFactory`` two-arg shape,
-``SessionEntry.principal``, atomic get-or-create, RAM-hit residency, introspection)
-and §6 migration row "single-arg agent factory" (arity detection is an ergonomic
-convenience, kept). Resolves smells A5 (no per-request cold-load) and X7 (one
-assembly path).
+Covers constructor defaults, ``AgentFactory`` two-arg shape,
+``SessionEntry.principal``, atomic get-or-create, RAM-hit residency, introspection,
+and the "single-arg agent factory" migration (arity detection is an ergonomic
+convenience, kept). Resolves the smells "no per-request cold-load" and "one
+assembly path".
 
 The agent the factory returns is a collaborator fake (``FakeAgentRuntime``); the
 type under test is the real ``SessionManager``.
@@ -29,13 +29,13 @@ class _Principal:
 
 
 def test_constructor_defaults_and_keyword_only():
-    """§2.2: __init__(build_agent, *, max_resident=128, idle_ttl_s=900.0, principal_policy=...)."""
+    """__init__(build_agent, *, max_resident=128, idle_ttl_s=900.0, principal_policy=...)."""
     params = inspect.signature(SessionManager.__init__).parameters
     assert params["max_resident"].default == 128
     assert params["max_resident"].kind is inspect.Parameter.KEYWORD_ONLY
     assert params["idle_ttl_s"].default == 900.0
     assert params["idle_ttl_s"].kind is inspect.Parameter.KEYWORD_ONLY
-    # §I1: the policy knob exists and is keyword-only (its default type is pinned
+    # The policy knob exists and is keyword-only (its default type is pinned
     # in test_session_control_principal_policy.py).
     assert params["principal_policy"].kind is inspect.Parameter.KEYWORD_ONLY
 
@@ -50,7 +50,7 @@ async def test_get_or_create_returns_factory_built_agent():
 
 
 async def test_resident_hit_builds_exactly_once():
-    """A5: the second call is a RAM hit — same object, no rebuild."""
+    """The second call is a RAM hit — same object, no rebuild."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
     first = await manager.get_or_create("sid-1")
@@ -60,7 +60,7 @@ async def test_resident_hit_builds_exactly_once():
 
 
 async def test_factory_receives_id_and_principal():
-    """§2.2: AgentFactory is Callable[[str, SessionPrincipal | None], AgentRuntime]."""
+    """AgentFactory is Callable[[str, SessionPrincipal | None], AgentRuntime]."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
     principal = _Principal("alice")
@@ -69,7 +69,7 @@ async def test_factory_receives_id_and_principal():
 
 
 async def test_single_arg_factory_still_accepted():
-    """§6: arity detection — a Callable[[str], AgentRuntime] is called with just the id."""
+    """Arity detection — a Callable[[str], AgentRuntime] is called with just the id."""
     built: list[FakeAgentRuntime] = []
 
     def one_arg_factory(root_session_id: str) -> FakeAgentRuntime:
@@ -84,7 +84,7 @@ async def test_single_arg_factory_still_accepted():
 
 
 async def test_async_factory_is_awaited():
-    """§2.2: the factory may return an Awaitable[AgentRuntime]."""
+    """The factory may return an Awaitable[AgentRuntime]."""
     built: list[FakeAgentRuntime] = []
 
     async def async_factory(root_session_id: str, principal=None) -> FakeAgentRuntime:
@@ -99,7 +99,7 @@ async def test_async_factory_is_awaited():
 
 
 async def test_concurrent_get_or_create_shares_one_build():
-    """§2.2 ATOMIC: concurrent callers for the same id share one build (no double-create)."""
+    """ATOMIC: concurrent callers for the same id share one build (no double-create)."""
     built: list[FakeAgentRuntime] = []
 
     async def slow_factory(root_session_id: str, principal=None) -> FakeAgentRuntime:
@@ -150,7 +150,7 @@ def test_is_resident_false_for_unknown_id():
 
 
 def test_session_entry_carries_principal():
-    """§2.2: SessionEntry{agent, principal, last_active} — principal is a first-class field."""
+    """SessionEntry{agent, principal, last_active} — principal is a first-class field."""
     agent = FakeAgentRuntime("sid-e")
     principal = _Principal("owner")
     entry = SessionEntry(agent=agent, principal=principal, last_active=12.5)
@@ -160,7 +160,7 @@ def test_session_entry_carries_principal():
 
 
 def test_agent_factory_alias_is_the_two_arg_principal_aware_callable():
-    """§2.2: AgentFactory = Callable[[str, SessionPrincipal | None],
+    """AgentFactory = Callable[[str, SessionPrincipal | None],
     Union[AgentRuntime, Awaitable[AgentRuntime]]] — two parameters (id then an
     optional principal) and a sync-or-async return. (The export itself is
     pinned by this module's top-level import.)"""

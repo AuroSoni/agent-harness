@@ -1,4 +1,4 @@
-"""In-process fakes for the MCP interface specs (mcp.md §11).
+"""In-process fakes for the MCP interface specs.
 
 Three tiers, no sockets, no subprocesses:
 

@@ -1,6 +1,6 @@
 """ReadTodosTool for reading the current todo list.
 
-Migrated to the template-method ``run()`` authoring style (tools.md §2.2).
+Migrated to the template-method ``run()`` authoring style.
 """
 from __future__ import annotations
 

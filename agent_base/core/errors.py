@@ -1,11 +1,11 @@
-"""The SINGLE typed error taxonomy (core.md §2.4 — D3 / R8 / O6).
+"""The SINGLE typed error taxonomy.
 
 One exception hierarchy in core, mapped to a stable :class:`ErrorCode`,
-projected into the contract's ``ErrorReport`` body **and** the streaming
+projected into the ``ErrorReport`` body **and** the streaming
 ``ErrorDelta``. The loop classifies once via :func:`classify_provider_error`;
 streaming and consumers read the typed ``code``, never ``e.body[...]``.
 
-O6 trims :class:`ErrorCode` to exactly 8 members. The dropped codes
+:class:`ErrorCode` is trimmed to exactly 8 members. The dropped codes
 (``PROVIDER_BAD_REQUEST``, ``PROVIDER_AUTH``, ``AUTH``, ``VALIDATION``)
 collapse into ``PROVIDER_STATUS`` with the precise status/kind carried in
 ``details``/``native_code``; ``CREDITS_EXHAUSTED`` is consumer-side and is
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 class ErrorCode(str, Enum):
-    """The single, stable error vocabulary (O6 — exactly 8 members).
+    """The single, stable error vocabulary (exactly 8 members).
 
     Streaming (``ErrorDelta.code``) and providers (``ProviderError`` → map)
     import this; there is exactly ONE public taxonomy.
@@ -58,10 +58,10 @@ class AgentError(Exception):
         # Make the exception render usefully when raised/logged.
         super().__init__(self.message or self.code.value)
 
-    # --- the two projections that kill D3 ---
+    # --- the two projections ---
 
     def to_error_report(self) -> "ErrorReport":
-        """Project onto the contract §3 ``ErrorReport`` MetaBody (R2 home:
+        """Project onto the ``ErrorReport`` MetaBody (home:
         ``agent_base.streaming.meta``)."""
         from agent_base.streaming.meta import ErrorReport
 
@@ -73,11 +73,11 @@ class AgentError(Exception):
         )
 
     def to_error_delta(self, *, agent_uuid: str) -> "ErrorDelta":
-        """Project onto the streaming terminal ``ErrorDelta`` frame (contract §1.4).
+        """Project onto the streaming terminal ``ErrorDelta`` frame.
 
         Streaming owns the wire type (typed ``code``/``retriable``/``terminal``
         fields; ``error_payload`` is its flat projection). Core's payload
-        contract (§2.4) requires ``retriable``/``native_code``/``details`` in
+        contract requires ``retriable``/``native_code``/``details`` in
         that projection, so they ride in the frame's ``details`` mapping.
         """
         from agent_base.streaming.types import ErrorDelta
@@ -118,7 +118,7 @@ class RateLimited(AgentError):
 
 class ContextOverflow(AgentError):
     """``ErrorCode.CONTEXT_OVERFLOW`` — also raised when an overflow
-    compaction is vetoed by ``before_compact`` (I10)."""
+    compaction is vetoed by ``before_compact``."""
 
     def __init__(self, message: str = "The context window overflowed.", **kw: Any) -> None:
         super().__init__(code=ErrorCode.CONTEXT_OVERFLOW, message=message, **kw)
@@ -130,7 +130,7 @@ class ToolFailed(AgentError):
 
 
 class ProviderStatus(AgentError):
-    """(O6) Carries the collapsed PROVIDER_BAD_REQUEST/PROVIDER_AUTH/etc. —
+    """Carries the collapsed PROVIDER_BAD_REQUEST/PROVIDER_AUTH/etc. —
     the precise provider detail lives in ``native_code``/``details``."""
 
     def __init__(
@@ -149,7 +149,7 @@ class ProviderStatus(AgentError):
 
 # Provider error-body "type" values → typed AgentError factories. The duck-typed
 # e.body["error"]["type"] shape is the Anthropic-style wire body, but nothing
-# here imports a provider SDK (the whole point of D3).
+# here imports a provider SDK.
 _OVERLOADED_TYPES = {"overloaded_error", "overloaded"}
 _RATE_LIMIT_TYPES = {"rate_limit_error", "rate_limited"}
 _TIMEOUT_TYPES = {"timeout_error", "request_timeout"}
@@ -173,7 +173,7 @@ def classify_provider_error(exc: BaseException) -> AgentError:
     The ONE place that inspects ``e.body['error']['type']`` / status —
     consumers never do this again.
 
-    R8: providers MAY classify internally, but the runtime edge turns a
+    Providers MAY classify internally, but the runtime edge turns a
     provider failure into ``ErrorReport(code=ErrorCode…)`` / ``ErrorDelta``.
     There is exactly ONE public taxonomy: :class:`ErrorCode`.
     """
@@ -196,7 +196,7 @@ def classify_provider_error(exc: BaseException) -> AgentError:
                 native_code=err_type,
             )
         # Any other provider-reported error type collapses into PROVIDER_STATUS
-        # with the raw type carried as native_code (O6).
+        # with the raw type carried as native_code.
         return ProviderStatus(native_code=err_type)
 
     status = getattr(exc, "status_code", None)

@@ -1,10 +1,10 @@
 """Phase 2 — await_external parks on the AwaitTable, wakes on reply, aborts on cancel.
 
-UPDATED (2026-06-10, P-A lift): the agent now derives ``await_external`` from
+UPDATED (2026-06-10): the agent now derives ``await_external`` from
 ``AgentRuntime`` — keyword-only ``(cid, tool_use_ids, outbound, reason, ctx)``
-returning a ``ResumeOutcome`` (relay-await.md §2.2 / AMENDMENTS B3); the legacy
-``(classification, queue, stream_formatter)`` surface is DELETED (R30/G0) and
-the only await frame is ``AwaitInput`` via ``ctx.emit`` (B5).  Loop bookkeeping
+returning a ``ResumeOutcome``; the legacy
+``(classification, queue, stream_formatter)`` surface is DELETED and
+the only await frame is ``AwaitInput`` via ``ctx.emit``.  Loop bookkeeping
 (``_phase`` / ``_abort_completion``) moved to the loop's relay branch and is no
 longer asserted here.
 """
@@ -111,7 +111,7 @@ async def test_await_external_aborts_on_cancel(agent, fresh_table):
     assert outcome.status == "aborted"
     assert outcome.results == []
     assert fresh_table.owner_of(cid) is None
-    # §6 nested repair: the cancelled node closed its own pending tool_use.
+    # Nested repair: the cancelled node closed its own pending tool_use.
     assert agent.agent_config.pending_relay is None
 
 

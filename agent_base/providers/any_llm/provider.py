@@ -22,7 +22,7 @@ Implementation notes bound by this interface:
 - any-llm exposes no retry mechanism (its docs document none and the
   ``acompletion`` signature carries no retry params) — ``generate``/
   ``generate_stream`` must wrap the call in backoff driven by
-  ``self.retry_policy`` (O12c: the runtime threads no retry scalars).
+  ``self.retry_policy`` (the runtime threads no retry scalars).
 - any-llm has no top-level ``timeout`` param — timeouts ride
   ``client_args={"timeout": ...}``.
 - Unified exceptions (``any_llm.AnyLLMError`` et al.) are OPT-IN via the
@@ -109,7 +109,7 @@ class AnyLLMProvider(Provider):
         return DEFAULT_MODEL
 
     def make_llm_config(self, loaded: "dict | LLMConfig | None") -> "AnyLLMConfig":
-        """Land the native :class:`AnyLLMConfig` (O12b).
+        """Land the native :class:`AnyLLMConfig`.
 
         Coercion contract (mirror litellm):
             - ``None``         → ``AnyLLMConfig()``
@@ -226,7 +226,7 @@ class AnyLLMProvider(Provider):
         """Map any exception from the any-llm call into a typed
         :class:`ProviderError` over the 8-member ``ErrorCode``.
 
-        Classification contract (plain if/elif, O5):
+        Classification contract (plain if/elif):
             - any-llm unified hierarchy (present whether or not
               ``ANY_LLM_UNIFIED_EXCEPTIONS`` is enabled at runtime, so match
               it first): ``RateLimitError → RATE_LIMITED (retriable)``,
@@ -235,7 +235,7 @@ class AnyLLMProvider(Provider):
               InvalidRequestError whose message mentions the context window
               ("context window" / "context length" / "too many tokens" /
               HTTP 413) → ``CONTEXT_OVERFLOW`` (so the runtime can compact
-              and retry, I10); any-llm ``ProviderError`` (aliased on import)
+              and retry); any-llm ``ProviderError`` (aliased on import)
               → ``PROVIDER_STATUS``, retriable iff 5xx.
             - When unified exceptions are OFF, the raw underlying-SDK
               exception surfaces (``openai.*`` / ``anthropic.*`` / httpx):
@@ -254,7 +254,7 @@ class AnyLLMProvider(Provider):
     # -- chain-repair primitives -------------------------------------------
 
     def sanitize_chain(self, messages: list["Message"]) -> list["Message"]:
-        """R18a shared default — providers never diverge on chain repair."""
+        """Shared default — providers never diverge on chain repair."""
         return ensure_chain_validity(messages)
 
     def plan_stream_abort(self, turn: ProviderTurn) -> ChainPatch:
@@ -276,4 +276,4 @@ class AnyLLMProvider(Provider):
         raise NotImplementedError
 
     # collect_api_files: NOT overridden — inherits the Protocol default
-    # (`return []`).  any-llm hosts no downloadable artifacts (R31).
+    # (`return []`).  any-llm hosts no downloadable artifacts.

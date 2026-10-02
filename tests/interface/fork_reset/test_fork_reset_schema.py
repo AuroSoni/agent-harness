@@ -1,12 +1,12 @@
-"""Red-suite specs — fork-reset: the ``agent_checkpoints`` DDL + v4->v5 migration.
+"""Interface specs — fork-reset: the ``agent_checkpoints`` DDL + v4->v5 migration.
 
 Covers:
-- interface_plan/subsystems/storage.md (schema) + SPEC §3.1 / §4 criterion #8.
+- mental_model/subsystems/storage.md (schema).
 - ``LIBRARY_SCHEMA_VERSION`` bumped to 5 with an idempotent ``Migration(4, 5)``
   that creates ``agent_checkpoints`` AND adds the ``conversation_history.archived``
   flag; the fresh-create DDL (registry) is structurally identical to the
   migration's hand-written CREATE TABLE (so a fresh DB and a v4->v5-migrated DB
-  converge — criterion #8). Driven through the same fake-connection harness the
+  converge). Driven through the same fake-connection harness the
   rest of the schema suite uses (no live Postgres needed).
 """
 from __future__ import annotations
@@ -90,7 +90,7 @@ def test_migration_4_to_5_creates_checkpoints_and_archives_conversation():
     assert "IF NOT EXISTS" in joined.upper()
 
 
-# ── fresh-create vs migration parity (criterion #8) ─────────────────────────
+# ── fresh-create vs migration parity ────────────────────────────────────────
 
 
 async def test_fresh_create_emits_checkpoint_table():
@@ -114,7 +114,7 @@ async def test_migration_path_emits_checkpoint_table_when_at_v4():
 
 
 async def test_fresh_create_ddl_matches_migration_ddl():
-    # criterion #8 — a fresh DB and a v4->v5-migrated DB produce identical
+    # A fresh DB and a v4->v5-migrated DB produce identical
     # agent_checkpoints columns.
     fresh = _FakeConn()                                 # version 0
     await PgCheckpointAdapterBase(_FakePool(fresh)).ensure_schema()

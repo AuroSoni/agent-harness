@@ -1,15 +1,15 @@
-"""Canonical serializable value types — pricing-cost §2.1 (fixes E10 cost half).
+"""Canonical serializable value types.
 
 Covers:
-  - `Usage.__add__` (O5: field-wise sum; raw_usage dropped on add).
-  - `Usage.totals_dict()` (O5: to_dict() MINUS raw_usage — the stable X8 keys + `_v` stamp).
-  - `CostBreakdown` at its canonical home `agent_base/core/cost.py` (R11):
+  - `Usage.__add__` (field-wise sum; raw_usage dropped on add).
+  - `Usage.totals_dict()` (to_dict() MINUS raw_usage — the stable keys + `_v` stamp).
+  - `CostBreakdown` at its canonical home `agent_base/core/cost.py`:
     constructor defaults (`currency="USD"`, `run_id=None`, empty `breakdown`),
-    `to_dict()` / `from_dict()` stable wire shape (X8 key contract + `_v` stamp),
+    `to_dict()` / `from_dict()` stable wire shape (key contract + `_v` stamp),
     and pricing-owned `__add__` accumulation (run_id promotion, rounding, key union).
-  - `CORE_SCHEMA_VERSION` is the single entity-wire version stamp (R12), under `_v`.
+  - `CORE_SCHEMA_VERSION` is the single entity-wire version stamp, under `_v`.
 
-Per AMENDMENTS O5 the `UsageTotals` type is DELETED — exercised in the deletions file.
+The `UsageTotals` type is DELETED — exercised in the deletions file.
 `Usage` is core-owned (`agent_base.core.messages`); pricing owns the `__add__`
 accumulation semantics. `CostBreakdown` is core-owned at `agent_base.core.cost`;
 pricing owns the `__add__` accumulation + `run_id` promotion.
@@ -21,7 +21,7 @@ from agent_base.core.serializable import CORE_SCHEMA_VERSION
 
 
 # ---------------------------------------------------------------------------
-# Usage.__add__ (O5)
+# Usage.__add__
 # ---------------------------------------------------------------------------
 
 
@@ -53,12 +53,12 @@ def test_usage_add_drops_raw_usage():
     a = Usage(input_tokens=1, raw_usage={"service_tier": "batch"})
     b = Usage(input_tokens=2, raw_usage={"speed": "fast"})
     total = a + b
-    # O5: raw_usage is dropped on add (set to None).
+    # raw_usage is dropped on add (set to None).
     assert total.raw_usage is None
 
 
 def test_usage_add_treats_none_cache_fields_as_zero():
-    # Per the spec's __add__ the cache/thinking fields coalesce None -> 0.
+    # In __add__ the cache/thinking fields coalesce None -> 0.
     a = Usage(input_tokens=5, cache_write_tokens=None, cache_read_tokens=None, thinking_tokens=None)
     b = Usage(input_tokens=5, cache_write_tokens=4, cache_read_tokens=None, thinking_tokens=2)
     total = a + b
@@ -86,7 +86,7 @@ def test_usage_add_identity_with_empty_usage():
 
 
 # ---------------------------------------------------------------------------
-# Usage.totals_dict (O5)
+# Usage.totals_dict
 # ---------------------------------------------------------------------------
 
 
@@ -126,7 +126,7 @@ def test_usage_totals_dict_coalesces_none_cache_fields_to_zero():
 
 
 # ---------------------------------------------------------------------------
-# CostBreakdown constructor + defaults (R11 — core.cost home)
+# CostBreakdown constructor + defaults (core.cost home)
 # ---------------------------------------------------------------------------
 
 
@@ -144,7 +144,7 @@ def test_cost_breakdown_run_id_is_first_class_field():
 
 
 # ---------------------------------------------------------------------------
-# CostBreakdown.to_dict / from_dict — stable wire shape (X8 + R12)
+# CostBreakdown.to_dict / from_dict — stable wire shape
 # ---------------------------------------------------------------------------
 
 
@@ -204,7 +204,7 @@ def test_cost_breakdown_from_dict_handles_null_breakdown():
 
 
 # ---------------------------------------------------------------------------
-# CostBreakdown.__add__ — pricing-owned accumulation (R11)
+# CostBreakdown.__add__ — pricing-owned accumulation
 # ---------------------------------------------------------------------------
 
 

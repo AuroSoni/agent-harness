@@ -1,6 +1,6 @@
 """S3 configuration resolution — the ONE region/endpoint resolver.
 
-media-backend.md §2.4 (Fork H = Variant A, R14): S3 env-resolution
+S3 env-resolution
 (``_resolve_s3_region`` / ``_resolve_s3_endpoint``) is duplicated across the
 snapshot, skill-bundle, and media stores today. This module collapses all three
 into a single :class:`S3Settings` value type + :meth:`S3Settings.from_env`.

@@ -1,6 +1,6 @@
-"""record_turn is a first-class turn — persistence + run frames (GF-P5LG1).
+"""record_turn is a first-class turn — persistence + run frames.
 
-Covers the gap LG-1 contract: ``AgentRuntime.record_turn`` does not merely
+Covers the gap contract: ``AgentRuntime.record_turn`` does not merely
 fire the turn hooks + splice in-memory — it is a full turn:
 
 - (a) it ``checkpoint()``s the config at the turn boundary (context_messages
@@ -12,8 +12,8 @@ fire the turn hooks + splice in-memory — it is a full turn:
   ``conversation_log``), so scripted and live turns persist identically;
 - (c) it emits ``RunStarted`` (at turn start) and ``RunCompleted`` (after
   persistence) meta frames when a stream consumer is attached, and drops them
-  silently when none is (R21 lossy-by-policy);
-- settlement stays ABSENT (B6 amendment — a scripted turn has no provider
+  silently when none is (lossy-by-policy);
+- settlement stays ABSENT (a scripted turn has no provider
   usage). The return type/signature are unchanged.
 """
 from __future__ import annotations
@@ -229,7 +229,7 @@ async def test_run_frames_ride_on_a_directly_assigned_queue():
     assert "run_completed" in kinds
 
 
-# ── settlement stays absent (B6) ────────────────────────────────────────────
+# ── settlement stays absent ────────────────────────────────────────────
 
 
 async def test_record_turn_attaches_no_settlement():
@@ -237,7 +237,7 @@ async def test_record_turn_attaches_no_settlement():
     result = await agent.record_turn(
         Message.user("hi"), [TextContent(text="done")]
     )
-    # B6: a scripted turn has no provider usage — settlement is absent.
+    # A scripted turn has no provider usage — settlement is absent.
     assert getattr(result, "settlement", None) is None
 
 

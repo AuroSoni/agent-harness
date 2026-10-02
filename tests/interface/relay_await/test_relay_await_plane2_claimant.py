@@ -1,23 +1,22 @@
-"""Plane-2 ``submit(ToolReply)`` presents a claimant — GF-P8G3 (ratified D1).
+"""Plane-2 ``submit(ToolReply)`` presents a claimant.
 
-Covers interface_plan/subsystems/relay-await.md §2.2/§3.1 + the AMENDMENTS
-"Open-gap fixes (2026-06-12)" GF-P8G3 entry:
+Covers:
 
-  - **D1 — the runtime self-resolves as OWNER.** The plane-2 ``ToolReply``
+  - **The runtime self-resolves as OWNER.** The plane-2 ``ToolReply``
     dispatch passes the runtime's OWN ambient principal as the claimant:
     ``resolve(cid, results, principal=self.principal)``. The SessionManager
-    already ran the attach/ownership check before routing (M7:
-    ``agent.submit`` stays principal-free), so the runtime resolving a pause
+    already ran the attach/ownership check before routing
+    (``agent.submit`` stays principal-free), so the runtime resolving a pause
     on its own session is legitimate.
   - **The keystone interlock (failing-first).** With a NAMED principal on the
-    runtime (GF-P8G2) and the claimant pass-through reverted/absent, the
+    runtime and the claimant pass-through reverted/absent, the
     runtime's own reply is an anonymous claimant against a named owner —
-    ``REJECTED`` (R9), and the await stays parked FOREVER (the live consumer's
+    ``REJECTED``, and the await stays parked FOREVER (the live consumer's
     422 loop). The interlock spec below goes red if either half lands alone:
-    G2 without G3 fails ``test_keystone_interlock...``; G3's pass-through
-    without a claimant fails the same spec at the REJECTED ack.
+    A named principal without the pass-through fails ``test_keystone_interlock...``;
+    the pass-through without a claimant fails the same spec at the REJECTED ack.
   - **The pinned claimant matrix** (``StrictScopePolicy``, the per-call
-    default — tenancy §A.4):
+    default):
 
         owner            | claimant            | disposition
         -----------------|---------------------|------------
@@ -121,12 +120,12 @@ async def _until(predicate) -> None:
 
 
 async def test_keystone_interlock_named_runtime_resolves_its_own_pause(table):
-    # G2+G3 together: a runtime threaded a NAMED principal (the manager's
-    # set_principal path — GF-P8G2) parks an await; the plane-2 reply RESOLVES
-    # it. With G2 alone (claimant pass-through absent) this exact flow is the
+    # Both halves together: a runtime threaded a NAMED principal (the manager's
+    # set_principal path) parks an await; the plane-2 reply RESOLVES
+    # it. With the named principal alone (claimant pass-through absent) this exact flow is the
     # live-smoke regression: REJECTED, await parked forever, FE stuck on 422s.
     agent = _agent()
-    agent.set_principal(OWNER)                  # the G2 threading seam
+    agent.set_principal(OWNER)                  # the principal threading seam
     task = _park(agent)
     await _until(lambda: table.owner_of(CID) is not None)
     assert table.owner_of(CID).principal == OWNER   # named-owner record
@@ -140,9 +139,9 @@ async def test_keystone_interlock_named_runtime_resolves_its_own_pause(table):
 
 
 async def test_half_landed_failure_mode_bare_resolve_is_rejected(table):
-    # The OTHER half of the interlock: what plane 2 did BEFORE GF-P8G3 — a
+    # The OTHER half of the interlock: what plane 2 did BEFORE the fix — a
     # bare resolve with NO claimant — must be observably broken against a
-    # named-owner record: REJECTED (R9, never downgraded), the await stays
+    # named-owner record: REJECTED (never downgraded), the await stays
     # parked. Pinned so the pre-fix call shape can never come back green.
     agent = _agent(principal=OWNER)
     task = _park(agent)
@@ -155,15 +154,15 @@ async def test_half_landed_failure_mode_bare_resolve_is_rejected(table):
     from agent_base.await_table.types import AwaitState
     assert table.owner_of(CID).state is AwaitState.OPEN
 
-    # The fixed plane-2 path still rescues the same pause afterwards (§3.1:
-    # REJECTED is an ack, not an abort).
+    # The fixed plane-2 path still rescues the same pause afterwards
+    # (REJECTED is an ack, not an abort).
     ack = await agent.submit(ToolReply(cid=CID, results=[_tr()]))
     assert ack.disposition is Disposition.RESOLVED
     await asyncio.wait_for(task, timeout=5)
 
 
 async def test_plane2_presents_the_runtimes_own_principal(table):
-    # D1 mechanically: the claimant the plane-2 dispatch hands to resolve IS
+    # Mechanically: the claimant the plane-2 dispatch hands to resolve IS
     # the runtime's ambient principal object (self-resolve as owner).
     agent = _agent(principal=OWNER)
     task = _park(agent)
@@ -192,7 +191,7 @@ async def test_anonymous_runtime_plane2_still_resolves(table):
 
 
 async def test_await_opened_before_set_principal_keeps_its_stamp_and_resolves(table):
-    # GF-P8G2 documented semantics: awaits ALREADY open keep the principal
+    # Documented semantics: awaits ALREADY open keep the principal
     # they were stamped with; the new principal applies from the next open
     # onward. An anonymous-owner record (opened pre-threading) authorizes ANY
     # claimant under StrictScopePolicy — so the now-named runtime's plane-2
@@ -258,7 +257,7 @@ async def test_matrix_none_owner_any_claimant_resolves(table):
 
 async def test_matrix_anonymous_owner_named_claimant_resolves(table):
     # PINNED: the "opened before set_principal" stamp is an anonymous
-    # SessionPrincipal OBJECT (never None on a constructed runtime, §A.1) —
+    # SessionPrincipal OBJECT (never None on a constructed runtime) —
     # same rule: nothing to enforce, the named claimant resolves.
     await _open_with_owner(table, ANON)
     assert await table.resolve(CID, [_tr()], principal=OWNER) \
@@ -267,7 +266,7 @@ async def test_matrix_anonymous_owner_named_claimant_resolves(table):
 
 async def test_matrix_anonymous_owner_cross_tenant_claimant_resolves(table):
     # Corollary of the pinned rule — and the reason Rung-1 deployments that
-    # care about reply-auth must thread a NAMED principal (G2) before parking.
+    # care about reply-auth must thread a NAMED principal before parking.
     await _open_with_owner(table, ANON)
     assert await table.resolve(CID, [_tr()], principal=OTHER) \
         is Disposition.RESOLVED

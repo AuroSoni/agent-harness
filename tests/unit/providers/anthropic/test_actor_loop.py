@@ -1,6 +1,6 @@
 """Phase 4 — single-writer actor loop drains the mailbox + per-turn checkpoint.
 
-GF-P6G3: ``submit(UserMessage)`` now auto-kicks the actor (``ensure_actor``);
+``submit(UserMessage)`` now auto-kicks the actor (``ensure_actor``);
 the fixture stubs the provider so an auto-driven turn never reaches the
 network, and the new tests below pin the public drive surface at unit level.
 """
@@ -89,7 +89,7 @@ async def test_checkpoint_delegates_to_persist_state(agent):
     assert called == [True, False]
 
 
-# ── GF-P6G3: public drive surface (auto-kick + ensure_actor + wait_idle) ────
+# ── Public drive surface (auto-kick + ensure_actor + wait_idle) ─────────────
 
 
 async def test_submit_auto_kicks_the_actor(agent):

@@ -1,22 +1,21 @@
-"""Profile integration on the concrete loop — AMENDMENTS "Consumer-migration
-fixes (2026-06-11)" CM-G3 (consumer gaps P3-G3a–e) + the CM-G4 session seam.
+"""Profile integration on the concrete loop, plus the session seam.
 
 Covers:
 
-- CM-G3a / R20: ``initialize()`` re-applies the persisted ``active_profile``
+- ``initialize()`` re-applies the persisted ``active_profile``
   (persisted > ``on_session_start`` handler > ctor default) — on the base
   ``AgentRuntime`` AND on ``AnthropicAgent`` (live tool registry + prompt).
-- CM-G3b: ``ctx.switch_profile`` swaps the LIVE tool registry + system
+- ``ctx.switch_profile`` swaps the LIVE tool registry + system
   prompt, and ``initialize_run()`` no longer reverts the swap.
-- CM-G3c: ``Profile.tail`` feeds the render view (the
-  ``_select_tail_for_mode`` stub is deleted — G0).
-- CM-G3d: ``profiles=`` / ``default_profile=`` / ``hooks=`` ctor kwargs on
+- ``Profile.tail`` feeds the render view (the
+  ``_select_tail_for_mode`` stub is deleted).
+- ``profiles=`` / ``default_profile=`` / ``hooks=`` ctor kwargs on
   ``AnthropicAgent``; the boot profile seeds the registry.
-- CM-G3e: ``AgentConfig.active_profile`` is a REAL dataclass field that
+- ``AgentConfig.active_profile`` is a REAL dataclass field that
   round-trips through the storage codec (see also the storage suites).
-- CM-G4: ``_make_session_context`` exists, builds a ``SessionContext`` with
-  the R20 handlers, and ``SessionManager`` reaches the session hooks +
-  fires the single initial ProfileChanged announce (§2.7 guarantee 4).
+- ``_make_session_context`` exists, builds a ``SessionContext`` with
+  the handlers, and ``SessionManager`` reaches the session hooks +
+  fires the single initial ProfileChanged announce.
 """
 from __future__ import annotations
 
@@ -66,7 +65,7 @@ PLAN = Profile(name="plan", tools=[plan_tool], system_prompt="PLAN PROMPT",
                tail="plan tail")
 
 
-# ── CM-G3e: AgentConfig.active_profile is a real field ──────────────────────
+# ── AgentConfig.active_profile is a real field ──────────────────────
 
 
 def test_agent_config_active_profile_is_a_dataclass_field():
@@ -75,7 +74,7 @@ def test_agent_config_active_profile_is_a_dataclass_field():
     assert AgentConfig(agent_uuid="a").active_profile is None
 
 
-# ── CM-G3a: R20 "persisted wins" on the base runtime (the consumer repro) ───
+# ── "persisted wins" on the base runtime (the consumer repro) ───
 
 
 async def test_runtime_cold_resume_restores_persisted_profile():
@@ -110,7 +109,7 @@ async def test_runtime_resume_without_persisted_profile_keeps_ctor_default():
     assert agent.agent_config.active_profile == "full"
 
 
-# ── CM-G3a+b on the CONCRETE agent: registry + prompt restored ───────────────
+# ── On the CONCRETE agent: registry + prompt restored ───────────────
 
 
 async def test_anthropic_agent_cold_resume_restores_registry_and_prompt():
@@ -123,15 +122,15 @@ async def test_anthropic_agent_cold_resume_restores_registry_and_prompt():
         config_adapter=adapter,
     )
     await first.initialize()
-    assert "full_tool" in first.tool_registry._tools  # boot profile seeded (G3d)
+    assert "full_tool" in first.tool_registry._tools  # boot profile seeded
 
-    # Switch live (the O7 path) and checkpoint — the column persists.
+    # Switch live and checkpoint — the column persists.
     await first._apply_profile_switch("plan", source="hook_switch")
     await first.checkpoint()
     assert "plan_tool" in first.tool_registry._tools
     assert "full_tool" not in first.tool_registry._tools
 
-    # Cold resume: a NEW agent over the same storage restores PLAN (R20).
+    # Cold resume: a NEW agent over the same storage restores PLAN.
     second = AnthropicAgent(
         system_prompt="AGENT DEFAULT",
         profiles=[FULL, PLAN],
@@ -159,7 +158,7 @@ async def test_initialize_run_does_not_revert_the_profile_prompt():
     from agent_base.core.messages import Message
 
     agent.initialize_run(Message.user("next run"))
-    # CM-G3b: the swap survives the next run's re-stamp.
+    # The swap survives the next run's re-stamp.
     assert agent.agent_config.system_prompt == "PLAN PROMPT"
     # And the tool schemas come from the swapped registry.
     assert [s.name for s in agent.agent_config.tool_schemas] == ["plan_tool"]
@@ -177,7 +176,7 @@ async def test_profile_with_none_prompt_inherits_the_agent_default():
     assert agent.agent_config.system_prompt == "AGENT DEFAULT"
 
 
-# ── CM-G3c: Profile.tail feeds the render view ───────────────────────────────
+# ── Profile.tail feeds the render view ───────────────────────────────
 
 
 async def test_profile_tail_feeds_the_render_view():
@@ -209,12 +208,12 @@ async def test_profile_tail_feeds_the_render_view():
 
 
 def test_select_tail_for_mode_stub_is_deleted():
-    # §2.7 guarantee 3 (G0): the override-only stub is GONE — tail comes
+    # The override-only stub is GONE — tail comes
     # from Profile.tail.
     assert not hasattr(AnthropicAgent, "_select_tail_for_mode")
 
 
-# ── CM-G4: _make_session_context + the R20 handlers ─────────────────────────
+# ── _make_session_context + the handlers ─────────────────────────
 
 
 def _make_runtime(**kw) -> AgentRuntime:
@@ -244,7 +243,7 @@ def test_session_handler_set_default_profile_applies_when_nothing_persisted():
 
 
 async def test_session_handler_is_ignored_when_persisted_profile_won():
-    # R20: persisted (restore) > handler (session_default) > ctor default.
+    # Persisted (restore) > handler (session_default) > ctor default.
     persisted = AgentConfig(agent_uuid="r20", active_profile="plan")
     agent = AgentRuntime(
         agent_uuid="r20",
@@ -287,8 +286,8 @@ async def test_session_manager_fires_session_start_and_initial_announce():
 
     kinds = [k for k, _ in observed]
     assert kinds == ["session_start", "profile_changed"]
-    # §2.7 guarantee 4: ONE initial announce, is_initial=True, with the
-    # R20-resolved source.
+    # ONE initial announce, is_initial=True, with the
+    # resolved source.
     name, source, is_initial = observed[1][1]
     assert name == "full"
     assert source == "session_default"

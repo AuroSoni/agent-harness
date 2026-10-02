@@ -1,13 +1,13 @@
 """``AwaitTable.cancel(cid, *, principal=None)`` — close ONE parked await.
 
-Covers interface_plan/subsystems/relay-await.md §2.1 + AMENDMENTS §I6:
+Covers:
   - cancel closes exactly one record and cancels its future as an abort
     (the parked waiter wakes cancelled, i.e. the "aborted" ResumeOutcome path);
   - it is distinct from ``interrupt()``: sibling pauses on the same root stay
     open and the root generation is NOT bumped;
   - dispositions map to an Ack like ``resolve()``: unknown cid →
     ``IGNORED_STALE``; already resolved/closed → ``IGNORED_DUP``; principal
-    mismatch → ``REJECTED`` (same policy predicate as resolve — the doc pins
+    mismatch → ``REJECTED`` (same policy predicate as resolve — the signature is
     ``cancel(cid, *, principal=)`` with no per-call policy parameter, so the
     seam is exercised through the default ``StrictScopePolicy`` semantics:
     its anonymous-owner and anonymous-claimant rules discriminate the policy
@@ -96,7 +96,7 @@ async def test_resolve_after_cancel_never_wakes_the_turn():
 
 
 async def test_cancel_is_scoped_to_a_single_pause():
-    # §I6: cancel closes ONE record — distinct from interrupt(), which
+    # cancel closes ONE record — distinct from interrupt(), which
     # retires the WHOLE root. Siblings stay parked and resolvable.
     table = AwaitTable()
     await _open(table, cid="relay_a")
@@ -153,7 +153,7 @@ async def test_cancel_principal_is_keyword_only():
 
 async def test_anonymous_owner_pause_is_cancellable_by_any_principal():
     # The cancel auth is the POLICY's predicate, not a hard-coded scope
-    # comparison: StrictScopePolicy (tenancy §2.2) authorizes ANY claimant
+    # comparison: StrictScopePolicy authorizes ANY claimant
     # when the owner is unscoped ("an unscoped session: nothing to
     # enforce"). A hand-rolled ``owner.tenant == claimant.tenant`` check
     # inside cancel would wrongly REJECT this cross-tenant claimant.
@@ -173,7 +173,7 @@ async def test_anonymous_owner_pause_is_cancellable_by_any_principal():
 
 async def test_principal_free_cancel_of_an_owned_pause_is_rejected():
     # The other policy-vs-hardcoding discriminator: StrictScopePolicy
-    # (tenancy §2.2) returns False for a named owner and a None claimant —
+    # returns False for a named owner and a None claimant —
     # an anonymous caller cannot kill a scoped pause. The await stays parked.
     table = AwaitTable()
     join = await _open(table, principal=OWNER)

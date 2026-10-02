@@ -1,9 +1,9 @@
-"""Declarative agent profiles (DESIGN_CONTRACT §6).
+"""Declarative agent profiles.
 
 A :class:`Profile` is a named, declarative capability bundle:
 ``Profile{name, tools, frontend_tools, system_prompt, tail}``. The active
 profile is persisted in ``AgentConfig`` and auto-restored on resume; it is
-switched via ``ctx.switch_profile()`` (O7 — the ONE switch path).
+switched via ``ctx.switch_profile()`` (the ONE switch path).
 
 Consumer-specific FE payloads do NOT live here: ``Profile.ui_capabilities``
 was removed (2026-06-10 amendment) in favour of the ``on_profile_changed``

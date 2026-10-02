@@ -1,15 +1,15 @@
-"""settle_turn + PricingPolicy seam — pricing-cost §2.4 / §2.5.
+"""settle_turn + PricingPolicy seam.
 
 Covers:
   - `settle_turn(ctx, steps) -> TurnSettlement` at `agent_base/pricing/settlement.py`
-    (O14d: a MODULE FUNCTION — the `_Settler` class is dropped).
-  - It sums per-step `Message.usage` via `Usage.__add__` into `turn_usage` (O5).
+    (a MODULE FUNCTION — the `_Settler` class is dropped).
+  - It sums per-step `Message.usage` via `Usage.__add__` into `turn_usage`.
   - It populates identity fields from the ctx (agent_id/run_id/parent_agent_id/
     principal/model) and `step_count` from the steps.
-  - O16(b): when the policy implements `cost_for_turn`, settle_turn PREFERS it for
+  - When the policy implements `cost_for_turn`, settle_turn PREFERS it for
     the whole turn; otherwise it falls back to summing `cost_for_step` per step.
   - Unknown-model `cost_for_step` returning None contributes zero (not a crash).
-  - It returns a TURN-LEVEL settlement (O14d) — no cumulative computation here.
+  - It returns a TURN-LEVEL settlement — no cumulative computation here.
   - `PricingPolicy` Protocol shape: `cost_for_step` required, `cost_for_turn` optional.
   - `CsvPricingPolicy` DEFAULT: implements `cost_for_step` (delegating to the
     existing `calculate_step_cost`); has NO `cost_for_turn` (fallback path).
@@ -57,7 +57,7 @@ class StepOnlyPolicy:
 
 
 class TurnShapedPolicy:
-    """Implements BOTH — settle_turn must PREFER cost_for_turn (O16b)."""
+    """Implements BOTH — settle_turn must PREFER cost_for_turn."""
 
     def __init__(self):
         self.turn_calls = 0
@@ -81,7 +81,7 @@ class UnknownModelPolicy:
 
 class ModelRecordingPolicy:
     """Records the `model` arg per cost_for_step call — pins the per-step model
-    resolution rule (§2.4 L218: `policy.cost_for_step(m.usage, m.model or ctx.model)`).
+    resolution rule (`policy.cost_for_step(m.usage, m.model or ctx.model)`).
     Implements ONLY cost_for_step so settle_turn takes the per-step path."""
 
     def __init__(self):
@@ -135,7 +135,7 @@ def test_settle_turn_step_count_matches_steps():
 
 
 # ---------------------------------------------------------------------------
-# turn_usage summation (O5)
+# turn_usage summation
 # ---------------------------------------------------------------------------
 
 
@@ -187,7 +187,7 @@ def test_settle_turn_none_step_cost_contributes_zero():
 
 
 def test_settle_turn_resolves_per_step_model_with_ctx_fallback():
-    # §2.4 L218: each step is priced with `m.model or ctx.model` — the step's OWN
+    # Each step is priced with `m.model or ctx.model` — the step's OWN
     # model when present, falling back to ctx.model only when the step lacks one.
     # A regression that always passes ctx.model would mis-price mixed-model turns.
     policy = ModelRecordingPolicy()
@@ -201,7 +201,7 @@ def test_settle_turn_resolves_per_step_model_with_ctx_fallback():
 
 
 # ---------------------------------------------------------------------------
-# cost: O16(b) cost_for_turn preference
+# cost: cost_for_turn preference
 # ---------------------------------------------------------------------------
 
 
@@ -259,7 +259,7 @@ def test_pricing_policy_protocol_declares_cost_for_step():
 
 
 def test_pricing_policy_protocol_declares_cost_for_turn():
-    # O16(b) / §2.5: the Protocol ALSO declares the OPTIONAL turn-shaped method
+    # The Protocol ALSO declares the OPTIONAL turn-shaped method
     # cost_for_turn (settle_turn prefers it when a concrete policy implements it).
     # Pin its presence on the Protocol surface, mirroring the cost_for_step check.
     assert hasattr(PricingPolicy, "cost_for_turn")

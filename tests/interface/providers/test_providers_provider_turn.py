@@ -1,13 +1,12 @@
-"""Interface red-suite: ``ProviderTurn`` value type.
+"""Interface spec: ``ProviderTurn`` value type.
 
-Covers providers.md §2.1 (Provider-neutral return shapes) and the O12(a)/O12(d)
-amendments:
+Covers the Provider-neutral return shapes:
 - ``ProviderTurn`` is a frozen dataclass at ``agent_base.core.provider``.
 - Field set is exactly ``{message, was_cancelled, partial_error, stream_bookkeeping}``
-  (O12a: ``completed_blocks`` / ``completed_tool_calls`` have LEFT the shared type).
+  (``completed_blocks`` / ``completed_tool_calls`` have LEFT the shared type).
 - Constructor defaults: ``was_cancelled=False``, ``partial_error=None``,
   ``stream_bookkeeping=None``.
-- O12(d): a cooperative mid-stream failure keeps partial content on ``message`` and
+- A cooperative mid-stream failure keeps partial content on ``message`` and
   sets ``partial_error`` (a ``ProviderError``); ``was_cancelled`` distinguishes the
   cooperative-abort sentinel.
 
@@ -39,7 +38,7 @@ def test_provider_turn_field_set_is_slimmed():
 
 def test_provider_turn_o12a_drops_completed_block_fields():
     names = {f.name for f in dataclasses.fields(ProviderTurn)}
-    # O12(a): these provider-specific fields left the shared type.
+    # These provider-specific fields left the shared type.
     assert "completed_blocks" not in names
     assert "completed_tool_calls" not in names
     assert "completed_block_indices" not in names
@@ -71,7 +70,7 @@ def test_provider_turn_cooperative_abort_sentinel():
 
 
 def test_provider_turn_carries_partial_error_with_partials_kept():
-    # O12(d): mid-stream failure — partials are preserved on message, partial_error set.
+    # Mid-stream failure — partials are preserved on message, partial_error set.
     partial = _assistant("partial output so far")
     perr = ProviderError(
         code=ErrorCode.PROVIDER_STATUS,

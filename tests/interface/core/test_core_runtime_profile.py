@@ -1,20 +1,20 @@
-"""Red-suite spec: AgentRuntime surface, declarative Profile, EndTurnContext.
+"""Interface spec: AgentRuntime surface, declarative Profile, EndTurnContext.
 
 Covers:
-  - core.md Fork E — the loop lives in ``AgentRuntime`` at
+  - The loop lives in ``AgentRuntime`` at
     ``agent_base/core/runtime.py`` (provider-agnostic).
-  - AMENDMENTS I7 — ``AgentRuntime.record_turn(user_message, assistant_blocks,
+  - ``AgentRuntime.record_turn(user_message, assistant_blocks,
     *, stop_reason="end_turn") -> AgentResult`` (signature contract; the full
     hook-chain drive is exercised once the loop ships — runtime construction
-    is not specified by the docs, so behavior is pinned at the signature).
-  - AMENDMENTS I3 — ``stream()`` ships at Rung 1 as a no-argument,
+    is not specified, so behavior is pinned at the signature).
+  - ``stream()`` ships at Rung 1 as a no-argument,
     single-subscriber read path (``run_stream(msg, queue, formatter)`` is
-    gone per G0; we spec the NEW surface only).
-  - DESIGN_CONTRACT §6 — declarative ``Profile{name, tools, frontend_tools,
+    gone; we spec the NEW surface only).
+  - Declarative ``Profile{name, tools, frontend_tools,
     system_prompt, tail}`` at ``agent_base.profiles`` (consumer FE payloads
     moved to the on_profile_changed hook — the field set is exactly the four
     capability fields plus name).
-  - AMENDMENTS B1 — ``EndTurnContext`` carries NO settlement field; billing
+  - ``EndTurnContext`` carries NO settlement field; billing
     subscribes via ``agent.on_usage_report(cb)`` (pricing_cost suite owns the
     delivery channel).
 """
@@ -32,7 +32,7 @@ from agent_base.profiles import Profile
 
 import pytest
 
-# ── AgentRuntime (Fork E, I7, I3) ───────────────────────────────────────────
+# ── AgentRuntime ───────────────────────────────────────────
 
 
 def test_agent_runtime_is_a_class():
@@ -61,7 +61,7 @@ def test_runtime_exposes_run_and_stream():
 
 
 def test_stream_takes_no_required_arguments():
-    # I3: Rung-1 stream() is a bare single-subscriber iterator — every
+    # Rung-1 stream() is a bare single-subscriber iterator — every
     # parameter beyond self is optional (replay's from_seq is Rung 2).
     sig = inspect.signature(AgentRuntime.stream)
     for name, param in sig.parameters.items():
@@ -74,7 +74,7 @@ def test_stream_takes_no_required_arguments():
         ), f"stream() must not require argument {name!r}"
 
 
-# ── Profile (contract §6) ───────────────────────────────────────────────────
+# ── Profile ───────────────────────────────────────────────────
 
 
 def test_profile_field_set_is_exactly_the_declarative_bundle():
@@ -123,7 +123,7 @@ def test_profile_carries_tool_callables():
     assert p.tail == "Answer tersely."
 
 
-# ── EndTurnContext (B1) ─────────────────────────────────────────────────────
+# ── EndTurnContext ─────────────────────────────────────────────────────
 
 
 class _FakeStorageHandles:
@@ -183,7 +183,7 @@ def test_end_turn_context_carries_the_turn_outcome_fields():
 
 
 def test_end_turn_context_has_no_settlement_field():
-    # B1 (maintainer overruled the add): cost-aware turn-end decisions are out
+    # Maintainer overruled the add: cost-aware turn-end decisions are out
     # of scope for on_turn_end — billing subscribes via agent.on_usage_report.
     names = {f.name for f in dataclasses.fields(EndTurnContext)}
     assert {

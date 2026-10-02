@@ -1,13 +1,13 @@
-"""Interface red-suite: ``MemoryStore`` Protocol + ``NoOpMemoryStore`` (memory subsystem).
+"""Interface spec: ``MemoryStore`` Protocol + ``NoOpMemoryStore`` (memory subsystem).
 
-Covers memory.md:
-  - §2.4 "The store contract (Protocol ONLY — O5/O13)": ``@runtime_checkable`` Protocol;
+Covers:
+  - "The store contract (Protocol ONLY)": ``@runtime_checkable`` Protocol;
     ``retrieve(ctx, user_message) -> MemoryContribution``; ``update(ctx, log, stop_reason)
     -> MemoryUpdate``; the BaseMemoryStore ABC is DELETED.
-  - §2.4 NoOpMemoryStore: shipped default, plain class, satisfies the Protocol structurally,
+  - NoOpMemoryStore: shipped default, plain class, satisfies the Protocol structurally,
     ``__init__(**kwargs)`` ignores kwargs, retrieve → empty MemoryContribution,
     update → MemoryUpdate(store_type="none").
-  - §2.6 method shapes (HookContext passed directly — O13; no bespoke context type).
+  - Method shapes (HookContext passed directly; no bespoke context type).
 
 Collaborators (NOT deep-tested here): ``HookContext`` (small in-file fake reading only the
 fields memory uses), ``Message`` (existing unchanged vocabulary), ``ConversationLog``
@@ -60,7 +60,7 @@ class _FakeConversationLog:
 # --- a structural store author (Protocol, no inheritance) -------------------
 
 class _StructuralStore:
-    """Satisfies MemoryStore structurally — no ABC inheritance (O5/O13)."""
+    """Satisfies MemoryStore structurally — no ABC inheritance."""
 
     async def retrieve(self, ctx: Any, user_message: Message) -> MemoryContribution:
         return MemoryContribution(blocks=[TextContent(text="hi")], placement="user_suffix")
@@ -72,7 +72,7 @@ class _StructuralStore:
 # --- tests ------------------------------------------------------------------
 
 def test_memory_store_is_runtime_checkable_protocol():
-    # §2.4: @runtime_checkable Protocol. A structural store passes isinstance.
+    # @runtime_checkable Protocol. A structural store passes isinstance.
     assert isinstance(_StructuralStore(), MemoryStore)
 
 
@@ -88,7 +88,7 @@ def test_plain_object_does_not_satisfy_protocol():
 
 
 def test_noop_store_is_not_an_abc_subclass_relationship():
-    # O5/O13: the BaseMemoryStore ABC is deleted; NoOp is a plain class. It conforms by
+    # The BaseMemoryStore ABC is deleted; NoOp is a plain class. It conforms by
     # structure, not by nominal inheritance — but it must NOT require subclassing an ABC.
     # Positive structural assertion of the deletion: NoOp is not an abc.ABC subclass and
     # carries no leftover abstractmethods, so direct instantiation can never raise the
@@ -104,7 +104,7 @@ def test_noop_store_is_not_an_abc_subclass_relationship():
 
 
 def test_noop_store_accepts_and_ignores_kwargs():
-    # §2.4: ``def __init__(self, **kwargs: Any) -> None``.
+    # ``def __init__(self, **kwargs: Any) -> None``.
     store = NoOpMemoryStore(index="anything", top_k=5)
     assert isinstance(store, NoOpMemoryStore)
 
@@ -126,7 +126,7 @@ async def test_noop_update_returns_none_store_type():
 
 
 async def test_retrieve_receives_hook_context_directly_with_principal():
-    # O13/§2.6: the store reads ctx.principal off the passed HookContext (no kwargs).
+    # The store reads ctx.principal off the passed HookContext (no kwargs).
     store = _StructuralStore()
     principal = _FakePrincipal(tenant="org-7", subject="user-9")
     ctx = _FakeHookContext(principal=principal)
@@ -146,14 +146,14 @@ async def test_update_receives_log_and_stop_reason():
 
 
 def test_retrieve_signature_is_ctx_and_user_message():
-    # O13: retrieve(ctx, user_message) — bespoke context types + **kwargs are gone.
+    # retrieve(ctx, user_message) — bespoke context types + **kwargs are gone.
     sig = inspect.signature(NoOpMemoryStore.retrieve)
     params = [p for p in sig.parameters if p != "self"]
     assert params == ["ctx", "user_message"]
 
 
 def test_update_signature_is_ctx_log_stop_reason():
-    # O13: update(ctx, log, stop_reason).
+    # update(ctx, log, stop_reason).
     sig = inspect.signature(NoOpMemoryStore.update)
     params = [p for p in sig.parameters if p != "self"]
     assert params == ["ctx", "log", "stop_reason"]

@@ -1,10 +1,10 @@
-"""Red-suite specs for media-backend §2.3 — canonical MediaMetadata + by-hash lookup.
+"""Interface specs for media-backend — canonical MediaMetadata + by-hash lookup.
 
-Covers media-backend.md §2.3: `MediaMetadata` gains the canonical `media_id`
+Covers: `MediaMetadata` gains the canonical `media_id`
 (no `file_id`), a `content_hash` field (blake3 hex), a canonical `to_dict()`, and
 a tolerant `from_dict()` that maps legacy `file_id`/`filename` spellings. Also the
-`MediaBackend.find_by_content_hash` counterpart used by dedupe (I13(a):
-default scope-filtered).
+`MediaBackend.find_by_content_hash` counterpart used by dedupe (default
+scope-filtered).
 
 Symbols under test (owned by media_backend):
   - agent_base.media_backend.MediaMetadata.content_hash / to_dict / from_dict
@@ -38,11 +38,11 @@ def _meta(**over) -> MediaMetadata:
     return MediaMetadata(**base)
 
 
-# ─── MediaMetadata canonical id + content_hash (§2.3) ─────────────────────
+# ─── MediaMetadata canonical id + content_hash ─────────────────────
 
 
 def test_media_metadata_has_canonical_media_id_no_file_id() -> None:
-    """§2.3: `media_id` is canonical; `file_id` is removed."""
+    """`media_id` is canonical; `file_id` is removed."""
     names = {f.name for f in dataclasses.fields(MediaMetadata)}
     assert "media_id" in names
     assert "file_id" not in names
@@ -65,7 +65,7 @@ def test_media_metadata_extras_defaults_to_empty_dict() -> None:
     assert meta.extras == {}
 
 
-# ─── canonical to_dict (§2.3 / contract §6) ───────────────────────────────
+# ─── canonical to_dict ───────────────────────────────
 
 
 def test_media_metadata_to_dict_includes_content_hash() -> None:
@@ -85,7 +85,7 @@ def test_media_metadata_to_dict_roundtrips_through_from_dict() -> None:
     assert restored.url == meta.url
 
 
-# ─── tolerant from_dict (§2.3) — the ONE place reconciliation lives ───────
+# ─── tolerant from_dict — the ONE place reconciliation lives ───────
 
 
 def test_from_dict_accepts_legacy_file_id_spelling() -> None:
@@ -149,7 +149,7 @@ def test_from_dict_missing_content_hash_is_none() -> None:
     assert meta.content_hash is None
 
 
-# ─── find_by_content_hash on the ABC (§2.3, I13(a)) ───────────────────────
+# ─── find_by_content_hash on the ABC ───────────────────────
 
 
 def test_find_by_content_hash_is_declared_on_abc() -> None:
@@ -157,9 +157,9 @@ def test_find_by_content_hash_is_declared_on_abc() -> None:
 
 
 def test_find_by_content_hash_is_abstract() -> None:
-    """§2.3 pins the contract: the default impl is backend-specific (S3 tag/index,
+    """Pins the contract: the default impl is backend-specific (S3 tag/index,
     local registry scan), so `find_by_content_hash` is an abstractmethod — unlike
-    the §2.1 projection methods which are explicitly concrete defaults. Backends
+    the projection methods which are explicitly concrete defaults. Backends
     MUST supply it; the in-suite fakes implement it for that reason."""
     assert "find_by_content_hash" in MediaBackend.__abstractmethods__
 
@@ -169,7 +169,7 @@ def test_find_by_content_hash_signature() -> None:
     params = sig.parameters
     assert "content_hash" in params
     assert "agent_uuid" in params
-    # I13(a): scope is keyword-only and defaults to None (today's single-tenant)
+    # Scope is keyword-only and defaults to None (today's single-tenant)
     assert params["scope"].kind == inspect.Parameter.KEYWORD_ONLY
     assert params["scope"].default is None
 
@@ -217,7 +217,7 @@ async def test_find_by_content_hash_single_tenant_uses_agent_uuid() -> None:
 
 
 async def test_find_by_content_hash_scope_filters_to_derived_namespace() -> None:
-    """I13(a): with a principal present the lookup only sees the tenant namespace."""
+    """With a principal present the lookup only sees the tenant namespace."""
     backend = _HashBackend()
     meta = _meta(content_hash="h2")
     backend.seed("org-1/member-1", "h2", meta)

@@ -1,13 +1,13 @@
-"""Red-suite spec: the canonical versioned-serialization convention.
+"""Interface spec: the canonical versioned-serialization convention.
 
-Covers interface_plan/subsystems/core.md:
-  - §2.1  agent_base/core/serializable.py — ``CORE_SCHEMA_VERSION``,
-          ``SCHEMA_VERSION_KEY``, ``schema_version_of`` (O15(c): one
+Covers:
+  - agent_base/core/serializable.py — ``CORE_SCHEMA_VERSION``,
+          ``SCHEMA_VERSION_KEY``, ``schema_version_of`` (one
           library-wide version, no per-entity ClassVars, no runtime-checkable
           ``Serializable`` Protocol — the convention is enforced by these tests).
-  - §2.1.1 (Usage half) — ``Usage.to_dict`` stamps ``_v`` via ``_stamp()`` and
-          ``Usage.from_dict`` tolerates the stamp (R12 single entity-wire axis).
-  - §2.1 unknown-key tolerance — "from_dict tolerates unknown keys" (additive
+  - Usage half — ``Usage.to_dict`` stamps ``_v`` via ``_stamp()`` and
+          ``Usage.from_dict`` tolerates the stamp (single entity-wire axis).
+  - Unknown-key tolerance — "from_dict tolerates unknown keys" (additive
           fields never bump the version): a strict-key-validating ``from_dict``
           violates the convention. Pinned on representative entities.
 
@@ -26,8 +26,8 @@ from agent_base.core.serializable import (
 
 
 def test_core_schema_version_is_the_single_entity_wire_version():
-    # O15(c)/R12: ONE library-wide integer version; the red-suite pins the
-    # initial value the doc ships with.
+    # ONE library-wide integer version; the suite pins the
+    # initial value it ships with.
     assert isinstance(CORE_SCHEMA_VERSION, int)
     assert CORE_SCHEMA_VERSION == 1
 
@@ -85,7 +85,7 @@ def test_usage_from_dict_missing_keys_take_defaults():
 
 
 def test_usage_from_dict_tolerates_unknown_keys():
-    # §2.1: "from_dict tolerates unknown keys" — an additive future field (and
+    # "from_dict tolerates unknown keys" — an additive future field (and
     # a future stamp) must not break an older reader.
     back = Usage.from_dict(
         {

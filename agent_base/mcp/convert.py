@@ -1,11 +1,11 @@
-"""MCP ``CallToolResult`` → ``ToolResultEnvelope`` (mcp.md §6).
+"""MCP ``CallToolResult`` → ``ToolResultEnvelope``.
 
 Conversion honors existing library conventions: text rides the
 ``ctx.emit_capped`` budget (spill to sandbox, never flood context); images
 project as native ``ImageContent`` blocks; resource links get a v1 text
 projection; ``isError: true`` is a *returned* tool error (no ``raised_error``)
 — model-visible, distinguishable from transport failures which set
-``raised_error`` (CM-G4).
+``raised_error``.
 
 The budget applies to the WHOLE result: every text block together, plus the
 structured output when it adds something the text does not (FastMCP sends a
@@ -347,7 +347,7 @@ async def result_to_envelope(
                     TextContent(text=f"[audio result: {block.mimeType} — not projected]")
                 )
         elif block_type == "resource_link":
-            # v1 text projection: name + uri + description (mcp.md §6).
+            # v1 text projection: name + uri + description.
             desc = f" — {block.description}" if getattr(block, "description", None) else ""
             context_blocks.append(
                 TextContent(text=f"[resource_link] {block.name}: {block.uri}{desc}")

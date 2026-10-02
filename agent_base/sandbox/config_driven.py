@@ -1,4 +1,4 @@
-"""Auto-derived config/from_config + @register_sandbox decorator (resolves F9).
+"""Auto-derived config/from_config + @register_sandbox decorator.
 
 ``ConfigDrivenSandbox`` derives ``config``/``from_config`` from the paired
 ``SandboxConfig`` dataclass so a subclass does not hand-copy fields. ``register_sandbox``
@@ -21,9 +21,9 @@ class ConfigDrivenSandbox(Sandbox):
 
     A subclass declares ``config_class`` and stores each config field as an attribute of
     the same name. ``config()``/``from_config()`` are then auto-generated — no per-field
-    copying (F9).
+    copying.
 
-    I12(b): ``__init_subclass__`` VALIDATES the config-field↔attribute mapping at class
+    ``__init_subclass__`` VALIDATES the config-field↔attribute mapping at class
     creation and RAISES — a config field with no matching constructor parameter (so
     ``from_config`` could silently drop it) is a hard error at import time.
     """
@@ -44,7 +44,7 @@ class ConfigDrivenSandbox(Sandbox):
         if missing:
             raise TypeError(
                 f"{cls.__name__}: config fields {sorted(missing)} have no matching "
-                f"__init__ parameter — from_config would silently drop them (I12(b))."
+                f"__init__ parameter — from_config would silently drop them."
             )
 
     @property

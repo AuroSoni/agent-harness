@@ -1,11 +1,11 @@
-"""Principal threading + the ONE injected ``PrincipalPolicy`` (I1, R9, R7).
+"""Principal threading + the ONE injected ``PrincipalPolicy``.
 
-Covers session-control.md §2.2 (``principal_policy`` ctor arg defaulting to
+Covers the ``principal_policy`` ctor arg (defaulting to
 ``StrictScopePolicy``; the resident attach-check routing through the injected
-policy; ``SessionNotFound`` with no existence leak), §2.3/§2.5 (principal threading
-into the build), R9 layer (a) (``SessionManager.submit`` principal mismatch →
-``Ack(NOT_FOUND)``), and R7 (the claimant rides ``submit(sid, ToolReply,
-principal=)`` — the command itself stays principal-free).
+policy; ``SessionNotFound`` with no existence leak), principal threading
+into the build, ``SessionManager.submit`` principal mismatch →
+``Ack(NOT_FOUND)``, and the claimant riding ``submit(sid, ToolReply,
+principal=)`` (the command itself stays principal-free).
 
 ``SessionPrincipal``/``StrictScopePolicy`` are collaborators owned by
 tenancy_principal (canonical home ``agent_base/core/identity.py``); they are used
@@ -32,7 +32,7 @@ BOB = SessionPrincipal(tenant="org-2", subject="member-2")
 
 
 def test_default_principal_policy_is_strict_scope():
-    """§I1: SessionManager.__init__(..., principal_policy: PrincipalPolicy = StrictScopePolicy())."""
+    """SessionManager.__init__(..., principal_policy: PrincipalPolicy = StrictScopePolicy())."""
     params = inspect.signature(SessionManager.__init__).parameters
     assert isinstance(params["principal_policy"].default, StrictScopePolicy)
 
@@ -50,7 +50,7 @@ async def test_attach_with_equal_principal_is_authorized():
 
 
 async def test_attach_with_mismatched_principal_raises_session_not_found():
-    """R9(a): addressing a session owned by another principal → SessionNotFound (no leak)."""
+    """Addressing a session owned by another principal → SessionNotFound (no leak)."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
     await manager.get_or_create("sid-1", principal=ALICE)
@@ -62,7 +62,7 @@ async def test_attach_with_mismatched_principal_raises_session_not_found():
 
 
 async def test_anonymous_attach_to_owned_session_raises_session_not_found():
-    """§2.5: the attach-check runs UNCONDITIONALLY on a resident hit
+    """The attach-check runs UNCONDITIONALLY on a resident hit
     ('authorizes(entry.principal, principal)') — omitting the principal kwarg
     must NOT bypass auth. StrictScopePolicy (equal scope keys) rejects an
     anonymous (None) claimant against an ALICE-owned session."""
@@ -76,7 +76,7 @@ async def test_anonymous_attach_to_owned_session_raises_session_not_found():
 
 
 async def test_anonymous_submit_to_owned_session_returns_not_found():
-    """R9(a): an anonymous submit addressing an owned session is Ack(NOT_FOUND)
+    """An anonymous submit addressing an owned session is Ack(NOT_FOUND)
     and the command never reaches the resident agent — no auth bypass by
     omission, no existence leak."""
     factory = make_recording_factory()
@@ -88,7 +88,7 @@ async def test_anonymous_submit_to_owned_session_returns_not_found():
 
 
 async def test_attach_check_consults_the_injected_policy():
-    """§I1: the resident attach-check is policy.authorizes(entry.principal, claimant)."""
+    """The resident attach-check is policy.authorizes(entry.principal, claimant)."""
     policy = RecordingPolicy(allow=True)
     factory = make_recording_factory()
     manager = SessionManager(factory, principal_policy=policy)
@@ -98,7 +98,7 @@ async def test_attach_check_consults_the_injected_policy():
 
 
 async def test_custom_policy_may_authorize_cross_principal_attach():
-    """§I1: only the policy object decides — a permissive policy admits another scope."""
+    """Only the policy object decides — a permissive policy admits another scope."""
     factory = make_recording_factory()
     manager = SessionManager(factory, principal_policy=RecordingPolicy(allow=True))
     first = await manager.get_or_create("sid-1", principal=ALICE)
@@ -107,7 +107,7 @@ async def test_custom_policy_may_authorize_cross_principal_attach():
 
 
 async def test_submit_principal_mismatch_returns_not_found_ack():
-    """R9(a)/§2.2: submit rejection is Ack(disposition=NOT_FOUND) — and the command
+    """Submit rejection is Ack(disposition=NOT_FOUND) — and the command
     never reaches the resident agent (no existence/information leak)."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
@@ -130,7 +130,7 @@ async def test_submit_authorized_principal_routes_to_agent():
 
 
 async def test_submit_consults_the_same_injected_policy():
-    """§I1: BOTH seams (attach-check and submit) consult the ONE policy object."""
+    """BOTH seams (attach-check and submit) consult the ONE policy object."""
     policy = RecordingPolicy(allow=True)
     factory = make_recording_factory()
     manager = SessionManager(factory, principal_policy=policy)
@@ -140,7 +140,7 @@ async def test_submit_consults_the_same_injected_policy():
 
 
 async def test_tool_reply_claimant_rides_submit_not_the_command():
-    """R7: ToolReply stays principal-free; the claimant is the submit kwarg and the
+    """ToolReply stays principal-free; the claimant is the submit kwarg and the
     authorized reply is forwarded to the agent unchanged."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
@@ -151,7 +151,7 @@ async def test_tool_reply_claimant_rides_submit_not_the_command():
 
 
 async def test_submit_materializes_non_resident_session_with_principal():
-    """§2.4 premise: submit resolves via get_or_create, so a fresh id materializes a
+    """Premise: submit resolves via get_or_create, so a fresh id materializes a
     principal-threaded session before routing."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
@@ -164,7 +164,7 @@ async def test_submit_materializes_non_resident_session_with_principal():
 
 
 async def test_fresh_build_threads_principal_into_the_agent():
-    """Contract §4: on a fresh build the runtime threads the principal via set_principal."""
+    """On a fresh build the runtime threads the principal via set_principal."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
     agent = await manager.get_or_create("sid-1", principal=ALICE)

@@ -6,14 +6,15 @@
 Async-first with streaming, tool execution, state persistence, and multimodal
 support. Fully redesigned in June 2026 around a **single-writer session actor**:
 one `submit(AgentInput)` front door routing three planes (mailbox / joins /
-control), a cid-keyed `AwaitTable` for pause/resume, and `AgentRuntime` as the
-one turn loop.
+control), a cid-keyed `AwaitTable` for pause/resume, and one turn loop. The
+loop lives in `AnthropicAgent` (`_resume_loop`); `AgentRuntime` is the base
+that holds the session machinery, and its own `run` is not implemented.
 
-**The real package is `agent_base/`.** The `anthropic_agent/` directory at the
-repo root is the stale pre-redesign package — do not edit it or take guidance
-from it. The same goes for the legacy top-level design docs
-(`AGENT_ARCHITECTURE*.md`, `NEW_CONSOLIDATEED_ARCHITECTURE*.md` — design
-history only) and the loose notebooks at the repo root.
+**The package is `agent_base/`.** How it works, and why, is told in
+`mental_model/` (see "Mental model" below). `NEW_CONSOLIDATEED_ARCHITECTURE.md`
+is design history: the redesign proposal, and the only description of Rungs 2
+to 4. Do not take guidance on the as-built system from it, or from the loose
+notebooks at the repo root.
 
 The API is **unreleased — breaking changes are allowed freely**; compat shims
 are deletion candidates.
@@ -36,35 +37,67 @@ uv run --directory demos/fastapi_server uvicorn main:app --reload --port 8000
 
 ## Living-Spec Discipline (read this first)
 
-- `tests/interface/` (15 packages, ~1,700 specs) **is the contract** for the
+- `tests/interface/` (18 packages, ~1,900 specs) **is the contract** for the
   public surface.
-- `interface_plan/subsystems/*.md` are the subsystem design docs;
-  `interface_plan/AMENDMENTS.md` is the **canonical decision ledger** — it
-  overrides subsystem docs on conflict.
-- Any interface change must update all three together: the subsystem doc, the
-  matching `tests/interface/<package>/`, and an AMENDMENTS.md entry.
-- **nova_backend** (`D:\Nova Labs\Repos\nova_backend`) consumes this repo as an
-  editable uv source — a breaking library change breaks its suite immediately.
-  Run both suites when touching the public surface.
+- `mental_model/` tells how each subsystem behaves and why. It replaced
+  `interface_plan/` (the subsystem docs and the `AMENDMENTS.md` decision
+  ledger), which git history keeps.
+- Any interface change updates the matching `tests/interface/<package>/` and
+  the mental model in the same PR.
+- **nova_backend** consumes this repo: it pins a commit, and in development it
+  can point at a local checkout, where a breaking library change breaks its
+  suite at once. Run both suites when touching the public surface.
 - Schema rule: any new DB column must bump `LIBRARY_SCHEMA_VERSION`
   (`agent_base/storage/pg/`) **and** ship an idempotent ALTER migration in the
   same cut.
+
+## Mental model
+
+This repo keeps a shared mental model of the product in `mental_model/`. It tells the story of the product's characters (its domain concepts, subsystems and infrastructure): how they behave, how they relate, and why they are the way they are. It is how everyone on the team, people and agents, shares one understanding of the product. `mental_model/CLAUDE.md` explains how the model is organised and how to write in it.
+
+**Read before you plan.** Before planning or designing a change, read `mental_model/CLAUDE.md` and the files your change touches. Also check `mental_model/planned_items/` for work already planned in the same area, and `nova_backend`'s `planned_items/`, where work that crosses repos is planned. The code tells you what the system does; the model tells you why, and what must not break. Code that looks unnecessary may be there on purpose, so check the model before simplifying it. If the code and the model disagree, say so rather than silently picking one.
+
+**Respect repo boundaries.** Nova spans three repos; `mental_model/CLAUDE.md` says where this one fits and how to read the others' models. Plan any work that crosses repos in `nova_backend`. Before changing anything marked as a cross-repo contract, find who depends on it: start with the product map, then read those repos' Depends on sections and code. Name every affected repo in the planned item. Never describe another repo's behaviour from memory or guesswork; read its model, or ask.
+
+**Speak in the model's terms.** Use the model's names for things in plans, explanations, commit messages and PR descriptions. Don't invent new names for existing concepts.
+
+**Tell a change as a chapter, not a scene.** When you explain what you did or propose to do, describe it as a change to the story: which characters changed, how their behaviour changed, and why. For example: "Resolution now trusts the registry over the vendor feed when they disagree, because the feed's identifiers proved unstable." Not: "Modified the resolver and added a cache layer." Use whatever form the reader takes in fastest, whether a sentence, a list or a before/after diagram. Name files and functions afterwards, as anchors for the reader.
+
+**New features and subsystems start as planned items.** Draft the model for the work in `mental_model/planned_items/` and get it reviewed in its own PR before writing code. In the PR that completes the work, run the `merge-mental-model` skill so the code and the updated story land together.
+
+**Keep the story true.** A change outside any planned item that still alters how the product works updates the story in the same PR; the `merge-mental-model` skill handles that too. Work that belongs to a planned item updates the story only in the PR that completes it.
+
+**Fix only plain factual errors directly.** Where the story is simply out of date, such as a renamed file or a moved function, fix it and mention the fix in the PR. Any other mismatch, one that touches behaviour, a boundary, a name or a why, may be drift in the code rather than an error in the story. Raise it instead of rewriting either side.
+
+**Never write a why you inferred.** Reasons in the model come from people, as `mental_model/CLAUDE.md` describes. If you think you know why something is the way it is, ask.
+
+**Suggest improvements freely.** A more elegant architecture or more efficient code is welcome. Raise it with the developer, and if it is taken up, it becomes a planned item.
+
+**Skills set the method; the mental model sets what is written.** The gstack skills are external and are not adapted to this repo. Follow a skill's method where the task calls for one: how to review a plan, how to investigate, how to test, how to ship. Follow this repo's conventions for everything written into the repo or said about it:
+
+- A plan for a feature or subsystem is a planned item in `mental_model/planned_items/`, not a plan file of the skill's own (`/spec`, `/plan-eng-review`, `/plan-ceo-review`, `/autoplan`).
+- A change to how the library works updates the story, through the `merge-mental-model` skill (`/ship`, `/document-release`).
+- A PR description, a commit message and an explanation tell the change as a chapter, in the model's terms, not as a list drawn from the diff (`/ship`, `create-pr`).
+
+Where a skill's output format and these conventions disagree, the conventions win. `create-pr` is being updated separately; until then the same rule applies to it.
 
 ## Architecture
 
 ```
 agent_base/               # The library package
-├── core/                 # AgentRuntime (the one turn loop), commands (UserMessage/
-│                         # Steer/Abort/ToolReply), AgentConfig/Conversation, hooks/,
+├── core/                 # AgentRuntime (the session machinery under every agent),
+│                         # commands (UserMessage/Steer/Abort/ToolReply),
+│                         # AgentConfig/Conversation, hooks/,
 │                         # identity (SessionPrincipal), provider protocol (ProviderTurn/
 │                         # RetryPolicy), chain repair, cost/TurnSettlement, errors
-├── providers/            # anthropic/ (AnthropicAgent, AnthropicLLMConfig),
-│                         # litellm/ (LiteLLM agent + config)
+├── providers/            # anthropic/ (AnthropicAgent with the turn loop, AnthropicLLMConfig),
+│                         # litellm/ (LiteLLM agent + config), any_llm/
 ├── session/              # SessionManager (actor lifecycle), mailbox, http (ack_to_http)
 ├── await_table/          # cid-keyed AwaitTable, await_external (pause/resume planes)
 ├── streaming/            # meta frames (RunStarted/RunCompleted/MetaEnvelope), deltas,
 │                         # wire types, sse_response transport
 ├── tools/                # @tool decorator, registry, bundles, ToolContext, media helpers
+├── mcp/                  # Tools from external MCP servers (extra `mcp`)
 ├── common_tools/         # Built-ins: read/grep/glob/patch/todos/code-exec,
 │                         # sub_agent_tool (SubAgentSpec/SubAgentTool)
 ├── storage/              # StorageHandles, adapters/ (memory, ...), pg/ (PgPool,
@@ -77,9 +110,10 @@ agent_base/               # The library package
 ├── memory/               # Cross-session memory stores
 ├── pricing/              # Cost calculator, settlement
 ├── logging/              # Structured logging via structlog (get_logger, bind_context)
+├── observability.py      # Optional sink for timed events
 └── profiles.py           # Profile system (modes)
 
-interface_plan/           # Subsystem docs + AMENDMENTS.md (canonical ledger)
+mental_model/             # How the library works and why (start at mental_model/CLAUDE.md)
 tests/
 ├── unit/                 # Default suite
 ├── integration/          # Marked `integration`, deselected by default
@@ -89,26 +123,24 @@ demos/fastapi_server/     # Demo server — public surface only (agent_router.py
 
 ## Key Runtime Patterns
 
-- **Session actor flow:** `SessionManager.get_or_create` → `attach_stream()` →
-  `submit(UserMessage)` (auto-kicks the actor) → consume SSE frames until
-  `RunCompleted` / `await_input` / `aborted`. `RunCompleted` is always emitted
-  at turn end. `wait_idle()` awaits quiescence.
-- **Pause/resume:** frontend-tool pauses park on `await_external` with a cid;
-  resume via `submit(ToolReply(cid, results))`. A bare `await agent.run()`
-  parks forever on a pause — use the pause-aware pattern.
-- **Streaming:** `attach_stream()` is single-live-reader — attaching steals the
-  stream from the prior reader and migrates the undelivered tail; no replay.
-  Frames emitted with no consumer attached are **dropped by design**.
-- **Identity/billing:** pass `principal=` at construction (or `set_principal()`);
-  usage settles via `on_usage_report` / `TurnSettlement`. Plane-2 `ToolReply`
-  self-resolves as owner — see the claimant interlock spec in
+Each is told in `mental_model/`; read the file before touching the area.
+
+- **Driving a session** (`SessionManager.get_or_create` → `attach_stream()` →
+  `submit(UserMessage)` → read to a terminal frame; `wait_idle()`):
+  `subsystems/session-actor.md`, `features/run.md`.
+- **Pause/resume** (`await_input` with a cid; `submit(ToolReply(cid, results))`):
+  `features/pause-and-resume.md`.
+- **Streaming** (one live reader, no replay; the frames and their order):
+  `subsystems/streaming.md`.
+- **Identity/billing** (`principal=`, `on_usage_report`, `TurnSettlement`):
+  `subsystems/identity.md`, `features/billing-a-run.md`. See the claimant
+  interlock spec in
   `tests/interface/relay_await/test_relay_await_plane2_claimant.py` before
   touching principal threading.
-- **Scripted turns:** `agent.scripted_ctx()` + `record_turn()` for
-  non-provider turns (checkpoints + Conversation row; no settlement).
-- Tools defined with `@tool` decorator — docstrings become schema descriptions.
-- Sub-agents via `SubAgentSpec` (field-aware deepcopy: data fields copied,
-  runtime resources like tools/memory_store kept by reference).
+- **Scripted runs and pauses** (`scripted_ctx()`, `record_turn()`):
+  `features/run.md`, `features/pause-and-resume.md`.
+- **Tools** (`@tool`; docstrings become schema descriptions): `subsystems/tools.md`.
+- **Sub-agents** (`SubAgentSpec`): `subsystems/sub-agents.md`.
 
 ## Conventions
 
@@ -118,7 +150,7 @@ demos/fastapi_server/     # Demo server — public surface only (agent_router.py
 - **Dataclasses** for data structures, **Protocol** classes for interfaces
 - Imports: stdlib > third-party > relative
 - Build backend is **hatchling**; `demos/fastapi_server` is a uv workspace member
-- Default Anthropic model: `claude-sonnet-4-5`
+- Default Anthropic model: `claude-sonnet-5`
 
 ## Environment Variables
 
@@ -195,7 +227,7 @@ Use /browse for all web browsing (Aside first, the bundled gstack browser as fal
 
 ## Skill routing
 
-When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
+When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill. The skill supplies the method; what it writes to the repo, and how the change is described, follows the **Mental model** section above.
 
 Key routing rules:
 - Product ideas/brainstorming → invoke /office-hours

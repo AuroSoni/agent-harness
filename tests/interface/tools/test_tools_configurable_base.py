@@ -1,16 +1,16 @@
-"""ConfigurableToolBase — template-method run() + as_tool() (tools.md §2.2, §6).
+"""ConfigurableToolBase — template-method run() + as_tool().
 
 Covers:
-- §2.2: a subclass implements ONLY ``async def run(...)``; the base derives the
+- A subclass implements ONLY ``async def run(...)``; the base derives the
   schema from run's signature (minus ``self``/``ctx``), renders the docstring
   template, and ``as_tool()`` builds the registry-ready callable.
-- §2.2: ``as_tool()`` auto-attaches ``__tool_instance__`` (the F2 fix),
+- ``as_tool()`` auto-attaches ``__tool_instance__``,
   ``__tool_executor__`` and ``__tool_needs_confirmation__`` from first-class
   class attrs; idempotent + cached.
-- §2.2: constructor is keyword-only (``docstring_template``,
+- Constructor is keyword-only (``docstring_template``,
   ``schema_override``, ``name``); ``set_sandbox`` returns Self.
-- §6 (G0): ``get_tool()`` shim and ``_apply_schema`` are deleted; budgeting
-  moved off the base class (I5/O11(a)) — no ``emit_capped*``/``budget``.
+- ``get_tool()`` shim and ``_apply_schema`` are deleted; budgeting
+  moved off the base class — no ``emit_capped*``/``budget``.
 """
 
 import pytest
@@ -79,7 +79,7 @@ def test_ctor_docstring_template_overrides_class_template():
 
 
 def test_description_falls_back_to_run_docstring_without_template():
-    # §2.2: as_tool() sets bound.__doc__ = self._render_docstring() or
+    # as_tool() sets bound.__doc__ = self._render_docstring() or
     # inspect.getdoc(self.run) — with no DOCSTRING_TEMPLATE and no ctor
     # template, run()'s own docstring becomes the schema description.
     class _NoTemplateTool(ConfigurableToolBase):
@@ -130,7 +130,7 @@ def test_frontend_executor_class_attr_is_the_relay_selector():
             Args:
                 plan_id: Identifier of the plan to present.
             """
-            return plan_id  # body is a no-op for FE tools (§2.2)
+            return plan_id  # body is a no-op for FE tools
 
     fn = _FeTool(name="present_plan").as_tool()
     assert fn.__tool_executor__ == "frontend"
@@ -159,7 +159,7 @@ def test_needs_user_confirmation_class_attr_propagates():
 def test_as_tool_auto_attaches_tool_instance():
     tool = _GreetTool()
     fn = tool.as_tool()
-    assert fn.__tool_instance__ is tool  # the F2 fix — no manual assignment
+    assert fn.__tool_instance__ is tool  # no manual assignment
 
 
 def test_as_tool_is_idempotent_and_cached():
@@ -197,18 +197,18 @@ def test_set_sandbox_returns_self():
     assert tool.set_sandbox(fake_sandbox) is tool
 
 
-# ─── Deletions (G0 / I5 / O11(a)) ───────────────────────────────────────────
+# ─── Deletions ──────────────────────────────────────────────────────────────
 
 
 def test_get_tool_ritual_is_deleted():
-    # G0: the get_tool() back-compat shim and the deprecated _apply_schema
+    # The get_tool() back-compat shim and the deprecated _apply_schema
     # ritual are deleted — as_tool() is the only compilation path.
     assert not hasattr(ConfigurableToolBase, "get_tool")
     assert not hasattr(ConfigurableToolBase, "_apply_schema")
 
 
 def test_budgeting_is_off_the_base_class():
-    # I5/O11(a): budgeting lives on ctx (ToolContext.emit_capped*), not here.
+    # Budgeting lives on ctx (ToolContext.emit_capped*), not here.
     assert not hasattr(ConfigurableToolBase, "emit_capped")
     assert not hasattr(ConfigurableToolBase, "emit_capped_bytes")
     assert not hasattr(ConfigurableToolBase, "budget")

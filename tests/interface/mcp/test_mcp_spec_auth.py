@@ -1,7 +1,7 @@
-"""Config surface + auth providers (mcp.md §1/§4; MC-D7/MC-D11).
+"""Config surface + auth providers.
 
 Key rules, spec dataclasses, and the four SDK-free provider built-ins —
-including the once-per-outage refresh guards the §4 single-flight contract
+including the once-per-outage refresh guards the single-flight contract
 leans on as defense in depth.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ from agent_base.mcp import (
 )
 
 
-# ── §1 key rules ──────────────────────────────────────────────────────
+# ── key rules ──────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("key", ["github", "local-tools", "A1_b2"])
@@ -56,7 +56,7 @@ def test_spec_defaults_are_the_documented_contract():
     assert spec.reconnect == McpReconnectPolicy(max_attempts=5, base_delay_s=0.5, max_delay_s=30.0)
 
 
-# ── §4 providers ─────────────────────────────────────────────────────
+# ── providers ─────────────────────────────────────────────────────
 
 
 async def test_static_headers_auth_never_refreshes():

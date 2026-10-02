@@ -1,8 +1,8 @@
-"""Interface red-suite: ``MemoryContribution`` (memory subsystem).
+"""Interface spec: ``MemoryContribution`` (memory subsystem).
 
-Covers memory.md:
-  - §2.2 "The contributed recall shape (NEW — MemoryContribution)"
-  - §5 Produces: MemoryContribution homed at ``agent_base/memory/base.py``
+Covers:
+  - "The contributed recall shape (NEW — MemoryContribution)"
+  - Produces: MemoryContribution homed at ``agent_base/memory/base.py``
     (blocks + placement Literal["user_suffix","system_suffix"], default "user_suffix").
 
 ``MemoryContribution`` is OWNED by the memory subsystem, so it is deep-tested here:
@@ -10,7 +10,7 @@ construction, constructor defaults, the placement vocabulary, frozen-ness, and t
 fact that it carries the recall blocks the loop will splice.
 
 ``ContentBlock`` / ``TextContent`` / ``Message`` are existing, unchanged vocabulary
-(memory.md §2.1) and are used here strictly as collaborators.
+and are used here strictly as collaborators.
 """
 from __future__ import annotations
 
@@ -27,13 +27,13 @@ def test_memory_contribution_is_a_dataclass():
 
 
 def test_memory_contribution_default_placement_is_user_suffix():
-    # §2.2: placement defaults to "user_suffix".
+    # Placement defaults to "user_suffix".
     contribution = MemoryContribution(blocks=[])
     assert contribution.placement == "user_suffix"
 
 
 def test_memory_contribution_default_blocks_required_but_can_be_empty():
-    # §2.2: ``blocks: list[ContentBlock]`` has NO default — it is mandatory. A regression
+    # ``blocks: list[ContentBlock]`` has NO default — it is mandatory. A regression
     # giving it a default (e.g. field(default_factory=list)) must be caught.
     with pytest.raises(TypeError):
         MemoryContribution()  # type: ignore[call-arg]
@@ -52,7 +52,7 @@ def test_memory_contribution_carries_recall_blocks_in_order():
 
 
 def test_memory_contribution_accepts_system_suffix_placement():
-    # §2.2 / §5: the other legal placement value.
+    # The other legal placement value.
     contribution = MemoryContribution(
         blocks=[TextContent(text="x")], placement="system_suffix"
     )
@@ -67,7 +67,7 @@ def test_memory_contribution_accepts_user_suffix_placement_explicitly():
 
 
 def test_memory_contribution_is_frozen():
-    # §2.2 declares ``@dataclass(frozen=True)``.
+    # It is declared ``@dataclass(frozen=True)``.
     contribution = MemoryContribution(blocks=[])
     with pytest.raises(dataclasses.FrozenInstanceError):
         contribution.placement = "system_suffix"  # type: ignore[misc]
@@ -80,7 +80,7 @@ def test_memory_contribution_blocks_is_frozen_field_too():
 
 
 def test_memory_contribution_placement_is_keyword_or_positional():
-    # Field order is (blocks, placement) per the pseudocode.
+    # Field order is (blocks, placement).
     contribution = MemoryContribution([TextContent(text="x")], "system_suffix")
     assert contribution.placement == "system_suffix"
 

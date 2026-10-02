@@ -74,8 +74,8 @@ def client() -> anthropic.AsyncAnthropic:
 
 
 class _MessageReturningProvider(AnthropicProvider):
-    """Test adapter (2026-06-10, P-A lift): ``generate`` now returns a
-    ``ProviderTurn`` (providers.md §2.1); these round-trip tests assert on the
+    """Test adapter (2026-06-10): ``generate`` now returns a
+    ``ProviderTurn``; these round-trip tests assert on the
     canonical ``Message``, so unwrap it once here."""
 
     async def generate(self, **kwargs):  # type: ignore[override]

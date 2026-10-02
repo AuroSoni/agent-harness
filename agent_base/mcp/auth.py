@@ -1,4 +1,4 @@
-"""Auth providers for external MCP servers (mcp.md §4).
+"""Auth providers for external MCP servers.
 
 The provider contract is two methods: ``headers()`` (called on every
 (re)connect and bridged into per-request headers via the handle's
@@ -7,10 +7,10 @@ hook — ``True`` means credentials were refreshed and the operation is retried
 exactly once; ``False``/raise parks the server in ``needs_auth``).
 
 Serialization of concurrent ``on_unauthorized()`` calls is the **handle's**
-job (mcp.md §4 "single-flight refresh") — providers here keep their own
+job ("single-flight refresh") — providers here keep their own
 once-per-outage guards only as defense in depth.
 
-Secrecy invariant (E8): nothing a provider returns is ever persisted,
+Secrecy invariant: nothing a provider returns is ever persisted,
 checkpointed, or logged. Durable credential storage is the consumer's
 problem (their callback / ``TokenStore`` implementation).
 """
@@ -103,7 +103,7 @@ class BearerTokenAuth(_CallbackHeadersAuth):
 
 
 class SessionHeadersAuth(_CallbackHeadersAuth):
-    """``BearerTokenAuth`` generalized to a whole header set (MC-D11).
+    """``BearerTokenAuth`` generalized to a whole header set.
 
     Cookie-session logins, rotating API keys, HMAC-signed headers: the
     consumer's callback performs its login/derivation (reading its own
@@ -111,7 +111,7 @@ class SessionHeadersAuth(_CallbackHeadersAuth):
     lives *inside* the callback — no store protocol. Session expiry rides
     the standard 401 contract: one single-flight re-login, then per-call
     retry-once. Unauthorized = HTTP 401 only; the transport cookie jar is
-    out of contract (provider headers are authoritative — mcp.md §4).
+    out of contract (provider headers are authoritative).
     """
 
 

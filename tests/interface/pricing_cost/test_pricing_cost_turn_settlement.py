@@ -1,18 +1,18 @@
-"""TurnSettlement — pricing-cost §2.2 (fixes X9; the one-object-per-turn fact).
+"""TurnSettlement — the one-object-per-turn fact.
 
 Covers:
-  - `TurnSettlement` at its canonical home `agent_base/core/cost.py` (R11):
+  - `TurnSettlement` at its canonical home `agent_base/core/cost.py`:
     it is frozen, carries identity + turn-level usage/cost, and is the single
     source of truth for "what did THIS turn cost".
-  - O14(d): TURN-LEVEL ONLY — no `cumulative_usage`/`cumulative_cost` fields
+  - TURN-LEVEL ONLY — no `cumulative_usage`/`cumulative_cost` fields
     (cumulative is the SettlementAggregator's job — deletions file asserts absence).
-  - `to_dict()` canonical wire shape: `_v` stamp (R12), identity fields, model,
-    step_count, `usage` via `totals_dict()` (O5), `cost` via `CostBreakdown.to_dict()`.
-  - B2: claims NEVER serialize — only `tenant`/`subject` from the principal land
+  - `to_dict()` canonical wire shape: `_v` stamp, identity fields, model,
+    step_count, `usage` via `totals_dict()`, `cost` via `CostBreakdown.to_dict()`.
+  - Claims NEVER serialize — only `tenant`/`subject` from the principal land
     on the wire; the in-process `.principal` object keeps the full principal.
   - `from_dict()` reconstruction.
 
-`SessionPrincipal` is imported from `agent_base.core.identity` (R1) and used here
+`SessionPrincipal` is imported from `agent_base.core.identity` and used here
 strictly as a COLLABORATOR (tenancy_principal owns its deep tests).
 `Usage`/`CostBreakdown` are collaborators owned/co-tested elsewhere.
 """
@@ -87,7 +87,7 @@ def test_turn_settlement_parent_agent_id_carried_for_subagents():
 
 
 # ---------------------------------------------------------------------------
-# to_dict() canonical wire shape (R12 / X8 / B2)
+# to_dict() canonical wire shape
 # ---------------------------------------------------------------------------
 
 
@@ -112,13 +112,13 @@ def test_to_dict_serializes_tenant_and_subject_only():
 
 
 def test_to_dict_never_serializes_claims():
-    # B2: claims must NEVER appear on the wire (Fork K consistency).
+    # Claims must NEVER appear on the wire.
     principal = SessionPrincipal(tenant="o", subject="m", claims={"role": "admin", "pii": "leak"})
     d = _settlement(principal=principal).to_dict()
     assert "claims" not in d
     # And no copy of the claim values smuggled ANYWHERE — including nested under
     # `usage`/`cost`/any sub-dict. A shallow d.values() scan would miss those, so
-    # serialize the whole dict and substring-check the claim values (B2 is a deep
+    # serialize the whole dict and substring-check the claim values (a deep
     # invariant: claim values never reach the wire under any key).
     import json
 
@@ -141,7 +141,7 @@ def test_to_dict_usage_uses_totals_dict_no_raw_usage():
     d = s.to_dict()
     assert d["usage"]["input_tokens"] == 7
     assert d["usage"]["output_tokens"] == 8
-    # O5: totals_dict() excludes raw_usage.
+    # totals_dict() excludes raw_usage.
     assert "raw_usage" not in d["usage"]
 
 
@@ -156,7 +156,7 @@ def test_to_dict_cost_uses_cost_breakdown_to_dict():
 
 
 def test_to_dict_has_no_cumulative_keys():
-    # O14(d): turn-level only — cumulative is served by the aggregator, never baked in.
+    # Turn-level only — cumulative is served by the aggregator, never baked in.
     d = _settlement().to_dict()
     assert "cumulative_usage" not in d
     assert "cumulative_cost" not in d
@@ -180,7 +180,7 @@ def test_from_dict_reconstructs_identity_and_payload():
 
 
 def test_from_dict_does_not_resurrect_claims():
-    # B2: claims were never serialized, so a round-trip cannot restore them.
+    # Claims were never serialized, so a round-trip cannot restore them.
     principal = SessionPrincipal(tenant="o", subject="m", claims={"role": "admin"})
     restored = TurnSettlement.from_dict(_settlement(principal=principal).to_dict())
     if restored.principal is not None:

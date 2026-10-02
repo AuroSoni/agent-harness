@@ -1,4 +1,4 @@
-"""Split-phase browser-OAuth mechanics for MCP servers (mcp.md §4, MC-D9).
+"""Split-phase browser-OAuth mechanics for MCP servers.
 
 The standards plumbing of the MCP authorization spec — RFC 9728
 protected-resource metadata → RFC 8414/OIDC AS metadata discovery → client
@@ -12,10 +12,9 @@ Composition, not reimplementation: the RFC legs come from
 ``PKCEParameters.generate()``. ``OAuthTokenAuth`` implements the
 ``McpAuthProvider`` contract directly on top of this module's ``refresh()``
 (the ratified ``refresh_lock`` must wrap the whole read→grant→persist leg,
-which the SDK's ``OAuthClientProvider`` offers no hook for — see the §4
-spec-review deltas).
+which the SDK's ``OAuthClientProvider`` offers no hook for).
 
-Secrecy invariant (E8): ``TokenSet``s live in library memory only — durable
+Secrecy invariant: ``TokenSet``s live in library memory only — durable
 storage happens solely through the consumer's ``TokenStore`` implementation.
 """
 from __future__ import annotations
@@ -201,7 +200,7 @@ class AuthServerInfo:
 class PendingAuth:
     """PKCE state parked across the browser redirect round-trip.
 
-    Serializable by design (mcp.md §4): the consumer stashes it in its own
+    Serializable by design: the consumer stashes it in its own
     pending store keyed by ``state`` and hands it back to ``exchange_code``.
     """
 
@@ -234,7 +233,7 @@ class PendingAuth:
 class TokenStore(Protocol):
     """Consumer-implemented persistence (encrypted, tenant-scoped).
 
-    The library never persists (E8). Shape-aligned with the mcp SDK's
+    The library never persists. Shape-aligned with the mcp SDK's
     ``TokenStorage`` protocol (4 methods) so adapters are mechanical.
     """
 
@@ -266,7 +265,7 @@ async def discover(
     """RFC 9728 protected-resource metadata → RFC 8414/OIDC AS metadata.
 
     Accepts a bare MCP server URL or the ``McpAuthChallenge`` off a
-    ``needs_auth`` status (mcp.md §7) — a 401 flows directly into discovery
+    ``needs_auth`` status — a 401 flows directly into discovery
     with no re-probing. When passing a challenge, ``server_url`` supplies the
     well-known fallback base (optional if the challenge carries a
     ``resource_metadata_url``).
@@ -504,7 +503,7 @@ async def refresh(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# OAuthTokenAuth — the 4th built-in McpAuthProvider (mcp.md §4)
+# OAuthTokenAuth — the 4th built-in McpAuthProvider
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -527,7 +526,7 @@ class OAuthTokenAuth:
     ``McpAuthRequiredError`` / returns ``False`` → ``needs_auth`` and the
     consumer re-runs the interactive leg.
 
-    ``refresh_lock`` (§4 spec-review delta 4): an async-context-manager lock
+    ``refresh_lock``: an async-context-manager lock
     serializing the read→grant→persist leg across live agents that share one
     store (two chats of one member). Inside the lock the store is re-read
     first — a sibling already refreshed ⇒ adopt its tokens and skip the

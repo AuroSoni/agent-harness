@@ -1,15 +1,15 @@
-"""Column registry engine — storage.md §2.2 (Fork B, AMENDMENTS O1: A1 only).
+"""Column registry engine.
 
 The shared scaffolding the Postgres adapter template composes its SQL from:
 
 - :class:`ColumnSpec` — one declared column (library base or consumer extra).
 - :class:`ColumnRegistry` — base ⊕ extra columns, composed into INSERT /
-  UPSERT-set / SELECT-list / WHERE fragments + DDL exactly once (fixes E1/E7).
+  UPSERT-set / SELECT-list / WHERE fragments + DDL exactly once.
 - :func:`principal_columns` — the canned owner-column one-liner (the dominant
-  tenant/member case; collapses E1+E2+E7 to one line).
+  tenant/member case).
 
-v1 ships the A1 ``ColumnSpec`` engine + ``principal_columns()`` ONLY (O1);
-the A2 annotated-model sugar is deferred (storage.md §7).
+v1 ships the ``ColumnSpec`` engine + ``principal_columns()`` ONLY;
+the annotated-model sugar is deferred.
 """
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ class ColumnRegistry:
                 continue
             spec.set(entity, value)
 
-    # ----- DDL generation (feeds §2.6 ensure_schema) ---------------------------
+    # ----- DDL generation (feeds ensure_schema) --------------------------------
 
     def ddl_columns(self) -> str:
         return ",\n    ".join(f"{spec.name} {spec.sql_type}" for spec in self._all)
@@ -100,7 +100,7 @@ class ColumnRegistry:
 
 
 # =============================================================================
-# principal_columns() — the canned owner-column one-liner (storage.md §2.2)
+# principal_columns() — the canned owner-column one-liner
 # =============================================================================
 
 
@@ -137,7 +137,7 @@ def principal_columns(
     subject: str = "owner_subject",
 ) -> list[ColumnSpec]:
     """Two ``scope="filter"``, ``indexed=True``, ``immutable_on_conflict=True``
-    specs whose getters read the bound adapter's principal (storage.md §2.2).
+    specs whose getters read the bound adapter's principal.
 
     Accepts the column names positionally (``principal_columns("organization_id",
     "member_id")``) or by keyword (``tenant=...``, ``subject=...``).

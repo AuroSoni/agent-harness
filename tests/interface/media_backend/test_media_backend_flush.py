@@ -1,14 +1,14 @@
-"""Red-suite specs for media-backend §2.2 — incremental flush strategy.
+"""Interface specs for media-backend — incremental flush strategy.
 
-Covers media-backend.md §2.2: `FlushResult`, `RegistryEntry`, the
+Covers `FlushResult`, `RegistryEntry`, the
 `MediaFlushRegistry` Protocol, the `MediaFlushStrategy` ABC, the default
 `IncrementalBlake3Flush`, and the `MediaBackend.flush_strategy` /
 `flush_exports` / `flush_exports_result` wiring.
 
 Amendments exercised:
-  - O3: `IncrementalBlake3Flush` is the ONLY shipped strategy; `FullReuploadFlush`
+  - `IncrementalBlake3Flush` is the ONLY shipped strategy; `FullReuploadFlush`
     is DELETED. The `MediaFlushStrategy` ABC stays as the custom seam.
-  - R28: `flush_exports` keeps its signature and now returns the DELTA;
+  - `flush_exports` keeps its signature and now returns the DELTA;
     `flush_exports_result()` returns the rich `FlushResult`.
 
 Symbols under test (owned by media_backend):
@@ -131,7 +131,7 @@ class _RecordingBackend(MediaBackend):
         return {}
 
 
-# ─── FlushResult value type (§2.2) ────────────────────────────────────────
+# ─── FlushResult value type ────────────────────────────────────────
 
 
 def test_flush_result_is_frozen_dataclass() -> None:
@@ -149,7 +149,7 @@ def test_flush_result_fields() -> None:
 
 
 def test_flush_result_all_current_is_unchanged_plus_delta() -> None:
-    """all_current = unchanged + delta (the full live set, ordering per the doc)."""
+    """all_current = unchanged + delta (the full live set)."""
     delta = [MediaMetadata("d", "image/png", "d.png", "png", 1, "fake", "fake://d")]
     unchanged = [MediaMetadata("u", "image/png", "u.png", "png", 1, "fake", "fake://u")]
     result = FlushResult(delta=delta, unchanged=unchanged, deleted_media_ids=[])
@@ -160,7 +160,7 @@ def test_flush_result_all_current_is_property() -> None:
     assert isinstance(inspect.getattr_static(FlushResult, "all_current"), property)
 
 
-# ─── RegistryEntry value type (§2.2) ──────────────────────────────────────
+# ─── RegistryEntry value type ──────────────────────────────────────
 
 
 def test_registry_entry_is_frozen_dataclass_with_three_fields() -> None:
@@ -177,17 +177,17 @@ def test_registry_entry_construction() -> None:
     assert entry.media_id == "m1"
 
 
-# ─── MediaFlushRegistry Protocol (§2.2) ───────────────────────────────────
+# ─── MediaFlushRegistry Protocol ───────────────────────────────────
 
 
 def test_media_flush_registry_is_protocol() -> None:
-    """§2.2: MediaFlushRegistry is the persistence seam, declared as a Protocol."""
+    """MediaFlushRegistry is the persistence seam, declared as a Protocol."""
     assert isinstance(MediaFlushRegistry, type)
     assert getattr(MediaFlushRegistry, "_is_protocol", False) is True
 
 
 def test_media_flush_registry_declares_load_and_save() -> None:
-    """§2.2: the Protocol declares `load(agent_uuid)` and `save(agent_uuid, registry)`."""
+    """The Protocol declares `load(agent_uuid)` and `save(agent_uuid, registry)`."""
     members = set(getattr(MediaFlushRegistry, "__protocol_attrs__", set()))
     if not members:
         # Fallback for runtimes that don't expose __protocol_attrs__.
@@ -211,7 +211,7 @@ def test_recording_registry_structurally_satisfies_protocol() -> None:
     assert callable(reg.save)
 
 
-# ─── MediaFlushStrategy ABC (§2.2) ────────────────────────────────────────
+# ─── MediaFlushStrategy ABC ────────────────────────────────────────
 
 
 def test_media_flush_strategy_is_abc_with_abstract_flush() -> None:
@@ -238,18 +238,18 @@ def test_media_flush_strategy_flush_signature() -> None:
     assert params["max_concurrent"].kind == inspect.Parameter.KEYWORD_ONLY
 
 
-# ─── O3: FullReuploadFlush is DELETED ─────────────────────────────────────
+# ─── FullReuploadFlush is DELETED ─────────────────────────────────────
 
 
 def test_full_reupload_flush_is_deleted() -> None:
-    """O3: IncrementalBlake3Flush is the ONLY shipped strategy."""
+    """IncrementalBlake3Flush is the ONLY shipped strategy."""
     import agent_base.media_backend.flush as flush_mod
     assert not hasattr(flush_mod, "FullReuploadFlush")
     import agent_base.media_backend as pkg
     assert not hasattr(pkg, "FullReuploadFlush")
 
 
-# ─── IncrementalBlake3Flush — the default strategy (§2.2) ─────────────────
+# ─── IncrementalBlake3Flush — the default strategy ─────────────────
 
 
 def test_incremental_flush_is_a_strategy() -> None:
@@ -334,7 +334,7 @@ async def test_incremental_flush_persists_new_registry() -> None:
     assert "exports/x.csv" in saved
 
 
-# ─── MediaBackend.flush_strategy default + delegation (§2.2) ──────────────
+# ─── MediaBackend.flush_strategy default + delegation ──────────────
 
 
 def test_default_flush_strategy_is_incremental() -> None:
@@ -343,7 +343,7 @@ def test_default_flush_strategy_is_incremental() -> None:
 
 
 async def test_flush_exports_returns_delta_list() -> None:
-    """R28: flush_exports keeps a list signature, now returning the DELTA."""
+    """flush_exports keeps a list signature, now returning the DELTA."""
     sandbox = _FakeSandbox([_Export(path="exports/a.csv", filename="a.csv", blake3_hash="h-a")])
     backend = _RecordingBackend()
     backend.attach_sandbox(sandbox)  # type: ignore[arg-type]
@@ -382,7 +382,7 @@ async def test_flush_exports_result_no_sandbox_returns_empty_result() -> None:
 
 
 async def test_flush_exports_accepts_strategy_override() -> None:
-    """A per-call strategy overrides backend.flush_strategy (the §6 seam)."""
+    """A per-call strategy overrides backend.flush_strategy (the seam)."""
     sandbox = _FakeSandbox([_Export(path="exports/a.csv", filename="a.csv", blake3_hash="h-a")])
     backend = _RecordingBackend()
     backend.attach_sandbox(sandbox)  # type: ignore[arg-type]
@@ -400,7 +400,7 @@ def test_flush_exports_strategy_is_keyword_only() -> None:
 
 
 async def test_flush_exports_returns_only_delta_not_all_current() -> None:
-    """R28/B2 load-bearing contract: flush_exports() returns ONLY the delta, NOT
+    """Load-bearing contract: flush_exports() returns ONLY the delta, NOT
     the full live set (all_current = unchanged + delta).
 
     This exercises the distinction THROUGH the public back-compat API (not just the
@@ -436,7 +436,7 @@ async def test_flush_exports_returns_only_delta_not_all_current() -> None:
 
 
 async def test_flush_exports_result_populates_unchanged_and_deleted_through_wiring() -> None:
-    """R28: the rich result's .unchanged / .deleted_media_ids are populated THROUGH
+    """The rich result's .unchanged / .deleted_media_ids are populated THROUGH
     backend.flush_exports_result() wiring (not only at the bare strategy).
 
     Mix: one unchanged file (matching blake3 + cached meta), one new file, and one
@@ -473,7 +473,7 @@ async def test_flush_exports_result_populates_unchanged_and_deleted_through_wiri
 
 
 def test_custom_strategy_seam_is_subclassable() -> None:
-    """O3: the ABC stays as the custom-registry seam — a consumer can subclass it."""
+    """The ABC stays as the custom-registry seam — a consumer can subclass it."""
 
     class MyStrategy(MediaFlushStrategy):
         async def flush(self, backend, sandbox, agent_uuid, *, max_concurrent=4):

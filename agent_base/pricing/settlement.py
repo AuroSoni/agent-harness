@@ -1,22 +1,22 @@
-"""Per-turn cost/usage settlement — pricing-cost.md §2.4 / §2.5 (O14d / O16b).
+"""Per-turn cost/usage settlement.
 
-Pricing **owns the computation** of the once-per-turn billing fact. Per O14(d)
-the computation is a **module function** ``settle_turn(ctx, steps)`` (the
+Pricing **owns the computation** of the once-per-turn billing fact. The
+computation is a **module function** ``settle_turn(ctx, steps)`` (the
 ``_Settler`` class is dropped). It consumes the canonical, core-owned
 :class:`~agent_base.core.cost.TurnSettlement` / :class:`CostBreakdown` types and
-the additive :class:`~agent_base.core.messages.Usage` (O5).
+the additive :class:`~agent_base.core.messages.Usage`.
 
-The :class:`PricingPolicy` seam (§2.5) lets a consumer swap rates (negotiated
+The :class:`PricingPolicy` seam lets a consumer swap rates (negotiated
 pricing, a markup, an internal model) WITHOUT touching settlement/emit/attach.
 :class:`CsvPricingPolicy` is the DEFAULT — a thin adapter over today's
 ``calculator.calculate_step_cost``.
 
-O16(b): ``settle_turn`` prefers an OPTIONAL ``policy.cost_for_turn(steps, model)``
+``settle_turn`` prefers an OPTIONAL ``policy.cost_for_turn(steps, model)``
 when the policy implements it (cache-aware / turn-shaped billing); otherwise it
 falls back to summing ``policy.cost_for_step`` per step.
 
 The runtime (NOT this function) emits ``UsageReport.of(settlement)`` once per
-turn and attaches the settlement to ``AgentResult`` (B1/B6).
+turn and attaches the settlement to ``AgentResult``.
 """
 from __future__ import annotations
 
@@ -28,14 +28,14 @@ from agent_base.pricing.calculator import calculate_step_cost
 
 
 # ==============================================================================
-# PricingPolicy seam (§2.5) — the consumer "override of rates"
+# PricingPolicy seam — the consumer "override of rates"
 # ==============================================================================
 
 
 class PricingPolicy(Protocol):
     """The rate-swap seam.
 
-    ``cost_for_step`` is REQUIRED. ``cost_for_turn`` is OPTIONAL (O16b): if a
+    ``cost_for_step`` is REQUIRED. ``cost_for_turn`` is OPTIONAL: if a
     concrete policy implements it, ``settle_turn`` prefers it over summing
     ``cost_for_step`` — letting a policy express cache-aware / turn-level
     billing (e.g. amortising a cache write across the turn). Policies that omit
@@ -57,26 +57,26 @@ class CsvPricingPolicy:
 
 
 # ==============================================================================
-# settle_turn — pricing-owned computation (O14d module function)
+# settle_turn — pricing-owned computation (module function)
 # ==============================================================================
 
 
 def settle_turn(ctx: Any, steps: list[Message]) -> TurnSettlement:
     """Compute the TURN-LEVEL :class:`TurnSettlement` from the turn's steps.
 
-    Sums per-step ``Message.usage`` via ``Usage.__add__`` into ``turn_usage``
-    (O5). For cost: prefers ``policy.cost_for_turn`` when implemented (O16b),
+    Sums per-step ``Message.usage`` via ``Usage.__add__`` into ``turn_usage``.
+    For cost: prefers ``policy.cost_for_turn`` when implemented,
     else sums ``policy.cost_for_step(m.usage, m.model or ctx.model)`` per step
     (an unknown model returning ``None`` contributes zero, never a crash).
 
-    Cumulative is NOT computed here (O14d) — cumulative roll-ups are a
+    Cumulative is NOT computed here — cumulative roll-ups are a
     consumer-side fold over the per-turn ``UsageReport`` stream. The runtime
-    emits the ``UsageReport`` and attaches the settlement (B1/B6: not this
+    emits the ``UsageReport`` and attaches the settlement (not this
     function).
     """
     policy: PricingPolicy = ctx.pricing_policy
 
-    # --- turn_usage: field-wise sum of every step's usage (O5) ---
+    # --- turn_usage: field-wise sum of every step's usage ---
     turn_usage = Usage()
     for m in steps:
         if m.usage:
@@ -85,7 +85,7 @@ def settle_turn(ctx: Any, steps: list[Message]) -> TurnSettlement:
     # --- turn_cost ---
     turn_cost: CostBreakdown
     if hasattr(policy, "cost_for_turn"):
-        # O16(b): prefer a turn-shaped policy method when the policy implements it.
+        # Prefer a turn-shaped policy method when the policy implements it.
         turn_cost = policy.cost_for_turn(steps, ctx.model) or CostBreakdown()
     else:
         turn_cost = CostBreakdown()

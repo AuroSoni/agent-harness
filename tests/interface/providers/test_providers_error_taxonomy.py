@@ -1,13 +1,13 @@
-"""Interface red-suite: ``ProviderError`` and the single error taxonomy.
+"""Interface spec: ``ProviderError`` and the single error taxonomy.
 
-Covers providers.md §2.1 (ProviderError), §2.1 Notes (ErrorCode / O5 / O6),
-§3.3 (D3 — consumer branches on ``.code``), and the O5/O6 deletions:
+Covers ProviderError, ErrorCode, the consumer branching on ``.code``, and the
+deletions:
 - ``ProviderError`` is a frozen dataclass AND an ``Exception`` (raisable / catchable).
 - Field set: ``{code, native_code, message, retriable, raw}`` with ``raw`` defaulting
   to ``None``.
 - ``ProviderError.code`` is a member of ``core.errors.ErrorCode`` (the ONE taxonomy).
-- O6: ``ErrorCode`` has exactly the 8 members; dropped members are absent.
-- O5: there is no ``ProviderErrorKind`` enum and no ``PROVIDER_KIND_TO_ERROR_CODE``
+- ``ErrorCode`` has exactly the 8 members; dropped members are absent.
+- There is no ``ProviderErrorKind`` enum and no ``PROVIDER_KIND_TO_ERROR_CODE``
   table — ``ProviderError`` has no ``.kind`` attribute.
 
 ``ErrorCode`` is owned by the *core* subsystem and used here strictly as a
@@ -100,7 +100,7 @@ def test_provider_error_wraps_raw_exception():
 
 
 def test_provider_error_has_no_kind_attribute():
-    # O5: the intermediate ProviderErrorKind enum is deleted; ProviderError exposes
+    # The intermediate ProviderErrorKind enum is deleted; ProviderError exposes
     # .code only — never a .kind.
     err = ProviderError(
         code=ErrorCode.TOOL_FAILED,
@@ -112,13 +112,13 @@ def test_provider_error_has_no_kind_attribute():
 
 
 def test_no_provider_error_kind_symbol_in_module():
-    # O5: ProviderErrorKind + PROVIDER_KIND_TO_ERROR_CODE are deleted symbols.
+    # ProviderErrorKind + PROVIDER_KIND_TO_ERROR_CODE are deleted symbols.
     assert not hasattr(provider_mod, "ProviderErrorKind")
     assert not hasattr(provider_mod, "PROVIDER_KIND_TO_ERROR_CODE")
 
 
 def test_error_code_has_exactly_eight_members():
-    # O6: ErrorCode trimmed to 8 members (collaborator assertion — providers depends
+    # ErrorCode trimmed to 8 members (collaborator assertion — providers depends
     # on this exact vocabulary for classify_error).
     members = {e.name for e in ErrorCode}
     assert members == {
@@ -134,7 +134,7 @@ def test_error_code_has_exactly_eight_members():
 
 
 def test_error_code_dropped_members_absent():
-    # O6: these collapsed into PROVIDER_STATUS / are consumer-side and must be gone.
+    # These collapsed into PROVIDER_STATUS / are consumer-side and must be gone.
     for dropped in (
         "PROVIDER_BAD_REQUEST",
         "PROVIDER_AUTH",

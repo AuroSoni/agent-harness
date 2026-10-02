@@ -49,7 +49,7 @@ class LocalSandboxConfig(SandboxConfig):
     base_dir: str = ""
     default_timeout: float = 30.0
     extra_zones: tuple[str, ...] = ()
-    """X11: zone names appended to DEFAULT_ZONE_LAYOUT."""
+    """Zone names appended to DEFAULT_ZONE_LAYOUT."""
 
 
 @register_sandbox("local")
@@ -103,7 +103,7 @@ class LocalSandbox(ConfigDrivenSandbox):
 
     # ─── Configuration ─────────────────────────────────────────────────
 
-    # config()/from_config() are inherited from ConfigDrivenSandbox (F9):
+    # config()/from_config() are inherited from ConfigDrivenSandbox:
     # auto-derived from LocalSandboxConfig — no per-field copying.
 
     @property
@@ -148,7 +148,7 @@ class LocalSandbox(ConfigDrivenSandbox):
 
     async def setup(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        for zone in self._layout.zones:  # X11: iterate the layout, not a literal tuple
+        for zone in self._layout.zones:  # iterate the layout, not a literal tuple
             (self.root / zone.name).mkdir(parents=True, exist_ok=True)
         self._cwd = self.workspace
 
@@ -185,7 +185,7 @@ class LocalSandbox(ConfigDrivenSandbox):
     async def write_file(self, path: str, content: str) -> None:
         resolved = self._resolve(path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        # I12(d)/A4: stage-to-temp + atomic rename so a crash leaves the old or the new
+        # Stage-to-temp + atomic rename so a crash leaves the old or the new
         # state, never a half-written file.
         tmp = resolved.parent / f".{resolved.name}.{uuid.uuid4().hex}.tmp"
         try:
@@ -210,7 +210,7 @@ class LocalSandbox(ConfigDrivenSandbox):
     ) -> None:
         resolved = self._resolve(path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        # I12(d)/A4: stage-to-temp + atomic rename.
+        # Stage-to-temp + atomic rename.
         tmp = resolved.parent / f".{resolved.name}.{uuid.uuid4().hex}.tmp"
         try:
             async with aiofiles.open(tmp, "wb") as f:

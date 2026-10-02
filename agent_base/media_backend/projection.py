@@ -1,12 +1,12 @@
 """The canonical image pipeline + content-block projection helpers.
 
-media-backend.md §2.1 (R16): this ``projection.py`` is the SINGLE canonical image
+This ``projection.py`` is the SINGLE canonical image
 pipeline for the whole library. ``crop → downscale → re-encode → base64`` lands
 here once; tools wraps it, the library's own ``common_tools/read_file.py`` uses
 it, never a second Pillow path.
 
 Amendments:
-  - O15(b): ``ImageBudget.for_provider()`` is DELETED — plain ``ImageBudget()`` is
+  - ``ImageBudget.for_provider()`` is DELETED — plain ``ImageBudget()`` is
     the Anthropic vision default; other providers pass explicit kwargs.
 """
 
@@ -41,7 +41,7 @@ _MIME_TO_FORMAT["image/jpg"] = "JPEG"
 class ImageBudget:
     """Image constraints. Plain ``ImageBudget()`` = Anthropic vision defaults.
 
-    O15(b): ``for_provider()`` is DELETED. There is no provider lookup table —
+    ``for_provider()`` is DELETED. There is no provider lookup table —
     ``ImageBudget()`` is the Anthropic default; other providers pass explicit
     kwargs (e.g. ``ImageBudget(max_dimension=2048, max_bytes=...)``).
     """
@@ -123,7 +123,7 @@ def fit_image_to_budget(
     original_dimensions = (image.width, image.height)
 
     if crop_bbox is not None:
-        # CM-P2 (AMENDMENTS 2026-06-11): CLAMP is canonical — the crop region
+        # CLAMP is canonical — the crop region
         # is intersected with the image bounds (same containment philosophy
         # as the sandbox path grammar), never an "Invalid crop_bbox" error
         # and never Pillow's black out-of-bounds padding. A region clamped
@@ -183,7 +183,7 @@ def image_content_from_bytes(
     budget: ImageBudget = ImageBudget(),
     crop_bbox: list[int] | None = None,
 ) -> ImageContent:
-    """bytes+mime → size-capped ImageContent. The F4 affordance, free-standing."""
+    """bytes+mime → size-capped ImageContent, free-standing."""
     return fit_image_to_budget(raw, budget=budget, crop_bbox=crop_bbox).to_image_content(
         filename=filename
     )

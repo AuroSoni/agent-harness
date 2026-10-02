@@ -1,15 +1,15 @@
-"""Red-suite specs for tenant namespacing via the principal (resolves X12, ties to X1).
+"""Interface specs for tenant namespacing via the principal.
 
-Covers sandbox.md:
-  - §2.4 `validate_segment(value)` module helper — accepts clean ids, raises
+Covers:
+  - `validate_segment(value)` module helper — accepts clean ids, raises
     SandboxNamespaceError on separators/traversal/empties; returns the validated value.
-  - §2.4 `SandboxNamespaceError` — subclasses ValueError, carries `.segment`.
-  - §2.4 `namespaced_base_dir(storage_root, principal, *, feature=None)` — fixed
-    tenant/subject[/feature] layout (O10: NamespacePolicy deleted); each present segment
+  - `SandboxNamespaceError` — subclasses ValueError, carries `.segment`.
+  - `namespaced_base_dir(storage_root, principal, *, feature=None)` — fixed
+    tenant/subject[/feature] layout (NamespacePolicy deleted); each present segment
     validated; principal=None → feature-only or storage_root.
 
 `SessionPrincipal` is consumed strictly as a COLLABORATOR (home: agent_base.core.identity).
-NamespacePolicy is DELETED (O10) and is never imported or referenced here.
+NamespacePolicy is DELETED and is never imported or referenced here.
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ def test_namespaced_base_dir_with_feature():
 
 
 def test_namespaced_base_dir_fixed_order_tenant_then_subject():
-    # O10: layout is FIXED tenant/subject[/feature] — no configurable segment order.
+    # Layout is FIXED tenant/subject[/feature] — no configurable segment order.
     principal = SessionPrincipal(tenant="TEN", subject="SUB")
     result = namespaced_base_dir("/root", principal, feature="feat")
     parts = Path(result).parts

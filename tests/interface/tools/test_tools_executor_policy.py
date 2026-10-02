@@ -1,17 +1,17 @@
-"""ExecutorPolicy — the 6-field executor config (AMENDMENTS O14(a)/(b), R17).
+"""ExecutorPolicy — the 6-field executor config.
 
-Covers python-executors.md §2.1/§2.2 as assigned to the tools suite:
-- O14(a): EXACTLY 6 fields — ``authorized_imports``, ``allow_all_imports``,
+As assigned to the tools suite:
+- EXACTLY 6 fields — ``authorized_imports``, ``allow_all_imports``,
   ``extra_builtins``, ``max_output_chars``, ``max_operations``,
   ``max_while_iterations``; ``base_imports``/``unblock_functions``/
   ``block_extra_*`` are dropped.
-- O14(b): ``evolve()`` and the ``DATA_SCIENCE`` preset are dropped;
+- ``evolve()`` and the ``DATA_SCIENCE`` preset are dropped;
   ``STDLIB_FILE_IO`` + ``file_io_policy()`` stay
   (``agent_base.python_executors.presets``).
-- §2.1: frozen dataclass; ``effective_imports`` layers the allow-list on top
+- Frozen dataclass; ``effective_imports`` layers the allow-list on top
   of the library base modules (``allow_all_imports`` → ``("*",)``);
   ``build_builtins()`` merges ``extra_builtins`` OVER the base tools.
-- R17/O11(a): the executor's ``max_output_chars`` (50_000) is a distinct char
+- The executor's ``max_output_chars`` (50_000) is a distinct char
   layer from ``ctx.emit_capped``'s ``max_chars`` (25_000) — no auto-derive.
 """
 
@@ -126,11 +126,11 @@ def test_build_builtins_extra_wins_on_name_collision():
     assert merged[name] is override
 
 
-# ─── Presets (§2.2) ─────────────────────────────────────────────────────────
+# ─── Presets ────────────────────────────────────────────────────────────────
 
 
 def test_stdlib_file_io_preset_contents():
-    # python-executors.md §2.2 pins the exact 15-module tuple (was Nova's
+    # The exact 15-module tuple is pinned (was Nova's
     # DEFAULT_STANDARD_LIBRARY_IMPORTS). Order included — file_io_policy
     # splices the tuple positionally into authorized_imports.
     assert STDLIB_FILE_IO == (
@@ -152,13 +152,13 @@ def test_data_science_preset_is_dropped():
     assert not hasattr(presets_module, "DATA_SCIENCE")
 
 
-# ─── R17 — three char/token layers, no auto-derive ──────────────────────────
+# ─── Three char/token layers, no auto-derive ────────────────────────────────
 
 
 def test_executor_buffer_and_emit_capped_caps_are_independent_layers():
     # Layer 1 (upstream, this policy): the executor print buffer — 50_000 chars.
     # Layer 2 (tools): ctx.emit_capped's max_chars — 25_000 chars.
-    # They are distinct constants; neither derives from the other (R17/O11(a)).
+    # They are distinct constants; neither derives from the other.
     executor_default = ExecutorPolicy().max_output_chars
     emit_capped_default = inspect.signature(
         ToolContext.emit_capped

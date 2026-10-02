@@ -1,7 +1,7 @@
-"""Shared, provider-agnostic message-chain repair (providers.md §2.1 / R18a).
+"""Shared, provider-agnostic message-chain repair.
 
-The well-formed ``tool_use``/``tool_result`` invariant is a **library guarantee**
-(DESIGN_CONTRACT §6): before *every* provider call the runtime repairs the
+The well-formed ``tool_use``/``tool_result`` invariant is a **library guarantee**:
+before *every* provider call the runtime repairs the
 accumulated context so Anthropic/LiteLLM never diverge.  This module is the one
 home for that repair — ``Provider.sanitize_chain`` defaults to
 :func:`ensure_chain_validity` here (a provider overrides it only for a genuinely
@@ -56,8 +56,8 @@ if TYPE_CHECKING:
 class ChainPatch:
     """Messages to append to the chain (sanitizer / abort-planner return shape).
 
-    Shared by ``Provider.plan_stream_abort`` and the runtime abort path
-    (providers.md §2.1 Notes); promoted to a named type so providers and the
+    Shared by ``Provider.plan_stream_abort`` and the runtime abort path;
+    promoted to a named type so providers and the
     loop both reference it.
     """
 
@@ -104,7 +104,7 @@ def synthesize_abort_tool_results(
 
 
 # ---------------------------------------------------------------------------
-# The shared pre-generate guarantee (R18a)
+# The shared pre-generate guarantee
 # ---------------------------------------------------------------------------
 
 #: Server-tool id prefix — server tool blocks never participate in the
@@ -119,7 +119,7 @@ def _is_server_tool_id(tool_id: str | None) -> bool:
 
 def _scrub_persisted_history(messages: list["Message"]) -> list["Message"]:
     """Scrub ALREADY-PERSISTED history damage before structural repair
-    (AMENDMENTS CM-G5; replaces the old consumer ``_repair_orphaned_tool_results``).
+    (replaces the old consumer ``_repair_orphaned_tool_results``).
 
     Four scrub rules (all idempotent, pure):
 
@@ -199,7 +199,7 @@ def ensure_chain_validity(
 ) -> list["Message"]:
     """Walk the chain and fix structural violations (idempotent).
 
-    Scrubs (CM-G5 — persisted-history damage, BEFORE structural repair):
+    Scrubs (persisted-history damage, BEFORE structural repair):
     - Leaked ``srvtoolu_*`` client ``tool_use`` in assistant history → stripped,
       never given a synthetic client ``tool_result`` (G5a).
     - Leaked ``srvtoolu_*`` ``tool_result`` in user history → stripped (G5b).
@@ -405,7 +405,7 @@ def plan_relay_abort(
     results for every still-pending frontend/confirmation call into ONE user
     message, so no ``tool_use`` is left orphaned.  Loop-owned and
     provider-agnostic — the per-provider ``message_sanitizer`` modules are
-    removed (providers.md §6, G0); this shared home is the only copy.
+    removed; this shared home is the only copy.
     """
     from agent_base.core.messages import Message as Msg
 

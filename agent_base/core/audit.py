@@ -6,11 +6,11 @@ agent do X, and **who asked**?". Rung 1 ships an in-memory ring buffer; Rung 2
 promotes this to a durable ``CommandAuditLog`` and uses it for at-least-once
 dedup.
 
-core.md §2.5: the record carries the submitting ``SessionPrincipal`` (stamped
+The record carries the submitting ``SessionPrincipal`` (stamped
 by ``submit()`` from the session principal — consumers do nothing) and an ISO
-``ts``. Both are ``_v``-tolerant additive fields (no version bump — O15(c));
+``ts``. Both are ``_v``-tolerant additive fields (no version bump);
 ``from_dict`` tolerates v0 payloads missing them. On the wire the principal is
-scope-only (B2 spirit): ``tenant``/``subject``, never ``claims``.
+scope-only: ``tenant``/``subject``, never ``claims``.
 """
 from __future__ import annotations
 
@@ -40,11 +40,11 @@ class CommandAuditRecord:
     disposition: str          # Disposition value
     detail: str | None = None
     # Who submitted it (subject/tenant), stamped by submit() from the session
-    # principal. None for anonymous/legacy. Enables per-tenant audit (§1.1).
+    # principal. None for anonymous/legacy. Enables per-tenant audit.
     principal: "SessionPrincipal | None" = None
-    # Flat scope components (tenancy §A.6) — auto-filled from ``principal``
+    # Flat scope components — auto-filled from ``principal``
     # when not supplied, so the audit log answers "who issued this?" without a
-    # side table. Never a claims carrier (B2).
+    # side table. Never a claims carrier.
     tenant: str | None = None
     subject: str | None = None
     ts: str = field(default_factory=_now_iso)  # when (was implicit by order)
@@ -64,7 +64,7 @@ class CommandAuditRecord:
             "client_seq": self.client_seq,
             "disposition": self.disposition,
             "detail": self.detail,
-            # scope-only principal (B2 spirit — no claims on the wire):
+            # scope-only principal (no claims on the wire):
             "principal": (
                 {"tenant": self.principal.tenant, "subject": self.principal.subject}
                 if self.principal
@@ -80,9 +80,9 @@ class CommandAuditRecord:
         principal = None
         raw_principal = data.get("principal")
         if raw_principal:
-            # Lazy: SessionPrincipal's home is agent_base/core/identity.py (R1,
-            # tenancy subsystem). Only tenant/subject were serialized; claims
-            # are not recoverable from the wire (B2).
+            # Lazy: SessionPrincipal's home is agent_base/core/identity.py (tenancy
+            # subsystem). Only tenant/subject were serialized; claims
+            # are not recoverable from the wire.
             from agent_base.core.identity import SessionPrincipal
 
             principal = SessionPrincipal(

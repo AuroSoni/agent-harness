@@ -170,11 +170,11 @@ class ExecutorPolicy:
     ``MAX_OPERATIONS`` / ``MAX_WHILE_ITERATIONS`` constants into one frozen
     config object.
 
-    Amended (O14(a)): EXACTLY 6 fields. ``base_imports``, ``unblock_functions``,
+    Amended: EXACTLY 6 fields. ``base_imports``, ``unblock_functions``,
     ``block_extra_functions`` and ``block_extra_modules`` are DROPPED — the base
     module set is a library constant the policy layers ON TOP of, and
     dangerous-fn unblocking / extra blocking had no live consumer. ``evolve()``
-    is also DROPPED (O14(b)) — callers construct a new ``ExecutorPolicy`` or use
+    is also DROPPED — callers construct a new ``ExecutorPolicy`` or use
     the ``file_io_policy()`` preset.
     """
 
@@ -187,10 +187,10 @@ class ExecutorPolicy:
     #   name -> callable, merged OVER BASE_PYTHON_TOOLS (this is where `open` goes,
     #   instead of the untyped `additional_functions` bag).
 
-    # --- output budget (single source of truth; kills the F6 re-truncate) ---
+    # --- output budget (single source of truth; kills the re-truncate) ---
     max_output_chars: int = DEFAULT_MAX_LEN_OUTPUT     # 50_000
 
-    # --- resource limits (was module globals — U2) --------------------------
+    # --- resource limits (was module globals) -------------------------------
     max_operations: int = MAX_OPERATIONS               # 10_000_000
     max_while_iterations: int = MAX_WHILE_ITERATIONS   # 1_000_000
 
@@ -209,7 +209,7 @@ class ExecutorPolicy:
     def build_builtins(self) -> dict[str, Callable]:
         """``BASE_PYTHON_TOOLS`` with ``extra_builtins`` merged over it.
 
-        (O14(a): no unblock/block knobs — extension is additive via
+        (No unblock/block knobs — extension is additive via
         ``extra_builtins``.) The base tools dict is never mutated.
         """
         return {**BASE_PYTHON_TOOLS, **self.extra_builtins}

@@ -1,11 +1,11 @@
-"""Eviction lifecycle + ``detach()`` (disconnect ≠ cancel) — §2.2, §3 A8.
+"""Eviction lifecycle + ``detach()`` (disconnect ≠ cancel).
 
-Covers session-control.md §2.2: ``evict`` is a clean teardown (abort → checkpoint →
+Covers: ``evict`` is a clean teardown (abort → checkpoint →
 unregister) that REFUSES while a turn is in flight (the ``_is_evictable`` invariant:
 never evict with a running actor, a non-IDLE phase, or an open await); ``evict_idle``
 is the TTL sweep; ``shutdown`` checkpoints everything; LRU capacity enforcement never
 evicts an in-flight session; and ``detach()`` only detaches the reader — the turn
-keeps running (resolves A8: the consumer never cancels on disconnect).
+keeps running (the consumer never cancels on disconnect).
 
 The await table is a relay_await collaborator: a fresh ``AwaitTable`` is installed
 per test via the shipped ``set_await_table`` hook so the open-await eviction guard
@@ -48,7 +48,7 @@ class RecordingAwaitTable(AwaitTable):
 
 
 async def test_evict_idle_session_is_clean_teardown():
-    """§2.2: abort → checkpoint → unregister; returns True."""
+    """Abort → checkpoint → unregister; returns True."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
     agent = await manager.get_or_create("sid-1")
@@ -67,7 +67,7 @@ async def test_evict_unknown_session_returns_false():
 
 
 async def test_evict_refuses_while_actor_running():
-    """§2.2: 'Refuses while a turn is in flight via _is_evictable'."""
+    """'Refuses while a turn is in flight via _is_evictable'."""
     factory = make_recording_factory(actor_running=True)
     manager = SessionManager(factory)
     agent = await manager.get_or_create("sid-busy")
@@ -86,7 +86,7 @@ async def test_evict_refuses_while_phase_non_idle():
 
 
 async def test_evict_refuses_session_with_open_await():
-    """§2.2 _is_evictable third conjunct ('not await_table.walk(root)'): a parked
+    """_is_evictable third conjunct ('not await_table.walk(root)'): a parked
     await blocks DIRECT evict() too — IDLE + no actor is not enough."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
@@ -104,7 +104,7 @@ async def test_evict_refuses_session_with_open_await():
 
 
 async def test_evict_drops_the_await_tree():
-    """§2.2: evict = 'abort → checkpoint → unregister + drop_tree(await table)' —
+    """evict = 'abort → checkpoint → unregister + drop_tree(await table)' —
     the root's await subtree is dropped so no records can leak past teardown."""
     table = RecordingAwaitTable()
     set_await_table(table)
@@ -136,7 +136,7 @@ async def test_evict_idle_keeps_fresh_sessions():
 
 
 async def test_ram_hit_refreshes_last_active_for_ttl_sweep():
-    """§2.5: 'entry.last_active = self._now()' on EVERY resident hit — a session
+    """'entry.last_active = self._now()' on EVERY resident hit — a session
     touched via get_or_create is fresh again and survives the TTL sweep."""
     manager = SessionManager(make_recording_factory(), idle_ttl_s=0.1)
     await manager.get_or_create("sid-a")
@@ -158,7 +158,7 @@ async def test_evict_idle_skips_in_flight_sessions():
 
 
 async def test_evict_idle_skips_sessions_with_open_await():
-    """§2.2 _is_evictable: never evict a session with an open await parked."""
+    """_is_evictable: never evict a session with an open await parked."""
     manager = SessionManager(make_recording_factory(), idle_ttl_s=0.0)
     await manager.get_or_create("sid-parked")
     await get_await_table().open(
@@ -188,7 +188,7 @@ async def test_lru_capacity_evicts_least_recently_active():
 
 
 async def test_ram_hit_refreshes_last_active_for_lru_victim_selection():
-    """§2.5: the resident-hit refresh is the LRU recency signal — a touched
+    """The resident-hit refresh is the LRU recency signal — a touched
     session must NOT be the capacity victim."""
     factory = make_recording_factory()
     manager = SessionManager(factory, max_resident=2)
@@ -228,11 +228,11 @@ async def test_shutdown_evicts_and_checkpoints_everything():
         assert agent.count("checkpoint") == 1
 
 
-# ── detach (disconnect ≠ cancel; resolves A8) ───────────────────────────────
+# ── detach (disconnect ≠ cancel) ────────────────────────────────────────────
 
 
 async def test_detach_leaves_the_turn_running():
-    """§2.2/§3: detach is a no-op on the actor — no abort, no checkpoint, no aclose;
+    """Detach is a no-op on the actor — no abort, no checkpoint, no aclose;
     the session stays resident so a reconnect finds it."""
     factory = make_recording_factory(actor_running=True)
     manager = SessionManager(factory)

@@ -1,17 +1,17 @@
-"""``HookMatcher`` + the ONE composition engine (agent-loop-hooks.md §2.4; O8).
+"""``HookMatcher`` + the ONE composition engine.
 
 Method-style hooks and the matcher registry are NOT two parallel resolution
 paths: method-style hooks auto-register into the *same* matcher registry,
 and there is exactly ONE composition engine — :class:`HookEngine`. The old
 ``_is_base_noop`` heuristic and the ``self.__dict__`` per-instance resolver
-are deleted (O8).
+are deleted.
 
 Deterministic chain order: subclass-declared (method-synthesized) →
 constructor registry → per-instance appended. Per-instance registration
 APPENDS (the single-slot ``agent.before_tool = fn`` trap is gone); explicit
 replacement is :meth:`HookEngine.replace`.
 
-Outcomes fold by the LOCKED §2.1 composition rule (see
+Outcomes fold by the LOCKED composition rule (see
 :func:`compose_chain`).
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ class HookMatcher:
     - ``on_session_start`` → matched against ``source`` ("create"/"resume")
     - ``on_session_end``   → matched against ``reason``
     - compaction        → matched against ``trigger`` ("auto"/"manual"/"overflow")
-    - ``on_profile_changed`` → matched against the new profile name (§2.3a)
+    - ``on_profile_changed`` → matched against the new profile name
     - turn / abort      → no matcher (matcher ignored)
 
     ``matcher=None`` (or ``"*"``) matches everything.
@@ -57,7 +57,7 @@ class HookMatcher:
 HookRegistry = dict[str, list[HookMatcher]]
 
 
-#: Per-event matcher-key field on the context (doc §2.4).
+#: Per-event matcher-key field on the context.
 MATCHER_KEY_FIELDS: dict[str, str] = {
     "on_session_start": "source",
     "on_session_end": "reason",
@@ -101,7 +101,7 @@ def _as_matcher(entry: "HookMatcher | HookFn") -> HookMatcher:
 
 
 class HookEngine:
-    """The ONE composition engine (O8): a single matcher registry with three
+    """The ONE composition engine: a single matcher registry with three
     ordered buckets per event — subclass-declared → ctor → per-instance."""
 
     def __init__(self) -> None:
@@ -137,7 +137,7 @@ class HookEngine:
         self._ctor.pop(event, None)
         self._instance[event] = [HookMatcher(matcher=matcher, hooks=list(fns))]
 
-    # ── resolution (doc §2.4 — deterministic order, one chain per event) ────
+    # ── resolution (deterministic order, one chain per event) ────
 
     def resolve(self, event: str, *, name_key: str | None = None) -> list[HookFn]:
         """Build the one ordered chain from the single registry.
@@ -155,11 +155,11 @@ class HookEngine:
         return chain
 
 
-# ── composition / fold (contract §1.3 / doc §2.1, LOCKED) ───────────────────
+# ── composition / fold (LOCKED) ───────────────────
 
 
 def _chain_update_into_ctx(event: str, ctx: Any, update: Any) -> None:
-    """§2.1: ``update`` chains in registration order — the NEXT hook's ctx
+    """``update`` chains in registration order — the NEXT hook's ctx
     reflects the previous hook's update as its input."""
     if event == "on_turn_start":
         ctx.message = update
@@ -177,7 +177,7 @@ def _chain_update_into_ctx(event: str, ctx: Any, update: Any) -> None:
 async def compose_chain(
     event: str, ctx: Any, chain: list[HookFn]
 ) -> HookOutcome | None:
-    """Run ``chain`` over ``ctx`` and fold the outcomes (LOCKED rule, §2.1).
+    """Run ``chain`` over ``ctx`` and fold the outcomes (LOCKED rule).
 
     - ``decision``: most-restrictive-wins — any block blocks (an explicit
       later ``proceed`` never resets it); the FIRST block's reason surfaces.

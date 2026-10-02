@@ -1,9 +1,9 @@
 """Await-generations: the sole resolution authority (the interrupt race fix).
 
-Covers interface_plan/subsystems/relay-await.md:
-  - §2.1 ``current_generation`` / ``bump_generation`` (per-root counters).
-  - §2.1 ``open(await_generation=...)`` default-to-current stamping.
-  - §2.1 ``interrupt(root_session_id)`` — bump the generation + close every
+Covers:
+  - ``current_generation`` / ``bump_generation`` (per-root counters).
+  - ``open(await_generation=...)`` default-to-current stamping.
+  - ``interrupt(root_session_id)`` — bump the generation + close every
     OPEN await for the root, returning the closed cids; a late ``resolve``
     for a retired generation never wakes the turn (generation, not
     future-vs-cancel ordering, is the authority).
@@ -124,7 +124,7 @@ async def test_interrupt_skips_already_resolved_awaits():
 
 
 async def test_late_reply_after_interrupt_never_wakes_the_turn():
-    # §2.1: once the generation is retired, a late ToolReply is a no-op —
+    # Once the generation is retired, a late ToolReply is a no-op —
     # it is dropped (an IGNORED_* disposition), never RESOLVED, never REJECTED.
     table = AwaitTable()
     join = await _open(table)

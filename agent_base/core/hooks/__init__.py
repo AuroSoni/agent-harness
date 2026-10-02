@@ -1,15 +1,15 @@
-"""The agent-loop-hooks public surface (agent-loop-hooks.md, keystone doc).
+"""The agent-loop-hooks public surface.
 
 This package owns the loop's extension surface:
 
 - :mod:`agent_base.core.hooks.context` — the capability-scoped
-  ``HookContext`` hierarchy (contract §1.2; R4 superset is canonical).
+  ``HookContext`` hierarchy (superset is canonical).
 - :mod:`agent_base.core.hooks.outcome` — the structured ``HookOutcome``
-  capability model (contract §1.3; O7: no ``switch_profile`` field).
+  capability model (no ``switch_profile`` field).
 - :mod:`agent_base.core.hooks.matcher` — ``HookMatcher`` / ``HookRegistry``
-  and the ONE composition engine (O8).
+  and the ONE composition engine.
 - :mod:`agent_base.core.hooks.protocol` — the LOCKED 12-hook catalog plus the
-  ``on_profile_changed`` observer hook (§2.3a).
+  ``on_profile_changed`` observer hook.
 """
 from agent_base.core.hooks.context import (
     AbortContext,

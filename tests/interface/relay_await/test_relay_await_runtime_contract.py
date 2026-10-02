@@ -1,36 +1,36 @@
 """AgentRuntime relay surface: the one suspend primitive + chain integrity.
 
-Covers interface_plan/subsystems/relay-await.md:
-  - §2.2 ``AgentRuntime.await_external`` (runtime-internal, keyword-only,
-    returns ``ResumeOutcome`` — AMENDMENTS §B3) at the canonical home
+Covers:
+  - ``AgentRuntime.await_external`` (runtime-internal, keyword-only,
+    returns ``ResumeOutcome``) at the canonical home
     ``agent_base/core/runtime.py``.
-  - §2.3 / §4 Variant A — runtime-minted opaque cid:
+  - Runtime-minted opaque cid:
     ``cid = f"relay_{run_id}_{step}"`` (never an agent identity).
-  - §2.5 ``_reconcile_relay_reply`` — the library-owned resume-boundary
-    chain-integrity guarantee (rules 1–4 + idempotency), R18b.
-  - §2.2 ``_race_join_against_cancel`` — the single shared wait (join future
+  - ``_reconcile_relay_reply`` — the library-owned resume-boundary
+    chain-integrity guarantee (rules 1–4 + idempotency).
+  - ``_race_join_against_cancel`` — the single shared wait (join future
     vs cancellation event) that replaces the two copy-pasted wait blocks;
     its abort path raises ``_AwaitCancelled``, the sole source of the
     ``"aborted"`` ``ResumeOutcome``.
-  - §2.6 / AMENDMENTS §I4 ``AgentRuntime.call_frontend_tool(name, tool_input,
+  - ``AgentRuntime.call_frontend_tool(name, tool_input,
     *, ctx) -> list[ContentBlock]`` (the runtime entry behind the public
     ``ctx.call_frontend_tool``).
-  - §2.4 / AMENDMENTS §B4 ``_rearm_pending_await(*, reply=None)`` calling
+  - ``_rearm_pending_await(*, reply=None)`` calling
     convention (conditional re-emit split).
-  - AMENDMENTS WT-2 — a ``scripted`` resume returns the RECONCILED blocks to
+  - A ``scripted`` resume returns the RECONCILED blocks to
     the caller and neither splices them into context nor checkpoints; loop
     reasons keep the splice+checkpoint boundary.
-  - AMENDMENTS WT-3 — programmatic pauses (``call_frontend_tool``) serialize
+  - Programmatic pauses (``call_frontend_tool``) serialize
     on the per-runtime ``_scripted_pause_lock``: at most one scripted
     ``AwaitInput`` in flight per agent; concurrent callers queue; abort
     drains the queue (each waiter returns ``[]``).
 
-The AgentRuntime constructor is deliberately unspecified by the docs, so the
+The AgentRuntime constructor is deliberately unspecified, so the
 algorithmic specs below drive the documented methods through plain ``self``
-state stubs (the only collaborator surface the doc's pseudocode reads);
+state stubs (the only collaborator surface the methods read);
 full-loop behaviour is exercised at the table level in the sibling files.
 The same stub-self technique drives ``await_external`` end-to-end against a
-REAL ``AwaitTable`` (via the ``set_await_table`` DI seam): the §2.2 emit
+REAL ``AwaitTable`` (via the ``set_await_table`` DI seam): the emit
 shape, open-record stamping, reconcile→splice→checkpoint resumed path,
 abort mapping, and the ``finally`` pop are all behavioral specs below.
 """
@@ -97,7 +97,7 @@ def _join(future: "asyncio.Future") -> Join:
     )
 
 
-# ── calling conventions (§2.2 / §2.6 / §B4) ───────────────────────────────
+# ── calling conventions ───────────────────────────────────────────────────
 
 
 def test_await_external_is_async_and_keyword_only():
@@ -115,7 +115,7 @@ def test_await_external_is_async_and_keyword_only():
 
 
 def test_call_frontend_tool_is_async_with_ctx_keyword_only():
-    # §I4: AgentRuntime.call_frontend_tool(name, tool_input, *, ctx).
+    # AgentRuntime.call_frontend_tool(name, tool_input, *, ctx).
     assert inspect.iscoroutinefunction(AgentRuntime.call_frontend_tool)
     params = dict(inspect.signature(AgentRuntime.call_frontend_tool).parameters)
     params.pop("self")
@@ -127,7 +127,7 @@ def test_call_frontend_tool_is_async_with_ctx_keyword_only():
 
 
 def test_rearm_pending_await_takes_an_optional_inbound_reply():
-    # §B4: _rearm_pending_await(*, reply: ToolReply | None = None) — the
+    # _rearm_pending_await(*, reply: ToolReply | None = None) — the
     # reply-in-hand cold path re-opens the cid WITHOUT re-emitting AwaitInput.
     assert inspect.iscoroutinefunction(AgentRuntime._rearm_pending_await)
     params = dict(inspect.signature(AgentRuntime._rearm_pending_await).parameters)
@@ -137,7 +137,7 @@ def test_rearm_pending_await_takes_an_optional_inbound_reply():
     assert params["reply"].default is None
 
 
-# ── cid allocation (§2.3, §4 Variant A) ───────────────────────────────────
+# ── cid allocation ────────────────────────────────────────────────────────
 
 
 def test_relay_cid_is_minted_from_run_id_and_step():
@@ -146,8 +146,8 @@ def test_relay_cid_is_minted_from_run_id_and_step():
 
 
 def test_relay_cid_is_opaque_not_an_agent_identity():
-    # §4 Variant A: the cid is an echo token, NEVER an agent_uuid the FE has
-    # to classify (kills relay_uuid spoofing / classifyRelayTarget, C1).
+    # The cid is an echo token, NEVER an agent_uuid the FE has
+    # to classify (kills relay_uuid spoofing / classifyRelayTarget).
     stub = _CidStateStub()
     cid = AgentRuntime._allocate_relay_cid(stub, None)
     assert cid.startswith("relay_")
@@ -155,7 +155,7 @@ def test_relay_cid_is_opaque_not_an_agent_identity():
     assert stub.agent_id not in cid
 
 
-# ── _reconcile_relay_reply (§2.5 — rules 1–4 + idempotency) ───────────────
+# ── _reconcile_relay_reply (rules 1–4 + idempotency) ──────────────────────
 
 
 async def test_reconcile_drops_blocks_for_unexpected_tool_ids():
@@ -252,7 +252,7 @@ async def test_reconcile_passes_non_tool_result_blocks_through():
 
 
 async def test_reconcile_is_idempotent():
-    # §2.5: re-delivering the same reply yields the same context.
+    # Re-delivering the same reply yields the same context.
     expected = ("toolu_a", "toolu_b")
     dirty = [_tr("toolu_a"), _tr("toolu_stale"), _tr("srvtoolu_1")]
 
@@ -264,11 +264,11 @@ async def test_reconcile_is_idempotent():
     assert [b.to_dict() for b in second] == [b.to_dict() for b in first]
 
 
-# ── _race_join_against_cancel (§2.2 — the shared wait helper) ─────────────
+# ── _race_join_against_cancel (the shared wait helper) ────────────────────
 
 
 async def test_race_returns_results_when_future_resolves_without_event():
-    # §2.2: no cancellation event configured → the helper simply awaits the
+    # No cancellation event configured → the helper simply awaits the
     # join future and returns its results.
     future = asyncio.get_running_loop().create_future()
     results = [_tr("toolu_a")]
@@ -281,7 +281,7 @@ async def test_race_returns_results_when_future_resolves_without_event():
 
 
 async def test_race_converts_future_cancellation_without_event():
-    # §2.2: a cancelled join future surfaces as _AwaitCancelled — the abort
+    # A cancelled join future surfaces as _AwaitCancelled — the abort
     # path await_external maps to ResumeOutcome(status="aborted") — never a
     # raw CancelledError escaping the helper.
     future = asyncio.get_running_loop().create_future()
@@ -293,7 +293,7 @@ async def test_race_converts_future_cancellation_without_event():
 
 
 async def test_race_cancellation_event_set_first_aborts_and_cancels_join():
-    # §2.2: the cancellation event wins the race → _AwaitCancelled, and the
+    # The cancellation event wins the race → _AwaitCancelled, and the
     # still-pending join future is cancelled, not left dangling.
     event = asyncio.Event()
     event.set()
@@ -306,7 +306,7 @@ async def test_race_cancellation_event_set_first_aborts_and_cancels_join():
 
 
 async def test_race_converts_future_cancellation_with_unset_event():
-    # §2.2: join.future cancelled while an (unset) event exists → abort path,
+    # join.future cancelled while an (unset) event exists → abort path,
     # same as the no-event branch.
     event = asyncio.Event()
     future = asyncio.get_running_loop().create_future()
@@ -318,7 +318,7 @@ async def test_race_converts_future_cancellation_with_unset_event():
 
 
 async def test_race_returns_results_when_event_exists_but_is_unset():
-    # §2.2: an unset cancellation event never wins — the resolved future does.
+    # An unset cancellation event never wins — the resolved future does.
     event = asyncio.Event()
     future = asyncio.get_running_loop().create_future()
     results = [_tr("toolu_a")]
@@ -330,28 +330,28 @@ async def test_race_returns_results_when_event_exists_but_is_unset():
     assert out == results
 
 
-# ── ResumeOutcome wiring (§2.2 / §B3) ─────────────────────────────────────
+# ── ResumeOutcome wiring ──────────────────────────────────────────────────
 
 
 def test_await_external_is_annotated_to_return_resume_outcome():
-    # §B3: await_external returns ResumeOutcome (status + results in one
+    # await_external returns ResumeOutcome (status + results in one
     # value) — callers branch on .status and read .results.
     hints = inspect.signature(AgentRuntime.await_external).return_annotation
     assert hints in (ResumeOutcome, "ResumeOutcome")
 
 
-# ── await_external behavior (§2.2 — driven through a stub self) ───────────
+# ── await_external behavior (driven through a stub self) ──────────────────
 # ctx is a PARAMETER of await_external, so a recording fake is a collaborator
 # stand-in, not a mock of the type under test. The table is a REAL AwaitTable
 # installed through the documented set_await_table DI seam; the shared
 # helpers (_race_join_against_cancel / _reconcile_relay_reply) are the real
-# implementations bound through the stub; only the pseudocode's named
+# implementations bound through the stub; only the named
 # side-effect collaborators (_splice_relay_results, checkpoint,
 # _repair_self_chain) are recorded.
 
 
 class _RecordingCtx:
-    """Collaborator fake for the §B8 emit handle."""
+    """Collaborator fake for the emit handle."""
 
     def __init__(self) -> None:
         self.emits: list[tuple] = []
@@ -361,7 +361,7 @@ class _RecordingCtx:
 
 
 class _AwaitSelf:
-    """Stands in for the runtime state §2.2's pseudocode reads on ``self``."""
+    """Stands in for the runtime state ``await_external`` reads on ``self``."""
 
     agent_id = "agent_uuid_99"
 
@@ -426,7 +426,7 @@ def _start(stub: _AwaitSelf, ctx: _RecordingCtx, **overrides) -> "asyncio.Task":
 
 
 async def test_await_external_emits_one_await_input_envelope():
-    # §2.2/B5/B8: the ONE control envelope — ctx.emit(AwaitInput(tools=
+    # The ONE control envelope — ctx.emit(AwaitInput(tools=
     # outbound), correlation_id=cid, expects_reply=True). No second frame,
     # no hand-built envelope.
     table = AwaitTable()
@@ -452,7 +452,7 @@ async def test_await_external_emits_one_await_input_envelope():
 
 
 async def test_await_external_stamps_identity_on_the_open_record():
-    # §2.2/§1.1: open() carries the ambient self.principal — NOT
+    # open() carries the ambient self.principal — NOT
     # extras['owner'] — plus reason, child_agent_id, the root session id and
     # the owning agent id.
     table = AwaitTable()
@@ -479,7 +479,7 @@ async def test_await_external_stamps_identity_on_the_open_record():
 
 
 async def test_await_external_resumed_path_reconciles_splices_checkpoints():
-    # §2.2 resumed path, in order: the REAL _reconcile_relay_reply cleans the
+    # Resumed path, in order: the REAL _reconcile_relay_reply cleans the
     # raw reply (stale id dropped), _splice_relay_results receives the
     # reconciled blocks + ctx, checkpoint() persists at the resume boundary
     # (through the base _checkpoint_at_resume seam), and the record is popped
@@ -514,7 +514,7 @@ async def test_await_external_resumed_path_reconciles_splices_checkpoints():
 
 
 async def test_await_external_abort_maps_to_aborted_outcome():
-    # §2.2 abort path: cancellation while parked → _repair_self_chain (the §6
+    # Abort path: cancellation while parked → _repair_self_chain (the
     # orphan-repair), ResumeOutcome(status="aborted", results=[]), record
     # popped — and never a CancelledError past the finally.
     table = AwaitTable()
@@ -540,7 +540,7 @@ async def test_await_external_abort_maps_to_aborted_outcome():
 
 
 async def test_await_external_scripted_resume_returns_without_splice_or_checkpoint():
-    # WT-2 (ratifies §I4): reason == "scripted" (the call_frontend_tool path)
+    # reason == "scripted" (the call_frontend_tool path)
     # — the RECONCILED blocks return to the calling tool body; the runtime
     # NEVER splices them into context and NEVER checkpoints (mid-body the
     # chain holds the enclosing turn's dangling tool_use blocks). Reconcile
@@ -568,7 +568,7 @@ async def test_await_external_scripted_resume_returns_without_splice_or_checkpoi
         set_await_table(AwaitTable())
 
 
-# ── call_frontend_tool serialization (WT-3 — driven on a REAL runtime) ────
+# ── call_frontend_tool serialization (driven on a REAL runtime) ────
 
 
 def _drain_await_inputs(agent) -> list:
@@ -585,7 +585,7 @@ def _drain_await_inputs(agent) -> list:
 
 
 async def test_call_frontend_tool_serializes_concurrent_programmatic_pauses():
-    # WT-3: two backend tools in one batch may both call the primitive — the
+    # Two backend tools in one batch may both call the primitive — the
     # per-runtime lock queues the second: at most ONE scripted AwaitInput is
     # in flight per agent (the FE holds a single pending relay slot). The
     # second pause emits only after the first resolves; both callers get
@@ -635,7 +635,7 @@ async def test_call_frontend_tool_serializes_concurrent_programmatic_pauses():
 
 
 async def test_call_frontend_tool_abort_drains_queued_waiters():
-    # WT-3 abort: cancellation while one caller is parked and another is
+    # Abort: cancellation while one caller is parked and another is
     # queued behind the lock — the parked pause aborts, the queued waiter
     # then parks, immediately loses the race to the already-set event, and
     # BOTH return [] (never hang, never raise).

@@ -1,9 +1,9 @@
 """Shipped, composable import-policy presets.
 
-Kills the F5/F6 hand-rolled "standard stdlib" merge that consumers (Nova's
+Kills the hand-rolled "standard stdlib" merge that consumers (Nova's
 ``DEFAULT_STANDARD_LIBRARY_IMPORTS``) re-derived by hand.
 
-O14(b): the ``DATA_SCIENCE`` preset is DROPPED — it was a thin tuple a consumer
+The ``DATA_SCIENCE`` preset is DROPPED — it was a thin tuple a consumer
 can spell inline via ``authorized_imports=("numpy", "pandas", "scipy")``.
 ``STDLIB_FILE_IO`` stays (it maps to a real Nova fork) along with
 ``file_io_policy()``.

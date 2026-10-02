@@ -1,6 +1,6 @@
 """Content-addressed blob store — the library's single object store.
 
-media-backend.md §2.4 (Fork H = Variant A, DECIDED — R14): ``BlobStore`` is the
+``BlobStore`` is the
 ONE content-addressed object store for the whole library. The hash IS the key;
 ``put`` is idempotent (dedupe by hash); ``safe_blob_key`` is the ONE key-safety
 routine; ``S3Settings.from_env`` is the ONE env resolver (see ``s3_config.py``).
@@ -72,9 +72,9 @@ def safe_blob_key(*parts: str) -> str:
 
 def split_namespace(namespace: str) -> list[str]:
     """Split a (possibly multi-segment) namespace into ``safe_blob_key``
-    segments (AMENDMENTS CM-P4G2).
+    segments.
 
-    The library's own ``derive_namespace`` (I13a) emits ``"tenant/subject"``
+    The library's own ``derive_namespace`` emits ``"tenant/subject"``
     — WITH a slash — so the concrete backends must treat the namespace as a
     path of segments, each individually validated. Single-segment namespaces
     keep their exact historical path layout.
@@ -84,7 +84,7 @@ def split_namespace(namespace: str) -> list[str]:
 
 @runtime_checkable
 class KeyedBlobStore(Protocol):
-    """KEY-addressed bytes beside the content-addressed surface (CM-P4G1).
+    """KEY-addressed bytes beside the content-addressed surface.
 
     The minimal surface for caller-built, opaque object keys (e.g.
     ``"skills/org/{org}/{skill}/revisions/{rev}.tar.gz"``) — integrity is the
@@ -126,7 +126,7 @@ class BlobStore(ABC):
         If a blob with the same hash already exists in the (possibly
         scope-derived) namespace, SKIP the write and return the existing ref.
 
-        I13(a): when ``scope``/principal is present, the effective namespace is
+        When ``scope``/principal is present, the effective namespace is
         DERIVED from it (tenant/subject), so the dedupe-skip only matches within
         the caller's own tenant (no cross-tenant dedupe leak).
         """
@@ -148,7 +148,7 @@ class BlobStore(ABC):
     ) -> BlobRef | None:
         """Return the existing :class:`BlobRef` for ``content_hash`` else ``None``.
 
-        I13(a): DEFAULT scope-filtered. When a scope/principal is present the
+        DEFAULT scope-filtered. When a scope/principal is present the
         namespace is derived from it and the probe never crosses into another
         tenant's blobs. ``scope=None`` ⇒ the bare ``namespace`` as given.
         """

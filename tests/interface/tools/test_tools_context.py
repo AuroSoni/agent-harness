@@ -1,21 +1,21 @@
-"""ToolContext — R3 field additions, emit (B8), budgeting (I5/O11(a)), relay (I4).
+"""ToolContext — field additions, emit, budgeting, relay.
 
-Covers tools.md §2.2 ("ToolContext field additions") and §2.4:
+Covers:
 - Shipped surface retained: ``run_id``/``tool_call_id``/``attempt``/
   ``replay_reason``/``idempotency_key`` + ``once()`` / ``OnceStore`` /
   ``stable_hash`` / ``CTX_PARAM_NAME``.
-- R3: new ``sandbox`` / ``principal`` / ``media`` fields, populated by the
+- New ``sandbox`` / ``principal`` / ``media`` fields, populated by the
   runtime at call-time, default ``None``.
-- B8: ``emit(body, *, correlation_id=None, expects_reply=False)`` — the
+- ``emit(body, *, correlation_id=None, expects_reply=False)`` — the
   unwired default RAISES ``RuntimeError`` (loud, not a silent no-op).
-- I5/O11(a): ``await ctx.emit_capped(text, *, max_chars=25_000)`` persists the
+- ``await ctx.emit_capped(text, *, max_chars=25_000)`` persists the
   FULL text via ``ctx.sandbox`` and returns a truncated string with a
   reference appended; idempotent via ``ctx.once``; plain kwargs over library
   default constants (no ``OutputBudget`` dataclass).
-- R16: ``ctx.emit_capped_bytes(data, *, ext, max_bytes=1_200_000)`` delegates
+- ``ctx.emit_capped_bytes(data, *, ext, max_bytes=1_200_000)`` delegates
   to the blob store via ``ctx.media`` when configured, else falls back to the
   sandbox; returns a reference string.
-- I4: ``ctx.call_frontend_tool(name, input)`` is the public relay primitive;
+- ``ctx.call_frontend_tool(name, input)`` is the public relay primitive;
   the old public ``await_external`` is gone from ``ToolContext``.
 """
 
@@ -152,7 +152,7 @@ async def test_once_store_isolates_different_idempotency_keys():
     assert counter["n"] == 2  # composite key includes the per-call identity
 
 
-# ─── R3 field additions ─────────────────────────────────────────────────────
+# ─── Field additions ────────────────────────────────────────────────────────
 
 
 def test_new_capability_fields_default_to_none():
@@ -170,7 +170,7 @@ def test_principal_field_threads_session_principal():
     assert ctx.principal.subject == "member_1"
 
 
-# ─── emit (B8) ──────────────────────────────────────────────────────────────
+# ─── emit ───────────────────────────────────────────────────────────────────
 
 
 def test_emit_unwired_default_raises_loudly():
@@ -191,7 +191,7 @@ def test_emit_signature_is_keyword_only_with_documented_defaults():
     assert params["expects_reply"].default is False
 
 
-# ─── emit_capped (I5/O11(a)) ────────────────────────────────────────────────
+# ─── emit_capped ────────────────────────────────────────────────────────────
 
 
 async def test_emit_capped_passthrough_under_limit():
@@ -224,7 +224,7 @@ async def test_emit_capped_overflow_persists_full_and_appends_reference():
     assert result.startswith(full[:100])
     # …and has a reference APPENDED (it is not a bare prefix of the original)
     assert not full.startswith(result)
-    # …which REFERENCES the persisted artifact (F6: the appended tail points at
+    # …which REFERENCES the persisted artifact (the appended tail points at
     # the full result the sandbox stored, not arbitrary filler)
     assert ".tool_results/overflow_1.txt" in result
 
@@ -244,7 +244,7 @@ async def test_emit_capped_is_idempotent_via_once():
 
 
 def test_emit_capped_default_cap_is_library_constant():
-    # O11(a): plain kwarg over the library default constant — 25_000 chars.
+    # Plain kwarg over the library default constant — 25_000 chars.
     sig = inspect.signature(ToolContext.emit_capped)
     param = sig.parameters["max_chars"]
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
@@ -340,7 +340,7 @@ async def test_emit_capped_and_spill_write_one_file_between_them():
     assert len(sandbox.calls) == 1
 
 
-# ─── emit_capped_bytes (R16 delegation) ─────────────────────────────────────
+# ─── emit_capped_bytes (delegation) ─────────────────────────────────────────
 
 
 def test_emit_capped_bytes_signature():
@@ -370,7 +370,7 @@ async def test_emit_capped_bytes_delegates_to_blob_store_when_media_configured()
     assert sandbox.calls == []  # …and the sandbox fallback was NOT
 
 
-# ─── call_frontend_tool (I4) ────────────────────────────────────────────────
+# ─── call_frontend_tool ─────────────────────────────────────────────────────
 
 
 def test_call_frontend_tool_is_the_public_relay_primitive():
@@ -380,12 +380,12 @@ def test_call_frontend_tool_is_the_public_relay_primitive():
 
 
 def test_public_await_external_is_gone_from_tool_context():
-    # I4: await_external is runtime-internal only — a tool body never sees
+    # await_external is runtime-internal only — a tool body never sees
     # or mints a cid.
     assert not hasattr(ToolContext, "await_external")
 
 
-# ─── Deletions (O11(a)) ─────────────────────────────────────────────────────
+# ─── Deletions ──────────────────────────────────────────────────────────────
 
 
 def test_no_output_budget_dataclass():

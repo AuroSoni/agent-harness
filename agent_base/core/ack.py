@@ -28,9 +28,9 @@ class Disposition(str, Enum):
     NOT_RUNNING = "not_running"      # nothing in flight to abort/steer (→ 409 Conflict)
     NOT_FOUND = "not_found"          # principal/auth: caller may not address this
                                      # session (→ 404; e.g. SessionManager.submit to a
-                                     # non-addressable session, R9)
+                                     # non-addressable session)
     MISDIRECTED = "misdirected"      # Rung 2: command addressed to a non-resident
-                                     # session (O4 — member retained; the 421 HTTP
+                                     # session (member retained; the 421 HTTP
                                      # mapping lands with Rung 2)
 
 

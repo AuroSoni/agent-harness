@@ -2,8 +2,8 @@
 
 Provides exponential backoff with jitter for transient failures, and
 stream event processing that translates Anthropic events into canonical
-``StreamDelta`` objects pushed into a ``DeltaSink`` (R30 — the legacy
-``(queue, stream_formatter)`` pair is deleted per G0, not shimmed).
+``StreamDelta`` objects pushed into a ``DeltaSink`` (the legacy
+``(queue, stream_formatter)`` pair is deleted, not shimmed).
 """
 from __future__ import annotations
 
@@ -35,8 +35,7 @@ if TYPE_CHECKING:
 class RawStreamOutcome:
     """Raw outcome of one Anthropic stream: the accumulated SDK message plus
     cancellation bookkeeping. The provider converts this into the shared
-    ``ProviderTurn`` (completed block indices ride ``stream_bookkeeping`` --
-    O12a)."""
+    ``ProviderTurn`` (completed block indices ride ``stream_bookkeeping``)."""
 
     message: Any
     completed_blocks: set[int] = field(default_factory=set)
@@ -103,7 +102,7 @@ async def anthropic_stream_with_backoff(
     """Execute Anthropic streaming with exponential backoff.
 
     Translates Anthropic stream events into ``StreamDelta`` objects and
-    pushes them to ``sink.emit(delta)`` (R30).
+    pushes them to ``sink.emit(delta)``.
 
     Retryable errors:
         ``RateLimitError``, ``APIConnectionError``, ``APITimeoutError``,
@@ -234,7 +233,7 @@ async def _process_stream_events(
     """Translate Anthropic stream events into StreamDelta objects.
 
     Produces typed ``StreamDelta`` objects and pushes them to
-    ``sink.emit(...)`` -- framing/format is downstream (R30).
+    ``sink.emit(...)`` -- framing/format is downstream.
 
     Event types handled:
         - ``content_block_start``: Track block types, initialize tool buffers

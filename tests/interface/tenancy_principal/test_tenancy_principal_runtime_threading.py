@@ -1,13 +1,13 @@
 """Interface spec — ambient principal on the runtime + adapter binding.
 
-Covers interface_plan/subsystems/tenancy-principal.md:
-  - §A.1: ``AgentRuntime(..., principal=)`` is the ONE identity input; the
+Covers:
+  - ``AgentRuntime(..., principal=)`` is the ONE identity input; the
     runtime holds it (never None internally — anonymous default) and exposes a
     read-only ``principal`` property.
-  - §A.2 / O2: the runtime BINDS each adapter via the SOLE public seam
+  - The runtime BINDS each adapter via the SOLE public seam
     ``adapter.for_principal(principal)`` — the bound view is what the runtime
     uses from then on. (No ``Scope``/``set_scope``/wrapper types anywhere.)
-  - §B.4 / §4 decided composition / I12(d): ``initialize()`` is bidirectional —
+  - ``initialize()`` is bidirectional —
     forward A→B it stamps ``agent_config.owner_tenant/owner_subject`` from the
     ambient principal; backward B→A it ADOPTS the persisted owner when no
     principal was supplied (cold-load never silently unscopes) and re-binds the
@@ -17,9 +17,8 @@ Storage adapter internals (column registry, ``is_owned``, SQL projection)
 belong to the storage subsystem; the fakes below stand in for adapters as
 collaborators and only record the binding calls tenancy_principal specifies.
 
-NOTE on ``PrincipalConflict``'s home: the symbol appears only in
-tenancy-principal.md §B.4 pseudocode and has NO entry in the AMENDMENTS
-"Canonical homes for new symbols" table. This suite ratifies
+NOTE on ``PrincipalConflict``'s home: the symbol has no pinned
+home. This suite ratifies
 ``agent_base/core/identity.py`` (the identity vocabulary module that already
 homes ``SessionPrincipal``/``PrincipalPolicy``/``StrictScopePolicy``) as its
 home pending a maintainer pin — if the maintainer pins a different home, only
@@ -37,7 +36,7 @@ OWNER = SessionPrincipal(tenant="org_1", subject="member_1")
 
 
 class _Bound:
-    """Distinct bound view returned by ``for_principal`` (O2).
+    """Distinct bound view returned by ``for_principal``.
 
     Deliberately a DIFFERENT object from the unbound adapter so the suite can
     prove the runtime keeps the object ``for_principal`` returned rather than
@@ -116,7 +115,7 @@ def _runtime(
     return agent, cfg, conv, run
 
 
-# ─── The ONE identity input (§A.1) ───────────────────────────────────
+# ─── The ONE identity input ──────────────────────────────────────────
 
 
 def test_runtime_exposes_the_supplied_principal():
@@ -138,7 +137,7 @@ def test_runtime_binds_every_adapter_via_for_principal():
 
 
 def test_runtime_uses_the_bound_adapter_view():
-    # O2: for_principal returns a DISTINCT bound view; the runtime must keep
+    # for_principal returns a DISTINCT bound view; the runtime must keep
     # THAT object — an implementation that calls for_principal but discards
     # the result for the unbound original cannot pass this.
     agent, cfg, conv, run = _runtime(principal=OWNER)
@@ -156,7 +155,7 @@ def test_anonymous_default_is_also_bound_onto_adapters():
     assert cfg.bindings[0].is_anonymous() is True
 
 
-# ─── initialize(): forward stamp A→B (§B.4) ──────────────────────────
+# ─── initialize(): forward stamp A→B ─────────────────────────────────
 
 
 async def test_initialize_stamps_owner_columns_on_a_fresh_config():
@@ -184,7 +183,7 @@ async def test_initialize_anonymous_everywhere_stays_unscoped():
     assert agent.principal.is_anonymous() is True
 
 
-# ─── initialize(): back-fill B→A on cold-load (I12(d)) ───────────────
+# ─── initialize(): back-fill B→A on cold-load ────────────────────────
 
 
 async def test_initialize_adopts_persisted_owner_when_no_principal_supplied():
@@ -206,7 +205,7 @@ async def test_initialize_rebinds_adapters_to_the_adopted_principal():
     agent, _, conv, run = _runtime(config_adapter=cfg)
     await agent.initialize()
     # First binding was the anonymous ctor default; adoption re-binds via
-    # _rebind_adapters(self._principal) — ALL THREE adapters (§B.4), not just
+    # _rebind_adapters(self._principal) — ALL THREE adapters, not just
     # the config adapter.
     assert cfg.bindings[-1].scope_key == ("org_1", "member_1")
     assert len(cfg.bindings) >= 2

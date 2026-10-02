@@ -89,7 +89,7 @@ class S3MediaBackend(MediaBackend):
             endpoint_url: Custom endpoint for S3-compatible services
                 (e.g., MinIO, LocalStack).
             presigned_url_expiry: Seconds until presigned URLs expire.
-            blob_store: Optional content-addressed object store (§2.4).
+            blob_store: Optional content-addressed object store.
         """
         super().__init__(blob_store=blob_store)
         self.bucket = bucket
@@ -404,7 +404,7 @@ class S3MediaBackend(MediaBackend):
         *,
         scope: MediaScope | None = None,
     ) -> MediaMetadata | None:
-        # I13(a): scope-derived namespace, default scope-filtered.
+        # Scope-derived namespace, default scope-filtered.
         from agent_base.blob_store.hashing import derive_namespace
 
         namespace = derive_namespace(agent_uuid, scope)

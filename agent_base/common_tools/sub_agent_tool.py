@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from agent_base.sandbox.sandbox_types import Sandbox
 
 
-# P8-G1: fields holding LIVE runtime objects — snapshotting a spec must keep
+# Fields holding LIVE runtime objects — snapshotting a spec must keep
 # these by REFERENCE, never deepcopy them. ``tools``/``frontend_tools`` are tool
 # instances that may carry process-wide resources (an asyncpg pool, a sandbox
 # binding); ``memory_store`` is a shared store. Cloning them is both fatal
@@ -42,7 +42,7 @@ _REFERENCE_FIELDS = frozenset({"tools", "frontend_tools", "memory_store", "mcp_s
 class SubAgentSpec:
     """Static specification for a subagent.
 
-    **Snapshot semantics (P8-G1).** ``copy.deepcopy`` of a spec — which the
+    **Snapshot semantics.** ``copy.deepcopy`` of a spec — which the
     runtime performs in ``SubAgentTool._coerce_spec`` and in
     ``from_template_agent`` for nested specs — is FIELD-AWARE:
 
@@ -70,13 +70,13 @@ class SubAgentSpec:
     tools: list[Callable[..., Any]] | None = None
     frontend_tools: list[Callable[..., Any]] | None = None
     subagents: dict[str, "SubAgentSpec"] | None = None
-    # O12(c): the retry budget is a provider concern — the spec snapshots the
+    # The retry budget is a provider concern — the spec snapshots the
     # parent provider's RetryPolicy for the child's provider value.
     retry_policy: Any = None
     max_parallel_tool_calls: int = 5
     max_tool_result_tokens: int = 25_000
     memory_store: "MemoryStore | None" = None
-    # mcp.md E9: the parent's McpToolSource, shared BY REFERENCE — children
+    # The parent's McpToolSource, shared BY REFERENCE — children
     # see dynamically added servers; they never re-baseline, drain notices,
     # or close it (ownership stays with the parent).
     mcp_source: Any = None
@@ -122,7 +122,7 @@ class SubAgentSpec:
         )
 
     def __deepcopy__(self, memo: dict) -> "SubAgentSpec":
-        """Field-aware snapshot (P8-G1).
+        """Field-aware snapshot.
 
         Deep-copy data fields; keep ``_REFERENCE_FIELDS`` (live runtime
         objects) by reference. ``tools``/``frontend_tools`` LIST CONTAINERS are
@@ -148,8 +148,8 @@ class SubAgentSpec:
 @dataclass
 class SubAgentParentContext:
     parent_agent_uuid: str | None = None
-    # The parent's Rung-1 stream queue (R30 -- the legacy queue/formatter
-    # pair is deleted, G0); children share it so their deltas reach the same
+    # The parent's Rung-1 stream queue (the legacy queue/formatter
+    # pair is deleted); children share it so their deltas reach the same
     # ``agent.stream()`` read path.
     stream_queue: asyncio.Queue | None = None
     config_adapter: "AgentConfigAdapter | None" = None
@@ -305,7 +305,7 @@ Args:
         from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
         from agent_base.providers.anthropic.provider import AnthropicProvider
 
-        # O12(c): the retry budget rides the provider VALUE, not ctor scalars.
+        # The retry budget rides the provider VALUE, not ctor scalars.
         provider_value = (
             AnthropicProvider(retry_policy=spec.retry_policy)
             if spec.retry_policy is not None
@@ -335,7 +335,7 @@ Args:
             media_backend=parent_context.media_backend,
         )
         child._parent_agent_uuid = parent_context.parent_agent_uuid or "unknown"
-        # mcp.md E9: share the parent's source by reference — the child
+        # Share the parent's source by reference — the child
         # compiles the current surface at its initialize(); ownership
         # (callbacks, notices, teardown) stays with the parent, so no
         # _wire_mcp_source and _mcp_owned stays False.
@@ -377,7 +377,7 @@ Args:
 
         spec = self.specs[agent_name]
 
-        # CM-G4: on_subagent_start fires on the PARENT runtime BEFORE the
+        # on_subagent_start fires on the PARENT runtime BEFORE the
         # child is built — matcher key = agent_type, update→SubAgentSpec
         # rewrites the spec the child is built from, block denies the spawn.
         parent_hook_fire = getattr(
@@ -406,7 +406,7 @@ Args:
             self._parent_context,
         )
 
-        # Tenancy §A.4 / §3.4 (G0 — ``extras["owner"]`` is GONE): identity
+        # ``extras["owner"]`` is GONE: identity
         # threads down the tree as typed runtime state. The child's
         # ``_root_session_id_value`` is stamped at spawn so its relay pauses
         # group under the ROOT session on the await table, and the parent's
@@ -425,7 +425,7 @@ Args:
         if parent_agent is not None:
             child._parent_usage_forward = parent_agent
 
-        # GF-P7G1 (ratified D2): the parent's ``on_usage_report`` subscribers
+        # The parent's ``on_usage_report`` subscribers
         # are propagated onto the child AT BUILD TIME via the PUBLIC
         # registration path, so every child turn's ``TurnSettlement`` reaches
         # the same in-process billing subscribers the consumer registered on
@@ -434,7 +434,7 @@ Args:
         # them again to grandchildren at THEIR spawn. Timing contract:
         # propagation happens at child build — subscribers registered on the
         # parent AFTER a child was already built do NOT retro-attach to that
-        # child (the next spawn picks them up). (The I9 SettlementAggregator
+        # child (the next spawn picks them up). (The SettlementAggregator
         # this once deferred to was deleted 2026-07-14 — see core/cost.py.)
         if parent_agent is not None:
             for callback in list(
@@ -447,7 +447,7 @@ Args:
                 await child.initialize()
             if self._parent_context.stream_queue is not None:
                 # Share the parent's Rung-1 stream so the child's deltas land
-                # on the same agent.stream() read path (R30).
+                # on the same agent.stream() read path.
                 child._stream_queue = self._parent_context.stream_queue
             result = await child.run(
                 task,
@@ -460,7 +460,7 @@ Args:
                 f"Subagent '{agent_name}' error: {type(exc).__name__}: {exc}",
             )
             if callable(parent_hook_fire):
-                # CM-G4: on_subagent_end observes the failed spawn too.
+                # on_subagent_end observes the failed spawn too.
                 await parent_hook_fire(
                     "on_subagent_end", agent_type=agent_name, result=error_envelope
                 )
@@ -476,7 +476,7 @@ Args:
             child_provider=result.provider,
             nested_conversation=result.conversation_log,
         )
-        # CM-G4: on_subagent_end fires on the parent runtime (observe + emit).
+        # on_subagent_end fires on the parent runtime (observe + emit).
         if callable(parent_hook_fire):
             await parent_hook_fire(
                 "on_subagent_end", agent_type=agent_name, result=envelope

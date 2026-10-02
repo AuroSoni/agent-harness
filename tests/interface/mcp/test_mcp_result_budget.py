@@ -1,4 +1,4 @@
-"""How big MCP results reach the model (mcp.md §6, *Budget*).
+"""How big MCP results reach the model.
 
 The cap applies to the whole result — every text block, plus structured output
 that adds something, plus embedded resources — and a result within it passes

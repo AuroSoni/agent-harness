@@ -1,6 +1,6 @@
 """Concrete memory store implementations.
 
-``NoOpMemoryStore`` — the shipped default. A plain class (no ABC; O5/O13) that
+``NoOpMemoryStore`` — the shipped default. A plain class (no ABC) that
 satisfies the ``MemoryStore`` Protocol structurally: ``retrieve()`` returns an empty
 ``MemoryContribution`` and ``update()`` returns ``MemoryUpdate(store_type="none")``.
 """

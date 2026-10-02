@@ -1,16 +1,16 @@
-"""Red-suite specs for the agent-facing path grammar promoted onto the Sandbox ABC (F7).
+"""Interface specs for the agent-facing path grammar promoted onto the Sandbox ABC.
 
-Covers sandbox.md:
-  - §2.2 `ResolvedAgentPath` dataclass shape (raw_input, sandbox_path, canonical_path,
+Covers:
+  - `ResolvedAgentPath` dataclass shape (raw_input, sandbox_path, canonical_path,
     sandbox_root, is_explicit_root_path).
-  - §2.2 `Sandbox.layout` property default = DEFAULT_ZONE_LAYOUT.
-  - §2.2 `Sandbox.allowed_roots` instance property derived from layout (I12(a)).
-  - §2.2 path grammar methods CONCRETE on the base: resolve_agent_path, check_allowed,
+  - `Sandbox.layout` property default = DEFAULT_ZONE_LAYOUT.
+  - `Sandbox.allowed_roots` instance property derived from layout.
+  - Path grammar methods CONCRETE on the base: resolve_agent_path, check_allowed,
     normalize_allowed_roots, access_denied_message, format_agent_path, assert_allowed.
-  - §2.2 grammar rules: "." → workspace; explicit-prefix verbatim; bare → workspace default;
+  - Grammar rules: "." → workspace; explicit-prefix verbatim; bare → workspace default;
     backslash normalization; ".." collapse.
-  - §2.2 `SandboxAccessDeniedError` subclasses `SandboxPathEscapeError`.
-  - §2.2 I12(a): assert_allowed/check_allowed need NO per-call allowed_roots arg; per-call arg
+  - `SandboxAccessDeniedError` subclasses `SandboxPathEscapeError`.
+  - assert_allowed/check_allowed need NO per-call allowed_roots arg; per-call arg
     only narrows.
 
 These exercise the grammar on the CONCRETE base implementations. A minimal Sandbox subclass
@@ -150,7 +150,7 @@ def test_allowed_roots_derived_from_layout():
     sb = _BareSandbox()
     roots = sb.allowed_roots
     assert isinstance(roots, list)
-    # I12(a): instance-level, ZoneLayout-derived = the layout's readable roots.
+    # Instance-level, ZoneLayout-derived = the layout's readable roots.
     assert set(roots) == set(DEFAULT_ZONE_LAYOUT.default_readable_roots())
 
 
@@ -161,7 +161,7 @@ def test_allowed_roots_follows_custom_layout():
 
 
 def test_resolve_agent_path_follows_custom_layout_explicit_zone():
-    # §2.1/§2.2 anti-drift invariant: the path grammar resolves against self.layout, so a
+    # Anti-drift invariant: the path grammar resolves against self.layout, so a
     # zone added to the layout is BOTH addressable (allowed_roots) AND treated by
     # resolve_agent_path as an explicit-root prefix — not just visible to the allow check.
     # explicit_root_prefixes() (which drives resolution) must include the new zone's first
@@ -242,7 +242,7 @@ def test_resolve_returns_resolved_agent_path_type():
 
 def test_check_allowed_true_for_workspace_path_no_arg():
     sb = _BareSandbox()
-    # I12(a): with no arg, checks against self.allowed_roots.
+    # With no arg, checks against self.allowed_roots.
     assert sb.check_allowed("workspace/data.csv") is True
 
 
@@ -263,12 +263,12 @@ def test_check_allowed_per_call_narrowing():
     assert sb.check_allowed(".exports/x.csv", [".exports"]) is True
 
 
-# ─── escaping ".." containment (§2.2 normpath collapse = escape prevention) ─
+# ─── escaping ".." containment (normpath collapse = escape prevention) ─
 
 
 def test_resolve_escaping_dotdot_does_not_escape_root():
     sb = _BareSandbox()
-    # §2.2: ".." is collapsed via posix normpath, whose entire point is escape prevention.
+    # ".." is collapsed via posix normpath, whose entire point is escape prevention.
     # A bare escaping input must NOT yield a sandbox_path that climbs above the root —
     # either it is contained inside an allowed root OR check_allowed rejects it.
     resolved = sb.resolve_agent_path("../etc/passwd")
@@ -338,14 +338,14 @@ def test_access_denied_message_is_nonempty_string_mentioning_path():
 
 def test_assert_allowed_returns_resolved_for_valid_path_no_arg():
     sb = _BareSandbox()
-    # I12(a): NO per-call allowed_roots arg needed.
+    # NO per-call allowed_roots arg needed.
     resolved = sb.assert_allowed("data.csv")
     assert isinstance(resolved, ResolvedAgentPath)
     assert resolved.sandbox_path == "workspace/data.csv"
 
 
 def test_assert_allowed_workspace_defaults_bare_multi_segment_paths():
-    # MAINTAINER-RATIFIED (2026-06-10): §2.2 "anything else → defaulted under
+    # MAINTAINER-RATIFIED (2026-06-10): "anything else → defaulted under
     # the workspace zone" applies to bare multi-segment paths too —
     # "etc/passwd" is just a relative filename inside the sandbox
     # (workspace/etc/passwd), NOT a host-root reference; nothing escapes.
@@ -357,7 +357,7 @@ def test_assert_allowed_workspace_defaults_bare_multi_segment_paths():
 
 def test_assert_allowed_raises_for_escaping_dotdot():
     sb = _BareSandbox()
-    # §2.2: the normpath collapse exists to PREVENT escape. A bare "../../" traversal
+    # The normpath collapse exists to PREVENT escape. A bare "../../" traversal
     # collapses to a path outside every allowed root, so the guard must raise.
     with pytest.raises(SandboxAccessDeniedError):
         sb.assert_allowed("../../etc/passwd")
@@ -394,7 +394,7 @@ def test_access_denied_error_subclasses_path_escape_error():
 
 def test_access_denied_error_caught_as_path_escape():
     # An actually-denied path (escaping traversal — "etc/passwd" itself is
-    # workspace-defaulted and allowed per the ratified §2.2 grammar) is
+    # workspace-defaulted and allowed per the ratified grammar) is
     # catchable via the broader SandboxPathEscapeError.
     sb = _BareSandbox()
     with pytest.raises(SandboxPathEscapeError):
