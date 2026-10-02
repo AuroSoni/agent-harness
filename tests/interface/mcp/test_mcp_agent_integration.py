@@ -1,4 +1,4 @@
-"""Agent-level integration (mcp.md §2/§5; E6/E8/E10/E11/E15, MC-D12/D13).
+"""Agent-level integration.
 
 Boot registration through initialize(), the canonical recompose (profile
 switch preserves the MCP surface), boundary discipline (queued diffs apply
@@ -44,7 +44,7 @@ async def test_initialize_registers_mcp_tools_and_status_tool(monkeypatch):
     try:
         names = [s.name for s in agent.tool_registry.get_schemas()]
         assert "mcp__calc__add" in names
-        assert "mcp_status" in names  # auto-registered (MC-D13, no flag)
+        assert "mcp_status" in names  # auto-registered (no flag)
         assert agent.mcp_statuses()[0].state == "connected"
     finally:
         await agent.aclose()
@@ -60,7 +60,7 @@ async def test_agent_without_mcp_has_no_status_tool_and_zero_overhead(monkeypatc
 
 
 async def test_profile_style_reconfigure_preserves_mcp_surface(monkeypatch):
-    """E10 / MC-D12: a profile-switch-shaped reconfigure(tools=[...]) goes
+    """A profile-switch-shaped reconfigure(tools=[...]) goes
     through the canonical recompose — the MCP surface and mcp_status are
     re-added, never silently dropped."""
     from agent_base.tools import tool
@@ -94,7 +94,7 @@ async def test_surface_change_applies_immediately_when_idle(monkeypatch):
 
 
 async def test_queued_surface_change_applies_at_next_run_start(monkeypatch):
-    """§5 boundary discipline: with a run 'active', the registry mutation
+    """Boundary discipline: with a run 'active', the registry mutation
     queues; the next run start applies it before schemas are read."""
     import asyncio
 
@@ -116,7 +116,7 @@ async def test_queued_surface_change_applies_at_next_run_start(monkeypatch):
 
 
 async def test_change_notice_rides_next_model_bound_user_content(monkeypatch):
-    """MC-D13: the applied diff renders as a system-note contribution on the
+    """The applied diff renders as a system-note contribution on the
     NEXT model-bound user message — never a standalone transcript message,
     never persisted into context_messages."""
     agent = await _agent(monkeypatch)
@@ -149,7 +149,7 @@ async def test_no_notice_on_boot(monkeypatch):
 
 
 async def test_e8_e11_nothing_secret_or_mcp_persists(monkeypatch):
-    """E8/E11: header secrets never reach the persisted row; no MCP columns,
+    """Header secrets never reach the persisted row; no MCP columns,
     no schema bump — the config row round-trips clean."""
     adapter = MemoryAgentConfigAdapter()
     agent = await _agent(
@@ -178,7 +178,7 @@ async def test_e8_e11_nothing_secret_or_mcp_persists(monkeypatch):
 
 
 async def test_dynamic_add_on_agent_booted_without_mcp(monkeypatch):
-    """E14: add_mcp_server on a plain agent lazily creates the source and
+    """add_mcp_server on a plain agent lazily creates the source and
     the next apply registers mcp_status too."""
     use_fake_server(monkeypatch)
     agent = AnthropicAgent(system_prompt="plain")
@@ -193,7 +193,7 @@ async def test_dynamic_add_on_agent_booted_without_mcp(monkeypatch):
 
 
 async def test_subagent_spec_shares_source_by_reference(monkeypatch):
-    """E9: the spec snapshot keeps mcp_source by reference; a child built
+    """The spec snapshot keeps mcp_source by reference; a child built
     from it compiles the parent's live surface without owning it."""
     from agent_base.common_tools.sub_agent_tool import SubAgentSpec
     import copy
@@ -230,7 +230,7 @@ async def test_mcp_status_output_is_credential_free(monkeypatch):
 
 @pytest.mark.integration
 async def test_stdio_spawn_serve_and_clean_child_termination():
-    """E6 on a REAL subprocess (the one integration-marked stdio test)."""
+    """Clean child termination on a REAL subprocess (the one integration-marked stdio test)."""
     from agent_base.mcp import McpStdioSpec
     from agent_base.mcp.source import McpToolSource
 
@@ -262,4 +262,4 @@ async def test_stdio_spawn_serve_and_clean_child_termination():
     envelope = await compiled["mcp__local__ping"]()
     assert not envelope.is_error
     await source.aclose()
-    assert source._handles["local"]._runner is None  # child reaped (E6)
+    assert source._handles["local"]._runner is None  # child reaped

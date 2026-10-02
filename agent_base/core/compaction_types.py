@@ -1,16 +1,16 @@
-"""Provider-agnostic compaction core types (core.md §2.3).
+"""Provider-agnostic compaction core types.
 
 - :class:`CompactionConfig` — the declarative, serializable knob (follows the
   ``Serializable`` convention; moved here from
-  ``providers/anthropic/compaction.py`` — breaking allowed, G0).
+  ``providers/anthropic/compaction.py`` — breaking allowed).
 - :class:`CompactionStats` — typed result of one compaction pass (replaces the
   loose ``last_compaction_meta`` dict).
 - :class:`Compactor` — the provider-agnostic protocol. The runtime — NOT the
   compactor — fires ``before_compact``/``after_compact`` and enforces the veto
-  (Fork L V1: auto/overflow vetoable, manual never). The compactor only decides
+  (auto/overflow vetoable, manual never). The compactor only decides
   + rewrites messages and emits progress via ``ctx.emit``.
 
-I10: the ``trigger`` vocabulary is ``{"auto", "manual", "overflow"}`` —
+The ``trigger`` vocabulary is ``{"auto", "manual", "overflow"}`` —
 overflow recovery routes through ``before_compact(trigger="overflow")``.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ CompactionTrigger = Literal["auto", "manual", "overflow"]
 
 @dataclass
 class CompactionConfig:
-    """Declarative compaction knob (Serializable convention; O15(c) — no
+    """Declarative compaction knob (Serializable convention; no
     per-entity version ClassVar, ``_stamp()`` writes ``CORE_SCHEMA_VERSION``)."""
 
     threshold_tokens: int | None = 160_000
@@ -62,7 +62,7 @@ class CompactionConfig:
 class CompactionStats:
     """Typed result of one compaction pass (replaces last_compaction_meta dict)."""
 
-    trigger: CompactionTrigger  # (I10) "overflow" added
+    trigger: CompactionTrigger  # "overflow" added
     applied: bool
     messages_compacted: int
     messages_preserved: int
@@ -93,8 +93,8 @@ class Compactor(Protocol):
         context_messages: "list[Message]",
         *,
         model: str,
-        ctx: "CompactionContext",  # §1.2 subclass — carries emit + run identity
-        trigger: CompactionTrigger = "auto",  # (I10) "overflow" added
+        ctx: "CompactionContext",  # subclass — carries emit + run identity
+        trigger: CompactionTrigger = "auto",  # "overflow" added
     ) -> "tuple[list[Message], CompactionStats]": ...
 
 

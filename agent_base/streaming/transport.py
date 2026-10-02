@@ -1,4 +1,4 @@
-"""SSE transport factory (streaming-and-meta §2.5; resolves D4; SSE-1).
+"""SSE transport factory.
 
 ``sse_response`` is the ONE Layer-C framing owner: per-item encode → render,
 exactly one terminal ``[DONE]`` frame, the idle keepalive frame, and the
@@ -33,15 +33,15 @@ if TYPE_CHECKING:
 
 _StreamItem = Union[StreamDelta, MetaEnvelope]
 
-#: The canonical SSE headers (kills the verbatim header copy, D4).
+#: The canonical SSE headers (kills the verbatim header copy).
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
 
-#: Default idle gap (seconds) before a ``[PING]`` keepalive frame is emitted
-#: (SSE-1).  Sized well under app-level client watchdogs (nova's add-in aborts
+#: Default idle gap (seconds) before a ``[PING]`` keepalive frame is emitted.
+#: Sized well under app-level client watchdogs (nova's add-in aborts
 #: a stream silent for 120 s — 15 s gives ~8 missed pings before that fires).
 KEEPALIVE_INTERVAL_S = 15.0
 
@@ -55,16 +55,16 @@ def sse_response(
     """Frame a StreamItem iterator as a ready-to-return StreamingResponse.
 
     Owns: per-item encode → render, the terminal ``[DONE]`` frame, the idle
-    keepalive frame (SSE-1: ``data: [PING]`` whenever *item_iter* has yielded
+    keepalive frame (``data: [PING]`` whenever *item_iter* has yielded
     nothing for ``keepalive_interval`` seconds; ``None`` disables), and the
     canonical headers.  The consumer returns this object and writes ZERO
     framing code.
 
     The keepalive is a ``data:`` frame — NOT an SSE ``:`` comment — so
     app-level client watchdogs (which only see ``onmessage`` events) observe
-    it; the paired decoder (§2.6) drops it, and it carries no ``StreamItem``.
+    it; the paired decoder drops it, and it carries no ``StreamItem``.
 
-    Contract preserved under the heartbeat (SSE-1a):
+    Contract preserved under the heartbeat:
 
     - Real frames are never delayed or reordered; a ping can only appear
       between items, never inside one item's chunked frame batch.

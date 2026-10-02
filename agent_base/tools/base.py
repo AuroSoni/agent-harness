@@ -1,14 +1,14 @@
-"""``ConfigurableToolBase`` — template-method ``run()`` + ``as_tool()`` (tools.md §2.2).
+"""``ConfigurableToolBase`` — template-method ``run()`` + ``as_tool()``.
 
-Kills the F2 ``get_tool()`` ritual: a subclass writes **only**
+Kills the ``get_tool()`` ritual: a subclass writes **only**
 ``async def run(self, ...)``; the base derives the schema from ``run``'s
 signature (minus ``self``/``ctx``), renders the docstring template, binds the
 instance, and auto-attaches ``__tool_instance__`` so sandbox injection can
 never be silently forgotten.
 
-G0 deletions: the ``get_tool()`` back-compat shim and the deprecated
+The ``get_tool()`` back-compat shim and the deprecated
 ``_apply_schema`` ritual are gone — ``as_tool()`` is the only compilation
-path. Budgeting moved off the base class to ``ctx`` (I5/O11(a)).
+path. Budgeting moved off the base class to ``ctx``.
 """
 from __future__ import annotations
 
@@ -48,17 +48,17 @@ class ConfigurableToolBase(ABC):
        THIS signature; the rendered docstring (or ``run``'s own docstring)
        becomes the description.
     3. Optionally set the first-class class attrs ``executor`` (the relay
-       selector, contract §2.1) and ``needs_user_confirmation``.
+       selector) and ``needs_user_confirmation``.
 
     ``as_tool()`` returns the registry-ready callable; the registry also
-    accepts the instance directly (tools.md §2.3) and calls it internally.
+    accepts the instance directly and calls it internally.
     """
 
     # Class-level docstring template with {placeholder} syntax.
     DOCSTRING_TEMPLATE: str = ""
 
     # First-class execution-mode class attrs (was: only via @tool / closures).
-    executor: ExecutorType = "backend"          # "backend" | "frontend" (relay selector, §2.1)
+    executor: ExecutorType = "backend"          # "backend" | "frontend" (relay selector)
     needs_user_confirmation: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -118,7 +118,7 @@ class ConfigurableToolBase(ABC):
         self._sandbox = sandbox
         return self
 
-    # ─── The ONLY thing a subclass implements (tools.md §2.2) ───────────────
+    # ─── The ONLY thing a subclass implements ───────────────────────────────
 
     async def run(self, **kwargs: Any) -> "ToolResultEnvelope | str":
         """Tool body. Declare real, typed params + an optional ``ctx: ToolContext``.
@@ -182,7 +182,7 @@ class ConfigurableToolBase(ABC):
             bound.__tool_schema__ = generate_tool_schema(bound)  # `ctx`/`self` already skipped
         bound.__tool_executor__ = self.executor
         bound.__tool_needs_confirmation__ = self.needs_user_confirmation
-        bound.__tool_instance__ = self  # AUTO-ATTACH — the F2 fix
+        bound.__tool_instance__ = self  # AUTO-ATTACH
         bound.__tool_schema__.name = self._name or bound.__tool_schema__.name
         self._compiled = bound
         return bound

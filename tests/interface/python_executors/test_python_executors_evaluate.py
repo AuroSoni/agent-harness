@@ -1,13 +1,13 @@
-"""Red-suite specs for ``evaluate_python_code`` resource-limit threading (U2).
+"""Interface specs for ``evaluate_python_code`` resource-limit threading.
 
-Covers python-executors.md:
-  - §2.4 evaluator note: ``evaluate_python_code(..., limits=...)`` threads the
+Covers:
+  - Evaluator note: ``evaluate_python_code(..., limits=...)`` threads the
     two limits (max_operations, max_while_iterations) into the run instead of
     reading the module globals — the only evaluator change required.
-  - §6 migration "still-true": ``evaluate_python_code(..., limits=None)`` falls
+  - Migration "still-true": ``evaluate_python_code(..., limits=None)`` falls
     back to the ``MAX_OPERATIONS`` / ``MAX_WHILE_ITERATIONS`` globals when no
     policy threads them, so unconfigured behavior is identical.
-  - U2: per-executor limits replace the read of module globals inside the
+  - Per-executor limits replace the read of module globals inside the
     evaluator — a tight ``limits`` budget aborts a runaway loop.
 
 These exercise ``evaluate_python_code`` (the public free function) directly and
@@ -50,7 +50,7 @@ def test_evaluate_python_code_runs_with_explicit_limits():
 
 
 def test_evaluate_python_code_limits_none_falls_back_to_globals():
-    # §6 still-true: limits=None -> unconfigured behavior identical (uses globals).
+    # Still-true: limits=None -> unconfigured behavior identical (uses globals).
     state: dict = {}
     output, _ = evaluate_python_code(
         "2 + 2",
@@ -92,7 +92,7 @@ def test_tight_while_budget_aborts_infinite_loop():
 
 
 def test_executor_threads_policy_limits_into_evaluator():
-    # U2: per-executor limits reach the evaluator; a tight op budget surfaces as
+    # Per-executor limits reach the evaluator; a tight op budget surfaces as
     # a structured error on the result (run() is no-raise).
     ex = LocalPythonExecutor(policy=ExecutorPolicy(max_operations=50))
     result = ex.run("total = 0\nfor i in range(10_000_000):\n    total += i\ntotal")

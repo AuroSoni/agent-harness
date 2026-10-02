@@ -1,12 +1,12 @@
-"""Interface red-suite: correlation field-name constants (logging subsystem).
+"""Interface spec: correlation field-name constants (logging subsystem).
 
-Covers logging.md:
-  - §2.1 "Canonical correlation field names (the contract that lets logs join storage)"
-  - §5 Cross-subsystem dependencies — "Hard alignment requirement (RESOLVED by R34)"
-  - §6 migration table — "ad-hoc key spellings -> the re-exported TENANT/SUBJECT
+Covers:
+  - "Canonical correlation field names (the contract that lets logs join storage)"
+  - Cross-subsystem dependencies — "Hard alignment requirement (RESOLVED)"
+  - Migration table — "ad-hoc key spellings -> the re-exported TENANT/SUBJECT
     constants as the library canon"
-  - R34 (single vocabulary home: agent_base/core/identity.py)
-  - O5 (the LogField wrapper is DELETED; logging RE-EXPORTS the constants directly)
+  - Single vocabulary home: agent_base/core/identity.py
+  - The LogField wrapper is DELETED; logging RE-EXPORTS the constants directly
 
 The constants are OWNED by ``agent_base/core/identity.py`` (tenancy subsystem). What
 logging OWNS — and what this file deep-tests — is the *re-export contract*: importing
@@ -23,7 +23,7 @@ import agent_base.logging.correlation as correlation_mod
 
 
 # ---------------------------------------------------------------------------
-# §2.1 / R34 — the constants exist at the ONE canonical home with exact spellings
+# The constants exist at the ONE canonical home with exact spellings
 # ---------------------------------------------------------------------------
 
 
@@ -56,7 +56,7 @@ def test_identity_defines_subject_constant_spelling():
 
 
 # ---------------------------------------------------------------------------
-# O5 / §2.1 — logging RE-EXPORTS the constants directly (no LogField wrapper).
+# Logging RE-EXPORTS the constants directly (no LogField wrapper).
 # `from agent_base.logging import RUN_ID, AGENT_ID, ...` must work.
 # ---------------------------------------------------------------------------
 
@@ -90,7 +90,7 @@ def test_logging_package_reexports_subject():
 
 
 # ---------------------------------------------------------------------------
-# §2.1 / R34 — the re-export is the SAME object, not a fresh redeclaration.
+# The re-export is the SAME object, not a fresh redeclaration.
 # (Re-spelling would let logs and storage drift out of join — the whole point.)
 # ---------------------------------------------------------------------------
 
@@ -136,7 +136,7 @@ def test_correlation_module_subject_is_the_identity_object():
 
 
 # ---------------------------------------------------------------------------
-# §5 hard alignment — TENANT/SUBJECT are the names a SessionPrincipal maps to.
+# Hard alignment — TENANT/SUBJECT are the names a SessionPrincipal maps to.
 # (Nova org id -> tenant, member id -> subject; collaborator used for the join.)
 # ---------------------------------------------------------------------------
 
@@ -152,7 +152,7 @@ def test_tenant_subject_constants_match_session_principal_attribute_names():
 
 
 # ---------------------------------------------------------------------------
-# §5 hard alignment — the MetaEnvelope header stamps the SAME spellings, so a
+# Hard alignment — the MetaEnvelope header stamps the SAME spellings, so a
 # log line ties to the exact control-channel event the frontend saw.
 # ---------------------------------------------------------------------------
 
@@ -164,7 +164,7 @@ def test_meta_envelope_header_field_names_match_correlation_constants():
 
     header_fields = {f.name for f in dataclasses.fields(MetaEnvelope)}
     # The correlation header carries these identity/event keys under the same
-    # spellings logging emits (R34 single source of truth).
+    # spellings logging emits (single source of truth).
     assert identity_mod.RUN_ID in header_fields
     assert identity_mod.AGENT_ID in header_fields
     assert identity_mod.PARENT_AGENT_ID in header_fields

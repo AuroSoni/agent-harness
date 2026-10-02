@@ -1,18 +1,18 @@
-"""UsageReport MetaBody — pricing-cost §2.3 (the contract type given a body).
+"""UsageReport MetaBody (the contract type given a body).
 
 Covers:
   - `UsageReport` registered as a `MetaBody` at its canonical home
-    `agent_base/streaming/meta.py` (R2: streaming owns the union + wire codec;
+    `agent_base/streaming/meta.py` (streaming owns the union + wire codec;
     pricing supplies the payload shape and registers it there).
   - `kind == "usage_report"` discriminator.
   - It is a frozen dataclass with `usage`/`cost` dict payloads (defaulting empty).
-  - O14(d): NO `cumulative` field (the aggregator sums per-turn reports) — pinned
+  - NO `cumulative` field (the aggregator sums per-turn reports) — pinned
     here at the dataclass-field AND instance level so an implementer following the
-    stale DESIGN_CONTRACT §3 shape `UsageReport(usage, cost, cumulative)` cannot
+    stale shape `UsageReport(usage, cost, cumulative)` cannot
     re-introduce it green; the carried payload is turn-level only.
   - `UsageReport.of(settlement)` builds the body from a `TurnSettlement`:
-    `usage` == `turn_usage.totals_dict()` (O5), `cost` == `turn_cost.to_dict()`.
-  - B2: identity rides the MetaEnvelope header — the body itself carries no
+    `usage` == `turn_usage.totals_dict()`, `cost` == `turn_cost.to_dict()`.
+  - Identity rides the MetaEnvelope header — the body itself carries no
     tenant/subject/claims.
 
 `MetaBody`, `TurnSettlement`, `Usage`, `CostBreakdown`, `SessionPrincipal` are
@@ -73,8 +73,8 @@ def test_usage_report_is_frozen():
 
 
 # ---------------------------------------------------------------------------
-# O14(d): NO `cumulative` field — the carried payload is turn-level only.
-# (The stale DESIGN_CONTRACT §3 still lists UsageReport(usage, cost, cumulative);
+# NO `cumulative` field — the carried payload is turn-level only.
+# (The stale shape is UsageReport(usage, cost, cumulative);
 # pin its absence so that shape cannot be re-introduced green.)
 # ---------------------------------------------------------------------------
 
@@ -88,7 +88,7 @@ def test_usage_report_has_no_cumulative_field():
 
 
 def test_usage_report_payload_fields_are_only_usage_and_cost():
-    # B2 / O14(d): the body's ONLY payload fields are usage/cost (no top-level
+    # The body's ONLY payload fields are usage/cost (no top-level
     # cumulative, and no tenant/subject/principal/claims — identity rides the
     # MetaEnvelope header). `kind` is the discriminator, not a payload field.
     import dataclasses
@@ -135,12 +135,12 @@ def test_of_excludes_raw_usage_from_body():
         turn_usage=Usage(input_tokens=1, raw_usage={"service_tier": "batch"})
     )
     body = UsageReport.of(s)
-    # O5: totals_dict() (used by .of) strips raw_usage.
+    # totals_dict() (used by .of) strips raw_usage.
     assert "raw_usage" not in body.usage
 
 
 def test_of_body_carries_no_principal_identity():
-    # B2: identity rides the MetaEnvelope header, not the body — no tenant/subject/claims.
+    # Identity rides the MetaEnvelope header, not the body — no tenant/subject/claims.
     body = UsageReport.of(_settlement())
     assert "tenant" not in body.usage and "tenant" not in body.cost
     assert "subject" not in body.usage and "subject" not in body.cost

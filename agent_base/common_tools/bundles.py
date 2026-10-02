@@ -1,4 +1,4 @@
-"""Curated, parameterized tool-bundle factories (tools.md §2.6 — kills F5).
+"""Curated, parameterized tool-bundle factories.
 
 A bundle is a named, registrable group built from shared configuration;
 ``ToolRegistry.register_tools`` / ``SubAgentSpec.tools`` accept bundles
@@ -22,7 +22,7 @@ def file_ops_bundle(*, allowed_dirs: list[str] | None = None) -> ToolBundle:
     """``read_file`` + ``glob_file_search`` + ``grep_search`` + ``list_dir_tree``
     + ``apply_patch``, all sharing ``allowed_dirs``.
 
-    Replaces Nova's re-pasted 6-tool stanza (F5).
+    Replaces Nova's re-pasted 6-tool stanza.
     """
     return ToolBundle("file_ops", [
         ReadFileTool(allowed_base_dirs=allowed_dirs),

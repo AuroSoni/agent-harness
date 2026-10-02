@@ -1,12 +1,12 @@
-"""ToolBundle + curated bundle factories (tools.md §2.6, §3 "After F5").
+"""ToolBundle + curated bundle factories.
 
 Covers:
-- §2.6: ``ToolBundle`` is a named, registrable group; ``tools()`` returns a
+- ``ToolBundle`` is a named, registrable group; ``tools()`` returns a
   copy; ``__add__`` composes bundles (``"a+b"`` name, concatenated tools).
-- §2.6: ``file_ops_bundle(allowed_dirs=...)`` ships the 5 documented file
+- ``file_ops_bundle(allowed_dirs=...)`` ships the 5 documented file
   tools sharing one allow-list; ``code_exec_bundle(pip_install=...)`` ships
-  the code-execution tool. Both replace Nova's re-pasted 6-tool stanza (F5).
-- §2.3: a bundle registers through ``ToolRegistry.register_tools`` with no
+  the code-execution tool. Both replace Nova's re-pasted 6-tool stanza.
+- A bundle registers through ``ToolRegistry.register_tools`` with no
   per-item ``.get_tool()`` plumbing.
 """
 
@@ -42,7 +42,7 @@ def _registered_names(registry: ToolRegistry) -> set[str]:
     return {schema.name for schema in registry.get_schemas()}
 
 
-# ─── ToolBundle dataclass (§2.6) ────────────────────────────────────────────
+# ─── ToolBundle dataclass ───────────────────────────────────────────────────
 
 
 def test_tool_bundle_holds_name_and_tools_in_order():
@@ -68,7 +68,7 @@ def test_bundle_add_composes_name_and_tools():
     assert len(a.tools()) == 1
 
 
-# ─── file_ops_bundle (§2.6) ─────────────────────────────────────────────────
+# ─── file_ops_bundle ────────────────────────────────────────────────────────
 
 
 def test_file_ops_bundle_ships_the_five_file_tools():
@@ -90,7 +90,7 @@ def test_file_ops_bundle_allowed_dirs_is_keyword_only():
         file_ops_bundle(["workspace"])
 
 
-# ─── code_exec_bundle (§2.6) ────────────────────────────────────────────────
+# ─── code_exec_bundle ───────────────────────────────────────────────────────
 
 
 def test_code_exec_bundle_ships_one_tool():
@@ -106,7 +106,7 @@ def test_code_exec_bundle_pip_install_is_keyword_only():
         code_exec_bundle(True)
 
 
-# ─── Composition end-to-end (the F5 "after") ───────────────────────────────
+# ─── Composition end-to-end ────────────────────────────────────────────────
 
 
 def test_composed_bundle_registers_all_six_tools():

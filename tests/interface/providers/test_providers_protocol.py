@@ -1,7 +1,7 @@
-"""Interface red-suite: the ``Provider`` protocol surface.
+"""Interface spec: the ``Provider`` protocol surface.
 
-Covers providers.md §2.0/§2.1 (the Provider protocol — the only provider-specific
-seam) and §5 (produced shared types):
+Covers the Provider protocol (the only provider-specific
+seam) and the produced shared types:
 - ``Provider`` is a ``runtime_checkable`` ``Protocol``.
 - Required attributes: ``name`` (str), ``token_estimator``, ``retry_policy``
   (``RetryPolicy``).
@@ -9,8 +9,8 @@ seam) and §5 (produced shared types):
   ``generate_stream``, ``classify_error``, ``sanitize_chain``,
   ``plan_stream_abort``, ``extract_tool_calls``, ``collect_api_files``.
 - ``generate``/``generate_stream`` signatures drop ``max_retries``/``base_delay``
-  (O12c) and ``generate_stream`` takes a ``sink`` (DeltaSink, R30) — the old
-  ``(queue, stream_formatter)`` pair is gone (G0).
+  and ``generate_stream`` takes a ``sink`` (DeltaSink) — the old
+  ``(queue, stream_formatter)`` pair is gone.
 - ``isinstance`` structural check passes for a complete in-file fake and fails for
   an incomplete one.
 
@@ -146,7 +146,7 @@ def test_provider_declares_required_methods():
 def test_generate_signature_drops_retry_scalars():
     sig = inspect.signature(Provider.generate)
     params = set(sig.parameters)
-    # O12(c): the provider reads self.retry_policy — no scalars threaded in.
+    # The provider reads self.retry_policy — no scalars threaded in.
     assert "max_retries" not in params
     assert "base_delay" not in params
     # documented keyword params remain
@@ -157,9 +157,9 @@ def test_generate_signature_drops_retry_scalars():
 def test_generate_stream_takes_sink_not_queue_pair():
     sig = inspect.signature(Provider.generate_stream)
     params = set(sig.parameters)
-    # R30: DeltaSink is the one write path.
+    # DeltaSink is the one write path.
     assert "sink" in params
-    # G0: the legacy (queue, stream_formatter) pair is deleted, not shimmed.
+    # The legacy (queue, stream_formatter) pair is deleted, not shimmed.
     assert "queue" not in params
     assert "stream_formatter" not in params
 
@@ -211,11 +211,11 @@ async def test_fake_generate_returns_provider_turn():
 
 
 # --------------------------------------------------------------------------- #
-# default_model — behavioral (§2.1: returns the model id string)              #
+# default_model — behavioral (returns the model id string)                    #
 # --------------------------------------------------------------------------- #
 
 def test_default_model_returns_configured_model_id():
-    # §2.1: default_model() returns the provider's config-default model id string
+    # default_model() returns the provider's config-default model id string
     # (e.g. "claude-sonnet-4-5" / "openai/gpt-4o-mini"). Exercise the contract,
     # don't merely declare the method exists.
     p = FakeProvider()
@@ -226,7 +226,7 @@ def test_default_model_returns_configured_model_id():
 
 
 # --------------------------------------------------------------------------- #
-# Provider.make_llm_config — the per-provider METHOD (O12b)                   #
+# Provider.make_llm_config — the per-provider METHOD                          #
 # --------------------------------------------------------------------------- #
 #
 # The module-level make_llm_config factory is exercised in
@@ -251,7 +251,7 @@ def test_make_llm_config_method_passthrough_returns_llm_config():
     # FakeProvider's LLMConfig branch returns the input unchanged (a permissible
     # provider choice), so this base-class isinstance check only pins the return
     # TYPE. The actual re-coercion — a base config transformed into a DISTINCT
-    # native instance, as providers.md's `GeminiLLMConfig.from_base(loaded)`
+    # native instance, as `GeminiLLMConfig.from_base(loaded)`
     # mandates — cannot be proven against the native subclass here (it is
     # provider-specific and out of scope). The new-object semantics the contract
     # guarantees for a re-coercing provider are exercised by
@@ -312,7 +312,7 @@ class _FakeSink:
 
 
 async def test_fake_generate_stream_returns_provider_turn():
-    # §2.1: generate_stream is the heart of the seam — actually await it (parallel
+    # generate_stream is the heart of the seam — actually await it (parallel
     # to test_fake_generate_returns_provider_turn) rather than only signature-check.
     p = FakeProvider()
     sink = _FakeSink()

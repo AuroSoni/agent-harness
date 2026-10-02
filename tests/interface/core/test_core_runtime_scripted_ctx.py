@@ -1,12 +1,12 @@
-"""Public scripted emit ctx for out-of-band frontend-tool emits (GF-P5LG2).
+"""Public scripted emit ctx for out-of-band frontend-tool emits.
 
-Covers the gap LG-2 contract: outside a hook there is now a PUBLIC way to get
+Covers the gap contract: outside a hook there is now a PUBLIC way to get
 an emitting ctx — ``AgentRuntime.scripted_ctx()`` — so a scripted turn that
 calls ``call_frontend_tool`` no longer shims over the private ``_hook_emit``.
 
 - ``scripted_ctx()`` returns an object whose
   ``emit(body, *, correlation_id=None, expects_reply=False)`` has the SAME
-  signature as the hook ctx emit (B8) and the same behavior (stamps the §3
+  signature as the hook ctx emit and the same behavior (stamps the
   MetaEnvelope header, enqueues on the Rung-1 stream).
 - It is bound to the agent's emit path: an emit reaches the agent's stream
   queue as a typed ``MetaEnvelope``.
@@ -45,7 +45,7 @@ def test_scripted_ctx_is_public_and_callable():
 
 
 def test_scripted_ctx_emit_signature_matches_the_hook_ctx_emit():
-    # B8: emit(body, *, correlation_id=None, expects_reply=False).
+    # emit(body, *, correlation_id=None, expects_reply=False).
     agent = AgentRuntime()
     ctx = agent.scripted_ctx()
     sig = inspect.signature(ctx.emit)
@@ -74,7 +74,7 @@ def test_scripted_ctx_emit_enqueues_a_typed_envelope():
     assert isinstance(item, MetaEnvelope)
     assert isinstance(item.body, Custom)
     assert item.body.name == "demo"
-    # The §3 header is stamped by the runtime (seq, ts, agent_id).
+    # The header is stamped by the runtime (seq, ts, agent_id).
     assert item.agent_id == agent.agent_uuid
     assert item.seq >= 1
 
@@ -92,7 +92,7 @@ def test_scripted_ctx_emit_threads_correlation_and_expects_reply():
 
 
 def test_scripted_ctx_emit_is_lossy_never_raises_with_no_consumer():
-    # R21: emit never raises into the caller, even before a consumer attaches.
+    # emit never raises into the caller, even before a consumer attaches.
     agent = AgentRuntime()
     ctx = agent.scripted_ctx()
     ctx.emit(Custom(name="c"))  # must not raise

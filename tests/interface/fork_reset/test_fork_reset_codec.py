@@ -1,10 +1,10 @@
-"""Red-suite specs — fork-reset: the transcript codec (the hybrid CAS split).
+"""Interface specs — fork-reset: the transcript codec (the hybrid CAS split).
 
 Covers:
-- interface_plan/subsystems/fork-reset.md §2 + SPEC §F1 / §2 correctness notes.
-- criterion #4 (sub-quadratic: an unchanged transcript prefix writes 0 new CAS
-  blobs), criterion #5 (``agent_phase`` survives the codec round-trip),
-  criterion #6 (tenant-scoped keys — no cross-tenant dedupe), inline fallback
+- mental_model/features/fork-and-reset.md.
+- sub-quadratic: an unchanged transcript prefix writes 0 new CAS
+  blobs; ``agent_phase`` survives the codec round-trip;
+  tenant-scoped keys (no cross-tenant dedupe); inline fallback
   when no blob store is wired.
 """
 from __future__ import annotations
@@ -54,7 +54,7 @@ async def test_split_strips_transcript_and_segments_it(tmp_path):
 
 
 async def test_round_trip_restores_transcript_and_agent_phase(tmp_path):
-    # criterion #5 — agent_phase survives the codec path (config_to_row drops it).
+    # agent_phase survives the codec path (config_to_row drops it).
     blobs = LocalBlobStore(base_path=tmp_path)
     cfg = _config()
     base, segs, logs, codec_v = await split_config_for_checkpoint(
@@ -69,7 +69,7 @@ async def test_round_trip_restores_transcript_and_agent_phase(tmp_path):
 
 
 async def test_unchanged_prefix_writes_zero_new_blobs(tmp_path):
-    # criterion #4 — re-splitting the SAME config dedupes to 0 new blobs;
+    # Re-splitting the SAME config dedupes to 0 new blobs;
     # appending one turn writes only the new message + log entry (+2).
     blobs = LocalBlobStore(base_path=tmp_path)
     cfg = _config()
@@ -85,7 +85,7 @@ async def test_unchanged_prefix_writes_zero_new_blobs(tmp_path):
 
 
 async def test_tenant_scoped_keys_do_not_cross_share(tmp_path):
-    # criterion #6 — identical content under a different tenant writes NEW blobs.
+    # Identical content under a different tenant writes NEW blobs.
     blobs = LocalBlobStore(base_path=tmp_path)
     cfg = _config()
     await split_config_for_checkpoint(cfg, blobs, tenant="tenantA")

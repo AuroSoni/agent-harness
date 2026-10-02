@@ -1,13 +1,13 @@
-"""``ensure_schema()`` + migrations — storage.md §2.6 (fixes E6).
+"""``ensure_schema()`` + migrations.
 
 Executable DDL for the **3 library tables only** (``agent_config``,
 ``conversation_history``, ``agent_runs``), version-stamped, idempotent. DDL is
 generated from the same :class:`~agent_base.storage.pg.columns.ColumnRegistry`
 the adapters compose SQL from, so consumer extra columns appear automatically.
 
-``LIBRARY_SCHEMA_VERSION`` is the **DDL axis** (R12) — a distinct, retained
+``LIBRARY_SCHEMA_VERSION`` is the **DDL axis** — a distinct, retained
 axis from ``core.serializable.CORE_SCHEMA_VERSION`` (entity wire) and
-``streaming.WIRE_PROTOCOL_VERSION`` (SSE bytes). See AMENDMENTS O15(c).
+``streaming.WIRE_PROTOCOL_VERSION`` (SSE bytes).
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from .columns import ColumnRegistry
 if TYPE_CHECKING:
     from .pool import PgPool
 
-#: DDL/migration axis ONLY (R12) — NOT the entity-wire version.
+#: DDL/migration axis ONLY — NOT the entity-wire version.
 LIBRARY_SCHEMA_VERSION: int = 6
 
 #: Single-row bookkeeping table ensure_schema() records the version in.
@@ -55,15 +55,15 @@ LIBRARY_MIGRATIONS: list[Migration] = [
     Migration(2, 3, [
         "ALTER TABLE conversation_history ADD COLUMN IF NOT EXISTS cost JSONB",
     ]),
-    # GF-SCHEMA4: `active_profile` was added to the agent_config CREATE column
-    # set by CM-G3e (row_mappers `_CONFIG_COLUMNS`) but the version was never
+    # `active_profile` was added to the agent_config CREATE column
+    # set (row_mappers `_CONFIG_COLUMNS`) but the version was never
     # bumped, so any DB stamped v3 before that landed silently lacks the column
     # (CREATE TABLE IF NOT EXISTS no-ops on existing tables). IF NOT EXISTS keeps
     # this a clean no-op on fresh-create and hand-patched DBs alike.
     Migration(3, 4, [
         "ALTER TABLE agent_config ADD COLUMN IF NOT EXISTS active_profile TEXT",
     ]),
-    # GF-FORKRESET: the fork/reset checkpoint store. CREATE TABLE here carries
+    # The fork/reset checkpoint store. CREATE TABLE here carries
     # the LIBRARY BASE columns only (consumer owner_* extras are the consumer's
     # own upgrade concern). It MUST stay structurally identical to what the
     # checkpoint ColumnRegistry generates on fresh-create — the v4->v5 parity
@@ -163,11 +163,11 @@ _TABLE_CONSTRAINTS: dict[str, list[str]] = {
 
 
 class PgSchema:
-    """Owns CREATE TABLE + migrations for the 3 library tables (E6)."""
+    """Owns CREATE TABLE + migrations for the 3 library tables."""
 
     def __init__(self, pool: "PgPool", *, registries: SchemaRegistries):
         # registries carries the ColumnRegistry objects so extra columns are
-        # in the DDL (storage.md §2.6 scope guard).
+        # in the DDL.
         self._pool = pool
         self._registries = registries
 

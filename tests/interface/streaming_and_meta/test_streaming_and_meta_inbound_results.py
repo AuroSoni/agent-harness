@@ -1,11 +1,11 @@
-"""Red-suite interface specs: inbound wire-result decode.
+"""Interface specs: inbound wire-result decode.
 
-Covers interface_plan/subsystems/streaming-and-meta.md:
-- §2.7 ``WireToolResult`` (the canonical inbound reply schema; cid is the
-  pause-level reply key per AMENDMENTS B7) and
-  ``WireToolResult.to_tool_reply()`` → the contract §1.5
-  ``ToolReply(cid, results)`` primitive — resolves D5 + the C1 meta half,
-- §2.7 ``ContentBlock.from_api_dict`` (additive on ``agent_base/core/types.py``;
+Covers:
+- ``WireToolResult`` (the canonical inbound reply schema; cid is the
+  pause-level reply key) and
+  ``WireToolResult.to_tool_reply()`` → the
+  ``ToolReply(cid, results)`` primitive,
+- ``ContentBlock.from_api_dict`` (additive on ``agent_base/core/types.py``;
   text/image/document/attachment).
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ def test_wire_tool_result_defaults_and_frozen():
 
 
 def test_to_tool_reply_correlates_by_pause_level_cid():
-    # B7: the reply is keyed by the envelope's correlation_id (cid), never a
+    # The reply is keyed by the envelope's correlation_id (cid), never a
     # spoofed agent uuid or a per-call tool_use_id.
     reply = WireToolResult(cid="cid-1", content="ok").to_tool_reply()
     assert isinstance(reply, ToolReply)
@@ -58,7 +58,7 @@ def test_to_tool_reply_with_no_content_and_no_attachments_is_empty():
 
 
 def test_to_tool_reply_translates_image_attachment_then_appends_text():
-    # §2.7: attachment dicts {kind, media_type, source_type, data, filename}
+    # Attachment dicts {kind, media_type, source_type, data, filename}
     # become canonical ContentBlocks; the text block is appended after them.
     attachment = {
         "kind": "image",
@@ -82,7 +82,7 @@ def test_to_tool_reply_translates_image_attachment_then_appends_text():
 
 
 def test_to_tool_reply_translates_attachment_kind():
-    # §2.7: the attachment dict shape {kind, media_type, source_type, data,
+    # The attachment dict shape {kind, media_type, source_type, data,
     # filename} is pinned by WireToolResult; an "attachment" kind translates
     # through ContentBlock.from_api_dict into a canonical AttachmentContent.
     attachment = {
@@ -127,7 +127,7 @@ def test_content_block_from_api_dict_image():
 
 
 def test_content_block_from_api_dict_document():
-    # §2.7: from_api_dict accepts text/image/document/attachment. The document
+    # from_api_dict accepts text/image/document/attachment. The document
     # api-dict follows the same source-dict pattern the image case pins.
     block = ContentBlock.from_api_dict(
         {
@@ -146,7 +146,7 @@ def test_content_block_from_api_dict_document():
 
 
 # ---------------------------------------------------------------------------
-# §2.7 — type-specific source payload keys + document block options (NV-2).
+# Type-specific source payload keys + document block options.
 # The api source dict carries its payload under a per-type key (base64/text →
 # "data", url → "url", file → "file_id"); canonically all of them live on the
 # block's `data` field — the SAME field the Anthropic formatter reads back on

@@ -1,10 +1,10 @@
-"""Interface red-suite: ``correlation_scope()`` (logging subsystem, OWNED).
+"""Interface spec: ``correlation_scope()`` (logging subsystem, OWNED).
 
-Covers logging.md:
-  - §2.2 "Scope-safe correlation binder (replaces leaky bind/clear for the runtime)"
-  - §2.4 "Where the runtime opens the scope" (the contract this subsystem ships)
-  - §3 Consumer override examples (request-scoped field WITHOUT clobbering ids)
-  - §6 migration: ``clear_context()`` finally -> ``correlation_scope()`` restores
+Covers:
+  - "Scope-safe correlation binder (replaces leaky bind/clear for the runtime)"
+  - "Where the runtime opens the scope" (the contract this subsystem ships)
+  - Consumer override examples (request-scoped field WITHOUT clobbering ids)
+  - Migration: ``clear_context()`` finally -> ``correlation_scope()`` restores
     prior context on exit (token-based).
 
 ``correlation_scope`` is logging's own binder, so it is deep-tested: which fields it
@@ -31,7 +31,7 @@ from agent_base.logging.correlation import correlation_scope
 
 
 # ---------------------------------------------------------------------------
-# §2.2 — it is a usable context manager that binds run/agent ids in-block.
+# It is a usable context manager that binds run/agent ids in-block.
 # ---------------------------------------------------------------------------
 
 
@@ -59,7 +59,7 @@ def test_correlation_scope_binds_all_three_ids_together():
 
 
 # ---------------------------------------------------------------------------
-# §2.2 — None-valued ids are NOT bound (the pseudocode only sets when not None).
+# None-valued ids are NOT bound (ids are only set when not None).
 # ---------------------------------------------------------------------------
 
 
@@ -75,7 +75,7 @@ def test_correlation_scope_with_no_args_binds_nothing_new():
 
 
 # ---------------------------------------------------------------------------
-# §2.2 — principal is flattened to tenant/subject and merged in.
+# Principal is flattened to tenant/subject and merged in.
 # ---------------------------------------------------------------------------
 
 
@@ -88,7 +88,7 @@ def test_correlation_scope_flattens_principal_into_context():
 
 
 def test_correlation_scope_principal_claims_never_bound():
-    # Fork K invariant flows through the scope too.
+    # The never-log-claims invariant flows through the scope too.
     p = SessionPrincipal(
         tenant="org-1", subject="mem-1", claims={"token": "secret"}
     )
@@ -109,7 +109,7 @@ def test_correlation_scope_binds_ids_and_principal_together():
 
 
 # ---------------------------------------------------------------------------
-# §2.2 / §3 — ad-hoc **extra keys merge in with the same rules as bind_context.
+# Ad-hoc **extra keys merge in with the same rules as bind_context.
 # ---------------------------------------------------------------------------
 
 
@@ -126,7 +126,7 @@ def test_correlation_scope_extra_keys_coexist_with_ids():
 
 
 # ---------------------------------------------------------------------------
-# §2.2 / §6 — snapshot/restore lifecycle: prior context restored EXACTLY on exit
+# Snapshot/restore lifecycle: prior context restored EXACTLY on exit
 # (NOT clear()). This is the core fix over the leaky clear_context() in a finally.
 # ---------------------------------------------------------------------------
 
@@ -157,7 +157,7 @@ def test_correlation_scope_restores_exception_path():
 
 
 # ---------------------------------------------------------------------------
-# §2.2 / §2.4 — nesting: a child scope must NOT clobber the parent's fields;
+# Nesting: a child scope must NOT clobber the parent's fields;
 # the parent's context survives the child and is restored on child exit.
 # ---------------------------------------------------------------------------
 
@@ -193,7 +193,7 @@ def test_correlation_scope_child_extra_key_removed_after_child_exit():
 
 
 # ---------------------------------------------------------------------------
-# §3 — request-scoped field added WITHOUT clobbering runtime correlation.
+# Request-scoped field added WITHOUT clobbering runtime correlation.
 # ---------------------------------------------------------------------------
 
 
@@ -208,7 +208,7 @@ def test_correlation_scope_request_field_coexists_with_runtime_ids():
 
 
 # ---------------------------------------------------------------------------
-# §2.4 — the scope works across async boundaries inside one task (contextvar).
+# The scope works across async boundaries inside one task (contextvar).
 # ---------------------------------------------------------------------------
 
 

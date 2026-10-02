@@ -36,9 +36,9 @@ class StorageAdapter(ABC, Generic[T]):
     """Base class for all storage adapters with lifecycle management.
 
     Provides async context manager support for resource cleanup, the ONE
-    public principal-binding seam ``for_principal()`` (tenancy O2), and the
-    concrete ``is_owned()`` ownership probe default (AMENDMENTS O16(a) /
-    R26 — never a bare ``@abstractmethod``, so custom adapters keep working).
+    public principal-binding seam ``for_principal()``, and the
+    concrete ``is_owned()`` ownership probe default (never a bare
+    ``@abstractmethod``, so custom adapters keep working).
     """
 
     #: Bound identity (set via ``for_principal``); ``None`` = unscoped.
@@ -64,7 +64,7 @@ class StorageAdapter(ABC, Generic[T]):
     def for_principal(self, principal: "SessionPrincipal") -> Self:
         """Bind this adapter to ``principal`` and return a cheap bound view.
 
-        The ONE public binding seam (tenancy O2): the runtime calls it at
+        The ONE public binding seam: the runtime calls it at
         session construction. Backends that scope rows (e.g. Postgres with
         ``scope="filter"`` columns) read the bound principal internally;
         unscoped backends simply carry it.
@@ -76,7 +76,7 @@ class StorageAdapter(ABC, Generic[T]):
     async def is_owned(
         self, id: str, principal: "SessionPrincipal | None" = None
     ) -> bool:
-        """Concrete ownership-probe default (O16(a), closes E8).
+        """Concrete ownership-probe default.
 
         Non-Pg backends load under the bound principal scope and test for a
         non-``None`` result; the Postgres base overrides this with the single
@@ -165,13 +165,13 @@ class AgentConfigAdapter(StorageAdapter[AgentConfig]):
         """
         ...
 
-    # Concrete DEFAULT (R26): correct-but-unoptimized; subclasses override
+    # Concrete DEFAULT: correct-but-unoptimized; subclasses override
     # for speed (the Postgres base uses a scoped JSONB lookup).
     async def get_media_metadata(
         self, agent_uuid: str, media_id: str
     ) -> "MediaMetadata | None":
         """Look up one entry from the agent's media_registry by canonical
-        media_id (fixes E5). Default: load the config and read
+        media_id. Default: load the config and read
         ``media_registry[media_id]``."""
         config = await self.load(agent_uuid)
         return config.media_registry.get(media_id) if config else None
@@ -256,13 +256,13 @@ class ConversationAdapter(StorageAdapter[Conversation]):
         """
         ...
 
-    # Concrete DEFAULT (R26): Python-side scan; the Postgres base overrides
+    # Concrete DEFAULT: Python-side scan; the Postgres base overrides
     # with the LATERAL single-query form.
     async def find_generated_file(
         self, agent_uuid: str, media_id: str
     ) -> "MediaMetadata | None":
         """Find a generated file across this agent's runs by canonical
-        media_id — newest run wins (fixes E5). The library owns the walk and
+        media_id — newest run wins. The library owns the walk and
         the MediaMetadata coercion; legacy key spellings are normalized
         upstream by ``MediaMetadata.from_dict`` (media subsystem)."""
         page_size = 50
@@ -279,7 +279,7 @@ class ConversationAdapter(StorageAdapter[Conversation]):
                 return None
             offset += len(page)
 
-    # Concrete DEFAULT (R26): correct-but-unoptimized; the Postgres base
+    # Concrete DEFAULT: correct-but-unoptimized; the Postgres base
     # overrides with a single UPDATE. Used by fork-reset (the reset verb).
     async def archive_after(
         self, agent_uuid: str, sequence_number: int

@@ -435,7 +435,7 @@ Returns:
         output = "\n".join(truncated_lines)
 
         if was_truncated and ctx is not None:
-            # F6: persist the FULL tree via the canonical ctx budgeting seam;
+            # Persist the FULL tree via the canonical ctx budgeting seam;
             # max_chars=0 yields just the appended reference line.
             output += await ctx.emit_capped("\n".join(full_lines), max_chars=0)
             output += (

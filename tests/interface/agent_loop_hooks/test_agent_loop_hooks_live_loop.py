@@ -1,24 +1,23 @@
-"""Lifecycle hooks fire on the LIVE LLM loop — AMENDMENTS "Consumer-migration
-fixes (2026-06-11)" CM-G4 / CM-G2 / CM-G1 (consumer gaps P3-G4 / P3-G2 / P3-G1).
+"""Lifecycle hooks fire on the LIVE LLM loop.
 
 Covers, against a real ``AnthropicAgent`` driven by a scripted offline
 provider (no API calls):
 
-- CM-G4 ``on_turn_start`` / ``on_turn_end`` on ``run()`` with their outcome
+- ``on_turn_start`` / ``on_turn_end`` on ``run()`` with their outcome
   semantics (block → typed ABORTED; update → Message replace;
   ``EndTurnOutcome(action="continue")`` → synthetic rerun).
-- CM-G4 ``before_tool`` / ``after_tool`` / ``on_tool_error`` around BACKEND
+- ``before_tool`` / ``after_tool`` / ``on_tool_error`` around BACKEND
   tool execution (update→ToolCall rewrite, block→deny envelope,
-  raised→recovery via update=ToolResultEnvelope, pre-splice transform — R10).
-- CM-G4 ``before_compact`` / ``after_compact`` via the loop's compaction seam
+  raised→recovery via update=ToolResultEnvelope, pre-splice transform).
+- ``before_compact`` / ``after_compact`` via the loop's compaction seam
   (`trigger="auto"` veto skips; `trigger="overflow"` veto fails the turn
-  upward with CONTEXT_OVERFLOW — I10).
-- CM-G4 ``on_abort`` observer on the live abort path.
-- CM-G4 ``on_subagent_start`` / ``on_subagent_end`` on the parent runtime
+  upward with CONTEXT_OVERFLOW).
+- ``on_abort`` observer on the live abort path.
+- ``on_subagent_start`` / ``on_subagent_end`` on the parent runtime
   around a spawn (update→SubAgentSpec rewrite; block denies the spawn).
-- CM-G2 hook contexts carry the LIVE resources (sandbox / media / memory /
+- Hook contexts carry the LIVE resources (sandbox / media / memory /
   conversation / run_id) — no more ``None`` stamping.
-- CM-G1 ``before_tool`` (executor="frontend") fires per pending frontend call
+- ``before_tool`` (executor="frontend") fires per pending frontend call
   BEFORE the ``AwaitInput`` emit, with update→ToolCall enrichment applied to
   the outbound ``FrontendCallView`` AND the persisted pause.
 """
@@ -169,7 +168,7 @@ def _agent(turns: list[Message], *, hooks=None, tools=None, frontend_tools=None,
     )
 
 
-# ── CM-G4: on_turn_start / on_turn_end on run() ──────────────────────────────
+# ── on_turn_start / on_turn_end on run() ──────────────────────────────
 
 
 async def test_on_turn_start_and_on_turn_end_fire_on_the_live_run():
@@ -258,7 +257,7 @@ async def test_on_turn_end_continue_reruns_the_loop_with_the_continue_prompt():
     assert synthetic == ["finish your todos first"]
 
 
-# ── CM-G2: live resource stamping on hook contexts ───────────────────────────
+# ── live resource stamping on hook contexts ───────────────────────────
 
 
 async def test_hook_contexts_carry_live_resources_not_none():
@@ -303,7 +302,7 @@ async def test_on_turn_start_context_carries_the_preminted_run_id():
     assert captured["run_id"] is not None
 
 
-# ── CM-G4: the unified tool lifecycle on the live BACKEND path ───────────────
+# ── the unified tool lifecycle on the live BACKEND path ───────────────
 
 
 async def test_before_tool_rewrites_backend_input_on_the_live_loop():
@@ -415,7 +414,7 @@ async def test_on_tool_error_fires_for_raised_execution_and_synthesizes_recovery
     assert "recovered gracefully" in str(spliced[0].tool_result)
 
 
-# ── CM-G4: before/after_compact on the loop's compaction seam (I10) ──────────
+# ── before/after_compact on the loop's compaction seam ──────────
 
 
 class _FakeCompactionController:
@@ -497,7 +496,7 @@ async def test_before_compact_block_on_overflow_fails_the_turn_upward():
     assert err.value.code is ErrorCode.CONTEXT_OVERFLOW
 
 
-# ── CM-G4: on_abort observer on the live abort path ──────────────────────────
+# ── on_abort observer on the live abort path ──────────────────────────
 
 
 async def test_on_abort_fires_on_the_live_abort_path():
@@ -520,7 +519,7 @@ async def test_on_abort_fires_on_the_live_abort_path():
     assert isinstance(captured["phase"], str)
 
 
-# ── CM-G4: on_subagent_start / on_subagent_end around a spawn ────────────────
+# ── on_subagent_start / on_subagent_end around a spawn ────────────────
 
 
 class _FakeChildResult:
@@ -639,7 +638,7 @@ async def test_on_subagent_start_block_denies_the_spawn():
     assert "no subagents for you" in (envelope.error_message or "")
 
 
-# ── CM-G1: before_tool on the in-loop frontend relay pause ───────────────────
+# ── before_tool on the in-loop frontend relay pause ───────────────────
 
 
 async def test_before_tool_enriches_the_frontend_relay_pause_before_await_emit():
@@ -674,7 +673,7 @@ async def test_before_tool_enriches_the_frontend_relay_pause_before_await_emit()
             break
     assert envelope is not None, "no AwaitInput frame was emitted"
 
-    # The OUTBOUND view carries the enrichment (B5/C2 — the old before_relay).
+    # The OUTBOUND view carries the enrichment (the old before_relay).
     view = envelope.body.tools[0]
     assert view.tool_name == "present_plan"
     assert view.input["plan_content"] == "the full plan text"

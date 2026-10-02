@@ -32,7 +32,7 @@ MEDIA_READ_CHUNK_SIZE: int = 64 * 1024  # 64KB
 INLINE_BASE64_THRESHOLD: int = 1_200_000  # 1.2 MB
 """Max payload size (bytes) that ``content_block_from_bytes`` will inline.
 
-I13(c): a pure-bytes codec has no place to persist large bytes, so above this
+A pure-bytes codec has no place to persist large bytes, so above this
 threshold a non-image payload must instead be stored and projected through
 ``to_content_block`` (which has the stored location)."""
 
@@ -52,13 +52,13 @@ def _is_projectable(mime_type: str) -> bool:
 class MediaScope:
     """How a stored object is namespaced. The runtime builds this from ctx.
 
-    §2.0: ``MediaBackend`` does NOT grow an ``(org, member)`` tuple — identity
+    ``MediaBackend`` does NOT grow an ``(org, member)`` tuple — identity
     lives in the optional ``principal``. ``principal is None`` ⇒ single-tenant
     (today's behaviour: the bare ``agent_uuid`` namespace).
     """
 
     agent_uuid: str                              # existing per-session namespace
-    principal: SessionPrincipal | None = None    # contract §1.1; None ⇒ single-tenant
+    principal: SessionPrincipal | None = None    # None ⇒ single-tenant
 
 
 @dataclass
@@ -149,7 +149,7 @@ class MediaBackend(ABC):
       - MemoryMediaBackend (media_backend/memory.py) — in-process (future)
     """
 
-    #: The default incremental flush strategy (§2.2 / contract §6). O3:
+    #: The default incremental flush strategy.
     #: ``IncrementalBlake3Flush`` is the only shipped strategy; consumers assign
     #: their own ``MediaFlushStrategy`` to override.
     flush_strategy: MediaFlushStrategy = IncrementalBlake3Flush()
@@ -158,17 +158,17 @@ class MediaBackend(ABC):
         """Construct a backend.
 
         Args:
-            blob_store: Optional content-addressed object store (§2.4, Variant A).
+            blob_store: Optional content-addressed object store.
                 ``ctx.media.blob_store`` is a documented cross-subsystem handle.
         """
         self.blob_store = blob_store
 
-    #: Lazily-created media-local default registry (R15) — used only when an
+    #: Lazily-created media-local default registry — used only when an
     #: ``IncrementalBlake3Flush`` is constructed without an injected registry.
     _default_flush_registry: "MediaFlushRegistry | None" = None
 
     def default_flush_registry(self) -> "MediaFlushRegistry":
-        """Return the backend's default media-local flush registry (R15)."""
+        """Return the backend's default media-local flush registry."""
         from .flush import _InMemoryFlushRegistry
 
         if self._default_flush_registry is None:
@@ -348,7 +348,7 @@ class MediaBackend(ABC):
         Default impl is backend-specific (S3: tag/index; local: registry scan).
         Returns ``None`` if absent. Enables store-if-absent dedupe.
 
-        I13(a): DEFAULT scope-filtered — when a ``scope``/principal is present the
+        DEFAULT scope-filtered — when a ``scope``/principal is present the
         lookup only sees blobs inside the derived tenant/subject namespace (no
         cross-tenant existence probe). ``scope=None`` ⇒ today's single-tenant
         ``agent_uuid`` namespace.
@@ -425,7 +425,7 @@ class MediaBackend(ABC):
         """
         ...
 
-    # ─── Content-block projection (§2.1; concrete defaults) ───────────
+    # ─── Content-block projection (concrete defaults) ─────────────────
 
     async def to_content_block(
         self,
@@ -441,7 +441,7 @@ class MediaBackend(ABC):
         - ``application/pdf`` → ``DocumentContent`` (base64, source_type=BASE64)
         - everything else     → ``AttachmentContent`` referencing url/storage_location
 
-        Concrete default (backends MAY override). I13(b): for projectable types the
+        Concrete default (backends MAY override). For projectable types the
         bytes are read (and image/* is capped while reading); a NON-projectable type
         returns a reference WITHOUT reading the bytes (no huge non-image in memory).
 
@@ -455,7 +455,7 @@ class MediaBackend(ABC):
                 f"for agent_uuid={agent_uuid!r}"
             )
 
-        # I13(b): non-projectable types return a reference WITHOUT reading bytes.
+        # Non-projectable types return a reference WITHOUT reading bytes.
         if not _is_projectable(meta.media_mime_type):
             return AttachmentContent(
                 media_type=meta.media_mime_type,
@@ -492,9 +492,9 @@ class MediaBackend(ABC):
         crop_bbox: list[int] | None = None,
         inline_threshold: int = INLINE_BASE64_THRESHOLD,
     ) -> ContentBlock:
-        """Pure bytes+mime → ContentBlock. No I/O. The X14 codec.
+        """Pure bytes+mime → ContentBlock. No I/O. The codec.
 
-        I13(c): returns an INLINE base64 block only when the (budget-fitted)
+        Returns an INLINE base64 block only when the (budget-fitted)
         payload is UNDER ``inline_threshold``. For image/* the budget cap usually
         brings the payload under the threshold; an over-threshold non-image
         payload raises, directing the caller to store-then-``to_content_block``.
@@ -683,14 +683,14 @@ class MediaBackend(ABC):
     ) -> list[MediaMetadata]:
         """Collect sandbox exports and store them — returning the DELTA.
 
-        BACK-COMPAT shape (R28): returns a list, now the incremental DELTA (newly
+        BACK-COMPAT shape: returns a list, now the incremental DELTA (newly
         uploaded or changed THIS turn), not a full re-upload. Callers wanting the
         rich result use :meth:`flush_exports_result`.
 
         Args:
             agent_uuid: Agent session UUID.
             max_concurrent: Maximum number of concurrent store operations.
-            strategy: Optional per-call strategy override (the §6 seam).
+            strategy: Optional per-call strategy override.
 
         Returns:
             The delta list of MediaMetadata.

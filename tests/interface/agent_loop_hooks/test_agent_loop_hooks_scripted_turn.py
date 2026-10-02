@@ -1,23 +1,23 @@
-"""Scripted turns drive the SAME hook chain — agent-loop-hooks.md §2.3 (I7).
+"""Scripted turns drive the SAME hook chain.
 
 Covers:
-- I7 (AMENDMENTS) / doc §2.3 note: ``AgentRuntime.record_turn(user_message,
+- ``AgentRuntime.record_turn(user_message,
   assistant_blocks, *, stop_reason="end_turn") -> AgentResult`` runs
   ``on_turn_start`` → (no provider call) → ``on_turn_end`` exactly like a model
   turn.
-- §2.2 context payloads as delivered by the live loop: ``TurnContext.message``
+- Context payloads as delivered by the live loop: ``TurnContext.message``
   / ``is_first_prompt`` / ``profile`` (the ACTIVE profile) plus runtime-stamped
   identity ("stamped by the runtime; never hand-passed");
   ``EndTurnContext.final_text`` / ``stop_reason`` / ``response_message`` /
   step counters.
-- §2.1 composition on the live path: ``update`` chains in registration order —
+- Composition on the live path: ``update`` chains in registration order —
   h2 sees h1's replaced ``Message`` as its input.
-- §2.1 block semantics: a blocked ``on_turn_start`` aborts the action —
+- Block semantics: a blocked ``on_turn_start`` aborts the action —
   ``on_turn_end`` never fires.
-- O7 (AMENDMENTS) / §2.1 composition note: across a multi-hook chain the LAST
+- Composition note: across a multi-hook chain the LAST
   ``ctx.switch_profile()`` call wins, applied ONCE post-composition — observed
   on the live ``record_turn`` path via the ``on_profile_changed`` observer
-  (§2.3a payload: ``source="hook_switch"``, ``is_initial=False``) and the next
+  (payload: ``source="hook_switch"``, ``is_initial=False``) and the next
   turn's ``TurnContext.profile``.
 """
 
@@ -83,7 +83,7 @@ async def test_record_turn_turn_start_context_payload():
     assert isinstance(ctx, TurnContext)
     assert "hello scripted" in _text_of(ctx.message)
     assert ctx.is_first_prompt is True
-    # §2.2: ctx.profile is "the active profile (read)" — the runtime-built
+    # ctx.profile is "the active profile (read)" — the runtime-built
     # context carries it; identity/topology is "stamped by the runtime; never
     # hand-passed".
     assert ctx.profile is not None
@@ -133,7 +133,7 @@ async def test_record_turn_returns_an_agent_result():
 
 
 async def test_turn_start_update_chains_into_the_next_hook():
-    # §2.1: update chains in registration order — h2 sees h1's update as input.
+    # Update chains in registration order — h2 sees h1's update as input.
     seen_by_h2 = []
 
     async def h1(ctx):

@@ -1,15 +1,15 @@
-"""Interface red-suite: ``MemoryUpdate`` (memory subsystem).
+"""Interface spec: ``MemoryUpdate`` (memory subsystem).
 
-Covers memory.md:
-  - §2.3 "Typed update outcome (NEW — replaces dict[str, Any])"
-  - §5 Produces: MemoryUpdate (store_type + details; O13) with ``.to_dict()``.
-  - §6 migration row: MemoryUpdate slims to {store_type, details}; the typed counters
+Covers:
+  - "Typed update outcome (NEW — replaces dict[str, Any])"
+  - Produces: MemoryUpdate (store_type + details) with ``.to_dict()``.
+  - Migration row: MemoryUpdate slims to {store_type, details}; the typed counters
     (memories_created / memories_updated / memories_evicted) are DROPPED — a store puts
     counters into ``details``.
 
 ``MemoryUpdate`` is OWNED by memory: deep-tested for construction, the default empty
-``details`` mapping, the ``store_type`` field, ``to_dict()`` canonical serialization
-(§6 contract), frozen-ness, and that the dropped O13 counter fields are NOT present.
+``details`` mapping, the ``store_type`` field, ``to_dict()`` canonical serialization,
+frozen-ness, and that the dropped counter fields are NOT present.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def test_memory_update_requires_store_type():
 
 
 def test_memory_update_details_defaults_to_empty_mapping():
-    # §2.3: ``details: Mapping[str, Any] = field(default_factory=dict)``.
+    # ``details: Mapping[str, Any] = field(default_factory=dict)``.
     upd = MemoryUpdate(store_type="redis_vector")
     assert upd.details == {}
 
@@ -48,20 +48,20 @@ def test_memory_update_carries_store_specific_details():
 
 
 def test_memory_update_fields_are_exactly_store_type_and_details():
-    # O13: slimmed to two fields; the typed counters were dropped.
+    # Slimmed to two fields; the typed counters were dropped.
     names = {f.name for f in dataclasses.fields(MemoryUpdate)}
     assert names == {"store_type", "details"}
 
 
 def test_memory_update_dropped_counter_fields_are_absent():
-    # §6 / O13: these legacy fields must NOT exist on the new type.
+    # These legacy fields must NOT exist on the new type.
     names = {f.name for f in dataclasses.fields(MemoryUpdate)}
     for dropped in ("memories_created", "memories_updated", "memories_evicted"):
         assert dropped not in names
 
 
 def test_memory_update_is_frozen():
-    # §2.3 declares ``@dataclass(frozen=True)``.
+    # It is declared ``@dataclass(frozen=True)``.
     upd = MemoryUpdate(store_type="none")
     with pytest.raises(dataclasses.FrozenInstanceError):
         upd.store_type = "other"  # type: ignore[misc]
@@ -90,7 +90,7 @@ def test_memory_update_to_dict_default_details_serializes_empty():
 
 
 def test_memory_update_to_dict_keys_are_exactly_store_type_and_details():
-    # §6 canonical serialization: the serialized surface is EXACTLY {store_type, details} —
+    # Canonical serialization: the serialized surface is EXACTLY {store_type, details} —
     # no extra/leaked keys (e.g. a stray legacy counter).
     out = MemoryUpdate(store_type="x", details={"n": 1}).to_dict()
     assert set(out.keys()) == {"store_type", "details"}

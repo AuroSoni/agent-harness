@@ -1,10 +1,10 @@
 """LiteLLM chain-repair seams: ``plan_stream_abort`` + ``sanitize_chain``.
 
-providers.md §6 (G0): the module-level ``message_sanitizer`` helpers are
+The module-level ``message_sanitizer`` helpers are
 REMOVED — ``provider.plan_stream_abort(turn)`` reads the provider-private
-``stream_bookkeeping`` (for LiteLLM: the completed ``ChainToolCall`` list,
-O12a) and ``provider.sanitize_chain`` delegates to the shared
-``agent_base.core.chain.ensure_chain_validity`` (R18a).  The shared rule set
+``stream_bookkeeping`` (for LiteLLM: the completed ``ChainToolCall`` list)
+and ``provider.sanitize_chain`` delegates to the shared
+``agent_base.core.chain.ensure_chain_validity``.  The shared rule set
 is pinned in ``tests/unit/core/test_chain.py``.
 """
 from __future__ import annotations

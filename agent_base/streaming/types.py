@@ -5,17 +5,15 @@ framework emits to any consumer (FastAPI SSE, WebSocket, CLI).  Providers
 translate their native streaming events into these types inside
 ``generate_stream()``.
 
-Per ``interface_plan/subsystems/streaming-and-meta.md`` §2.1:
-
-- the ``StreamDelta`` taxonomy is retained (contract §1.4),
-- every delta carries the R6 correlation header (``parent_agent_uuid`` +
+- the ``StreamDelta`` taxonomy is retained,
+- every delta carries the correlation header (``parent_agent_uuid`` +
   ``seq``, stamped by the loop on EVERY delta),
 - each type owns its own serialization via ``to_wire()`` / ``from_wire()``
-  (the type, not a formatter, owns the wire shape — kills X5's lockstep),
+  (the type, not a formatter, owns the wire shape — kills the lockstep),
 - ``ErrorDelta`` is typed (``code``/``retriable``/``terminal``) and imports
-  the single ``ErrorCode`` taxonomy from ``agent_base.core.errors`` (R8),
+  the single ``ErrorCode`` taxonomy from ``agent_base.core.errors``,
 - ``WIRE_PROTOCOL_VERSION`` is the one version axis this module owns (the
-  SSE byte contract — O15c).  v1 keeps today's field spellings:
+  SSE byte contract).  v1 keeps today's field spellings:
   ``agent`` / ``final`` / ``delta`` / ``id`` / ``name`` / ``tool_use_id``.
 
 Each subclass auto-sets its ``type`` field in ``__post_init__``.
@@ -26,9 +24,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from agent_base.core.errors import ErrorCode  # SINGLE taxonomy — defined in core (R8)
+from agent_base.core.errors import ErrorCode  # SINGLE taxonomy — defined in core
 
-# RECONCILED (R12) + amended (O15c): WIRE_PROTOCOL_VERSION is the WIRE axis — the
+# WIRE_PROTOCOL_VERSION is the WIRE axis — the
 # SSE byte contract (field spellings + framing), and the ONLY version axis this
 # module owns.  Core owns CORE_SCHEMA_VERSION (entity wire shape); storage owns
 # LIBRARY_SCHEMA_VERSION (DDL).  Bumped only on a breaking WIRE change.
@@ -63,7 +61,7 @@ class StreamDelta:
         type: Event type string (auto-set by subclasses).
         is_final: Whether this is the last delta in its logical chunk.
         parent_agent_uuid: Sub-agent attribution — stamped by the LOOP on
-            every delta (R6), never reconstructed from a side meta_init map.
+            every delta, never reconstructed from a side meta_init map.
         seq: Per-run monotonic ordering, stamped by the runtime (loop).
     """
 
@@ -283,13 +281,13 @@ class CitationDelta(StreamDelta):
 
 
 # ---------------------------------------------------------------------------
-# Error delta — typed taxonomy (resolves D3)
+# Error delta — typed taxonomy
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class ErrorDelta(StreamDelta):
-    """A typed terminal error event (§2.1, D3).
+    """A typed terminal error event.
 
     The runtime classifies provider exceptions into ``ErrorCode`` at the loop
     boundary (``classify_provider_error`` in ``agent_base.core.errors``); a
@@ -307,7 +305,7 @@ class ErrorDelta(StreamDelta):
 
     @property
     def error_payload(self) -> dict[str, Any]:
-        """Projection of the typed fields as a flat payload dict (§2.1)."""
+        """Projection of the typed fields as a flat payload dict."""
         code = self.code
         code_value = code.value if isinstance(code, ErrorCode) else str(code)
         return {"code": code_value, "message": self.message, **self.details}
@@ -339,13 +337,13 @@ class ErrorDelta(StreamDelta):
         )
 
 
-# LEGACY deltas DELETED (streaming-and-meta.md §6 / AMENDMENTS O3 / G0):
+# LEGACY deltas DELETED:
 # ``MetaDelta`` → ``MetaEnvelope`` bodies (streaming/meta.py);
 # ``RollbackDelta`` → the ``Rollback`` MetaBody.  No alias, no codec mapping.
 
 
 # ---------------------------------------------------------------------------
-# from_wire dispatch table (the type discriminator, §2.1)
+# from_wire dispatch table (the type discriminator)
 # ---------------------------------------------------------------------------
 
 _WIRE_DECODERS: dict[str, Callable[[dict[str, Any]], StreamDelta]] = {

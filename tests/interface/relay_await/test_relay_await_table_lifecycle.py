@@ -1,11 +1,11 @@
 """AwaitTable open/resolve lifecycle, record stamping, and the DI seam.
 
-Covers interface_plan/subsystems/relay-await.md:
-  - §2.1 ``AwaitTable.open`` (keyword-only, principal/reason stamping,
+Covers:
+  - ``AwaitTable.open`` (keyword-only, principal/reason stamping,
     Join return shape) and ``resolve`` dispositions RESOLVED / IGNORED_DUP /
     IGNORED_STALE for the non-auth cases.
-  - §2.1 ``pop`` / ``owner_of`` / ``walk`` / ``drop_tree``.
-  - §3.5 ``get_await_table()`` / ``set_await_table()`` — the DI seam that
+  - ``pop`` / ``owner_of`` / ``walk`` / ``drop_tree``.
+  - ``get_await_table()`` / ``set_await_table()`` — the DI seam that
     replaces Nova's ``control/relay.py`` re-export shim (Rung-2 Redis swap).
 
 Auth (REJECTED / PrincipalPolicy) is specified in
@@ -57,7 +57,7 @@ async def test_open_returns_join_with_pending_future():
 
 
 async def test_open_rejects_the_legacy_owner_tuple_kwargs():
-    # §6 migration row (G0): ``open(...)`` no longer accepts
+    # ``open(...)`` no longer accepts
     # ``organization_id=``/``member_id=`` — callers pass ``principal=``.
     # The signature break itself is pinned: an implementation swallowing the
     # legacy kwargs (e.g. via **kwargs) must not pass.
@@ -74,7 +74,7 @@ async def test_open_rejects_the_legacy_owner_tuple_kwargs():
 
 
 async def test_open_is_keyword_only():
-    # §2.1 Protocol: ``open(self, *, cid, root_session_id, ...)``.
+    # Protocol: ``open(self, *, cid, root_session_id, ...)``.
     table = AwaitTable()
     with pytest.raises(TypeError):
         table.open("relay_run_1_0", "root_1", "agent_1", ["toolu_a"])
@@ -111,7 +111,7 @@ async def test_open_defaults_principal_none_and_reason_frontend_tool():
 
 
 async def test_open_accepts_open_vocabulary_reason():
-    # §O9: ``reason`` is an open str vocabulary — no enum gate at open().
+    # ``reason`` is an open str vocabulary — no enum gate at open().
     table = AwaitTable()
     await _open(table, reason="custom_pause")
     assert table.owner_of("relay_run_1_0").reason == "custom_pause"
@@ -134,7 +134,7 @@ async def test_resolve_open_await_returns_resolved_and_wakes_the_join():
 
 async def test_resolve_delivers_results_unmodified():
     # The table is the rendezvous, not the chain-repair chokepoint: blocks are
-    # delivered verbatim (reconciliation happens in await_external, §2.5).
+    # delivered verbatim (reconciliation happens in await_external).
     table = AwaitTable()
     join = await _open(table, tool_use_ids=["toolu_a", "toolu_b"])
     results = [_tr("toolu_a"), _tr("toolu_zz"), _tr("srvtoolu_1")]
@@ -179,7 +179,7 @@ def test_owner_of_unknown_cid_is_none():
 
 
 async def test_walk_lists_parent_and_child_records_for_a_root():
-    # §2.1: ``walk(root_session_id)`` — parent AND children, for nested repair.
+    # ``walk(root_session_id)`` — parent AND children, for nested repair.
     table = AwaitTable()
     await _open(table, cid="relay_root_pause")
     await _open(
@@ -214,7 +214,7 @@ def test_drop_tree_of_unknown_root_drops_nothing():
     assert table.drop_tree("root_never_seen") == 0
 
 
-# ── DI seam (§3.5) ────────────────────────────────────────────────────────
+# ── DI seam ───────────────────────────────────────────────────────────────
 
 
 def test_get_await_table_returns_a_process_wide_table():

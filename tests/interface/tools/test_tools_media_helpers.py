@@ -1,15 +1,15 @@
-"""image_block / ImageContent.from_bytes_capped — thin wrappers (tools.md §2.5, R16).
+"""image_block / ImageContent.from_bytes_capped — thin wrappers.
 
 Covers:
-- §2.5: ``image_block(data, *, media_type=None, filename=None, budget=None,
+- ``image_block(data, *, media_type=None, filename=None, budget=None,
   crop_bbox=None) -> tuple[ImageContent, str]`` — bytes in, size-capped block
   + human metadata string out; ``media_type`` inferred from bytes when None;
-  thin wrapper over media-backend's canonical ``fit_image_to_budget`` (R16).
-- §2.5: ``ImageContent.from_bytes_capped`` classmethod — block-only spelling.
-- §3 "After F1": the single-image envelope shape uses ``from_blocks`` (O11(b):
-  ``from_image`` is deferred).
-- ``ImageBudget`` is media-backend's type, consumed here as a collaborator
-  (plain ``ImageBudget()`` = Anthropic defaults, O15(b)).
+  thin wrapper over the media backend's canonical ``fit_image_to_budget``.
+- ``ImageContent.from_bytes_capped`` classmethod — block-only spelling.
+- The single-image envelope shape uses ``from_blocks`` (``from_image`` is
+  deferred).
+- ``ImageBudget`` is the media backend's type, consumed here as a collaborator
+  (plain ``ImageBudget()`` = Anthropic defaults).
 """
 
 import base64
@@ -96,7 +96,7 @@ def test_from_bytes_capped_budget_defaults_to_plain_image_budget():
     assert sig.parameters["budget"].default is None  # None → ImageBudget()
 
 
-# ─── §3 "After F1" — image-result envelope shape via from_blocks ────────────
+# ─── Image-result envelope shape via from_blocks ────────────────────────────
 
 
 def test_image_result_envelope_uses_from_blocks():
@@ -114,7 +114,7 @@ def test_image_result_envelope_uses_from_blocks():
 
 
 def test_image_block_clamps_out_of_bounds_crop_to_image_bounds():
-    # CM-P2 (AMENDMENTS 2026-06-11): CLAMP is CANONICAL — an out-of-bounds
+    # CLAMP is CANONICAL — an out-of-bounds
     # crop_bbox is clamped to the image bounds and yields a valid image,
     # never an "Invalid crop_bbox" error (the same containment philosophy as
     # the sandbox path grammar's normpath collapse). Decode failures still

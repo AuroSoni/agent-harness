@@ -180,14 +180,14 @@ class ExportedFileMetadata:
     """Path relative to the exports root (e.g. "subdir/report.csv")."""
 
 
-# ─── Zone layout (X11) ────────────────────────────────────────────────
+# ─── Zone layout ──────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class Zone:
     """One named directory inside a sandbox root.
 
-    Amended (O10): trimmed to ``{name, explicit}``. Every shipped zone is created on
+    Amended: trimmed to ``{name, explicit}``. Every shipped zone is created on
     ``setup()`` and appears in the allowed-roots default.
     """
 
@@ -232,11 +232,11 @@ class ZoneLayout:
         Zone("workspace/.imported", explicit=False),
         Zone(".exports"),
         Zone(".plans"),
-        Zone(".context"),  # R33: shipped local.py already mkdirs this — default
+        Zone(".context"),  # shipped local.py already mkdirs this — default
         Zone(".tool_results"),
     )
 
-    # ── derivations the path grammar consumes (F7) ──
+    # ── derivations the path grammar consumes ──
     def explicit_root_prefixes(self) -> frozenset[str]:
         """First path segments that bypass the workspace default (e.g. {'.exports'})."""
         return frozenset(
@@ -244,14 +244,14 @@ class ZoneLayout:
         )
 
     def default_readable_roots(self) -> tuple[str, ...]:
-        """Every zone is readable (O10 dropped the ``readable`` flag) — all qualify."""
+        """Every zone is readable (the ``readable`` flag was dropped) — all qualify."""
         return tuple(z.name for z in self.zones)
 
     def with_extra_zones(self, *extra: "Zone | str") -> "ZoneLayout":
-        """Return a new layout with extra zones appended — the X11 seam.
+        """Return a new layout with extra zones appended.
 
         Names already present are de-duped, so re-passing a default zone like
-        ``.context`` (R33) is a harmless no-op.
+        ``.context`` is a harmless no-op.
         """
         more = tuple(Zone(z) if isinstance(z, str) else z for z in extra)
         names = {z.name for z in self.zones}
@@ -260,10 +260,10 @@ class ZoneLayout:
 
 
 DEFAULT_ZONE_LAYOUT = ZoneLayout()
-"""Exactly today's shipped zone set, INCLUDING ``.context`` (R33)."""
+"""Exactly today's shipped zone set, INCLUDING ``.context``."""
 
 
-# ─── Agent-facing path grammar result (F7) ────────────────────────────
+# ─── Agent-facing path grammar result ─────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -286,7 +286,7 @@ class ResolvedAgentPath:
     """True if it began with an explicit zone prefix."""
 
 
-# ─── Bulk operation results (X10) ─────────────────────────────────────
+# ─── Bulk operation results ───────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -372,7 +372,7 @@ class Sandbox(ABC):
       - E2BSandbox    (sandbox/e2b.py)     — remote VM isolation (future)
     """
 
-    # ─── Layout (X11) ──────────────────────────────────────────────────
+    # ─── Layout ────────────────────────────────────────────────────────
 
     @property
     def layout(self) -> ZoneLayout:
@@ -384,7 +384,7 @@ class Sandbox(ABC):
         """
         return DEFAULT_ZONE_LAYOUT
 
-    # ─── Allowed roots (I12(a)) — INSTANCE-LEVEL, derived from the layout ─
+    # ─── Allowed roots — INSTANCE-LEVEL, derived from the layout ─────────
 
     @property
     def allowed_roots(self) -> list[str]:
@@ -395,7 +395,7 @@ class Sandbox(ABC):
         """
         return list(self.layout.default_readable_roots())
 
-    # ─── Agent-facing path grammar (F7) — CONCRETE on the base ─────────
+    # ─── Agent-facing path grammar — CONCRETE on the base ───────────────
 
     def resolve_agent_path(
         self,
@@ -439,7 +439,7 @@ class Sandbox(ABC):
             is_explicit = False
 
         # Containment clamp: a ".." chain that climbs above the sandbox root must never
-        # surface a path beginning with ".." (§2.2 — normpath collapse is escape
+        # surface a path beginning with ".." (normpath collapse is escape
         # prevention). Strip leading parent segments so the result stays inside the root
         # but lands on a non-existent/unaddressable zone that check_allowed rejects.
         while collapsed.startswith("../"):
@@ -543,7 +543,7 @@ class Sandbox(ABC):
             )
         return resolved
 
-    # ─── Bulk operations (X10) — CONCRETE on the base ──────────────────
+    # ─── Bulk operations — CONCRETE on the base ─────────────────────────
 
     async def import_tree(
         self,
@@ -621,7 +621,7 @@ class Sandbox(ABC):
 
         ``verify`` values are PREFIXED digests — ``"sha256:<hex>"`` (default algorithm
         if a bare hex string is given) or ``"blake3:<hex>"``. With ``members=``, this
-        is also the X10 "write many at once" path (O10).
+        is also the "write many at once" path.
         """
         if members is not None:
             member_bytes: dict[str, bytes] = {

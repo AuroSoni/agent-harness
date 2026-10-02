@@ -1,4 +1,4 @@
-"""Injectable Postgres pool — storage.md §2.3 (fixes E4).
+"""Injectable Postgres pool.
 
 The adapter no longer owns connection management by fiat: consumers inject a
 live :data:`PgPool` (e.g. one FastAPI app pool shared across all three
@@ -63,7 +63,7 @@ class _BorrowedPool:
     async def connect(self) -> PgPool:
         return self.pool
 
-    async def close(self) -> None:  # never closes a borrowed pool (E4)
+    async def close(self) -> None:  # never closes a borrowed pool
         return None
 
 

@@ -1,4 +1,4 @@
-"""Provider implementations + the named provider registry (providers.md §2.4).
+"""Provider implementations + the named provider registry.
 
 The :data:`PROVIDERS` registry is Style 2 registration (parity with storage
 ``create_adapters`` / formatter ``get_formatter``):

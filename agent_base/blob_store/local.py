@@ -1,6 +1,6 @@
 """Filesystem-backed content-addressed blob store.
 
-media-backend.md §2.4 (Variant A): ``LocalBlobStore`` mirrors the
+``LocalBlobStore`` mirrors the
 ``LocalMediaBackend`` layout but addresses bytes by content hash. Layout::
 
     {base_path}/{namespace}/{hh}/{hash}
@@ -44,18 +44,18 @@ class LocalBlobStore(BlobStore):
     def _blob_path(self, namespace: str, content_hash: str) -> Path:
         bare = self._bare(content_hash)
         shard = bare[:2] if len(bare) >= 2 else "00"
-        # CM-P4G2: the namespace may be multi-segment ("tenant/subject" from
-        # derive_namespace, I13a) — split it so safe_blob_key validates each
+        # The namespace may be multi-segment ("tenant/subject" from
+        # derive_namespace) — split it so safe_blob_key validates each
         # segment; single-segment namespaces keep the historical layout.
         key = safe_blob_key(*split_namespace(namespace), shard, bare)
         return self.base_path / self.prefix / key
 
     def _keyed_path(self, key: str) -> Path:
-        # CM-P4G1: caller key validated segment-wise; lands under the same
+        # Caller key validated segment-wise; lands under the same
         # store prefix as the content-addressed layout.
         return self.base_path / self.prefix / safe_blob_key(*split_namespace(key))
 
-    # ─── KeyedBlobStore surface (CM-P4G1) ─────────────────────────────
+    # ─── KeyedBlobStore surface ─────────────────────────────
 
     async def put_at(
         self, key: str, data: bytes, *, mime_type: str | None = None

@@ -3,12 +3,11 @@
 Handles authentication, request building, retry/backoff, response parsing,
 and stream event translation.
 
-Conforms to the expanded ``Provider`` protocol (providers.md §2.1 / Fork
-P-A): a provider is a VALUE injected into the runtime.  ``generate`` /
+Conforms to the expanded ``Provider`` protocol: a provider is a VALUE
+injected into the runtime.  ``generate`` /
 ``generate_stream`` are keyword-only, return a normalised ``ProviderTurn``,
-read ``self.retry_policy`` (O12c — no threaded retry scalars) and emit into a
-``DeltaSink`` (R30 — the legacy ``(queue, stream_formatter)`` pair is deleted
-per G0).
+read ``self.retry_policy`` (no threaded retry scalars) and emit into a
+``DeltaSink`` (the legacy ``(queue, stream_formatter)`` pair is deleted).
 """
 from __future__ import annotations
 
@@ -212,21 +211,21 @@ class AnthropicProvider(Provider):
         self.client = client or anthropic.AsyncAnthropic()
         self.formatter = formatter or AnthropicMessageFormatter()
         self.token_estimator = AnthropicTokenEstimator(self.formatter)
-        # O12(c): the provider carries its own retry budget.
+        # The provider carries its own retry budget.
         self.retry_policy = retry_policy or RetryPolicy(
             max_retries=DEFAULT_MAX_RETRIES, base_delay=DEFAULT_BASE_DELAY
         )
         self._fallback_api_keys = fallback_api_keys or []
         self._fallback_clients: list[anthropic.AsyncAnthropic] = []
 
-    # -- identity / config defaults (providers.md §2.1) ----------------------
+    # -- identity / config defaults -------------------------------------------
 
     def default_model(self) -> str:
         """The provider's config-default model id."""
         return DEFAULT_MODEL
 
     def make_llm_config(self, loaded: "dict | LLMConfig | None") -> AnthropicLLMConfig:
-        """Land the native ``AnthropicLLMConfig`` (O12b — the ONE factory)."""
+        """Land the native ``AnthropicLLMConfig`` (the ONE factory)."""
         from agent_base.core.config import LLMConfig
 
         if loaded is None:
@@ -423,20 +422,20 @@ class AnthropicProvider(Provider):
             usage_kwargs=usage_kwargs,
         )
 
-    # -- Chain repair (R18a — shared, provider-agnostic default) -------------
+    # -- Chain repair (shared, provider-agnostic default) ---------------------
 
     def sanitize_chain(self, messages: list[Message]) -> list[Message]:
-        """Pure, idempotent pre-generate chain repair (B1/C5/X13).
+        """Pure, idempotent pre-generate chain repair.
 
         Delegates to the shared :func:`agent_base.core.chain.ensure_chain_validity`
-        (R18a) so Anthropic/LiteLLM never diverge.
+        so Anthropic/LiteLLM never diverge.
         """
         # No merging of consecutive user messages: the API combines them
         # itself, and a merged message was a rebuilt one — a history edit
         # that invalidates the cache and every later thinking block.
         return ensure_chain_validity(messages, merge_consecutive_users=False)
 
-    # -- Public API (providers.md §2.1 — keyword-only, ProviderTurn) ---------
+    # -- Public API (keyword-only, ProviderTurn) -------------------------------
 
     async def generate(
         self,
@@ -450,7 +449,7 @@ class AnthropicProvider(Provider):
     ) -> ProviderTurn:
         """Non-streaming Anthropic API call with retry → ``ProviderTurn``.
 
-        O12(c): retry budget comes from ``self.retry_policy`` — no threaded
+        Retry budget comes from ``self.retry_policy`` — no threaded
         ``max_retries``/``base_delay`` scalars.
         """
         formatted_tool_schemas = self.formatter.format_tool_schemas(tool_schemas)
@@ -506,10 +505,10 @@ class AnthropicProvider(Provider):
     ) -> ProviderTurn:
         """Streaming Anthropic API call with retry → ``ProviderTurn``.
 
-        R30/G0: ``sink`` replaces the deleted ``(queue, stream_formatter)``
+        ``sink`` replaces the deleted ``(queue, stream_formatter)``
         pair — native events translate to typed ``StreamDelta`` objects pushed
         to ``sink.emit(...)``.  Completed block indices ride the
-        provider-private ``stream_bookkeeping`` field (O12a) for
+        provider-private ``stream_bookkeeping`` field for
         :meth:`plan_stream_abort`.
         """
         formatted_tool_schemas = self.formatter.format_tool_schemas(tool_schemas)
@@ -559,13 +558,13 @@ class AnthropicProvider(Provider):
                     continue
                 raise
 
-    # -- Error classification (O5/O6/R8 — built directly, no shadow enum) ----
+    # -- Error classification (built directly, no shadow enum) ----------------
 
     def classify_error(self, exc: Exception) -> ProviderError:
         """Map an Anthropic SDK exception to a typed :class:`ProviderError`.
 
-        Plain ``if/elif`` over SDK exception types (O5); ``code`` is the single
-        8-member ``ErrorCode`` taxonomy (O6).
+        Plain ``if/elif`` over SDK exception types; ``code`` is the single
+        8-member ``ErrorCode`` taxonomy.
         """
         if isinstance(exc, ProviderError):
             return exc
@@ -605,7 +604,7 @@ class AnthropicProvider(Provider):
                     code=ErrorCode.CONTEXT_OVERFLOW, native_code=native or "request_too_large",
                     message=message, retriable=False, raw=exc,
                 )
-            # O6: bad-request / auth / validation collapse into PROVIDER_STATUS.
+            # Bad-request / auth / validation collapse into PROVIDER_STATUS.
             return ProviderError(
                 code=ErrorCode.PROVIDER_STATUS, native_code=native or str(status_code or ""),
                 message=message, retriable=False, raw=exc,
@@ -615,14 +614,14 @@ class AnthropicProvider(Provider):
             retriable=False, raw=exc,
         )
 
-    # -- Abort planning (O12a — reads provider-private stream bookkeeping) ---
+    # -- Abort planning (reads provider-private stream bookkeeping) -----------
 
     def plan_stream_abort(self, turn: ProviderTurn) -> ChainPatch:
         """Synthesize tool_results for tool_uses left open by a mid-stream
         abort.  Reads ``turn.stream_bookkeeping`` (the completed block indices
-        this provider stored on the way out — O12a); the chain patch itself
+        this provider stored on the way out); the chain patch itself
         comes from the shared ``agent_base.core.chain`` planner (the
-        module-level ``message_sanitizer`` helpers are removed — §6, G0)."""
+        module-level ``message_sanitizer`` helpers are removed)."""
         from agent_base.core.chain import ChainToolCall, plan_abort_from_completed
 
         completed: set[int] = turn.stream_bookkeeping or set()
@@ -643,7 +642,7 @@ class AnthropicProvider(Provider):
 
         return plan_abort_from_completed(partial, orphaned, kept_blocks=kept)
 
-    # -- Tool-call extraction (providers.md §2.1 — lifted from the agents) ---
+    # -- Tool-call extraction (lifted from the agents) -------------------------
 
     def extract_tool_calls(self, message: Message) -> list[ToolCallInfo]:
         """Pull *local* client tool calls (server tools surface as
@@ -658,7 +657,7 @@ class AnthropicProvider(Provider):
             if isinstance(block, ToolUseContent)
         ]
 
-    # -- Provider-hosted files (R31 — the one finalize asymmetry) ------------
+    # -- Provider-hosted files (the one finalize asymmetry) -------------------
 
     @staticmethod
     def _collect_file_ids(obj: Any, file_ids: set[str]) -> None:
@@ -677,7 +676,7 @@ class AnthropicProvider(Provider):
 
     async def collect_api_files(self, runtime: Any) -> "list[MediaMetadata]":
         """Download Anthropic Files API artifacts and store them via
-        ``runtime.media_backend`` (providers.md §2.3; was the agent-private
+        ``runtime.media_backend`` (was the agent-private
         ``_extract_and_store_api_files``)."""
         agent_config = runtime.agent_config
         if agent_config is None:

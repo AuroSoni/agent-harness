@@ -7,7 +7,7 @@ their respective modules to avoid circular imports:
 
 - ``agent_base.core.config``: AgentConfig, Conversation, LLMConfig, etc.
 - ``agent_base.core.result``: AgentResult, AgentRunLog, LogEntry
-- ``agent_base.core.runtime``: AgentRuntime (the ONE agent class -- Fork P-A)
+- ``agent_base.core.runtime``: AgentRuntime (the ONE agent class)
 - ``agent_base.core.provider``: Provider
 """
 
@@ -92,11 +92,11 @@ __all__ = [
     "CheckpointRef",
     # Provider ABC
     "Provider",
-    # Canonical serialization convention (core.md §2.1)
+    # Canonical serialization convention
     "CORE_SCHEMA_VERSION",
     "SCHEMA_VERSION_KEY",
     "schema_version_of",
-    # Error taxonomy (core.md §2.4 — R8/O6)
+    # Error taxonomy
     "ErrorCode",
     "AgentError",
     "ProviderOverloaded",
@@ -105,7 +105,7 @@ __all__ = [
     "ToolFailed",
     "ProviderStatus",
     "classify_provider_error",
-    # Compaction core types (core.md §2.3)
+    # Compaction core types
     "CompactionConfig",
     "CompactionStats",
     "Compactor",

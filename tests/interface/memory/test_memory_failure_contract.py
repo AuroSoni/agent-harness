@@ -1,33 +1,33 @@
-"""Interface red-suite: the O13 failure contract + run-boundary semantics.
+"""Interface spec: the failure contract + run-boundary semantics.
 
-Covers memory.md:
-  - §2.4 FAILURE CONTRACT (O13): retrieve() = best-effort swallow+log (recall miss never
+Covers:
+  - FAILURE CONTRACT: retrieve() = best-effort swallow+log (recall miss never
     fails a turn) UNLESS registered strict=True (recall failure turn-fatal); update() never
     turn-fatal — the runtime catches and emits ``MetaBody.ErrorReport``.
-  - §2.5: the ``strict`` knob lives at registration and flips recall failure to turn-fatal;
+  - The ``strict`` knob lives at registration and flips recall failure to turn-fatal;
     ``update`` is never turn-fatal regardless of ``strict``.
-  - §2.6 "Runtime integration with the locked lifecycle hooks": retrieve fires at
+  - "Runtime integration with the locked lifecycle hooks": retrieve fires at
     on_turn_start, update at on_turn_end; the store may ``ctx.emit(Custom("memory_updated", …))``.
-  - §3.1 override example: a store reads ``ctx.principal`` and emits a correlated Custom event.
+  - Override example: a store reads ``ctx.principal`` and emits a correlated Custom event.
 
 What memory OWNS and we deep-test: that the ``MemoryStore`` contract permits a store to raise,
 that ``strict`` is recorded per-registration, and that a store's emitted bodies flow through the
 threaded ``ctx.emit``. The failure POLICY itself is enforced by the runtime; here we model it
-with a tiny in-file harness that applies the documented O13 rules, proving the contract is
+with a tiny in-file harness that applies the documented rules, proving the contract is
 expressible against the memory surface. ``Custom`` / ``ErrorReport`` are streaming/meta
 collaborators, constructed (not deep-tested) here.
 
 NOT COVERED (intentional — no public seam at the memory boundary):
   - The registry->policy wiring (registering a store with ``strict=True`` actually causing its
-    ``retrieve()`` failure to become turn-fatal at the runtime call site) is the central O13
-    invariant, but it is deliberately UNMODELED here. memory.md §2.5 exposes only
+    ``retrieve()`` failure to become turn-fatal at the runtime call site) is the central
+    invariant, but it is deliberately UNMODELED here. The documented surface exposes only
     ``register_memory_store(name, store_cls=None, *, strict=False)`` and
     ``get_memory_store(name, **kwargs) -> MemoryStore`` (which returns an *instance*, not the
     recorded strictness). There is NO public accessor for the per-registration ``strict`` flag
     on the memory surface, so a test cannot resolve the registered strictness for a store name
     and feed it into the harness without inventing a non-spec symbol. The runtime call site that
     consumes the flag is owned by core (``anthropic_agent.py`` / runtime), out of scope for the
-    memory interface red-suite. The harness below therefore takes ``strict`` as a hand-passed
+    memory interface suite. The harness below therefore takes ``strict`` as a hand-passed
     parameter to prove the *policy* is expressible against the store surface; the registry->policy
     coupling is left to the runtime subsystem's tests.
 """
@@ -92,7 +92,7 @@ class _RaisingUpdateStore:
 
 
 class _EmittingStore:
-    """A well-behaved store that emits a correlated Custom event on update (§3.1)."""
+    """A well-behaved store that emits a correlated Custom event on update."""
 
     async def retrieve(self, ctx: Any, user_message: Message) -> MemoryContribution:
         ns = None
@@ -106,9 +106,9 @@ class _EmittingStore:
         return MemoryUpdate(store_type="emitting", details={"created": 1})
 
 
-# --- a tiny harness that applies the documented O13 policy ------------------
+# --- a tiny harness that applies the documented policy ------------------
 #
-# Models exactly the §2.6 call sites: swallow+log recall unless strict; never-fatal update
+# Models exactly the call sites: swallow+log recall unless strict; never-fatal update
 # with an ErrorReport emit. The harness is a COLLABORATOR; the store + value types are the
 # memory surface under specification.
 
@@ -183,7 +183,7 @@ async def test_update_failure_error_report_carries_message():
 # --- tests: well-behaved store rides the threaded ctx ----------------------
 
 async def test_store_emits_correlated_custom_event_on_update():
-    # §3.1: ctx.emit(Custom("memory_updated", …)) — a correlated control event, free.
+    # ctx.emit(Custom("memory_updated", …)) — a correlated control event, free.
     ctx = _FakeHookContext(principal=_FakePrincipal("org", "member"))
     await _run_turn(_EmittingStore(), ctx, strict=False)
     customs = [b for b in ctx.emitted if isinstance(b, Custom)]
@@ -193,7 +193,7 @@ async def test_store_emits_correlated_custom_event_on_update():
 
 
 async def test_store_scopes_recall_by_ctx_principal():
-    # X1 fix: identity arrives on ctx.principal; no hand-passed (org, member) tuple.
+    # Identity arrives on ctx.principal; no hand-passed (org, member) tuple.
     ctx = _FakeHookContext(principal=_FakePrincipal("org-42", "user-7"))
     contribution = await _EmittingStore().retrieve(ctx, Message.user("q"))
     assert contribution.blocks[0].text == "ns=org-42:user-7"

@@ -1,15 +1,15 @@
-"""Interface red-suite: ``classify_error`` and ``collect_api_files``.
+"""Interface spec: ``classify_error`` and ``collect_api_files``.
 
-Covers providers.md §2.1 (classify_error — D3/O5/O6), §2.3 (collect_api_files —
-R31, no-op default), §3.3 (consumer branches on ``.code``) and §3.5:
-- ``classify_error(exc)`` returns a ``ProviderError`` built DIRECTLY (O5: no
+Covers classify_error, collect_api_files (no-op default) and the consumer
+branching on ``.code``:
+- ``classify_error(exc)`` returns a ``ProviderError`` built DIRECTLY (no
   intermediate ``ProviderErrorKind``), with ``code`` drawn from the 8-member
   ``ErrorCode`` taxonomy, ``native_code`` carrying the provider-native string, and
   ``retriable`` set per error class. Dropped codes collapse into ``PROVIDER_STATUS``.
 - ``collect_api_files(runtime)`` is async; the documented default returns ``[]``
   (LiteLLM-shaped providers); a provider may override it (Anthropic Files API).
 
-In-file ``GeminiLikeProvider`` mirrors the §3.5 example; its fake SDK exceptions
+In-file ``GeminiLikeProvider``: its fake SDK exceptions
 are COLLABORATORS, never the type under test. The runtime/consumer never import an
 SDK — they branch on ``ProviderError.code``.
 """
@@ -47,7 +47,7 @@ class _FakeBadRequest(Exception):
 
 class GeminiLikeProvider:
     """Collaborator provider whose classify_error does plain if/elif over its own
-    SDK exceptions and builds ProviderError DIRECTLY (O5)."""
+    SDK exceptions and builds ProviderError DIRECTLY."""
 
     name = "gemini-like"
 
@@ -64,7 +64,7 @@ class GeminiLikeProvider:
         if isinstance(exc, _FakeTimeout):
             return ProviderError(code=ErrorCode.PROVIDER_TIMEOUT, native_code=exc.code,
                                  message=str(exc), retriable=True, raw=exc)
-        # O6: bad-request / auth / validation all collapse into PROVIDER_STATUS.
+        # Bad-request / auth / validation all collapse into PROVIDER_STATUS.
         if isinstance(exc, _FakeBadRequest):
             return ProviderError(code=ErrorCode.PROVIDER_STATUS, native_code=exc.code,
                                  message=str(exc), retriable=False, raw=exc)
@@ -115,7 +115,7 @@ def test_classify_timeout_maps_to_provider_timeout():
 
 
 def test_classify_bad_request_collapses_into_provider_status():
-    # O6: PROVIDER_BAD_REQUEST/AUTH/VALIDATION are dropped — all map to PROVIDER_STATUS.
+    # PROVIDER_BAD_REQUEST/AUTH/VALIDATION are dropped — all map to PROVIDER_STATUS.
     p = GeminiLikeProvider()
     perr = p.classify_error(_FakeBadRequest("nope"))
     assert perr.code is ErrorCode.PROVIDER_STATUS
@@ -136,7 +136,7 @@ def test_classify_preserves_raw_exception():
 
 
 def test_classified_error_consumer_branches_on_public_code():
-    # §3.3: consumers branch on the PUBLIC ErrorCode — never sniff native exceptions.
+    # Consumers branch on the PUBLIC ErrorCode — never sniff native exceptions.
     p = GeminiLikeProvider()
     perr = p.classify_error(_FakeRateLimit("x"))
     # mimics: if e.code is ErrorCode.RATE_LIMITED: ...
@@ -152,12 +152,12 @@ class DefaultFilesProvider:
     """Collaborator that does NOT reimplement collect_api_files — it binds the
     inherited protocol DEFAULT (mirrors DefaultingProvider binding
     Provider.sanitize_chain in test_providers_chain_repair.py) so the documented
-    no-op default body (``return []``, providers.md §2.3) is genuinely exercised,
+    no-op default body (``return []``) is genuinely exercised,
     not a reimplementation."""
 
     name = "default-files"
 
-    # NOTE: bound from the protocol default on purpose — exercises §2.3's concrete
+    # NOTE: bound from the protocol default on purpose — exercises the concrete
     # ``return []`` default rather than a local reimplementation.
     collect_api_files = Provider.collect_api_files
 
@@ -173,7 +173,7 @@ async def test_collect_api_files_override_returns_empty_list():
 
 
 async def test_collect_api_files_inherited_default_returns_empty_list():
-    # §2.3: the Provider protocol's concrete default body is ``return []``. Bind it
+    # The Provider protocol's concrete default body is ``return []``. Bind it
     # onto a collaborator (no reimplementation) and exercise the actual default.
     p = DefaultFilesProvider()
     result = await p.collect_api_files(runtime=object())

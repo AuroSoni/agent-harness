@@ -1,10 +1,10 @@
 """LiteLLM provider implementation.
 
-Conforms to the expanded ``Provider`` protocol (providers.md §2.1 / Fork
-P-A): keyword-only ``generate``/``generate_stream`` returning a normalised
+Conforms to the expanded ``Provider`` protocol: keyword-only
+``generate``/``generate_stream`` returning a normalised
 ``ProviderTurn``; streaming emits typed ``StreamDelta`` objects into a
-``DeltaSink`` (R30 — the ``(queue, stream_formatter)`` pair is deleted, G0);
-the retry budget rides ``self.retry_policy`` (O12c).
+``DeltaSink`` (the ``(queue, stream_formatter)`` pair is deleted);
+the retry budget rides ``self.retry_policy``.
 """
 from __future__ import annotations
 
@@ -52,17 +52,17 @@ class LiteLLMProvider(Provider):
     ) -> None:
         self.formatter = formatter or LiteLLMMessageFormatter()
         self.token_estimator = LiteLLMTokenEstimator(self.formatter)
-        # O12(c): the provider carries its own retry budget.
+        # The provider carries its own retry budget.
         self.retry_policy = retry_policy or RetryPolicy()
 
-    # -- identity / config defaults (providers.md §2.1) ----------------------
+    # -- identity / config defaults -------------------------------------------
 
     def default_model(self) -> str:
         """The provider's config-default model id."""
         return DEFAULT_MODEL
 
     def make_llm_config(self, loaded: "dict | LLMConfig | None") -> LiteLLMConfig:
-        """Land the native ``LiteLLMConfig`` (O12b — the ONE factory)."""
+        """Land the native ``LiteLLMConfig`` (the ONE factory)."""
         from agent_base.core.config import LLMConfig
 
         if loaded is None:
@@ -77,18 +77,18 @@ class LiteLLMProvider(Provider):
             f"make_llm_config expects dict | LLMConfig | None, got {type(loaded).__name__}"
         )
 
-    # -- Chain repair (R18a — shared default) --------------------------------
+    # -- Chain repair (shared default) ----------------------------------------
 
     def sanitize_chain(self, messages: list[Message]) -> list[Message]:
-        """Pure, idempotent pre-generate chain repair (B1/C5/X13) via the
-        shared :func:`agent_base.core.chain.ensure_chain_validity` (R18a)."""
+        """Pure, idempotent pre-generate chain repair via the
+        shared :func:`agent_base.core.chain.ensure_chain_validity`."""
         return ensure_chain_validity(messages)
 
-    # -- Error classification (O5/O6/R8) --------------------------------------
+    # -- Error classification --------------------------------------------------
 
     def classify_error(self, exc: Exception) -> ProviderError:
         """Map a LiteLLM exception to a typed :class:`ProviderError` (plain
-        if/elif over SDK exceptions — O5; 8-member ``ErrorCode`` — O6)."""
+        if/elif over SDK exceptions; 8-member ``ErrorCode``)."""
         if isinstance(exc, ProviderError):
             return exc
         message = str(exc)
@@ -141,14 +141,14 @@ class LiteLLMProvider(Provider):
             message=message, retriable=False, raw=exc,
         )
 
-    # -- Abort planning (O12a) -------------------------------------------------
+    # -- Abort planning --------------------------------------------------------
 
     def plan_stream_abort(self, turn: ProviderTurn) -> ChainPatch:
         """Synthesize tool_results for tool_uses left open by a mid-stream
         abort.  Reads ``turn.stream_bookkeeping`` (the completed tool-call ids
-        this provider stored on the way out — O12a); the chain patch comes
+        this provider stored on the way out); the chain patch comes
         from the shared ``agent_base.core.chain`` planner (the module-level
-        ``message_sanitizer`` helpers are removed — §6, G0)."""
+        ``message_sanitizer`` helpers are removed)."""
         from agent_base.core.chain import plan_abort_from_completed
 
         completed: list[ChainToolCall] = list(turn.stream_bookkeeping or [])

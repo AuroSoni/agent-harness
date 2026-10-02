@@ -1,10 +1,10 @@
-"""The LOCKED hook catalog — agent-loop-hooks.md §2.3 / §2.3a (contract §2).
+"""The LOCKED hook catalog.
 
 Covers:
-- §2.3 the ``Hooks`` protocol carries exactly the 12 lifecycle hooks, all async,
+- The ``Hooks`` protocol carries exactly the 12 lifecycle hooks, all async,
   each taking a single context argument.
-- §2.3a the ``on_profile_changed`` observer hook rides beside the catalog.
-- "Dropped / unified" (contract §2): ``on_checkpoint`` and the three relay hooks
+- The ``on_profile_changed`` observer hook rides beside the catalog.
+- "Dropped / unified": ``on_checkpoint`` and the three relay hooks
   (``before_relay`` / ``on_relay_result`` / ``transform_relay_results``) are NOT
   part of the protocol — relay is a runtime execution mode of the tool hooks.
 """
@@ -44,7 +44,7 @@ def test_catalog_has_exactly_twelve_lifecycle_hooks():
     # Set-EQUALITY, not a superset check: the catalog is LOCKED, so an
     # implementation that grows extra lifecycle hooks (on_steer,
     # before_generate, ...) must fail here. The only member beside the 12 is
-    # the §2.3a observer hook on_profile_changed; on_usage_report is
+    # the observer hook on_profile_changed; on_usage_report is
     # registered via agent.on_usage_report(cb), NOT a protocol method.
     assert _protocol_async_hook_names() == set(LIFECYCLE_HOOKS) | {"on_profile_changed"}
 
@@ -75,8 +75,8 @@ def test_observer_hook_on_profile_changed_is_in_the_protocol():
 
 
 def test_dropped_hooks_are_absent_from_the_protocol():
-    # on_checkpoint is dropped; the relay hooks are unified into the tool hooks
-    # (§2.1 of the contract / §2.5 of the doc). They must not resurface.
+    # on_checkpoint is dropped; the relay hooks are unified into the tool hooks.
+    # They must not resurface.
     for name in (
         "on_checkpoint",
         "before_relay",

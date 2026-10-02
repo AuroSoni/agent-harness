@@ -6,10 +6,10 @@ completed together the future could win and splice into a chain being torn down.
 Now the await-generation is the resolution authority: an interrupt retires the
 generation, so any racing reply is dropped and the parked await wakes cancelled.
 
-UPDATED (2026-06-10, P-A lift): ``await_external`` is the runtime's keyword-only
-primitive returning ``ResumeOutcome`` (relay-await.md §2.2 / AMENDMENTS B3); the
-legacy ``(classification, queue, stream_formatter)`` surface is DELETED (R30/G0)
-and ``_await_inline_relay`` itself is gone (relay-await.md §6 / O3).
+UPDATED (2026-06-10): ``await_external`` is the runtime's keyword-only
+primitive returning ``ResumeOutcome``; the
+legacy ``(classification, queue, stream_formatter)`` surface is DELETED
+and ``_await_inline_relay`` itself is gone.
 """
 import asyncio
 

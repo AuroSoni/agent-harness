@@ -1,16 +1,16 @@
-"""Red-suite specs for bulk staging operations on the Sandbox base (resolves X10).
+"""Interface specs for bulk staging operations on the Sandbox base.
 
-Covers sandbox.md:
-  - §2.3 `StagedEntry` dataclass shape (sandbox_path, size_bytes, blake3_hash default None).
-  - §2.3 `StageResult` dataclass shape (dest_prefix, entries, committed, rolled_back default ()).
-  - §2.3 `Sandbox.import_tree(local_dir, dest_prefix, *, include=None, atomic=True)` — CONCRETE
+Covers:
+  - `StagedEntry` dataclass shape (sandbox_path, size_bytes, blake3_hash default None).
+  - `StageResult` dataclass shape (dest_prefix, entries, committed, rolled_back default ()).
+  - `Sandbox.import_tree(local_dir, dest_prefix, *, include=None, atomic=True)` — CONCRETE
     on the base, recursive host-dir copy, atomic rollback on failure (committed=False),
     `include` filter, return type StageResult.
-  - §2.3 `Sandbox.extract_archive(data, dest_prefix, *, format="auto", members=None,
-    verify=None, atomic=True)` — CONCRETE on the base; `members=` "write many" path (O10
-    replacement for the deleted staging() txn); PREFIXED-digest verify (I12(c)); zip-slip guard;
+  - `Sandbox.extract_archive(data, dest_prefix, *, format="auto", members=None,
+    verify=None, atomic=True)` — CONCRETE on the base; `members=` "write many" path (replacement
+    for the deleted staging() txn); PREFIXED-digest verify; zip-slip guard;
     all-or-nothing.
-  - §4 Fork B1: atomic defaults to True, overridable.
+  - atomic defaults to True, overridable.
 
 Bulk ops are exercised against a real on-disk LocalSandbox so the inherited base behavior
 (copy + rollback + verify) is the type under test. The host source tree is a tmp_path fixture.
@@ -70,7 +70,7 @@ def test_stage_result_field_names():
     assert field_names == {"dest_prefix", "entries", "committed", "rolled_back"}
 
 
-# ─── Signatures: atomic defaults True (Fork B1), members/verify on extract ─
+# ─── Signatures: atomic defaults True, members/verify on extract ─
 
 
 def test_import_tree_atomic_defaults_true():
@@ -118,7 +118,7 @@ async def test_import_tree_copies_directory_recursively(tmp_path):
 
 
 async def test_import_tree_accepts_str_local_dir(tmp_path):
-    # §2.3 types local_dir as `str | Path`. Exercise the str arm of the union behaviorally:
+    # local_dir is typed as `str | Path`. Exercise the str arm of the union behaviorally:
     # a plain string path must produce the same recursive-copy outcome as a Path.
     src = tmp_path / "src"
     (src / "sub").mkdir(parents=True)
@@ -173,7 +173,7 @@ async def test_import_tree_include_filter_skips_excluded(tmp_path):
     await sb.teardown()
 
 
-# ─── extract_archive with members= (O10 staging() replacement) ───────────
+# ─── extract_archive with members= (staging() replacement) ───────────────
 
 
 async def test_extract_archive_members_writes_all(tmp_path):
@@ -209,7 +209,7 @@ async def test_extract_archive_members_verify_sha256_prefixed_ok(tmp_path):
 async def test_extract_archive_members_verify_bare_hex_defaults_to_sha256(tmp_path):
     sb = await _new_sandbox(tmp_path)
     content = "# bare hex skill"
-    # §2.3 + I12(c): a BARE hex digest (no algorithm prefix) defaults to sha256.
+    # A BARE hex digest (no algorithm prefix) defaults to sha256.
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
     result = await sb.extract_archive(
         b"",
@@ -246,7 +246,7 @@ async def test_extract_archive_verify_mismatch_rolls_back(tmp_path):
         members={"SKILL.md": "actual content"},
         verify={"SKILL.md": "sha256:" + ("0" * 64)},  # wrong digest
     )
-    # I12(c): verify failure → all-or-nothing rollback.
+    # Verify failure → all-or-nothing rollback.
     assert result.committed is False
     present, _ = await sb.file_exists(".context/s3/SKILL.md")
     assert present is False
@@ -271,7 +271,7 @@ async def test_extract_archive_members_with_verify_populates_hash(tmp_path):
 
 async def test_extract_archive_without_verify_leaves_hash_none(tmp_path):
     sb = await _new_sandbox(tmp_path)
-    # I12(c) negative half: §2.3 says blake3_hash is "populated when verify=True", i.e.
+    # Negative half: blake3_hash is "populated when verify=True", i.e.
     # None otherwise. Pin it on a PRODUCED entry from a real extract_archive made WITHOUT verify.
     result = await sb.extract_archive(
         b"",
@@ -314,7 +314,7 @@ async def test_extract_archive_blocks_zip_slip_member(tmp_path):
 
 async def test_extract_archive_non_atomic_allows_partial(tmp_path):
     sb = await _new_sandbox(tmp_path)
-    # atomic=False is the documented best-effort override (Fork B1).
+    # atomic=False is the documented best-effort override.
     result = await sb.extract_archive(
         b"",
         dest_prefix=".context/s6",
@@ -329,7 +329,7 @@ async def test_extract_archive_non_atomic_allows_partial(tmp_path):
 
 
 async def test_import_tree_non_atomic_allows_partial(tmp_path):
-    # Fork B1 / §2.3 / I12(d)/A4: the atomic=False best-effort override is generic across
+    # The atomic=False best-effort override is generic across
     # BOTH bulk calls. Symmetric with test_extract_archive_non_atomic_allows_partial:
     # when one file fails to copy, atomic=False must NOT roll back the already-written ones.
     src = tmp_path / "src"

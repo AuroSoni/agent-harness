@@ -1,4 +1,4 @@
-"""SubAgentSpec field-aware deepcopy snapshot contract (tools.md §2.5, P8-G1).
+"""SubAgentSpec field-aware deepcopy snapshot contract.
 
 The runtime snapshots a ``SubAgentSpec`` via ``copy.deepcopy`` in two places:
 ``SubAgentTool._coerce_spec`` (an explicitly-passed spec) and
@@ -14,7 +14,7 @@ The runtime snapshots a ``SubAgentSpec`` via ``copy.deepcopy`` in two places:
 - plain DATA fields (prompts, model, config, limits, ``retry_policy``, nested
   ``subagents``) are independent deep copies.
 
-This is the upstreamed P8-G1 fix: the consumer's ``NovaSubAgentSpec`` subclass
+This is the upstreamed fix: the consumer's ``NovaSubAgentSpec`` subclass
 (which workarounded this) collapses back onto ``SubAgentSpec`` with zero
 behavior change.
 """

@@ -1,9 +1,9 @@
-"""Red-suite specs for media-backend §2.4 — the BlobStore ABC contract.
+"""Interface specs for media-backend — the BlobStore ABC contract.
 
-Covers media-backend.md §2.4 (Fork H = Variant A, DECIDED — R14): the
+Covers the
 content-addressed `BlobStore` ABC, its abstract surface (put/get/exists/delete),
 the concrete `put_bytes` convenience, idempotent dedupe-by-hash on put, the
-I13(a) scope-derived namespace on put/exists, and the two concrete backends
+scope-derived namespace on put/exists, and the two concrete backends
 (`LocalBlobStore`, `S3BlobStore`).
 
 Symbols under test (owned by media_backend / blob_store package):
@@ -81,7 +81,7 @@ async def _aiter(data: bytes) -> AsyncIterator[bytes]:
     yield data
 
 
-# ─── BlobStore ABC shape (§2.4) ───────────────────────────────────────────
+# ─── BlobStore ABC shape ───────────────────────────────────────────
 
 
 def test_blob_store_is_abc() -> None:
@@ -126,7 +126,7 @@ def test_blob_store_exists_signature() -> None:
     assert params["scope"].default is None
 
 
-# ─── put / get round-trip + returned BlobRef (§2.4) ───────────────────────
+# ─── put / get round-trip + returned BlobRef ───────────────────────
 
 
 async def test_put_returns_blob_ref_with_hash_and_size() -> None:
@@ -145,7 +145,7 @@ async def test_get_round_trips_bytes() -> None:
     assert out == b"payload"
 
 
-# ─── idempotent put: dedupe by hash (§2.4) ────────────────────────────────
+# ─── idempotent put: dedupe by hash ────────────────────────────────
 
 
 async def test_put_is_idempotent_dedupe_by_hash() -> None:
@@ -165,7 +165,7 @@ async def test_put_distinct_bytes_distinct_hash() -> None:
     assert store.put_writes == 2
 
 
-# ─── put_bytes convenience mixin (§2.4) ───────────────────────────────────
+# ─── put_bytes convenience mixin ───────────────────────────────────
 
 
 def test_put_bytes_is_concrete_on_abc() -> None:
@@ -192,7 +192,7 @@ def test_put_bytes_namespace_keyword_only() -> None:
     assert sig.parameters["namespace"].kind == inspect.Parameter.KEYWORD_ONLY
 
 
-# ─── exists / delete (§2.4) ───────────────────────────────────────────────
+# ─── exists / delete ───────────────────────────────────────────────
 
 
 async def test_exists_returns_ref_when_present_else_none() -> None:
@@ -211,7 +211,7 @@ async def test_delete_returns_true_then_false() -> None:
     assert await store.delete(ref.content_hash, "agent-1") is False
 
 
-# ─── I13(a): scope-derived namespace on put / exists ──────────────────────
+# ─── Scope-derived namespace on put / exists ──────────────────────
 
 
 async def test_put_with_scope_derives_namespace() -> None:
@@ -224,7 +224,7 @@ async def test_put_with_scope_derives_namespace() -> None:
 
 
 async def test_exists_scope_blocks_cross_tenant_probe() -> None:
-    """I13(a): a different tenant cannot probe the blob's existence."""
+    """A different tenant cannot probe the blob's existence."""
     store = _MemBlobStore()
     scope_a = MediaScope(agent_uuid="agent-1", principal=SessionPrincipal(tenant="org-1", subject="m-1"))
     ref = await store.put(_aiter(b"private"), namespace="agent-1", scope=scope_a)
@@ -244,7 +244,7 @@ async def test_put_dedupe_does_not_cross_tenants() -> None:
     assert store.put_writes == 2
 
 
-# ─── Concrete backends exist (§2.4) ───────────────────────────────────────
+# ─── Concrete backends exist ───────────────────────────────────────
 
 
 def test_local_blob_store_is_a_blob_store() -> None:
@@ -256,7 +256,7 @@ def test_s3_blob_store_is_a_blob_store() -> None:
 
 
 def test_s3_blob_store_init_keyword_signature() -> None:
-    """§2.4: S3BlobStore(*, bucket, prefix='blobs', region=None, endpoint_url=None)."""
+    """S3BlobStore(*, bucket, prefix='blobs', region=None, endpoint_url=None)."""
     sig = inspect.signature(S3BlobStore.__init__)
     params = sig.parameters
     assert "bucket" in params
@@ -266,7 +266,7 @@ def test_s3_blob_store_init_keyword_signature() -> None:
 
 
 def test_s3_blob_store_init_params_are_keyword_only() -> None:
-    """§2.4 pins the leading `*`: every ctor param is KEYWORD_ONLY (excluding self)."""
+    """Pins the leading `*`: every ctor param is KEYWORD_ONLY (excluding self)."""
     sig = inspect.signature(S3BlobStore.__init__)
     for name in ("bucket", "prefix", "region", "endpoint_url"):
         assert (

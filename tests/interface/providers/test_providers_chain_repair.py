@@ -1,12 +1,12 @@
-"""Interface red-suite: chain-repair primitives and ``ChainPatch``.
+"""Interface spec: chain-repair primitives and ``ChainPatch``.
 
-Covers providers.md §2.1 (sanitize_chain / plan_stream_abort / extract_tool_calls),
-§2.1 Notes (ChainPatch shape, ensure_chain_validity default — R18a) and §3.5:
+Covers sanitize_chain / plan_stream_abort / extract_tool_calls,
+the ChainPatch shape and the ensure_chain_validity default:
 - ``ChainPatch`` is a dataclass with a single ``append_messages: list[Message]`` field.
 - ``Provider.sanitize_chain`` has a DEFAULT body that delegates to
-  ``ensure_chain_validity`` (R18a) — a subclass inheriting the default produces the
+  ``ensure_chain_validity`` — a subclass inheriting the default produces the
   same result as calling the shared helper directly.
-- ``plan_stream_abort(turn)`` reads ``turn.stream_bookkeeping`` (O12a): the
+- ``plan_stream_abort(turn)`` reads ``turn.stream_bookkeeping``: the
   provider-private field it itself populated — the loop never inspects it.
 - ``extract_tool_calls(message)`` pulls local tool calls.
 
@@ -48,7 +48,7 @@ def test_chain_patch_empty_is_constructible():
 
 
 # --------------------------------------------------------------------------- #
-# sanitize_chain default delegation (R18a)                                     #
+# sanitize_chain default delegation                                             #
 # --------------------------------------------------------------------------- #
 
 class DefaultingProvider:
@@ -90,7 +90,7 @@ class DefaultingProvider:
 
 
 def test_sanitize_chain_default_matches_ensure_chain_validity():
-    # R18a: the default sanitize_chain delegates to the shared helper so providers
+    # The default sanitize_chain delegates to the shared helper so providers
     # never diverge. A no-op-quirk provider yields exactly the helper's output.
     messages = [Message.user("a"), Message.assistant("b")]
     p = DefaultingProvider()
@@ -107,11 +107,11 @@ def test_ensure_chain_validity_is_callable_collaborator():
 
 
 # --------------------------------------------------------------------------- #
-# plan_stream_abort reads stream_bookkeeping (O12a)                            #
+# plan_stream_abort reads stream_bookkeeping                                   #
 # --------------------------------------------------------------------------- #
 
 class BookkeepingProvider:
-    """Collaborator whose plan_stream_abort reads turn.stream_bookkeeping (O12a):
+    """Collaborator whose plan_stream_abort reads turn.stream_bookkeeping:
     the provider-private field it populated on the way out."""
 
     def plan_stream_abort(self, turn: ProviderTurn) -> ChainPatch:
@@ -146,8 +146,7 @@ def test_plan_stream_abort_handles_empty_bookkeeping():
 
 class ExtractingProvider:
     """Collaborator whose extract_tool_calls pulls *local* tool calls and skips
-    server-tool blocks (§2.1: 'Pull *local* tool calls (skip server-tool
-    blocks)'). Server-tool blocks are ``ServerToolUseContent`` and/or local
+    server-tool blocks. Server-tool blocks are ``ServerToolUseContent`` and/or local
     blocks carrying ``srvtoolu_*`` ids; both are skipped. Mirrors the FakeProvider
     pattern used for plan_stream_abort/classify_error — returns one entry per local
     tool_use block, none for server-tool blocks."""

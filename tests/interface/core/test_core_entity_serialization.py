@@ -1,15 +1,15 @@
-"""Red-suite spec: entity `.to_dict()` for the wire-crossing set (Fork S1 / R22).
+"""Interface spec: entity `.to_dict()` for the wire-crossing set.
 
-Covers interface_plan/subsystems/core.md:
-  - §2.1.2 — ``Conversation.to_dict()`` / ``to_clean_dict()`` / ``from_dict()``
-    (resolves E10: no more mixed asdict/to_dict, every child via its own
+Covers:
+  - ``Conversation.to_dict()`` / ``to_clean_dict()`` / ``from_dict()``
+    (no more mixed asdict/to_dict, every child via its own
     ``to_dict``).
-  - §2.1.3 — ``AgentResult.to_dict()`` / ``from_dict()`` + the
-    ``settlement`` attribute the runtime always attaches (B6: there is no
+  - ``AgentResult.to_dict()`` / ``from_dict()`` + the
+    ``settlement`` attribute the runtime always attaches (there is no
     builder fallback — ``settlement`` is a plain field defaulting to None).
-  - §2.1.4 / R27 — core owns the ``conversation_log`` entry schema; its
+  - Core owns the ``conversation_log`` entry schema; its
     ``to_dict`` stamps the same ``_v`` axis. ``LogEntry`` joins the convention.
-  - §4.1 — S1 decided: methods live on the entities themselves.
+  - Methods live on the entities themselves.
 """
 from __future__ import annotations
 
@@ -44,9 +44,9 @@ _CONVERSATION_KEYS = {
     "extras",
 }
 
-# NOTE: no "cost"/"cumulative_usage" — those shims are DELETED per
-# pricing-cost.md §6 / G0 + B6; per-turn cost rides `settlement`, cumulative
-# rides the SettlementAggregator (O14(d)).
+# NOTE: no "cost"/"cumulative_usage" — those shims are DELETED;
+# per-turn cost rides `settlement`, cumulative
+# rides the SettlementAggregator.
 _AGENT_RESULT_KEYS = {
     SCHEMA_VERSION_KEY,
     "final_message",
@@ -102,7 +102,7 @@ def _agent_result(
 
 
 def _settlement_for_result(**overrides) -> TurnSettlement:
-    # Canonical TurnSettlement per pricing-cost.md §2.2 (the owning doc):
+    # Canonical TurnSettlement:
     # all fields required, `agent_id` (not `agent_uuid`).
     kwargs = dict(
         agent_id="agent-1",
@@ -140,7 +140,7 @@ def _media() -> MediaMetadata:
     )
 
 
-# ── Conversation (§2.1.2, E10) ──────────────────────────────────────────────
+# ── Conversation ──────────────────────────────────────────────
 
 
 def test_conversation_to_dict_canonical_keys_and_stamp():
@@ -150,7 +150,7 @@ def test_conversation_to_dict_canonical_keys_and_stamp():
 
 
 def test_conversation_to_dict_uses_each_child_own_to_dict():
-    # E10's root cause was asdict(cost) — the canonical projection delegates.
+    # The root cause was asdict(cost) — the canonical projection delegates.
     d = _conversation().to_dict()
     assert d["cost"]["currency"] == "USD"
     assert d["cost"][SCHEMA_VERSION_KEY] == CORE_SCHEMA_VERSION
@@ -199,11 +199,11 @@ def test_conversation_from_dict_tolerates_missing_optionals():
     assert back.extras == {}
 
 
-# ── AgentResult (§2.1.3, E10 + X9 + B6) ─────────────────────────────────────
+# ── AgentResult ─────────────────────────────────────
 
 
 def test_agent_result_settlement_defaults_to_none():
-    # B6: settlement is a plain attribute the runtime attaches; default None,
+    # Settlement is a plain attribute the runtime attaches; default None,
     # no builder fallback.
     assert _agent_result().settlement is None
 
@@ -221,7 +221,7 @@ def test_agent_result_to_dict_canonical_keys_and_stamp():
 
 
 def test_agent_result_to_dict_serializes_the_attached_settlement():
-    # Canonical TurnSettlement shape per pricing-cost.md §2.2 (re-pinned:
+    # Canonical TurnSettlement shape (re-pinned:
     # `agent_id`, all fields required).
     settlement = _settlement_for_result(turn_usage=Usage(input_tokens=3))
     d = _agent_result(settlement=settlement).to_dict()
@@ -231,9 +231,9 @@ def test_agent_result_to_dict_serializes_the_attached_settlement():
 
 
 def test_agent_result_to_dict_serializes_populated_agent_logs_and_files():
-    # §2.1.3: "agent_logs": [e.to_dict() for e in self.agent_logs] (same for
-    # generated_files) — when populated, EVERY child via its own to_dict (the
-    # E10 substance), never asdict.
+    # "agent_logs": [e.to_dict() for e in self.agent_logs] (same for
+    # generated_files) — when populated, EVERY child via its own to_dict,
+    # never asdict.
     entry, media = _log_entry(), _media()
     d = _agent_result(agent_logs=[entry], generated_files=[media]).to_dict()
     assert d["agent_logs"][0][SCHEMA_VERSION_KEY] == CORE_SCHEMA_VERSION
@@ -267,7 +267,7 @@ def test_agent_result_round_trips_the_current_version():
     assert back.settlement.run_id == "run-1"
 
 
-# ── conversation_log entry schema (§2.1.4 / R27) ────────────────────────────
+# ── conversation_log entry schema ────────────────────────────
 
 
 def test_conversation_log_to_dict_stamps_core_schema_version():
@@ -277,7 +277,7 @@ def test_conversation_log_to_dict_stamps_core_schema_version():
 
 
 def test_conversation_log_with_entries_stamps_every_entry():
-    # §2.1.4 / R27: every entry via its own to_dict (no asdict); readers branch
+    # Every entry via its own to_dict (no asdict); readers branch
     # on schema_version_of(entry) — so each serialized entry carries the stamp.
     entry = MessageLogEntry.from_message(Message.user("hello"), agent_uuid="agent-1")
     d = ConversationLog(entries=[entry]).to_dict()
@@ -300,7 +300,7 @@ def test_conversation_log_from_dict_restores_the_entries():
 
 
 def test_conversation_round_trips_a_populated_conversation_log():
-    # Conversation.from_dict depends on ConversationLog.from_dict (§2.1.2).
+    # Conversation.from_dict depends on ConversationLog.from_dict.
     conv = _conversation()
     conv.conversation_log = ConversationLog(
         entries=[MessageLogEntry.from_message(Message.user("hello"), agent_uuid="agent-1")]
@@ -331,11 +331,11 @@ def test_log_entry_joins_the_serialization_convention():
     assert back.usage.input_tokens == 3
 
 
-# ── cross-entity invariant (§2.1, R12) ──────────────────────────────────────
+# ── cross-entity invariant ──────────────────────────────────────
 
 
 def test_every_wire_crossing_entity_stamps_the_same_version_axis():
-    # One CORE_SCHEMA_VERSION; no per-entity counters (O15(c)).
+    # One CORE_SCHEMA_VERSION; no per-entity counters.
     entities = [
         Usage(),
         CostBreakdown(),

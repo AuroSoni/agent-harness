@@ -1,7 +1,7 @@
-"""Interface red-suite: ``RetryPolicy`` and ``make_llm_config``.
+"""Interface spec: ``RetryPolicy`` and ``make_llm_config``.
 
-Covers providers.md §2.1 (RetryPolicy O12c, make_llm_config O12b) and §5
-(produced shared types), plus the O12 deletions:
+Covers RetryPolicy, make_llm_config and the produced shared types, plus the
+deletions:
 - ``RetryPolicy`` is a frozen dataclass at ``agent_base.core.provider`` with
   ``max_retries=3`` / ``base_delay=1.0`` defaults; carried BY the Provider value.
 - ``make_llm_config(loaded: dict | LLMConfig | None) -> LLMConfig`` is the single
@@ -52,7 +52,7 @@ def test_retry_policy_defaults():
 
 
 def test_retry_policy_per_provider_budget_overrides():
-    # O12(c): per-provider budgets are expressible (a flaky provider gets more).
+    # Per-provider budgets are expressible (a flaky provider gets more).
     rp = RetryPolicy(max_retries=4, base_delay=0.5)
     assert rp.max_retries == 4
     assert rp.base_delay == 0.5
@@ -90,7 +90,7 @@ def test_make_llm_config_dict_returns_llm_config():
 
 def test_make_llm_config_passthrough_returns_llm_config():
     # LLMConfig → re-coerce a loaded base config into a (native) LLMConfig
-    # (providers.md lines 140-151, 472-475: `GeminiLLMConfig.from_base(loaded)`).
+    # (`GeminiLLMConfig.from_base(loaded)`).
     #
     # LIMITATION: the *re-coercion* itself (base config transformed INTO the
     # provider's native subclass) is NOT provable at this module-agnostic layer.
@@ -108,6 +108,6 @@ def test_make_llm_config_passthrough_returns_llm_config():
 
 
 def test_old_llm_config_helpers_are_deleted():
-    # O12(b): the llm_config_cls() + coerce_llm_config() pair is collapsed away.
+    # The llm_config_cls() + coerce_llm_config() pair is collapsed away.
     assert not hasattr(provider_mod, "llm_config_cls")
     assert not hasattr(provider_mod, "coerce_llm_config")

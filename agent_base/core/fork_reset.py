@@ -1,4 +1,4 @@
-"""Fork / reset-to-checkpoint verbs (SPEC §5).
+"""Fork / reset-to-checkpoint verbs.
 
 Module-level functions over a ``StorageHandles`` bundle — they work COLD, with no
 live runtime. ``fork_session`` starts a new owned session from a past checkpoint
@@ -9,8 +9,7 @@ boundaries (the boundary a checkpoint was captured at).
 
 Divergence is NOT decided here: the library reset of agent + sandbox is
 deterministic and needs no divergence input. The workbook (a Nova concern) is
-decided in the backend AROUND these calls via the opaque ``consumer_payload``
-(SPEC §F4).
+decided in the backend AROUND these calls via the opaque ``consumer_payload``.
 """
 
 from __future__ import annotations

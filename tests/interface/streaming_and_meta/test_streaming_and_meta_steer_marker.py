@@ -1,11 +1,11 @@
-"""Steer preemption marker — `Custom('steered')`, not `Custom('aborted')` (NV-4).
+"""Steer preemption marker — `Custom('steered')`, not `Custom('aborted')`.
 
 A FORCEFUL ``Steer`` preempts the open round through the same ``_do_abort``
 teardown a real ``Abort`` uses — but on the wire the two MUST differ:
 ``Custom('aborted')`` is the terminal frame of an aborted turn (a consumer
 closes its read point), while a steer preemption is followed by the steered
-turn ON THE SAME STREAM (the contract's "steering 202 — output arrives on the
-open stream" row). Before NV-4 both emitted ``Custom('aborted')``, so a
+turn ON THE SAME STREAM (steering 202 — "output arrives on the
+open stream"). Previously both emitted ``Custom('aborted')``, so a
 consumer's stop-frame check closed the SSE at the preemption and the steered
 turn's frames dropped while detached (Rung-1 lossy read).
 
@@ -88,7 +88,7 @@ async def test_cooperative_steer_never_sets_the_preemption_flag():
 
 
 async def test_tool_phase_abort_ends_with_the_same_terminal_marker():
-    # B1: an abort landing while a backend tool runs returns through the same
+    # An abort landing while a backend tool runs returns through the same
     # finish as the streaming path — its reader gets Custom('aborted') too,
     # instead of idling on keepalives forever.
     agent = await _agent()

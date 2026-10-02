@@ -1,12 +1,12 @@
-"""Red-suite specs — storage §2.1: the public serialization codec.
+"""Interface specs — storage: the public serialization codec.
 
 Covers:
-- interface_plan/subsystems/storage.md §2.1 (``agent_base/storage/serialization.py``):
-  versioned ``serialize_*``/``deserialize_*`` functions (fixes E10), the
-  ``_v`` = ``CORE_SCHEMA_VERSION`` stamp (R12: entity-wire axis is core-owned,
-  storage mints no counter of its own), and the R22 exception — ``AgentConfig``
+- ``agent_base/storage/serialization.py``:
+  versioned ``serialize_*``/``deserialize_*`` functions, the
+  ``_v`` = ``CORE_SCHEMA_VERSION`` stamp (entity-wire axis is core-owned,
+  storage mints no counter of its own), and the exception — ``AgentConfig``
   stays storage-codec-owned and never grows a wire ``to_dict()``.
-- §2.1 R23 note: ``PendingToolRelay.cid`` round-trips through
+- ``PendingToolRelay.cid`` round-trips through
   ``AgentConfig.pending_relay`` serialization, additive and nullable (legacy
   payloads without ``cid`` deserialize cleanly).
 """
@@ -39,7 +39,7 @@ def _config(**overrides) -> AgentConfig:
 
 
 # ---------------------------------------------------------------------------
-# AgentConfig codec (storage-codec-owned, R22)
+# AgentConfig codec (storage-codec-owned)
 # ---------------------------------------------------------------------------
 
 def test_serialize_config_round_trips_identity_fields():
@@ -51,7 +51,7 @@ def test_serialize_config_round_trips_identity_fields():
 
 
 def test_serialize_config_stamps_core_schema_version():
-    # §2.1: each entity dict embeds {"_v": CORE_SCHEMA_VERSION} (R12 — the
+    # Each entity dict embeds {"_v": CORE_SCHEMA_VERSION} (the
     # entity-wire axis; storage does not mint its own counter).
     assert serialize_config(_config())["_v"] == CORE_SCHEMA_VERSION
 
@@ -70,7 +70,7 @@ class _CustomLLMConfig(LLMConfig):
 
 
 def test_deserialize_config_reconstructs_llm_config_as_the_given_subclass():
-    # §2.1: llm_config_class is the seam for provider-specific subclasses —
+    # llm_config_class is the seam for provider-specific subclasses —
     # the restored llm_config must actually BE that subclass, not base LLMConfig.
     restored = deserialize_config(
         serialize_config(_config()), llm_config_class=_CustomLLMConfig
@@ -79,7 +79,7 @@ def test_deserialize_config_reconstructs_llm_config_as_the_given_subclass():
 
 
 # ---------------------------------------------------------------------------
-# PendingToolRelay.cid round-trip (R23 — relay cold-resume dependency)
+# PendingToolRelay.cid round-trip (relay cold-resume dependency)
 # ---------------------------------------------------------------------------
 
 def test_pending_relay_cid_round_trips():
@@ -128,7 +128,7 @@ def test_serialize_conversation_stamps_core_schema_version():
 
 
 def test_serialize_log_entry_stamps_core_schema_version():
-    # §2.1: "Each entity dict embeds {'_v': CORE_SCHEMA_VERSION}" — log entries
+    # "Each entity dict embeds {'_v': CORE_SCHEMA_VERSION}" — log entries
     # included, not just config/conversation.
     entry = LogEntry(
         step=1,
@@ -155,18 +155,18 @@ def test_log_entry_codec_round_trip():
 
 
 # ---------------------------------------------------------------------------
-# R22 negative invariant
+# Negative invariant
 # ---------------------------------------------------------------------------
 
 def test_agent_config_never_grows_a_wire_to_dict():
-    # R22: AgentConfig is heavy and never crosses the FE wire as a unit; it
+    # AgentConfig is heavy and never crosses the FE wire as a unit; it
     # stays storage-codec-owned (serialize_config / deserialize_config).
     assert not hasattr(AgentConfig, "to_dict")
     assert not hasattr(AgentConfig, "from_dict")
 
 
 def test_serialize_config_round_trips_active_profile():
-    # CM-G3e (AMENDMENTS 2026-06-11): the active profile NAME is part of the
+    # The active profile NAME is part of the
     # persisted config codec; absent keys (pre-profile payloads) hydrate None.
     from agent_base.core.config import AgentConfig
     from agent_base.storage.serialization import deserialize_config, serialize_config

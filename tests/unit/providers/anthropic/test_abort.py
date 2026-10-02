@@ -5,15 +5,15 @@ Tests ``abort()``, ``steer()``, ``_handle_stream_abort()``,
 manipulating agent internal state.  Uses default memory adapters — no
 API calls or external dependencies.
 
-UPDATED (2026-06-10, P-A lift):
+UPDATED (2026-06-10):
 - ``StreamResult`` is DELETED; the loop consumes the shared ``ProviderTurn``
-  with provider-private ``stream_bookkeeping`` (providers.md §6 / O12a / G0).
+  with provider-private ``stream_bookkeeping``.
 - ``_handle_stream_abort(turn, sink)`` — the (queue, stream_formatter) pair is
-  deleted (R30/G0).
-- idle ``submit(Abort())`` returns typed NOT_RUNNING WITHOUT teardown
-  (session-control.md §2.4) — the cancellation-event side effects of an idle
+  deleted.
+- idle ``submit(Abort())`` returns typed NOT_RUNNING WITHOUT teardown —
+  the cancellation-event side effects of an idle
   abort are gone by design.
-- ``provider.generate`` returns a ``ProviderTurn`` (providers.md §2.1).
+- ``provider.generate`` returns a ``ProviderTurn``.
 """
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ class TestAbort:
         assert result.final_answer == STREAM_ABORT_TEXT
 
     async def test_abort_when_idle_runs_no_teardown(self, agent):
-        # session-control.md §2.4: nothing in flight ⇒ typed NOT_RUNNING and
+        # Nothing in flight ⇒ typed NOT_RUNNING and
         # NO teardown — the cancellation event is left untouched.
         from agent_base.core.ack import Disposition
         from agent_base.core.commands import Abort

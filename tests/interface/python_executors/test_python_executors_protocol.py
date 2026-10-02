@@ -1,15 +1,15 @@
-"""Red-suite specs for the ``PythonExecutor`` Protocol (U1 promotion).
+"""Interface specs for the ``PythonExecutor`` Protocol.
 
-Covers python-executors.md:
-  - §2.3 ``PythonExecutor`` promoted from an empty marker to a
+Covers:
+  - ``PythonExecutor`` promoted from an empty marker to a
     ``@runtime_checkable`` ``Protocol`` with method surface
     ``bind_tools``/``bind_variables``/``run``/``arun``/``reset`` and a
     ``policy`` attribute.
-  - §3.4 / §6: a custom backend that structurally satisfies the surface passes
+  - A custom backend that structurally satisfies the surface passes
     ``isinstance(x, PythonExecutor)``; ``LocalPythonExecutor`` does too.
 
 ``PythonExecutor`` is owned by this subsystem, so its protocol surface is
-deep-tested here. The custom ``E2BPythonExecutor`` in §3.4 is modelled as a
+deep-tested here. The custom ``E2BPythonExecutor`` is modelled as a
 small in-file fake collaborator. The implementation does not exist yet.
 """
 
@@ -29,7 +29,7 @@ def test_python_executor_is_a_protocol():
 
 
 def test_python_executor_is_runtime_checkable():
-    # §2.3: @runtime_checkable so isinstance works for structural backends.
+    # @runtime_checkable so isinstance works for structural backends.
     assert getattr(PythonExecutor, "_is_runtime_protocol", False) is True
 
 
@@ -52,7 +52,7 @@ def test_protocol_members_include_policy_attribute():
 
 
 def test_structural_backend_passes_isinstance():
-    # §3.4 E2BPythonExecutor-shaped fake: structurally satisfies the surface.
+    # E2BPythonExecutor-shaped fake: structurally satisfies the surface.
     class _StructuralBackend:
         def __init__(self) -> None:
             self.policy = ExecutorPolicy()
@@ -85,13 +85,13 @@ def test_incomplete_backend_fails_isinstance():
 
 
 def test_local_executor_satisfies_protocol_isinstance():
-    # §6 migration row 1 (load-bearing): the SHIPPED LocalPythonExecutor must
+    # Load-bearing: the SHIPPED LocalPythonExecutor must
     # satisfy its own runtime-checkable Protocol. Default construction works
     # because the default policy's effective imports are all stdlib.
     assert isinstance(LocalPythonExecutor(), PythonExecutor)
 
 
 def test_local_executor_is_subclass_of_protocol():
-    # §2.4: LocalPythonExecutor(PythonExecutor) explicit-subclass path also
+    # LocalPythonExecutor(PythonExecutor) explicit-subclass path also
     # holds under issubclass against the runtime-checkable Protocol.
     assert issubclass(LocalPythonExecutor, PythonExecutor)

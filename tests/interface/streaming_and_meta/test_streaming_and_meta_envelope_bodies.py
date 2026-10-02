@@ -1,19 +1,18 @@
-"""Red-suite interface specs: MetaEnvelope header + the MetaBody union.
+"""Interface specs: MetaEnvelope header + the MetaBody union.
 
-Covers interface_plan/subsystems/streaming-and-meta.md:
-- §2.2 Layer A MetaEnvelope control channel (contract §3 header verbatim;
-  the typed MetaBody union homed at ``agent_base/streaming/meta.py`` per R2),
-- AMENDMENTS B7 (``FrontendCallView.tool_use_id``; the envelope's
+Covers:
+- Layer A MetaEnvelope control channel (header verbatim;
+  the typed MetaBody union homed at ``agent_base/streaming/meta.py``),
+- ``FrontendCallView.tool_use_id`` (the envelope's
   ``correlation_id`` is the pause-level cid),
-- AMENDMENTS O14(d) + pricing-cost.md §2.3 R2 (pricing supplies the
+- Pricing supplies the
   ``UsageReport`` payload shape: turn-level ``{kind, usage, cost}`` only; no
-  ``cumulative`` — the SettlementAggregator sums per-turn reports; B2 identity
-  rides the MetaEnvelope header, never the body),
-- the 2026-06-10 ProfileChanged amendment (minimal fact: ``profile`` only),
-- Fork D / R13 / O3 (Rollback is a MetaBody, the only rollback type),
-- §6 continuity row (``tool_use_id`` is one of the six unchanged v1 wire
-  field spellings — pinned on the serialized AwaitInput payload),
-- DESIGN_CONTRACT.md §3 (MetaEnvelope contract).
+  ``cumulative`` — the SettlementAggregator sums per-turn reports; identity
+  rides the MetaEnvelope header, never the body,
+- the ProfileChanged amendment (minimal fact: ``profile`` only),
+- Rollback is a MetaBody, the only rollback type,
+- Continuity (``tool_use_id`` is one of the six unchanged v1 wire
+  field spellings — pinned on the serialized AwaitInput payload).
 """
 from __future__ import annotations
 
@@ -90,7 +89,7 @@ def _library_bodies() -> list[MetaBody]:
 
 
 def test_meta_envelope_header_is_the_contract_section3_shape():
-    # DESIGN_CONTRACT §3: exactly the ratified header fields, nothing else.
+    # Exactly the ratified header fields, nothing else.
     names = {f.name for f in dataclasses.fields(MetaEnvelope)}
     assert names == {
         "event_id",
@@ -144,7 +143,7 @@ def test_meta_envelope_wire_round_trip_preserves_typed_body():
 
 
 def test_await_input_envelope_correlates_by_pause_level_cid():
-    # B7 / contract §3.2: AwaitInput rides with correlation_id == cid and
+    # AwaitInput rides with correlation_id == cid and
     # expects_reply=True; per-call attribution is by tool_use_id.
     view = FrontendCallView(tool_use_id="toolu_9", tool_name="excel_write", input={"a": 1})
     env = _envelope(AwaitInput(tools=[view]), correlation_id="cid-1", expects_reply=True)
@@ -159,7 +158,7 @@ def test_await_input_envelope_correlates_by_pause_level_cid():
 
 
 def test_frontend_call_view_shape_uses_tool_use_id():
-    # B7: the per-call field is named tool_use_id (no `cid` field — cid means
+    # The per-call field is named tool_use_id (no `cid` field — cid means
     # exactly one thing: the envelope-level reply key).
     names = {f.name for f in dataclasses.fields(FrontendCallView)}
     assert names == {"tool_use_id", "tool_name", "input"}
@@ -169,8 +168,8 @@ def test_frontend_call_view_shape_uses_tool_use_id():
 
 
 def test_await_input_payload_wire_uses_tool_use_id_spelling():
-    # §6 continuity row: `tool_use_id` is one of the SIX unchanged v1 wire
-    # field spellings (with agent/final/delta/id/name). B7 FE contract:
+    # Continuity: `tool_use_id` is one of the SIX unchanged v1 wire
+    # field spellings (with agent/final/delta/id/name). FE contract:
     # "attribute per-call results by tool_use_id" — so the serialized
     # AwaitInput payload must carry the literal key, not a respelling.
     body = AwaitInput(
@@ -201,17 +200,17 @@ def test_await_input_payload_wire_uses_tool_use_id_spelling():
 
 
 def test_profile_changed_is_the_minimal_fact():
-    # 2026-06-10 amendment: the library announces only the FACT of the switch.
+    # The library announces only the FACT of the switch.
     names = {f.name for f in dataclasses.fields(ProfileChanged)}
     assert names == {"profile"}
     assert ProfileChanged(profile="writer").profile == "writer"
 
 
 def test_usage_report_payload_is_turn_level_and_scope_free():
-    # O14(d) + pricing-cost.md §2.3 (R2: pricing supplies the payload shape):
+    # Pricing supplies the payload shape:
     # turn-level {kind, usage, cost} only. No `cumulative` (the
     # SettlementAggregator sums per-turn reports) and no identity fields —
-    # B2 identity (tenant/subject, never claims) rides the MetaEnvelope
+    # identity (tenant/subject, never claims) rides the MetaEnvelope
     # header, not this body.
     names = {f.name for f in dataclasses.fields(UsageReport)}
     assert names == {"kind", "usage", "cost"}
@@ -231,7 +230,7 @@ def test_error_report_typed_taxonomy_and_defaults():
 
 
 def test_error_report_round_trips_typed_code():
-    # §2.2: ErrorReport is the control-channel mirror of the ErrorDelta
+    # ErrorReport is the control-channel mirror of the ErrorDelta
     # taxonomy — from_payload/from_wire rehydrate the typed ErrorCode MEMBER
     # (identity), not its raw string value.
     body = ErrorReport(
@@ -250,7 +249,7 @@ def test_error_report_round_trips_typed_code():
 
 
 def test_rollback_is_a_meta_body_with_collapse_default():
-    # Fork D / R13: rollback rides the control channel; UI-only.
+    # Rollback rides the control channel; UI-only.
     body = Rollback(message="draft rejected")
     assert isinstance(body, MetaBody)
     assert body.collapse_previous_assistant is True
@@ -297,7 +296,7 @@ def test_library_kind_discriminators_are_exact():
 
 
 def test_all_library_bodies_round_trip_json_safe_payloads():
-    # §2.2: to_payload()/from_payload() are lossless and the payload is
+    # to_payload()/from_payload() are lossless and the payload is
     # JSON-safe (it crosses the versioned wire).
     for body in _library_bodies():
         payload = body.to_payload()

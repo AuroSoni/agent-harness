@@ -1,12 +1,12 @@
-"""Interface red-suite: context snapshot helper + retained ad-hoc API (logging).
+"""Interface spec: context snapshot helper + retained ad-hoc API (logging).
 
-Covers logging.md:
-  - §2.2 reference to ``_set_context_snapshot(d, token=None) -> Token`` (the
+Covers:
+  - Reference to ``_set_context_snapshot(d, token=None) -> Token`` (the
     token-based set/reset primitive the scope restores through)
-  - §6 migration table rows 1-3: ``bind_context`` / ``unbind_context`` /
+  - ``bind_context`` / ``unbind_context`` /
     ``clear_context`` / ``get_context`` are RETAINED (existing ad-hoc-key API,
     "kept by design, not by compat"); merge semantics unchanged.
-  - §6 implementation delta 2: ``context.py`` gains a tiny
+  - ``context.py`` gains a tiny
     ``_set_context_snapshot`` helper; existing bind/get untouched.
 
 The snapshot helper underpins ``correlation_scope``'s exact-restore guarantee, and the
@@ -27,7 +27,7 @@ from agent_base.logging.context import _set_context_snapshot
 
 
 # ---------------------------------------------------------------------------
-# §6 delta 2 — _set_context_snapshot sets a whole dict and returns a Token.
+# _set_context_snapshot sets a whole dict and returns a Token.
 # ---------------------------------------------------------------------------
 
 
@@ -74,7 +74,7 @@ def test_set_context_snapshot_get_context_returns_a_copy():
 
 
 # ---------------------------------------------------------------------------
-# §6 row 1 — bind_context retained: merge semantics unchanged.
+# bind_context retained: merge semantics unchanged.
 # ---------------------------------------------------------------------------
 
 
@@ -97,7 +97,7 @@ def test_bind_context_later_value_overrides_earlier():
 
 
 # ---------------------------------------------------------------------------
-# §6 row — unbind_context retained: removes specific keys only.
+# unbind_context retained: removes specific keys only.
 # ---------------------------------------------------------------------------
 
 
@@ -121,7 +121,7 @@ def test_unbind_context_missing_key_is_a_noop():
 
 
 # ---------------------------------------------------------------------------
-# §6 row 3 — clear_context retained (soft-deprecated in docs): nukes everything.
+# clear_context retained (soft-deprecated in docs): nukes everything.
 # ---------------------------------------------------------------------------
 
 

@@ -1,4 +1,4 @@
-"""Public row-mappers + coercers — storage.md §2.1 (fixes E3, E1).
+"""Public row-mappers + coercers.
 
 The formerly-private Postgres helpers (``_to_jsonb`` / ``_from_jsonb`` /
 ``_to_datetime`` / ``_parse_datetime`` / ``_config_to_row_values`` /
@@ -7,9 +7,9 @@ surface. Any custom Postgres adapter reuses these instead of importing
 underscores.
 
 The row mapping is a **column-name -> value dict**, never a positional tuple
-(G0: ``_config_to_row_values(config) -> tuple`` is removed): a name->value
+(``_config_to_row_values(config) -> tuple`` is removed): a name->value
 mapping lets the base adapter compose placeholders and merge extra columns
-deterministically, so adding a column never renumbers anything (E1).
+deterministically, so adding a column never renumbers anything.
 """
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ def _val(row: Mapping[str, Any], key: str, default: Any = None) -> Any:
 
 def _media_from_dict(data: dict[str, Any]) -> MediaMetadata:
     """Hydrate a MediaMetadata child via its own ``from_dict`` when the media
-    subsystem provides one (it owns the legacy key normalization — E5);
+    subsystem provides one (it owns the legacy key normalization);
     otherwise field-filtered construction."""
     from_dict = getattr(MediaMetadata, "from_dict", None)
     if callable(from_dict):
@@ -126,7 +126,7 @@ def _media_from_dict(data: dict[str, Any]) -> MediaMetadata:
 # Column tables — single source of truth for (name, sql_type, getter).
 # The pg adapter bases build their library base ColumnSpecs from these, and
 # the public *_to_row mappers below derive from the same getters, so the
-# composed INSERT/SELECT stay byte-equivalent with the mapping (storage.md §6).
+# composed INSERT/SELECT stay byte-equivalent with the mapping.
 # =============================================================================
 
 _CONFIG_COLUMNS: list[tuple[str, str, Callable[[AgentConfig], Any]]] = [
@@ -183,7 +183,7 @@ _CONVERSATION_COLUMNS: list[tuple[str, str, Callable[[Conversation], Any]]] = [
     ("sequence_number", "INTEGER", lambda c: c.sequence_number),
     ("started_at", "TIMESTAMPTZ", lambda c: to_datetime(c.started_at)),
     ("completed_at", "TIMESTAMPTZ", lambda c: to_datetime(c.completed_at)),
-    # CM-P1G1: the persisted ``user_message`` column shows exactly what the
+    # The persisted ``user_message`` column shows exactly what the
     # user typed — the CLEAN form (transient contributions dropped). The
     # canonical contributions/attachments round-trip via ``conversation_log``.
     ("user_message", "JSONB",
@@ -251,7 +251,7 @@ _CHECKPOINT_COLUMNS: list[tuple[str, str, Callable[[Checkpoint], Any]]] = [
 
 def config_to_row(config: AgentConfig) -> dict[str, Any]:
     """AgentConfig -> column-name -> value mapping (replaces the removed
-    positional ``_config_to_row_values`` tuple — G0)."""
+    positional ``_config_to_row_values`` tuple)."""
     return {name: get(config) for name, _sql_type, get in _CONFIG_COLUMNS}
 
 

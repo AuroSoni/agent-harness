@@ -1,17 +1,17 @@
-"""Red-suite specs — storage §2.2/§2.3/§2.4: Pg adapter bases, pool, scoping.
+"""Interface specs — storage: Pg adapter bases, pool, scoping.
 
 Covers:
-- interface_plan/subsystems/storage.md §2.2 (template base adapter: SQL composed
-  once from the ColumnRegistry; ``extra_columns()`` seam; fixes E1/E7).
-- §2.3 injectable pool (fixes E4): pool injection, ``from_dsn`` back-compat
+- Template base adapter: SQL composed
+  once from the ColumnRegistry; ``extra_columns()`` seam.
+- Injectable pool: pool injection, ``from_dsn`` back-compat
   constructor, BOTH halves of the connect()/close() contract (act iff owned;
   no-op iff borrowed), ``create_adapters_from_pool``, ``PgConnectConfig``
   defaults, ``PgPool`` alias.
-- §2.4 principal-scoped reads (fixes E2 + E8): the ONE public binding seam
-  ``adapter.for_principal(principal)`` (tenancy O2 — Scope/set_scope/
+- Principal-scoped reads: the ONE public binding seam
+  ``adapter.for_principal(principal)`` (Scope/set_scope/
   Scoped*Adapter are deleted and never imported here), WHERE composition via
   filter columns, and the single concrete ``is_owned`` SELECT-1 probe
-  (AMENDMENTS O16(a)) inherited by config/conversation/run adapters, with a
+  inherited by config/conversation/run adapters, with a
   concrete (non-abstract) default on the non-Pg ABC base.
 """
 from __future__ import annotations
@@ -111,7 +111,7 @@ class _FakePool:
 
 
 # ---------------------------------------------------------------------------
-# Consumer-style subclasses (the §3 "after" shape)
+# Consumer-style subclasses (the "after" shape)
 # ---------------------------------------------------------------------------
 
 class _OrgScopedConfigAdapter(PgConfigAdapterBase):
@@ -142,7 +142,7 @@ def _config() -> AgentConfig:
 
 
 # ---------------------------------------------------------------------------
-# §2.2 — composed CRUD from the registry
+# Composed CRUD from the registry
 # ---------------------------------------------------------------------------
 
 def test_config_adapter_table_and_conflict_key():
@@ -169,7 +169,7 @@ async def test_save_composes_insert_on_conflict_from_registry():
     assert "ON CONFLICT" in sql
     assert "EXCLUDED." in sql
     # one $N placeholder per bound value — placeholder renumbering is the
-    # library's problem now, never the consumer's (E1).
+    # library's problem now, never the consumer's.
     assert sql.count("$") == len(args)
     assert "agent-1" in args
 
@@ -183,9 +183,9 @@ async def test_save_includes_consumer_extra_column_and_value():
 
 
 async def test_bound_list_sessions_is_principal_scoped_and_returns_page_and_total():
-    # §2.2: list_sessions(limit=50, offset=0) -> tuple[list[dict], int] with a
+    # list_sessions(limit=50, offset=0) -> tuple[list[dict], int] with a
     # principal-only _scoped_where({}) — base composes count + page query, and
-    # every read goes through the scoped WHERE (E2).
+    # every read goes through the scoped WHERE.
     conn = _FakeConn()
     conn.fetchval_result = 0
     bound = _OrgScopedConfigAdapter(_FakePool(conn)).for_principal(_PRINCIPAL)
@@ -204,7 +204,7 @@ async def test_bound_list_sessions_is_principal_scoped_and_returns_page_and_tota
 
 
 async def test_bound_delete_goes_through_scoped_where():
-    # §2.2: "delete / update_title likewise composed; all reads/writes go
+    # "delete / update_title likewise composed; all reads/writes go
     # through _scoped_where" — a missed predicate is structurally impossible.
     conn = _FakeConn()
     bound = _OrgScopedConfigAdapter(_FakePool(conn)).for_principal(_PRINCIPAL)
@@ -218,7 +218,7 @@ async def test_bound_delete_goes_through_scoped_where():
 
 
 # ---------------------------------------------------------------------------
-# §2.4 — for_principal: the ONE public binding seam (tenancy O2)
+# for_principal: the ONE public binding seam
 # ---------------------------------------------------------------------------
 
 def test_for_principal_returns_a_distinct_bound_view_of_the_same_type():
@@ -229,7 +229,7 @@ def test_for_principal_returns_a_distinct_bound_view_of_the_same_type():
 
 
 async def test_for_principal_binding_does_not_leak_into_sibling_views():
-    # §2.2: for_principal "returns a cheap bound view" — binding a second
+    # for_principal "returns a cheap bound view" — binding a second
     # principal must not rebind the first view (or shared adapter state).
     conn = _FakeConn()
     adapter = _OrgScopedConfigAdapter(_FakePool(conn))
@@ -275,7 +275,7 @@ async def test_load_returns_none_when_no_row():
 
 
 async def test_bound_load_hit_maps_row_and_hydrates_extra_columns():
-    # §2.2 load hit path: the fetched row goes through the PUBLIC mapper
+    # Load hit path: the fetched row goes through the PUBLIC mapper
     # row_to_config(row), then registry.hydrate(config, row) fires the
     # extra-column set() callbacks — principal_columns hydrates the persisted
     # owner values into config.extras.
@@ -293,7 +293,7 @@ async def test_bound_load_hit_maps_row_and_hydrates_extra_columns():
 
 
 # ---------------------------------------------------------------------------
-# §2.4 — is_owned: ONE concrete SELECT-1 probe (O16(a), closes E8)
+# is_owned: ONE concrete SELECT-1 probe
 # ---------------------------------------------------------------------------
 
 async def test_is_owned_true_on_probe_hit():
@@ -331,7 +331,7 @@ async def test_is_owned_scopes_by_bound_principal():
 
 
 class _MemoryConfigAdapter(AgentConfigAdapter):
-    """Non-Pg backend exercising the ABC's CONCRETE is_owned default (O16(a))."""
+    """Non-Pg backend exercising the ABC's CONCRETE is_owned default."""
 
     def __init__(self, configs: dict[str, AgentConfig]):
         self._configs = configs
@@ -353,7 +353,7 @@ class _MemoryConfigAdapter(AgentConfigAdapter):
 
 
 async def test_is_owned_has_concrete_default_on_non_pg_base():
-    # R26/O16(a): never a bare @abstractmethod — custom adapters keep working
+    # Never a bare @abstractmethod — custom adapters keep working
     # without overriding it; the default tests a scoped load for non-None.
     assert "is_owned" not in _MemoryConfigAdapter.__dict__
     adapter = _MemoryConfigAdapter({"agent-1": _config()})
@@ -362,7 +362,7 @@ async def test_is_owned_has_concrete_default_on_non_pg_base():
 
 
 # ---------------------------------------------------------------------------
-# §2.3 — injectable pool (fixes E4)
+# Injectable pool
 # ---------------------------------------------------------------------------
 
 async def test_connect_close_are_noops_for_borrowed_pool():
@@ -370,11 +370,11 @@ async def test_connect_close_are_noops_for_borrowed_pool():
     adapter = PgConfigAdapterBase(pool)
     await adapter.connect()
     await adapter.close()
-    assert pool.closed is False        # borrowed pools are never closed (E4)
+    assert pool.closed is False        # borrowed pools are never closed
 
 
 async def test_from_dsn_creates_owned_pool_and_connect_close_act(monkeypatch):
-    # §2.3 owned half: from_dsn creates + OWNS the pool, so connect() acts and
+    # Owned half: from_dsn creates + OWNS the pool, so connect() acts and
     # close() closes it. Patching the asyncpg boundary (pool.create_pool), not
     # the type under test.
     created: list = []
@@ -389,7 +389,7 @@ async def test_from_dsn_creates_owned_pool_and_connect_close_act(monkeypatch):
     await adapter.connect()
     assert created, "from_dsn + connect() must create the pool the adapter owns"
     await adapter.close()
-    assert owned.closed is True        # owned pools ARE closed (§2.3)
+    assert owned.closed is True        # owned pools ARE closed
 
 
 def test_from_dsn_is_classmethod_with_documented_defaults():
@@ -443,8 +443,8 @@ async def test_create_adapters_from_pool_honors_custom_classes_and_principal():
 
 
 # ---------------------------------------------------------------------------
-# §2.2 — conversation save auto-assigns sequence_number (NV-1; base contract
-# "The sequence_number should be auto-assigned by the adapter", schemas.md
+# Conversation save auto-assigns sequence_number (base contract
+# "The sequence_number should be auto-assigned by the adapter",
 # "application-managed, MAX(sequence_number)+1 on insert" — parity with the
 # filesystem adapter, which already assigns it)
 # ---------------------------------------------------------------------------

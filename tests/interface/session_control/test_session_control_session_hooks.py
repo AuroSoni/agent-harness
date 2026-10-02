@@ -1,6 +1,6 @@
-"""``on_session_start`` / ``on_session_end`` firing points (R19; §2.5).
+"""``on_session_start`` / ``on_session_end`` firing points.
 
-Covers session-control.md §2.5: the hook fires exactly once, inside
+Covers: the hook fires exactly once, inside
 ``get_or_create``'s build path, PRE-publish (never in ``initialize()``); the
 ``SessionContext`` is built with ``source ∈ {create, resume}`` + ``is_cold_load``
 from the persisted-state probe; identity is threaded (``set_principal``) BEFORE the
@@ -8,8 +8,8 @@ hook; ``decision="block"`` discards the half-built agent (``aclose``) and raises
 ``SessionBlocked``; and ``on_session_end`` fires in ``evict()`` after abort, before
 checkpoint.
 
-``HookOutcome`` (lifecycle-hooks, canonical home ``agent_base/core/hooks/outcome.py``
-per the RECONCILIATION ledger + agent-loop-hooks.md §2.1) is a collaborator; the
+``HookOutcome`` (lifecycle-hooks, canonical home ``agent_base/core/hooks/outcome.py``)
+is a collaborator; the
 hook *machinery* (``_make_session_context``/``_run_hook``) is faked on the agent
 so the manager's documented driving of it is observable.
 """
@@ -27,7 +27,7 @@ PRINCIPAL = SessionPrincipal(tenant="org-1", subject="member-1")
 
 
 async def test_cold_create_fires_session_start_with_create_context():
-    """§2.5: no persisted state ⇒ SessionContext(source='create', is_cold_load=True)."""
+    """No persisted state ⇒ SessionContext(source='create', is_cold_load=True)."""
     factory = make_recording_factory(persisted=False)
     manager = SessionManager(factory)
     agent = await manager.get_or_create("sid-cold", principal=PRINCIPAL)
@@ -39,7 +39,7 @@ async def test_cold_create_fires_session_start_with_create_context():
 
 
 async def test_resume_fires_session_start_with_resume_context():
-    """§2.5: persisted state ⇒ SessionContext(source='resume', is_cold_load=False)."""
+    """Persisted state ⇒ SessionContext(source='resume', is_cold_load=False)."""
     factory = make_recording_factory(persisted=True)
     manager = SessionManager(factory)
     agent = await manager.get_or_create("sid-warm")
@@ -50,7 +50,7 @@ async def test_resume_fires_session_start_with_resume_context():
 
 
 async def test_session_start_not_refired_on_resident_hit():
-    """R19: fires exactly ONCE per build — a RAM hit never re-fires it."""
+    """Fires exactly ONCE per build — a RAM hit never re-fires it."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
     agent = await manager.get_or_create("sid-1")
@@ -60,7 +60,7 @@ async def test_session_start_not_refired_on_resident_hit():
 
 
 async def test_session_start_fires_pre_publish():
-    """R19: the hook runs BEFORE the agent is published to the resident table."""
+    """The hook runs BEFORE the agent is published to the resident table."""
     observed: dict[str, bool] = {}
 
     def on_hook(name: str, ctx: object) -> None:
@@ -75,7 +75,7 @@ async def test_session_start_fires_pre_publish():
 
 
 async def test_principal_threaded_before_session_start_hook():
-    """§2.5: 'Thread identity BEFORE the hook & before publishing' — strict ordering."""
+    """'Thread identity BEFORE the hook & before publishing' — strict ordering."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
     agent = await manager.get_or_create("sid-order", principal=PRINCIPAL)
@@ -84,7 +84,7 @@ async def test_principal_threaded_before_session_start_hook():
 
 
 async def test_persisted_state_probe_precedes_initialize_on_cold_build():
-    """§2.5 statement order: 'cold = not await agent.has_persisted_state()' runs
+    """Statement order: 'cold = not await agent.has_persisted_state()' runs
     BEFORE initialize() — initialize hydrates (and on a cold build may create
     initial persisted state), so probing after it would misclassify create as
     resume — and initialize() precedes set_principal()."""
@@ -97,7 +97,7 @@ async def test_persisted_state_probe_precedes_initialize_on_cold_build():
 
 
 async def test_block_outcome_discards_build_and_raises_session_blocked():
-    """§2.5: block ⇒ aclose() the half-built agent, raise SessionBlocked(reason),
+    """Block ⇒ aclose() the half-built agent, raise SessionBlocked(reason),
     nothing is published."""
     factory = make_recording_factory(
         hook_outcomes={
@@ -136,7 +136,7 @@ async def test_blocked_build_allows_a_subsequent_rebuild():
 
 
 async def test_none_outcome_proceeds_and_publishes():
-    """Contract §2: returning None from a hook means proceed unchanged."""
+    """Returning None from a hook means proceed unchanged."""
     factory = make_recording_factory(hook_outcomes={})
     manager = SessionManager(factory)
     agent = await manager.get_or_create("sid-none")
@@ -158,7 +158,7 @@ async def test_session_blocked_is_an_exception():
 
 
 async def test_on_session_end_fires_in_evict_between_abort_and_checkpoint():
-    """§2.5 note: on_session_end fires in evict() AFTER abort, BEFORE checkpoint —
+    """on_session_end fires in evict() AFTER abort, BEFORE checkpoint —
     so an end-hook can still emit a final MetaBody."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
@@ -174,8 +174,7 @@ async def test_on_session_end_fires_in_evict_between_abort_and_checkpoint():
 
 
 async def test_on_session_end_context_is_machinery_built_and_carries_reason():
-    """§2 catalog ('on_session_end | SessionContext(reason)') + §2.0 ('reason …
-    populated for on_session_end') + §2.5: the end-hook context comes from the
+    """The end-hook context comes from the
     SAME _make_session_context machinery as the start hook — not an ad-hoc
     object — and its kwargs include a populated reason."""
     factory = make_recording_factory()

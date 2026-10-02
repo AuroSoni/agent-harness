@@ -1,13 +1,13 @@
-"""Red-suite specs for the zone-layout-as-data surface (resolves X11).
+"""Interface specs for the zone-layout-as-data surface.
 
-Covers sandbox.md:
-  - §2.1 `Zone` (trimmed to {name, explicit} per O10) — clean-path validation in __post_init__.
-  - §2.1 `ZoneLayout` — default fields (workspace/imported_subdir/exports), default `zones`
-    tuple (incl. `.context` per R33), and derivations `explicit_root_prefixes()`,
+Covers:
+  - `Zone` (trimmed to {name, explicit}) — clean-path validation in __post_init__.
+  - `ZoneLayout` — default fields (workspace/imported_subdir/exports), default `zones`
+    tuple (incl. `.context`), and derivations `explicit_root_prefixes()`,
     `default_readable_roots()`, `with_extra_zones()` (de-dup + string coercion).
-  - §2.1 `DEFAULT_ZONE_LAYOUT` module constant = the shipped zone set.
+  - `DEFAULT_ZONE_LAYOUT` module constant = the shipped zone set.
 
-The `Zone.readable`/`Zone.create` flags were dropped by O10 — these tests assert ONLY the
+The `Zone.readable`/`Zone.create` flags were dropped — these tests assert ONLY the
 {name, explicit} shape and never reference the deleted flags.
 """
 
@@ -30,7 +30,7 @@ from agent_base.sandbox import (
 def test_zone_is_frozen_dataclass_with_name_and_explicit_default():
     zone = Zone("workspace")
     assert zone.name == "workspace"
-    # O10: `explicit` defaults to True.
+    # `explicit` defaults to True.
     assert zone.explicit is True
     # frozen → mutation raises.
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -44,7 +44,7 @@ def test_zone_explicit_can_be_set_false():
 
 
 def test_zone_only_has_name_and_explicit_fields():
-    # O10 trimmed Zone to exactly {name, explicit}. readable/create must NOT exist.
+    # Zone is trimmed to exactly {name, explicit}. readable/create must NOT exist.
     field_names = {f.name for f in dataclasses.fields(Zone)}
     assert field_names == {"name", "explicit"}
 
@@ -95,7 +95,7 @@ def test_zone_layout_is_frozen():
 def test_zone_layout_default_zones_include_context_per_r33():
     layout = ZoneLayout()
     names = [z.name for z in layout.zones]
-    # R33: `.context` IS in the shipped DEFAULT_ZONE_LAYOUT.
+    # `.context` IS in the shipped DEFAULT_ZONE_LAYOUT.
     assert ".context" in names
 
 
@@ -121,7 +121,7 @@ def test_zone_layout_imported_zone_is_not_explicit():
 def test_zone_layout_context_zone_is_explicit_by_default():
     layout = ZoneLayout()
     by_name = {z.name: z for z in layout.zones}
-    # R33 / O10: .context default explicit=True (the Zone default).
+    # .context default explicit=True (the Zone default).
     assert by_name[".context"].explicit is True
 
 
@@ -151,7 +151,7 @@ def test_default_readable_roots_returns_every_zone_name():
     layout = ZoneLayout()
     roots = layout.default_readable_roots()
     assert isinstance(roots, tuple)
-    # O10: every zone is readable, so all zone names qualify (incl. the non-explicit one).
+    # Every zone is readable, so all zone names qualify (incl. the non-explicit one).
     assert set(roots) == {z.name for z in layout.zones}
 
 
@@ -180,7 +180,7 @@ def test_with_extra_zones_accepts_bare_string():
 def test_with_extra_zones_dedups_existing_name():
     layout = ZoneLayout()
     before = len(layout.zones)
-    # Re-passing a default zone (.context per R33) is a harmless no-op.
+    # Re-passing a default zone (.context) is a harmless no-op.
     extended = layout.with_extra_zones(".context")
     assert len(extended.zones) == before
     assert [z.name for z in extended.zones].count(".context") == 1

@@ -1,9 +1,9 @@
-"""Dynamic registration + declarative reconcile (mcp.md §3/§7; MC-D8/MC-D14, E14).
+"""Dynamic registration + declarative reconcile.
 
 add/remove on a live source, duplicate rejection, needs_auth-on-add (the
 registration still succeeds), the reconcile diff matrix (add-only /
 remove-only / mixed / no-op / unchanged-key-spec-change), diff + notice
-semantics (boot baseline emits nothing; MC-D13 notice queues on change).
+semantics (boot baseline emits nothing; notice queues on change).
 """
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ async def test_boot_commit_is_baseline_no_notice(monkeypatch):
     source = await _started(monkeypatch, {"a": _spec()})
     try:
         diff = source.commit_applied()
-        assert diff.is_empty()  # boot surface is NOT a change (MC-D13)
+        assert diff.is_empty()  # boot surface is NOT a change
         assert source.consume_pending_notice() is None
     finally:
         await source.aclose()
@@ -121,7 +121,7 @@ async def test_removal_notice_tells_model_not_to_claim_access(monkeypatch):
         await source.aclose()
 
 
-# ── reconcile (MC-D14) diff matrix ───────────────────────────────────
+# ── reconcile diff matrix ───────────────────────────────────
 
 
 async def test_reconcile_add_only(monkeypatch):
@@ -157,7 +157,7 @@ async def test_reconcile_noop_notifies_nothing(monkeypatch):
 
 
 async def test_reconcile_unchanged_key_with_changed_spec_is_untouched(monkeypatch):
-    """Keys are the identity (MC-D14): a different spec under an existing
+    """Keys are the identity: a different spec under an existing
     key does NOT reconnect or replace the handle."""
     source = await _started(monkeypatch, {"a": _spec()})
     original_handle = source._handles["a"]

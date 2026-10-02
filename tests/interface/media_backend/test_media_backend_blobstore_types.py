@@ -1,6 +1,6 @@
-"""Red-suite specs for media-backend §2.4 — BlobStore value types & helpers.
+"""Interface specs for media-backend — BlobStore value types & helpers.
 
-Covers media-backend.md §2.4 (Fork H = Variant A, DECIDED — R14): the
+Covers the
 content-addressed blob-store value types and shared helpers homed at
 `agent_base/blob_store/`:
   - agent_base.blob_store.base.BlobRef
@@ -25,7 +25,7 @@ from agent_base.blob_store.base import safe_blob_key as base_safe_blob_key
 from agent_base.blob_store.s3_config import S3Settings as ConfigS3Settings
 
 
-# ─── BlobRef value type (§2.4) ────────────────────────────────────────────
+# ─── BlobRef value type ────────────────────────────────────────────
 
 
 def test_blob_ref_is_frozen_dataclass() -> None:
@@ -81,7 +81,7 @@ def test_blob_ref_package_and_module_symbol_match() -> None:
     assert BlobRef is BaseBlobRef
 
 
-# ─── safe_blob_key — the ONE key-safety routine (§2.4) ────────────────────
+# ─── safe_blob_key — the ONE key-safety routine ────────────────────
 
 
 def test_safe_blob_key_joins_parts() -> None:
@@ -113,7 +113,7 @@ def test_safe_blob_key_package_and_module_symbol_match() -> None:
     assert safe_blob_key is base_safe_blob_key
 
 
-# ─── S3Settings + from_env (§2.4) ─────────────────────────────────────────
+# ─── S3Settings + from_env ─────────────────────────────────────────
 
 
 def test_s3_settings_is_frozen_dataclass() -> None:
@@ -182,7 +182,7 @@ def test_s3_settings_from_env_takes_prefix(monkeypatch) -> None:
 
 
 def test_s3_settings_from_env_resolves_endpoint_url(monkeypatch) -> None:
-    """§2.4: the ONE resolver reads endpoint from S3_ENDPOINT_URL."""
+    """The ONE resolver reads endpoint from S3_ENDPOINT_URL."""
     monkeypatch.setenv("S3_ENDPOINT_URL", "https://minio.local")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setenv("MEDIA_S3_BUCKET", "media-bucket")

@@ -1,11 +1,11 @@
-"""Red-suite specs for media-backend §2.1 — the canonical image pipeline.
+"""Interface specs for media-backend — the canonical image pipeline.
 
-Covers media-backend.md §2.1 (`projection.py`): `ImageBudget`, `ProjectedImage`,
-`fit_image_to_budget`, `image_content_from_bytes`. Per R16 this is the single
+Covers `projection.py`: `ImageBudget`, `ProjectedImage`,
+`fit_image_to_budget`, `image_content_from_bytes`. This is the single
 canonical image pipeline for the whole library.
 
 Amendments exercised:
-  - O15(b): `ImageBudget.for_provider()` is DELETED — plain `ImageBudget()` is the
+  - `ImageBudget.for_provider()` is DELETED — plain `ImageBudget()` is the
     Anthropic default; other providers pass explicit kwargs.
 
 Symbols under test (owned by media_backend):
@@ -13,7 +13,7 @@ Symbols under test (owned by media_backend):
   - agent_base.media_backend.projection.ProjectedImage
   - agent_base.media_backend.projection.fit_image_to_budget
   - agent_base.media_backend.projection.image_content_from_bytes
-  (also re-exported from agent_base.media_backend per §3.2)
+  (also re-exported from agent_base.media_backend)
 
 Collaborators (NOT deep-tested here):
   - agent_base.core.types.ImageContent / SourceType
@@ -47,7 +47,7 @@ def _png_bytes(width: int, height: int, color: tuple[int, int, int] = (200, 30, 
     return buf.getvalue()
 
 
-# ─── ImageBudget constructor defaults (§2.1) ──────────────────────────────
+# ─── ImageBudget constructor defaults ──────────────────────────────
 
 
 def test_image_budget_is_frozen_dataclass() -> None:
@@ -56,7 +56,7 @@ def test_image_budget_is_frozen_dataclass() -> None:
 
 
 def test_image_budget_anthropic_defaults() -> None:
-    """Plain ImageBudget() = Anthropic vision defaults (the doc's pinned values)."""
+    """Plain ImageBudget() = Anthropic vision defaults (pinned values)."""
     budget = ImageBudget()
     assert budget.max_dimension == 1568
     assert budget.max_bytes == 1_200_000
@@ -65,7 +65,7 @@ def test_image_budget_anthropic_defaults() -> None:
 
 
 def test_image_budget_accepts_explicit_kwargs() -> None:
-    """O15(b): other providers pass explicit kwargs instead of a lookup table."""
+    """Other providers pass explicit kwargs instead of a lookup table."""
     budget = ImageBudget(max_dimension=2048, max_bytes=500_000, prefer_format="JPEG")
     assert budget.max_dimension == 2048
     assert budget.max_bytes == 500_000
@@ -73,7 +73,7 @@ def test_image_budget_accepts_explicit_kwargs() -> None:
 
 
 def test_image_budget_for_provider_is_deleted() -> None:
-    """O15(b): `for_provider()` is DELETED — there is no provider lookup table."""
+    """`for_provider()` is DELETED — there is no provider lookup table."""
     assert not hasattr(ImageBudget, "for_provider")
 
 
@@ -82,7 +82,7 @@ def test_image_budget_re_export_is_same_object() -> None:
     assert ImageBudget is ProjectionImageBudget
 
 
-# ─── fit_image_to_budget — the ONE canonical pipeline (§2.1) ──────────────
+# ─── fit_image_to_budget — the ONE canonical pipeline ──────────────
 
 
 def test_fit_image_to_budget_returns_projected_image() -> None:
@@ -125,7 +125,7 @@ def test_fit_image_to_budget_honours_max_bytes() -> None:
 
 
 def test_fit_image_to_budget_prefer_format_sets_media_type() -> None:
-    """§2.1: ImageBudget.prefer_format drives the re-encode + output media_type.
+    """ImageBudget.prefer_format drives the re-encode + output media_type.
 
     prefer_format='JPEG' must yield a JPEG projection (media_type image/jpeg),
     exercising the field's EFFECT (not just its constructor acceptance).
@@ -151,7 +151,7 @@ def test_fit_image_to_budget_package_and_module_symbol_match() -> None:
     assert fit_image_to_budget is projection_fit
 
 
-# ─── ProjectedImage value type (§2.1) ─────────────────────────────────────
+# ─── ProjectedImage value type ─────────────────────────────────────
 
 
 def test_projected_image_is_frozen_dataclass() -> None:
@@ -249,7 +249,7 @@ def test_projected_image_describe_marks_crop() -> None:
     assert "crop" in marker.lower()
 
 
-# ─── image_content_from_bytes — the free-standing F4 affordance (§2.1) ────
+# ─── image_content_from_bytes — the free-standing affordance ────
 
 
 def test_image_content_from_bytes_returns_image_content() -> None:
@@ -271,7 +271,7 @@ def test_image_content_from_bytes_applies_budget() -> None:
 
 
 def test_image_content_from_bytes_passes_crop_bbox_through() -> None:
-    """§2.1: image_content_from_bytes's crop_bbox= must flow into the projection.
+    """image_content_from_bytes's crop_bbox= must flow into the projection.
 
     A 200x200 image cropped to a 100x100 region yields an ImageContent whose decoded
     bytes are the cropped 100x100 — proving crop_bbox is not silently dropped.

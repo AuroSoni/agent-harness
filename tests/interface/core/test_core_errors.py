@@ -1,14 +1,14 @@
-"""Red-suite spec: the single typed error taxonomy (D3 / R8 / O6).
+"""Interface spec: the single typed error taxonomy.
 
-Covers interface_plan/subsystems/core.md:
-  - §2.4 — ``agent_base/core/errors.py``: ``ErrorCode`` (O6: trimmed to
+Covers:
+  - ``agent_base/core/errors.py``: ``ErrorCode`` (trimmed to
     EXACTLY 8 members), ``AgentError`` + concrete subclasses
     (``ProviderOverloaded``, ``RateLimited``, ``ContextOverflow``,
     ``ToolFailed``, ``ProviderStatus``), and ``classify_provider_error``.
-  - The two projections that kill D3: ``to_error_report()`` (streaming.meta
+  - The two projections: ``to_error_report()`` (streaming.meta
     ``ErrorReport`` body — collaborator) and ``to_error_delta()`` (streaming
     ``ErrorDelta`` — collaborator).
-  - I10 tie-in: ``ContextOverflow`` is the typed error an overflow-compaction
+  - ``ContextOverflow`` is the typed error an overflow-compaction
     veto fails upward with (the veto wiring itself is the loop's concern).
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from agent_base.core.errors import (
 from agent_base.streaming.meta import ErrorReport
 from agent_base.streaming.types import ErrorDelta
 
-# ── ErrorCode (O6) ──────────────────────────────────────────────────────────
+# ── ErrorCode ──────────────────────────────────────────────────────────
 
 
 def test_error_code_has_exactly_eight_members():
@@ -138,7 +138,7 @@ def test_rate_limited_defaults():
 
 
 def test_context_overflow_defaults():
-    # Also raised when an overflow compaction is vetoed (I10).
+    # Also raised when an overflow compaction is vetoed.
     err = ContextOverflow()
     assert err.code is ErrorCode.CONTEXT_OVERFLOW
     assert err.retriable is False
@@ -157,7 +157,7 @@ def test_tool_failed_code():
 
 
 def test_provider_status_carries_the_collapsed_native_code():
-    # O6: PROVIDER_BAD_REQUEST/PROVIDER_AUTH/etc. collapse into PROVIDER_STATUS
+    # PROVIDER_BAD_REQUEST/PROVIDER_AUTH/etc. collapse into PROVIDER_STATUS
     # with the precise provider detail in native_code/details.
     err = ProviderStatus(native_code="invalid_request_error")
     assert err.code is ErrorCode.PROVIDER_STATUS
@@ -184,8 +184,8 @@ def test_every_concrete_subclass_is_an_agent_error():
 def _provider_shaped(err_type: str) -> Exception:
     """Duck-typed fake of a provider exception carrying e.body['error']['type'].
 
-    §2.4 pins classify_provider_error as the ONE place that inspects this shape;
-    D3's whole point is that nothing here (or in consumers) imports `anthropic`.
+    classify_provider_error is the ONE place that inspects this shape;
+    the whole point is that nothing here (or in consumers) imports `anthropic`.
     """
     exc = Exception(f"provider error: {err_type}")
     exc.body = {"error": {"type": err_type}}  # type: ignore[attr-defined]
@@ -193,7 +193,7 @@ def _provider_shaped(err_type: str) -> Exception:
 
 
 def test_classify_maps_overloaded_error_to_provider_overloaded():
-    # §3.3: 'overloaded_error' is a concrete mapping D3 exists to kill.
+    # 'overloaded_error' is a concrete mapping.
     result = classify_provider_error(_provider_shaped("overloaded_error"))
     assert isinstance(result, AgentError)
     assert result.code is ErrorCode.PROVIDER_OVERLOADED
@@ -210,7 +210,7 @@ def test_classify_maps_rate_limit_error_to_rate_limited():
 
 
 def test_classify_maps_rate_limited_spelling_to_rate_limited():
-    # §3.3 names BOTH provider spellings: 'rate_limit_error' / 'rate_limited'.
+    # BOTH provider spellings are named: 'rate_limit_error' / 'rate_limited'.
     result = classify_provider_error(_provider_shaped("rate_limited"))
     assert result.code is ErrorCode.RATE_LIMITED
     assert result.retriable is True
@@ -228,7 +228,7 @@ def test_classify_maps_uncategorized_exceptions_to_internal():
 
 
 def test_classified_error_projects_onto_both_channels():
-    # D3 end-to-end: classify once, project to ErrorReport + ErrorDelta —
+    # End-to-end: classify once, project to ErrorReport + ErrorDelta —
     # consumers never inspect e.body again.
     err = classify_provider_error(RuntimeError("boom"))
     report = err.to_error_report()

@@ -6,7 +6,7 @@ The conversation log is distinct from ``context_messages``:
   continuation and resume.
 - ``ConversationLog`` is the rich persisted history used for UI replay.
 
-Schema ownership (core.md §2.1.4 / R27): **core owns the conversation_log
+Schema ownership: **core owns the conversation_log
 entry schema + its version** — ``to_dict()`` stamps the library-wide
 ``CORE_SCHEMA_VERSION`` under ``_v`` on the log AND on every entry; readers
 branch on ``schema_version_of(entry)``. Additive entry fields are
@@ -518,7 +518,7 @@ class ConversationLog:
         return None
 
     def to_dict(self) -> dict[str, Any]:
-        # Canonical, versioned (R27): every entry via its own to_dict (no
+        # Canonical, versioned: every entry via its own to_dict (no
         # asdict); the log and each entry carry the `_v` stamp. `spans` is
         # emitted only when there are some, so a log without them serialises
         # exactly as it did before spans existed.

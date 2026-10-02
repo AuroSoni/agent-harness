@@ -1,17 +1,17 @@
-"""The LOCKED hook catalog — canonical signatures (contract §2; doc §2.3).
+"""The LOCKED hook catalog — canonical signatures.
 
 Exactly 12 lifecycle hooks, all async, each taking a single capability-scoped
 context and returning ``HookOutcome | None`` (``None`` = proceed unchanged).
-Beside them rides ONE observer hook, ``on_profile_changed`` (§2.3a) —
+Beside them rides ONE observer hook, ``on_profile_changed`` —
 observe + emit only. ``on_usage_report`` is the same observer category but is
-registered via ``agent.on_usage_report(cb)``, NOT a protocol method (Fork G).
+registered via ``agent.on_usage_report(cb)``, NOT a protocol method.
 
-Dropped / unified (contract §2) — these must never resurface:
+Dropped / unified — these must never resurface:
 
 - ``on_checkpoint`` — dropped (principal-scoped storage removed the
   org/member stamping that motivated it).
 - ``before_relay`` / ``on_relay_result`` / ``transform_relay_results`` —
-  unified into the tool hooks (§2.5): relay is a runtime execution mode
+  unified into the tool hooks: relay is a runtime execution mode
   selected by ``executor="frontend"``, not a separate hook family.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
         TurnStartOutcome,
     )
 
-#: The 12 LOCKED lifecycle hooks (contract §2).
+#: The 12 LOCKED lifecycle hooks.
 LIFECYCLE_HOOK_EVENTS: tuple[str, ...] = (
     "on_session_start",
     "on_session_end",
@@ -53,7 +53,7 @@ LIFECYCLE_HOOK_EVENTS: tuple[str, ...] = (
     "on_abort",
 )
 
-#: Observer hooks (§2.3a) that ride beside the lifecycle catalog in the
+#: Observer hooks that ride beside the lifecycle catalog in the
 #: registry. (``on_usage_report`` is callback-registered, not an event.)
 OBSERVER_HOOK_EVENTS: tuple[str, ...] = ("on_profile_changed",)
 
@@ -85,14 +85,14 @@ class Hooks(Protocol):
     async def on_subagent_start(self, ctx: "SubagentContext") -> "HookOutcome | None": ...
     async def on_subagent_end(self, ctx: "SubagentContext") -> "HookOutcome | None": ...
 
-    # ── compaction ──  matcher: trigger ∈ {auto, manual, overflow}  (I10)
+    # ── compaction ──  matcher: trigger ∈ {auto, manual, overflow}
     async def before_compact(self, ctx: "CompactionContext") -> "HookOutcome | None": ...
     async def after_compact(self, ctx: "CompactionContext") -> "HookOutcome | None": ...
 
-    # ── abort ──  (no matcher; tool-level on_abort() retained — §2.6)
+    # ── abort ──  (no matcher; tool-level on_abort() retained)
     async def on_abort(self, ctx: "AbortContext") -> "HookOutcome | None": ...
 
-    # ── observer hook (§2.3a — observe + emit only; NOT a lifecycle stage) ──
+    # ── observer hook (observe + emit only; NOT a lifecycle stage) ──
     async def on_profile_changed(
         self, ctx: "ProfileChangedContext"
     ) -> "HookOutcome | None": ...

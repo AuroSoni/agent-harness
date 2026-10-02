@@ -1,11 +1,11 @@
-"""Red-suite specs — storage §2.1: public row-mappers + coercers.
+"""Interface specs — storage: public row-mappers + coercers.
 
 Covers:
-- interface_plan/subsystems/storage.md §2.1 (``agent_base/storage/pg/row_mappers.py``):
-  the formerly-private helpers promoted to a supported public surface (fixes E3),
-  and the name->value row mapping that replaces the positional tuple (E1, G0:
-  ``_config_to_row_values`` is gone and is NOT imported here).
-- Migration note §6 row: ``from agent_base.storage.pg.row_mappers import
+- ``agent_base/storage/pg/row_mappers.py``:
+  the formerly-private helpers promoted to a supported public surface,
+  and the name->value row mapping that replaces the positional tuple
+  (``_config_to_row_values`` is gone and is NOT imported here).
+- Migration note: ``from agent_base.storage.pg.row_mappers import
   to_jsonb, row_to_config, ...`` is the supported import path.
 """
 from __future__ import annotations
@@ -94,7 +94,7 @@ def test_iso_none_is_none():
 
 def test_config_to_row_is_a_column_name_mapping():
     row = config_to_row(AgentConfig(agent_uuid="agent-1", model="claude-sonnet-4-5"))
-    assert isinstance(row, dict)              # E1: the positional tuple is gone
+    assert isinstance(row, dict)              # The positional tuple is gone
     assert not isinstance(row, tuple)
     assert row["agent_uuid"] == "agent-1"
 
@@ -146,12 +146,12 @@ def test_log_entry_row_round_trip_preserves_entry_fields():
 
 
 # ---------------------------------------------------------------------------
-# Consumer-migration fixes (AMENDMENTS 2026-06-11)
+# Consumer-migration fixes
 # ---------------------------------------------------------------------------
 
 def test_config_row_round_trips_active_profile():
-    # CM-G3e: `active_profile` is a persisted column — a resume re-applies it
-    # (R20 "persisted wins"); pre-profile rows hydrate as None.
+    # `active_profile` is a persisted column — a resume re-applies it
+    # ("persisted wins"); pre-profile rows hydrate as None.
     config = AgentConfig(agent_uuid="agent-1", active_profile="plan")
     row = config_to_row(config)
     assert row["active_profile"] == "plan"
@@ -167,7 +167,7 @@ def test_config_row_tolerates_missing_active_profile_column():
 
 
 def test_conversation_user_message_column_is_the_clean_form():
-    # CM-P1G1: the persisted user_message column shows exactly what the user
+    # The persisted user_message column shows exactly what the user
     # typed — transient `contributions` are dropped (they round-trip via the
     # conversation_log column instead).
     from agent_base.core.messages import Message

@@ -1,8 +1,8 @@
 """Search file contents with ripgrep.
 
-Migrated to the template-method ``run()`` authoring style (tools.md §2.2);
-output budgeting goes through ``ctx.emit_capped`` (I5/O11(a)) — the
-``tool_result_storage`` fork is deleted (F6, G0).
+Migrated to the template-method ``run()`` authoring style;
+output budgeting goes through ``ctx.emit_capped`` — the
+``tool_result_storage`` fork is deleted.
 """
 from __future__ import annotations
 
@@ -110,7 +110,7 @@ Returns:
         if truncated:
             output += f"\n[... {len(lines) - self.max_match_lines} more lines omitted]"
             if ctx is not None:
-                # F6: persist the FULL output via the canonical ctx budgeting
+                # Persist the FULL output via the canonical ctx budgeting
                 # seam; max_chars=0 yields just the appended reference line.
                 output += await ctx.emit_capped(full_output, max_chars=0)
                 output += "\n[Hint: Use read_file on the saved result to inspect all matches.]"

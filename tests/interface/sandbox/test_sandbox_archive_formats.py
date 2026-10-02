@@ -1,13 +1,13 @@
-"""Red-suite specs for extract_archive real-archive decoding + atomic rollback semantics.
+"""Interface specs for extract_archive real-archive decoding + atomic rollback semantics.
 
-Covers sandbox.md:
-  - §2.3 extract_archive `format` decoding ("tar.gz", "zip", "auto") from raw `data` bytes.
-  - §2.3 extract_archive zip-slip guard on archive member paths (same escape check as resolve()).
-  - §2.3 / I12(c) verify against real archive members with PREFIXED sha256 digest.
-  - §2.3 / I12(d)/A4 atomic=True all-or-nothing on LocalSandbox (stage-to-temp + rename): a
+Covers:
+  - extract_archive `format` decoding ("tar.gz", "zip", "auto") from raw `data` bytes.
+  - extract_archive zip-slip guard on archive member paths (same escape check as resolve()).
+  - verify against real archive members with PREFIXED sha256 digest.
+  - atomic=True all-or-nothing on LocalSandbox (stage-to-temp + rename): a
     failing op leaves the prior state, never a half-written tree; StageResult.committed=False
     and rolled_back populated.
-  - §4 Fork B1: atomic flag override on extract_archive.
+  - atomic flag override on extract_archive.
 
 Exercises the inherited base behavior against a real on-disk LocalSandbox with real tar.gz/zip
 bytes built in-test. The archive bytes are plain test data, not a fake of the type under test.
@@ -106,7 +106,7 @@ async def test_extract_auto_detects_zip(tmp_path):
     await sb.teardown()
 
 
-# ─── verify against real archive members (I12(c)) ────────────────────────
+# ─── verify against real archive members ─────────────────────────────────
 
 
 async def test_extract_targz_verify_prefixed_sha256_ok(tmp_path):
@@ -153,7 +153,7 @@ async def test_extract_blocks_escaping_tar_member(tmp_path):
     await sb.teardown()
 
 
-# ─── atomic rollback (I12(d)/A4) ─────────────────────────────────────────
+# ─── atomic rollback ─────────────────────────────────────────────────────
 
 
 async def test_extract_atomic_rollback_leaves_no_partial_tree(tmp_path):

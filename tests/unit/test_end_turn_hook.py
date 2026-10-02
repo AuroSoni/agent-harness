@@ -1,9 +1,9 @@
 """End-turn hook: rollback persistence + control-channel emission.
 
-UPDATED (2026-06-10, P-A lift): the legacy ``get_formatter``/queue pipeline is
-DELETED (streaming-and-meta.md §6 / G0); the hook path emits typed MetaBodies
+UPDATED (2026-06-10): the legacy ``get_formatter``/queue pipeline is
+DELETED; the hook path emits typed MetaBodies
 into a ``DeltaSink`` — ``Custom(name="meta_end_turn_validation")`` frames plus
-the ``Rollback`` MetaBody (AMENDMENTS O3: ``RollbackDelta`` is deleted; rollback
+the ``Rollback`` MetaBody (``RollbackDelta`` is deleted; rollback
 rides the control channel).
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ from agent_base.streaming.meta import Custom, Rollback
 
 
 class RecorderSink:
-    """Minimal DeltaSink (R30) recording emitted control bodies."""
+    """Minimal DeltaSink recording emitted control bodies."""
 
     def __init__(self) -> None:
         self.deltas: list[Any] = []

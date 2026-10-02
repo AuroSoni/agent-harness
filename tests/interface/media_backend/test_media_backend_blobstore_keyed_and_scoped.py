@@ -1,15 +1,14 @@
-"""Blob store: scope namespaces + the key-addressed surface — AMENDMENTS
-"Consumer-migration fixes (2026-06-11)" CM-P4G2 / CM-P4G1.
+"""Blob store: scope namespaces + the key-addressed surface.
 
 Covers:
 
-- CM-P4G2: the concrete ``LocalBlobStore``/``S3BlobStore`` accept the
-  documented MULTI-SEGMENT scope namespace — ``derive_namespace`` (I13a)
+- The concrete ``LocalBlobStore``/``S3BlobStore`` accept the
+  documented MULTI-SEGMENT scope namespace — ``derive_namespace``
   emits ``"tenant/subject"`` and the backends split it into validated
   segments instead of rejecting the slash. A real
   ``MediaScope(principal=...)`` put/get round-trips on the shipped local
   backend; single-segment namespaces keep their historical path layout.
-- CM-P4G1: the minimal KEY-addressed surface (``KeyedBlobStore``:
+- The minimal KEY-addressed surface (``KeyedBlobStore``:
   ``put_at`` / ``get_by_key`` / ``exists_key`` / ``delete_key``) on both
   shipped backends, with ``safe_blob_key`` segment validation; the
   content-addressed API is unchanged.
@@ -38,7 +37,7 @@ def _scope(tenant: str = "org-1", subject: str = "m-1") -> MediaScope:
     )
 
 
-# ── CM-P4G2: multi-segment scope namespaces on the shipped backends ─────────
+# ── Multi-segment scope namespaces on the shipped backends ─────────
 
 
 def test_split_namespace_splits_on_slash():
@@ -66,7 +65,7 @@ async def test_local_scope_put_get_round_trip(tmp_path):
     chunks = [chunk async for chunk in store.get(ref, effective)]
     assert b"".join(chunks) == b"tenant bytes"
 
-    # exists() is scope-filtered by default (I13a) — same scope finds it…
+    # exists() is scope-filtered by default — same scope finds it…
     assert await store.exists(ref.content_hash, "a1", scope=scope) is not None
     # …a different tenant's scope does NOT (no cross-tenant existence leak).
     other = _scope(tenant="org-2", subject="m-9")
@@ -93,7 +92,7 @@ def test_s3_key_builder_still_rejects_traversal_segments():
         store._key("org-1/../m-1", "blake3:abcdef0123")
 
 
-# ── CM-P4G1: the key-addressed surface ───────────────────────────────────────
+# ── The key-addressed surface ───────────────────────────────────────
 
 
 def test_shipped_backends_satisfy_the_keyed_blob_store_protocol(tmp_path):

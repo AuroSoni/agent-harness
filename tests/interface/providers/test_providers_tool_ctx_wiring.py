@@ -1,21 +1,20 @@
-"""Factory-wired ``ToolContext`` — the workflow-tool enabling seam (WT-1).
+"""Factory-wired ``ToolContext`` — the workflow-tool enabling seam.
 
-Covers AMENDMENTS "Workflow-tool ctx wiring (WT) — 2026-07-07" and
-interface_plan/subsystems/tools.md §2.2 ("Wired at call-time"):
+Covers the workflow-tool ctx wiring, wired at call-time:
 
-- WT-1: the provider's per-call ctx factory (``AnthropicAgent._tool_ctx_factory``)
-  is the call-time population point R3/B8/I4 promised — capability fields
+- The provider's per-call ctx factory (``AnthropicAgent._tool_ctx_factory``)
+  is the call-time population point — capability fields
   (``sandbox``/``principal``/``media``) bind by constructor arg; ``emit`` binds
-  to the runtime's wired ``_hook_emit`` (exact B8 signature); ``call_frontend_tool``
+  to the runtime's wired ``_hook_emit`` (exact signature); ``call_frontend_tool``
   binds to ``AgentRuntime.call_frontend_tool`` with the ctx itself as the emit
   carrier. Binds are per-INSTANCE — a bare-constructed ``ToolContext`` keeps the
-  LOUD unwired raises (B8 unchanged).
+  LOUD unwired raises.
 - ``before_tool`` runs on programmatic calls (``executor="frontend"``): an
   ``update`` outcome rewrites the outbound payload; a ``block`` outcome raises a
   typed ``TOOL_FAILED`` into the tool body.
 - Sequential same-name calls mint DISTINCT runtime-owned ``toolu_`` ids and each
-  record pops cleanly before the next opens (WT-3 sequential-reuse guarantee).
-- WT-4: ``ctx.emit_text`` streams a live ``TextDelta`` AND appends a
+  record pops cleanly before the next opens (sequential-reuse guarantee).
+- ``ctx.emit_text`` streams a live ``TextDelta`` AND appends a
   DISPLAY-ONLY assistant message entry to the conversation log — never to the
   model context chain; ``log_tool_result_for_replay`` persists a
   programmatically-executed tool/sub-agent result (nested conversation intact)
@@ -68,7 +67,7 @@ def _drain_await_inputs(agent) -> list[MetaEnvelope]:
     return out
 
 
-# ── WT-1: capability fields bind from the agent ───────────────────────────
+# ── Capability fields bind from the agent ─────────────────────────────────
 
 
 async def test_factory_ctx_carries_agent_sandbox_principal_media():
@@ -87,7 +86,7 @@ async def test_factory_ctx_carries_agent_sandbox_principal_media():
 
 async def test_factory_ctx_names_the_roster_reader_and_loader():
     # Overflow notices name tools the live roster has: a reader for text, a
-    # code runner for a saved JSON result (tools.md §2.4, mcp.md §6).
+    # code runner for a saved JSON result.
     from agent_base.tools import tool
 
     @tool
@@ -118,7 +117,7 @@ async def test_factory_ctx_names_the_roster_reader_and_loader():
     assert ctx.result_loader_tool == "bash_tool"
 
 
-# ── WT-1: emit binds to the wired _hook_emit (B8) ─────────────────────────
+# ── emit binds to the wired _hook_emit ────────────────────────────────────
 
 
 async def test_factory_ctx_emit_lands_a_stamped_envelope_on_the_stream():
@@ -135,7 +134,7 @@ async def test_factory_ctx_emit_lands_a_stamped_envelope_on_the_stream():
     assert isinstance(item.body, Custom)
     assert item.body.name == "workflow_progress"
     assert item.correlation_id == "cid_9"
-    assert item.agent_id == agent.agent_uuid   # §3 header stamped
+    assert item.agent_id == agent.agent_uuid   # header stamped
     assert item.seq >= 1
 
 
@@ -152,7 +151,7 @@ async def test_factory_ctx_emit_keeps_the_b8_signature():
     assert params["expects_reply"].default is False
 
 
-# ── WT-1: call_frontend_tool binds to the runtime relay primitive ─────────
+# ── call_frontend_tool binds to the runtime relay primitive ───────────────
 
 
 async def test_factory_ctx_drives_a_full_programmatic_pause_end_to_end():
@@ -194,7 +193,7 @@ async def test_factory_ctx_drives_a_full_programmatic_pause_end_to_end():
 
 
 async def test_before_tool_update_rewrites_the_outbound_payload():
-    # §2.1/CM-G1: the before_tool chain runs on programmatic calls with
+    # The before_tool chain runs on programmatic calls with
     # executor="frontend"; an update outcome's rewritten input is what the
     # FE receives in the AwaitInput payload.
     table = AwaitTable()
@@ -208,7 +207,7 @@ async def test_before_tool_update_rewrites_the_outbound_payload():
         async def enrich(hook_ctx):
             seen_executors.append(hook_ctx.executor)
             # On the scripted path ctx.call is plain call info; the fold reads
-            # update.input into ctx.tool_input (§2.1 chain-update rule).
+            # update.input into ctx.tool_input (chain-update rule).
             return HookOutcome(
                 update=SimpleNamespace(input={"question": "enriched"}))
 
@@ -258,7 +257,7 @@ async def test_before_tool_block_raises_into_the_tool_body():
 
 
 async def test_sequential_same_name_calls_mint_distinct_ids_and_pop_cleanly():
-    # WT-3 sequential-reuse guarantee: same tool name twice in one body →
+    # Sequential-reuse guarantee: same tool name twice in one body →
     # same cid shape but DISTINCT runtime-minted toolu_ ids, and the first
     # record is popped (finally) before the second opens.
     table = AwaitTable()
@@ -292,11 +291,11 @@ async def test_sequential_same_name_calls_mint_distinct_ids_and_pop_cleanly():
         set_await_table(AwaitTable())
 
 
-# ── WT-4: emit_text — live TextDelta + display-only replay entry ──────────
+# ── emit_text — live TextDelta + display-only replay entry ────────────────
 
 
 async def test_factory_ctx_emit_text_streams_and_logs_but_never_enters_context():
-    # WT-4: one call → (a) a TextDelta on the live stream (agent-stamped,
+    # One call → (a) a TextDelta on the live stream (agent-stamped,
     # is_final, rendered as its own paragraph) and (b) a DISPLAY-ONLY
     # assistant message entry in the conversation log — while the model
     # context chain (context_messages) is untouched.
@@ -325,7 +324,7 @@ async def test_factory_ctx_emit_text_streams_and_logs_but_never_enters_context()
     assert [b.text for b in entry.content] == [
         "Downloading the FY2025 annual report (2 of 3)…"
     ]
-    # The load-bearing WT-4 invariant: the model never sees display lines.
+    # The load-bearing invariant: the model never sees display lines.
     assert len(agent.agent_config.context_messages) == context_before
 
 
@@ -342,7 +341,7 @@ async def test_emit_text_empty_string_is_a_no_op():
     assert len(agent.agent_config.conversation_log.entries) == log_before
 
 
-# ── WT-4: log_tool_result_for_replay — public replay-persistence seam ─────
+# ── log_tool_result_for_replay — public replay-persistence seam ───────────
 
 
 async def test_log_tool_result_for_replay_appends_nested_conversation_intact():
@@ -385,7 +384,7 @@ async def test_log_tool_result_for_replay_appends_nested_conversation_intact():
     assert len(agent.agent_config.context_messages) == context_before
 
 
-# ── B8 unchanged: bare-constructed ToolContext keeps the LOUD raises ──────
+# ── Bare-constructed ToolContext keeps the LOUD raises ────────────────────
 
 
 async def test_bare_tool_context_still_raises_unwired():

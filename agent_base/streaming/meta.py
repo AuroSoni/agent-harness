@@ -1,6 +1,6 @@
-"""MetaEnvelope — the backend→frontend control channel (contract §3).
+"""MetaEnvelope — the backend→frontend control channel.
 
-Canonical home of the meta union (reconciled R2): ``MetaEnvelope``,
+Canonical home of the meta union: ``MetaEnvelope``,
 ``MetaBody`` and the typed body union (``AwaitInput`` / ``ProfileChanged`` /
 ``UsageReport`` / ``ErrorReport`` / ``Rollback`` / ``RunStarted`` /
 ``RunCompleted`` / ``FilesUpdated`` / ``Custom``) plus the nested
@@ -9,13 +9,13 @@ Canonical home of the meta union (reconciled R2): ``MetaEnvelope``,
 
 Key contracts:
 
-- The §3 header is stamped by the RUNTIME (event_id / run_id / agent_id /
+- The header is stamped by the RUNTIME (event_id / run_id / agent_id /
   parent_agent_id / seq / ts); producers call ``ctx.emit(body, ...)`` or
   ``sink.emit_meta(body)`` and never construct envelopes by hand.
 - ``AwaitInput`` rides with ``correlation_id == cid`` (the pause-level reply
   key) and ``expects_reply=True``; per-call results are attributed by
-  ``tool_use_id`` (AMENDMENTS B7).
-- ``register_meta_body`` (AMENDMENTS I11) lets a consumer register a frozen
+  ``tool_use_id``.
+- ``register_meta_body`` lets a consumer register a frozen
   dataclass with a unique ``kind: ClassVar[str]``; the shipped decoder then
   yields TYPED instances of that class instead of ``Custom``.
 """
@@ -25,7 +25,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from agent_base.core.errors import ErrorCode  # SINGLE taxonomy, imported not redefined (R8)
+from agent_base.core.errors import ErrorCode  # SINGLE taxonomy, imported not redefined
 
 #: Wire ``type`` discriminator for control envelopes (vs. content deltas).
 META_WIRE_TYPE = "meta"
@@ -63,7 +63,7 @@ class MetaBody:
 
 @dataclass(frozen=True)
 class FrontendCallView:
-    """One pending frontend tool, as the FE sees it (§B7).
+    """One pending frontend tool, as the FE sees it.
 
     FE contract: reply with the ENVELOPE's ``correlation_id`` (the
     pause-level cid); attribute per-call results by ``tool_use_id``.
@@ -76,7 +76,7 @@ class FrontendCallView:
 
 
 # ---------------------------------------------------------------------------
-# The MetaBody union (contract §3 — typed, closed except Custom)
+# The MetaBody union (typed, closed except Custom)
 # ---------------------------------------------------------------------------
 
 
@@ -86,7 +86,7 @@ class AwaitInput(MetaBody):
 
     Emitted with ``MetaEnvelope.correlation_id = cid`` (the pause-level reply
     key).  The FE echoes that cid back in ``ToolReply(cid, results)`` and
-    tags each per-call result by its ``tool_use_id`` (§B7).
+    tags each per-call result by its ``tool_use_id``.
     """
 
     kind: ClassVar[str] = "await_input"
@@ -120,12 +120,12 @@ class ProfileChanged(MetaBody):
 
 @dataclass(frozen=True)
 class UsageReport(MetaBody):
-    """Auto-emitted per turn by the runtime (pricing-cost.md §2.3, R2).
+    """Auto-emitted per turn by the runtime.
 
     Pricing supplies the payload shape; streaming owns the union + wire codec.
-    Per O14(d) the body is TURN-LEVEL only — ``{kind, usage, cost}``: there is
+    The body is TURN-LEVEL only — ``{kind, usage, cost}``: there is
     NO ``cumulative`` field (consumers fold per-turn reports themselves).
-    Per B2 identity rides the ``MetaEnvelope`` header (tenant/subject only, never
+    Identity rides the ``MetaEnvelope`` header (tenant/subject only, never
     claims) — the body carries no identity fields.
 
     ``kind`` is a regular field (not a ``ClassVar``) so it is part of the
@@ -140,7 +140,7 @@ class UsageReport(MetaBody):
     @classmethod
     def of(cls, settlement: Any) -> "UsageReport":
         """Build the body from a ``TurnSettlement`` (core.cost): ``usage`` ==
-        ``turn_usage.totals_dict()`` (O5), ``cost`` == ``turn_cost.to_dict()``."""
+        ``turn_usage.totals_dict()``, ``cost`` == ``turn_cost.to_dict()``."""
         return cls(
             usage=settlement.turn_usage.totals_dict(),
             cost=settlement.turn_cost.to_dict(),
@@ -180,9 +180,9 @@ class ErrorReport(MetaBody):
 
 @dataclass(frozen=True)
 class Rollback(MetaBody):
-    """UI-only rollback signal; never alters context append (contract §3).
+    """UI-only rollback signal; never alters context append.
 
-    DECIDED (Fork D / R13, amended O3/G0): rollback rides the control channel
+    DECIDED: rollback rides the control channel
     as a MetaBody — the ONLY rollback type.  The content-channel
     ``RollbackDelta`` alias is deleted (no codec mapping).
     """
@@ -194,7 +194,7 @@ class Rollback(MetaBody):
 
 @dataclass(frozen=True)
 class RunStarted(MetaBody):
-    """Supersedes ``meta_init`` (resolves C4 / D2)."""
+    """Supersedes ``meta_init``."""
 
     kind: ClassVar[str] = "run_started"
     user_query: str
@@ -242,7 +242,7 @@ class FilesUpdated(MetaBody):
 
 @dataclass(frozen=True)
 class Custom(MetaBody):
-    """Consumer-defined event; still fully correlated (resolves B7/X5)."""
+    """Consumer-defined event; still fully correlated."""
 
     kind: ClassVar[str] = "custom"
     name: str  # consumer namespace, e.g. "mode_change", "todo"
@@ -250,7 +250,7 @@ class Custom(MetaBody):
 
 
 # ---------------------------------------------------------------------------
-# Registry + consumer registration (AMENDMENTS I11 / Fork F-2 Variant B opt-in)
+# Registry + consumer registration (opt-in)
 # ---------------------------------------------------------------------------
 
 #: Kinds shipped by the library (used by the decoder's typed projections).
@@ -314,13 +314,13 @@ def body_from_payload(kind: str, payload: dict[str, Any]) -> MetaBody:
 
 
 # ---------------------------------------------------------------------------
-# MetaEnvelope — EXACTLY the contract §3 header
+# MetaEnvelope — EXACTLY the header
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class MetaEnvelope:
-    """A correlation header + a typed body (contract §3).
+    """A correlation header + a typed body.
 
     The header is stamped by the runtime from ``ctx``; ``correlation_id`` is
     the reply reference id (== relay cid) for ``expects_reply`` events.

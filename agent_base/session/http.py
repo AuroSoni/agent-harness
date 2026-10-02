@@ -1,11 +1,11 @@
-"""Disposition → HTTP mapping — the ONE shared table (session-control.md §2.1).
+"""Disposition → HTTP mapping — the ONE shared table.
 
 Single source of truth for the consumer's HTTP layer, so every consumer maps
-:class:`~agent_base.core.ack.Ack` dispositions identically (kills smell A10's
+:class:`~agent_base.core.ack.Ack` dispositions identically (kills the
 bespoke ``AgentControlError/NotFound/Conflict`` hierarchies).
 
-Amended (O4): the ``MISDIRECTED → 421`` row is REMOVED until Rung 2. The enum
-member stays reserved (Fork F) so adding the row later is not a public-enum
+Amended: the ``MISDIRECTED → 421`` row is REMOVED until Rung 2. The enum
+member stays reserved so adding the row later is not a public-enum
 break, but a stray lookup at Rung 1 falls through to the default 500 — which
 correctly signals "not a Rung-1 outcome".
 """
@@ -21,8 +21,8 @@ DISPOSITION_HTTP_STATUS: dict[Disposition, int] = {
     Disposition.IGNORED_STALE: 200,  # idempotent no-op (late/duplicate reply)
     Disposition.IGNORED_DUP: 200,    # idempotent retry
     Disposition.NOT_RUNNING: 409,    # Conflict — nothing to control
-    Disposition.NOT_FOUND: 404,      # caller may not address this session (R9)
-    # MISDIRECTED → 421 is intentionally NOT mapped at Rung 1 (O4); lands with Fork B2.
+    Disposition.NOT_FOUND: 404,      # caller may not address this session
+    # MISDIRECTED → 421 is intentionally NOT mapped at Rung 1.
     Disposition.REJECTED: 422,       # validation / backpressure (mailbox_full → detail)
 }
 

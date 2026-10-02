@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-# UPDATED (2026-06-10, P-A lift): LiteLLMProvider conforms to the expanded
-# Provider protocol (providers.md §2.1/§6) — keyword-only generate/
+# UPDATED (2026-06-10): LiteLLMProvider conforms to the expanded
+# Provider protocol — keyword-only generate/
 # generate_stream returning ProviderTurn, retry budget on self.retry_policy
-# (O12c — no max_retries/base_delay params), and a DeltaSink instead of the
-# deleted (queue, stream_formatter) pair (R30/G0).
+# (no max_retries/base_delay params), and a DeltaSink instead of the
+# deleted (queue, stream_formatter) pair.
 
 import asyncio
 from dataclasses import dataclass, field
@@ -118,7 +118,7 @@ class FakeAsyncStream:
 
 
 class RecorderSink:
-    """Minimal DeltaSink (R30) recording emitted deltas."""
+    """Minimal DeltaSink recording emitted deltas."""
 
     def __init__(self) -> None:
         self.deltas: list[Any] = []
@@ -132,7 +132,7 @@ class RecorderSink:
 
 
 async def _generate_message(provider, **kwargs):
-    """generate() now returns a ProviderTurn (providers.md §2.1); these tests
+    """generate() now returns a ProviderTurn; these tests
     assert on the canonical message."""
     turn = await provider.generate(**kwargs)
     return turn.message

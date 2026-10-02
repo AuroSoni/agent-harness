@@ -1,10 +1,10 @@
-"""Red-suite specs — fork-reset: the ``CheckpointAdapter`` (4th storage adapter).
+"""Interface specs — fork-reset: the ``CheckpointAdapter`` (4th storage adapter).
 
 Covers:
-- interface_plan/subsystems/fork-reset.md §1 (the checkpoint ledger).
-- SPEC §3.1 / §4: ``save`` / ``load`` / ``load_latest`` / ``list_refs`` /
+- mental_model/features/fork-and-reset.md (the checkpoint ledger).
+- ``save`` / ``load`` / ``load_latest`` / ``list_refs`` /
   ``update_consumer_payload`` / ``archive_after``; reset ARCHIVES the tail (a
-  flag) and NEVER deletes (criterion #2).
+  flag) and NEVER deletes.
 
 The adapter parallels ``ConversationAdapter`` (append-only at a turn boundary,
 principal-scoped via ``for_principal``). ``MemoryCheckpointAdapter`` is the
@@ -118,7 +118,6 @@ async def test_save_does_not_clobber_reconciled_consumer_payload():
     ``consumer_payload={}`` on many paths (finalize / relay / abort / retry), so
     a re-``save`` must NOT wipe a payload the consumer reconciled out-of-band
     (e.g. Nova's restore-grade workbook ref). Structural fields still update.
-    (AMENDMENTS FR-8.)
     """
     a = MemoryCheckpointAdapter()
     await a.save(_cp("u1", 1))                                  # first insert: payload {}

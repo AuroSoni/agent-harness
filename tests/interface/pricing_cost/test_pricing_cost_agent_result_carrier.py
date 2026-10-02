@@ -1,15 +1,15 @@
-"""AgentResult settlement carrier — pricing-cost §2.4 / §6 (B6, streamed-path parity).
+"""AgentResult settlement carrier (streamed-path parity).
 
 Covers the pricing-cost-specified contract that `AgentResult` (core-owned type,
 `agent_base.core.result`) carries the per-turn `TurnSettlement`:
   - `AgentResult.settlement: TurnSettlement | None` field exists and defaults None.
   - It accepts the canonical `TurnSettlement` object verbatim (no recompute).
   - `to_dict()` serializes `settlement` via `TurnSettlement.to_dict()` (canonical,
-    no mixed asdict — fixes E10 cost half), and stamps `_v` (R12).
+    no mixed asdict), and stamps `_v`.
   - When no settlement is attached, `to_dict()["settlement"]` is None.
 
 This is the carrier half of "the same typed object on the awaited path and the
-streamed path" (X9 parity). `TurnSettlement` is the pricing-cost-computed payload;
+streamed path" (parity). `TurnSettlement` is the pricing-cost-computed payload;
 `AgentResult` is the core-owned carrier we assert the contract against.
 """
 
@@ -37,7 +37,7 @@ def _settlement():
 def _make_result(**overrides):
     """Construct an AgentResult supplying its required core-owned collaborator
     fields, so each test can vary ONLY `settlement` and isolate the pricing-cost
-    settlement carrier + to_dict contract (§2.4 / §6). AgentResult is core-owned;
+    settlement carrier + to_dict contract. AgentResult is core-owned;
     the pricing-cost doc only specifies the ADDED `settlement` field (the rest is
     `...`) and never promises the other fields gain defaults — so we never rely on
     a no-arg constructor for the contract under test.

@@ -1,22 +1,22 @@
-"""Provider boundary — the one provider-specific seam (providers.md §2.1).
+"""Provider boundary — the one provider-specific seam.
 
 ``AgentRuntime`` owns the loop, hooks, finalize, flush, budget, abort/steer/await,
 persistence, and stream emission — all provider-agnostic.  ``Provider`` owns only
 the truly model-specific pieces: request-build, native-event→``StreamDelta``
 translation, response parse, token estimation, error classification, and
 chain-repair primitives.  A provider is a *value* injected into the runtime, never
-a base class to subclass (Fork P-A).
+a base class to subclass.
 
-This module is the canonical home (AMENDMENTS / RECONCILIATION R1+) of:
+This module is the canonical home of:
 
 - :class:`Provider` — the ``runtime_checkable`` Protocol (the only seam),
 - :class:`ProviderTurn` — the normalised assistant-turn value (replaces the two
-  divergent per-provider ``StreamResult`` dataclasses; O12a),
+  divergent per-provider ``StreamResult`` dataclasses),
 - :class:`ProviderError` — the normalised provider failure carrying a
-  ``code: ErrorCode`` (O5: built directly by ``classify_error``; no
+  ``code: ErrorCode`` (built directly by ``classify_error``; no
   ``ProviderErrorKind`` enum, no ``PROVIDER_KIND_TO_ERROR_CODE`` table),
-- :class:`RetryPolicy` — the per-provider retry budget (O12c),
-- :func:`make_llm_config` — the single ``LLMConfig`` factory (O12b, replaces
+- :class:`RetryPolicy` — the per-provider retry budget,
+- :func:`make_llm_config` — the single ``LLMConfig`` factory (replaces
   ``llm_config_cls()`` + ``coerce_llm_config()`` + the ctor-default dance).
 
 ``ChainPatch`` (the sanitizer/abort-planner return shape) is re-exported from
@@ -53,12 +53,12 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class ProviderError(Exception):
-    """Normalised provider failure (providers.md §2.1; resolves D3).
+    """Normalised provider failure.
 
     The loop and consumers branch on ``.code`` (the single
     ``core.errors.ErrorCode``); they NEVER import ``anthropic`` / ``litellm``.
 
-    O5: ``Provider.classify_error`` constructs this DIRECTLY via plain ``if/elif``
+    ``Provider.classify_error`` constructs this DIRECTLY via plain ``if/elif``
     over its own SDK exceptions — there is no intermediate ``ProviderErrorKind``
     enum and no ``PROVIDER_KIND_TO_ERROR_CODE`` table.  At the runtime edge this
     maps onto ``MetaBody.ErrorReport(code=ErrorCode…, message, retriable, details)``.
@@ -111,27 +111,27 @@ ProviderError.__delattr__ = _provider_error_delattr  # type: ignore[method-assig
 
 @dataclass(frozen=True)
 class ProviderTurn:
-    """One assistant turn, normalised (providers.md §2.1; O12a/O12d).
+    """One assistant turn, normalised.
 
     Replaces the two divergent per-provider ``StreamResult`` dataclasses with a
     single provider-agnostic value the loop consumes.
 
-    O12(a): slimmed to the loop-read fields only, plus ONE provider-private
+    Slimmed to the loop-read fields only, plus ONE provider-private
     bookkeeping field that the SAME provider's ``plan_stream_abort(turn)``
     consumes.  ``completed_blocks``/``completed_tool_calls`` have LEFT the shared
     type — they were Anthropic- vs LiteLLM-specific and only ever read by that
     provider's abort planner, so they now live inside ``stream_bookkeeping``
     (opaque to the loop).
 
-    O12(d): a mid-stream failure returns cooperatively — partial content is kept
+    A mid-stream failure returns cooperatively — partial content is kept
     on ``message`` and ``partial_error`` is set, so the loop emits an
     ``ErrorReport`` without discarding the partials.
 
     ``timing`` is ``{started_at, ended_at, flight_ms}`` for the call, stamped
     by ``AgentRuntime._provider_turn`` with ``dataclasses.replace(turn,
     timing=...)`` — providers never set it. It is an ``InitVar`` kept as a
-    plain attribute rather than a field: O12(a) pins the provider-neutral
-    field set, and timing is a fact about the call, not part of the turn's
+    plain attribute rather than a field: the provider-neutral
+    field set is pinned, and timing is a fact about the call, not part of the turn's
     value (equality and ``repr`` ignore it). ``replace`` carries it over.
     """
 
@@ -146,13 +146,13 @@ class ProviderTurn:
 
 
 # ---------------------------------------------------------------------------
-# Per-provider retry budget (O12c)
+# Per-provider retry budget
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class RetryPolicy:
-    """O12(c): each Provider carries its own retry budget.
+    """Each Provider carries its own retry budget.
 
     The runtime stops threading ``max_retries``/``base_delay`` scalars into every
     ``generate()`` call; the provider reads its own ``self.retry_policy`` when it
@@ -165,13 +165,12 @@ class RetryPolicy:
 
 
 # ---------------------------------------------------------------------------
-# LLMConfig construction (O12b)
+# LLMConfig construction
 # ---------------------------------------------------------------------------
 
 
 def make_llm_config(loaded: "dict | LLMConfig | None") -> "LLMConfig":
-    """The ONE way to land a base :class:`~agent_base.core.config.LLMConfig`
-    (providers.md §2.1; O12b).
+    """The ONE way to land a base :class:`~agent_base.core.config.LLMConfig`.
 
     Collapses the former ``provider.llm_config_cls()`` + ``provider.coerce_llm_config()``
     + the ctor-default dance into a single factory:
@@ -231,7 +230,7 @@ class ToolCallInfo(Protocol):
 
 @runtime_checkable
 class Provider(Protocol):
-    """The complete provider-specific surface (providers.md §2.0/§2.1).
+    """The complete provider-specific surface.
 
     Everything not declared here is shared and lives in ``AgentRuntime``.  A
     provider is a *value* injected into the runtime — not a base class to
@@ -251,7 +250,7 @@ class Provider(Protocol):
         ...
 
     def make_llm_config(self, loaded: "dict | LLMConfig | None") -> "LLMConfig":
-        """Land the provider's native ``LLMConfig`` (O12b).
+        """Land the provider's native ``LLMConfig``.
 
         ``None`` → native default; ``dict`` → parsed native; ``LLMConfig`` →
         re-coerced into the native subclass.  Replaces ``llm_config_cls()`` +
@@ -260,7 +259,7 @@ class Provider(Protocol):
         ...
 
     # -- the two generation primitives (the heart of the seam) --
-    #    O12(c): no max_retries/base_delay params — the provider reads self.retry_policy.
+    #    No max_retries/base_delay params — the provider reads self.retry_policy.
     async def generate(
         self,
         *,
@@ -289,7 +288,7 @@ class Provider(Protocol):
     ) -> ProviderTurn:
         """Streaming generation → normalised :class:`ProviderTurn`.
 
-        R30/G0: ``sink`` (a :class:`~agent_base.streaming.wire.DeltaSink`) replaces
+        ``sink`` (a :class:`~agent_base.streaming.wire.DeltaSink`) replaces
         the deleted ``(queue, stream_formatter)`` pair — the provider pushes typed
         ``StreamDelta`` objects to ``sink.emit(delta)``; framing is downstream.
         """
@@ -297,16 +296,15 @@ class Provider(Protocol):
 
     # -- error classification (so the loop/consumer never sniff native exceptions) --
     def classify_error(self, exc: Exception) -> ProviderError:
-        """Map an SDK exception to a typed :class:`ProviderError` (O5 — built
+        """Map an SDK exception to a typed :class:`ProviderError` (built
         directly, no ``ProviderErrorKind``)."""
         ...
 
     # -- chain-repair primitives (provider supplies the shape; the LOOP owns policy) --
     def sanitize_chain(self, messages: list["Message"]) -> list["Message"]:
-        """Pure, idempotent chain repair, called before EVERY generate()
-        (B1/C5/X13).
+        """Pure, idempotent chain repair, called before EVERY generate().
 
-        R18a: providers DELEGATE to the shared
+        Providers DELEGATE to the shared
         :func:`~agent_base.core.chain.ensure_chain_validity` so Anthropic/LiteLLM
         never diverge — a provider overrides this only for a genuinely
         provider-specific id quirk.  Distinct from relay-await's resume-boundary
@@ -317,7 +315,7 @@ class Provider(Protocol):
     def plan_stream_abort(self, turn: ProviderTurn) -> ChainPatch:
         """Synthesize tool_results for tool_uses left open by a mid-stream abort.
 
-        O12(a): reads ``turn.stream_bookkeeping`` — the provider-private field it
+        Reads ``turn.stream_bookkeeping`` — the provider-private field it
         itself populated on the way out.  The loop never inspects this field.
         """
         ...
@@ -328,7 +326,7 @@ class Provider(Protocol):
 
     async def collect_api_files(self, runtime: Any) -> list[Any]:
         """Download provider-hosted artifacts (e.g. Anthropic Files API file_ids)
-        and store via ``runtime.media_backend``.  Default returns ``[]`` (R31)."""
+        and store via ``runtime.media_backend``.  Default returns ``[]``."""
         return []
 
 

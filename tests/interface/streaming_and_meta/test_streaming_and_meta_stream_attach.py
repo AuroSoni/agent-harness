@@ -1,7 +1,7 @@
-"""Public stream re-attach: ``attach_stream()`` / ``detach_stream()`` (GF-P6G2, D3).
+"""Public stream re-attach: ``attach_stream()`` / ``detach_stream()``.
 
-Covers the ratified single-live-reader contract (streaming-and-meta.md §2.4,
-amended): the Rung-1 stream has at most ONE live reader;
+Covers the ratified single-live-reader contract (amended):
+the Rung-1 stream has at most ONE live reader;
 
 - ``attach_stream()`` returns a fresh iterator reading the live stream from
   now on — a second attach STEALS the stream and the prior reader's iterator
@@ -14,10 +14,10 @@ amended): the Rung-1 stream has at most ONE live reader;
   guard — the second stream() raises, attach_stream() is the re-attach path.
 
 Kills Nova's ``stream_glue.attach_stream_queue`` private ``_stream_queue``
-swap (and retires the duplicate consumer filing P5 LG-3).
+swap (and retires the duplicate consumer filing).
 
-Emission rides the PUBLIC scripted-emit ctx (``agent.scripted_ctx().emit`` —
-GF-P5LG2), so this spec touches no private emit seam.
+Emission rides the PUBLIC scripted-emit ctx (``agent.scripted_ctx().emit``),
+so this spec touches no private emit seam.
 """
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ async def test_prior_reader_raises_stop_async_iteration_not_an_error():
 
 
 async def test_frames_consumed_before_a_steal_stay_with_the_first_reader():
-    """No replay (D3): a frame the first reader already consumed is gone."""
+    """No replay: a frame the first reader already consumed is gone."""
     agent = AgentRuntime()
     first = agent.attach_stream()
     _emit(agent, "consumed")
@@ -154,7 +154,7 @@ async def test_detach_is_idempotent():
 
 
 async def test_record_turn_frames_drop_while_detached():
-    """The R21 record_turn gate composes with detach: a scripted turn with no
+    """The record_turn gate composes with detach: a scripted turn with no
     reader emits nothing and buffers nothing."""
     agent = AgentRuntime()
     agent.attach_stream()

@@ -1,9 +1,9 @@
-"""Interface red-suite: ``principal_fields()`` (logging subsystem, OWNED).
+"""Interface spec: ``principal_fields()`` (logging subsystem, OWNED).
 
-Covers logging.md:
-  - §2.1 ``principal_fields(p: SessionPrincipal | None) -> dict[str, str]``
-  - §4 Both variants — Variant A (CHOSEN, v1): never-log-claims invariant
-  - §7.1 / Fork K (DECIDED, variant A): ``claims`` are NEVER logged (PII risk)
+Covers:
+  - ``principal_fields(p: SessionPrincipal | None) -> dict[str, str]``
+  - Never-log-claims invariant (CHOSEN, v1)
+  - ``claims`` are NEVER logged (PII risk)
 
 ``principal_fields`` is logging's own flattener, so it is deep-tested here: the
 return shape, which keys it emits, the None-principal contract, and the load-bearing
@@ -19,7 +19,7 @@ from agent_base.logging.correlation import principal_fields
 
 
 # ---------------------------------------------------------------------------
-# §2.1 — None contract: returns an empty dict (not None, not a partial).
+# None contract: returns an empty dict (not None, not a partial).
 # ---------------------------------------------------------------------------
 
 
@@ -33,7 +33,7 @@ def test_principal_fields_none_returns_a_dict_instance():
 
 
 # ---------------------------------------------------------------------------
-# §2.1 — flatten tenant/subject under the contract constants.
+# Flatten tenant/subject under the contract constants.
 # ---------------------------------------------------------------------------
 
 
@@ -51,7 +51,7 @@ def test_principal_fields_uses_contract_constant_keys():
 
 
 # ---------------------------------------------------------------------------
-# §2.1 — only present fields are surfaced; None tenant/subject are omitted.
+# Only present fields are surfaced; None tenant/subject are omitted.
 # ---------------------------------------------------------------------------
 
 
@@ -76,7 +76,7 @@ def test_principal_fields_anonymous_principal_yields_empty_dict():
 
 
 # ---------------------------------------------------------------------------
-# §4 / §7.1 / Fork K — NEVER-LOG-CLAIMS invariant (variant A, v1).
+# NEVER-LOG-CLAIMS invariant (v1).
 # ---------------------------------------------------------------------------
 
 
@@ -91,7 +91,7 @@ def test_principal_fields_never_emits_a_claims_key():
 
 
 def test_principal_fields_never_leaks_a_claim_value():
-    # Fork K: claims may hold tokens/email/PII — no claim VALUE may appear.
+    # Claims may hold tokens/email/PII — no claim VALUE may appear.
     p = SessionPrincipal(
         tenant="org-1",
         subject="mem-1",
@@ -134,7 +134,7 @@ def test_principal_fields_claim_named_tenant_does_not_override_real_tenant():
 
 
 # ---------------------------------------------------------------------------
-# §2.1 — return shape is a plain dict[str, str] (values are strings).
+# Return shape is a plain dict[str, str] (values are strings).
 # ---------------------------------------------------------------------------
 
 

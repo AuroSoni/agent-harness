@@ -5,11 +5,10 @@ Covers:
   and clears ``pending_relay``.
 - ``_ingest_child_usage`` forwards usage/cost into the parent sinks.
 
-NOTE (2026-06-10, relay-await wave): the ``_await_inline_relay`` tests and the
+NOTE (2026-06-10): the ``_await_inline_relay`` tests and the
 ``InlineRelayRegistry`` fixture were DELETED with the ``agent_base.relay``
-shim — AMENDMENTS §O3 ("losing-variant shims deleted (G0): InlineRelayRegistry
-bridge ...") and relay-await.md §6 ("The ``agent_base.relay`` shim ... is
-deleted, not kept; delete ``_await_inline_relay``"). The one relay primitive
+shim: the shim is deleted, not kept, and so is ``_await_inline_relay``.
+The one relay primitive
 is ``await_external`` over the cid-keyed ``AwaitTable``
 (tests/unit/await_table + tests/interface/relay_await).
 """
@@ -57,8 +56,8 @@ async def test_splice_relay_results_merges_completed_and_incoming(agent) -> None
     )
 
     incoming = [_tool_result("t2", "frontend-ok")]
-    # P-A lift: runtime splice signature (cid, results, ctx) -- the legacy
-    # (queue, stream_formatter) pair is deleted (streaming-and-meta.md SS6/G0).
+    # Runtime splice signature (cid, results, ctx) -- the legacy
+    # (queue, stream_formatter) pair is deleted.
     await agent._splice_relay_results(None, incoming, None)
 
     last = agent.agent_config.context_messages[-1]
