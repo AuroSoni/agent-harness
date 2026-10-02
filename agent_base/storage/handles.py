@@ -1,6 +1,6 @@
 """``StorageHandles`` — the storage bundle the runtime threads onto hooks.
 
-Storage-owned (storage.md §2.0, contract §1.2): the ``{config, conversation,
+Storage-owned: the ``{config, conversation,
 run, analytics}`` bundle carried on ``HookContext.storage``. The hooks
 subsystem imports it from this canonical home.
 
@@ -36,7 +36,7 @@ class StorageHandles:
     config: "AgentConfigAdapter"
     conversation: "ConversationAdapter"
     run: "AgentRunAdapter"
-    analytics: "AnalyticsReader | None" = None   # §2.7; None when backend can't query cross-agent
+    analytics: "AnalyticsReader | None" = None   # None when backend can't query cross-agent
     checkpoint: "CheckpointAdapter | None" = None  # fork-reset; None = feature off
     blobs: "KeyedBlobStore | None" = None          # CAS for transcript segments + sandbox manifest
 

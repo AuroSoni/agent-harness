@@ -1,22 +1,21 @@
 """Identity + correlation vocabulary — the library-wide canonical home.
 
-This module is the ONE home (RECONCILIATION R1/R34, tenancy-principal.md §2.0)
-for:
+This module is the ONE home for:
 
-- :class:`SessionPrincipal` — the contract §1.1 identity type, set once at
+- :class:`SessionPrincipal` — the identity type, set once at
   session construction and threaded by the runtime into storage (scope),
   sandbox (namespace), relay/await (reply-auth), and audit. Replaces the
   ``extras["owner"]`` dict the old core required.
-- The identity + correlation **field-name constants** (R34). Logging
-  re-exports them directly (O5: no ``LogField`` wrapper), storage read-model
+- The identity + correlation **field-name constants**. Logging
+  re-exports them directly (no ``LogField`` wrapper), storage read-model
   columns index on them, and the ``MetaEnvelope`` header stamps them — one
   spelling, never redeclared.
 - :class:`PrincipalPolicy` + :class:`StrictScopePolicy` — the reply/attach
-  auth seam (AMENDMENTS I1). ``SessionPrincipal.authorizes()`` is deleted;
+  auth seam. ``SessionPrincipal.authorizes()`` is deleted;
   the policy is ctor-injected on ``SessionManager`` and consulted by BOTH
   the session-attach check and ``AwaitTable.resolve``.
 - :class:`PrincipalConflict` — raised by ``initialize()`` when a supplied
-  principal's scope conflicts with the persisted owner columns (I12(d)).
+  principal's scope conflicts with the persisted owner columns.
 """
 from __future__ import annotations
 
@@ -24,12 +23,11 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol
 
 # ──────────────────────────────────────────────────────────────────────
-# R34 — identity/correlation field-name constants (the single source of
+# Identity/correlation field-name constants (the single source of
 # truth for key spellings; "one spelling, never redeclared"). The BARE
-# names are the canonical spelling — logging re-exports them verbatim
-# (logging.md §2.1, O5). The FIELD_*-prefixed aliases the earlier tenancy
-# §2.0 draft documented are DELETED (maintainer-ratified 2026-06-10, G0:
-# no dual spellings).
+# names are the canonical spelling — logging re-exports them verbatim.
+# The FIELD_*-prefixed aliases the earlier tenancy draft documented are
+# DELETED (maintainer-ratified 2026-06-10: no dual spellings).
 # ──────────────────────────────────────────────────────────────────────
 
 TENANT = "tenant"                    # SessionPrincipal.tenant   (Nova org id maps here)
@@ -42,7 +40,7 @@ EVENT_ID = "event_id"                # MetaEnvelope.event_id, when correlating
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Contract §1.1 — the shared identity type (tenancy-principal.md §2.0)
+# The shared identity type
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -52,7 +50,7 @@ class SessionPrincipal:
 
     Set once at session construction; the runtime threads it everywhere.
     Pure data + pure ergonomics only — reply-auth lives in
-    :class:`PrincipalPolicy` (I1), never on the principal itself.
+    :class:`PrincipalPolicy`, never on the principal itself.
     """
 
     tenant: str | None = None       # e.g. organization_id
@@ -73,7 +71,7 @@ class SessionPrincipal:
     def to_dict(self) -> dict[str, Any]:
         """In-process / full-fidelity serialization — keeps ``claims``.
 
-        NOTE (B2): for BILLING/USAGE serialization, claims NEVER cross the
+        NOTE: for BILLING/USAGE serialization, claims NEVER cross the
         wire — only tenant/subject (the scope key) are emitted by
         ``TurnSettlement.to_dict()`` / the ``UsageReport`` body. The
         in-process object retains the full principal.
@@ -88,7 +86,7 @@ class SessionPrincipal:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# I1 — the reply/attach auth seam (tenancy-principal.md §2.0)
+# The reply/attach auth seam
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -130,14 +128,14 @@ class StrictScopePolicy:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# I12(d) — supplied-vs-persisted owner mismatch (tenancy-principal.md §B.4)
+# Supplied-vs-persisted owner mismatch
 # ──────────────────────────────────────────────────────────────────────
 
 
 class PrincipalConflict(Exception):
     """Supplied principal's scope conflicts with the persisted owner columns.
 
-    Raised by ``initialize()`` (I12(d)): a cold-load never adopts a different
+    Raised by ``initialize()``: a cold-load never adopts a different
     tenant's row and never proceeds unscoped against an owned row.
     """
 
@@ -148,7 +146,7 @@ __all__ = [
     "PrincipalPolicy",
     "StrictScopePolicy",
     "PrincipalConflict",
-    # R34 field-name constants (bare canonical spellings — the ONLY spelling)
+    # Field-name constants (bare canonical spellings — the ONLY spelling)
     "TENANT",
     "SUBJECT",
     "RUN_ID",

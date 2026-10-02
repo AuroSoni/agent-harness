@@ -1,21 +1,21 @@
-"""Typed cross-agent analytics read-API — storage.md §2.7 (fixes X8).
+"""Typed cross-agent analytics read-API.
 
 The adapter ABCs are strictly single-agent; dashboards need filterable
 cross-agent reads + typed accessors over ``cost``/``usage``/``conversation_log``
 so consumers stop casting JSONB internals and hard-coding the ``stop_reason``
 vocabulary.
 
-Ownership split (R27): the ``conversation_log`` entry schema this reader walks
+Ownership split: the ``conversation_log`` entry schema this reader walks
 is **core-owned** and versioned by ``core.serializable.CORE_SCHEMA_VERSION``;
 storage owns ONLY the ``stop_reason`` taxonomy below.
 
-AMENDMENTS I2: ``PgAnalyticsReader(pool, *, filter_columns=...)`` composes the
+``PgAnalyticsReader(pool, *, filter_columns=...)`` composes the
 SAME registry ``scope="filter"`` specs the write adapters use into EVERY
 WHERE, and ``runs_matching(filter)`` is the ONE escape hatch — it streams
 typed :class:`RunSummary` rows so raw JSONB casting is never needed in the
 consumer, even for unanticipated cuts.
 
-AMENDMENTS O5: the aggregate here is :class:`AnalyticsTotals` — the shadow
+The aggregate here is :class:`AnalyticsTotals` — the shadow
 ``UsageTotals`` type is deleted library-wide; this is a distinct domain shape
 (run/agent/error COUNTS, not just token sums).
 """
@@ -28,14 +28,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, Mapping, Sequence
 
 from agent_base.core.identity import SessionPrincipal
-from agent_base.core.serializable import CORE_SCHEMA_VERSION  # noqa: F401  (R27: entry-layout version this reader tracks)
+from agent_base.core.serializable import CORE_SCHEMA_VERSION  # noqa: F401  (entry-layout version this reader tracks)
 
 if TYPE_CHECKING:
     from agent_base.storage.pg.columns import ColumnSpec
 
 
 # =============================================================================
-# stop_reason taxonomy (storage-owned, R27)
+# stop_reason taxonomy (storage-owned)
 # =============================================================================
 
 #: The success/error taxonomy the dashboard used to hard-code.
@@ -104,7 +104,7 @@ class RunSummary:
 
 @dataclass(frozen=True)
 class AnalyticsTotals:
-    """Cross-run aggregate (renamed from UsageTotals — O5 cross-ref)."""
+    """Cross-run aggregate (renamed from UsageTotals)."""
 
     runs: int
     agents: int
@@ -118,7 +118,7 @@ class AnalyticsTotals:
 
 @dataclass(frozen=True)
 class AgentTotals:
-    """Per-AGENT rollup row (GF-P7G2): one row per ``agent_uuid``.
+    """Per-AGENT rollup row: one row per ``agent_uuid``.
 
     Mirrors the fields the consumer dashboard used to reconstruct in Python by
     draining ``runs_matching`` (Nova's ``_AgentAgg``): identity columns + run
@@ -185,7 +185,7 @@ class AnalyticsReader(ABC):
     @abstractmethod
     async def usage_totals(self, f: RunFilter) -> AnalyticsTotals: ...
 
-    # Per-AGENT aggregate (GF-P7G2): one row per agent_uuid via GROUP BY, with a
+    # Per-AGENT aggregate: one row per agent_uuid via GROUP BY, with a
     # total agent-count for pagination (the list_runs return convention).
     @abstractmethod
     async def agent_totals(
@@ -213,7 +213,7 @@ class AnalyticsReader(ABC):
     @abstractmethod
     async def distinct_principals(self) -> list[SessionPrincipal]: ...
 
-    # ONE escape hatch (I2) for unanticipated dashboard cuts — streams typed
+    # ONE escape hatch for unanticipated dashboard cuts — streams typed
     # RunSummary rows, so the consumer NEVER hand-casts JSONB even for a
     # slice the accessors above don't cover.
     @abstractmethod
@@ -241,13 +241,13 @@ _RUN_FROM = (
 
 
 class PgAnalyticsReader(AnalyticsReader):
-    """Owns exactly the SQL consumers used to hand-write (storage.md §2.7)."""
+    """Owns exactly the SQL consumers used to hand-write."""
 
     def __init__(self, pool: Any, *, filter_columns: "Sequence[ColumnSpec]" = ()):
         """Read-only; pool injected like everything else.
 
         ``filter_columns`` are the SAME registry ``scope="filter"`` specs the
-        write adapters use (I2): the reader composes them into EVERY WHERE,
+        write adapters use: the reader composes them into EVERY WHERE,
         so analytics is tenant-scoped by the identical machinery — no
         separate org/member plumbing, no chance of an unscoped dashboard
         query. Pass ``principal_columns(...)``-derived specs (or read them
@@ -304,7 +304,7 @@ class PgAnalyticsReader(AnalyticsReader):
             )
         if f.stop_reasons is not None:
             clauses.append(f"ch.stop_reason = ANY(${bind(list(f.stop_reasons))})")
-        # I2: the SAME filter specs as the write adapters, in EVERY WHERE.
+        # The SAME filter specs as the write adapters, in EVERY WHERE.
         for spec in self._filter_columns:
             value = self._filter_value(spec, f.principal)
             clauses.append(f"ch.{spec.name} = ${bind(value)}")
@@ -407,7 +407,7 @@ class PgAnalyticsReader(AnalyticsReader):
     async def agent_totals(
         self, f: RunFilter, *, limit: int = 50, offset: int = 0
     ) -> tuple[list[AgentTotals], int]:
-        """Per-AGENT rollup (GF-P7G2): one row per ``agent_uuid`` via ``GROUP
+        """Per-AGENT rollup: one row per ``agent_uuid`` via ``GROUP
         BY agent_uuid``, plus a total agent-count for pagination (the
         ``list_runs`` return convention).
 
@@ -568,7 +568,7 @@ class PgAnalyticsReader(AnalyticsReader):
         self, f: RunFilter, *, sample_limit: int = 5000
     ) -> list[ToolUsageStat]:
         # The conversation_log ENTRY SCHEMA this walks is core-owned and
-        # versioned by CORE_SCHEMA_VERSION (R27); update in lockstep with core.
+        # versioned by CORE_SCHEMA_VERSION; update in lockstep with core.
         where, args = self._compose_where(f)
         sql = (
             "SELECT entry->>'tool_name' AS tool_name, "
@@ -639,7 +639,7 @@ class PgAnalyticsReader(AnalyticsReader):
             principals.append(SessionPrincipal(tenant=tenant, subject=subject))
         return principals
 
-    # ----- the ONE escape hatch (I2) ----------------------------------------------
+    # ----- the ONE escape hatch ---------------------------------------------------
 
     async def runs_matching(self, f: RunFilter) -> AsyncIterator[RunSummary]:
         """Streams typed RunSummary rows matching ``f`` (the same RunFilter +

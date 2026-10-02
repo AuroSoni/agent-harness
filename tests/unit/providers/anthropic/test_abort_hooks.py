@@ -1,6 +1,6 @@
 """Phase 3 — abort hardening: on_abort hooks, mailbox drain, hard-cancel backstop.
 
-GF-P6G3: plane-1 submits auto-kick the actor, so the fixture stubs the
+Plane-1 submits auto-kick the actor, so the fixture stubs the
 provider and reaps the kicked task — a unit test never reaches the network.
 """
 import asyncio

@@ -1,13 +1,13 @@
-"""Interface red-suite: ``get_logger`` contract + inject_context surfacing (logging).
+"""Interface spec: ``get_logger`` contract + inject_context surfacing (logging).
 
-Covers logging.md:
-  - §2.3 "``get_logger`` contract (formalize what already works; no behaviour change)"
+Covers:
+  - "``get_logger`` contract (formalize what already works; no behaviour change)"
       * Idempotent: ensure_configured() applies defaults if never configured.
       * Every line auto-includes whatever correlation_scope()/bind_context() bound
         on the current contextvar (via the inject_context processor).
-  - §3 Consumer override example: ``logger.info(...)`` carries run_id/agent_id/
+  - Consumer override example: ``logger.info(...)`` carries run_id/agent_id/
     tenant/subject already attached, free.
-  - §6 implementation delta 3: NO change to config/processors/renderers — the
+  - NO change to config/processors/renderers — the
     inject_context processor already surfaces whatever the scope binds.
 
 ``get_logger`` is logging's own entry point. The auto-include guarantee is verified
@@ -33,7 +33,7 @@ from agent_base.core.identity import SessionPrincipal
 
 
 # ---------------------------------------------------------------------------
-# §2.3 — signature contract: name is optional, defaults to None (root logger).
+# Signature contract: name is optional, defaults to None (root logger).
 # ---------------------------------------------------------------------------
 
 
@@ -54,7 +54,7 @@ def test_get_logger_accepts_a_module_name():
 
 
 # ---------------------------------------------------------------------------
-# §2.3 — idempotent: calling get_logger() ensures configuration without error,
+# Idempotent: calling get_logger() ensures configuration without error,
 # even when the consumer never called configure_logging().
 # ---------------------------------------------------------------------------
 
@@ -76,7 +76,7 @@ def test_get_logger_returns_an_object_with_info_method():
 
 
 # ---------------------------------------------------------------------------
-# §2.3 / §3 — the inject_context processor auto-includes scope/bind fields.
+# The inject_context processor auto-includes scope/bind fields.
 # This is the documented mechanism by which every line gets correlation for free.
 # ---------------------------------------------------------------------------
 
@@ -120,7 +120,7 @@ def test_inject_context_does_not_surface_claims():
 
 
 def test_inject_context_does_not_override_explicit_event_fields():
-    # §6 delta 3: existing inject_context behavior unchanged — explicit values win.
+    # Existing inject_context behavior unchanged — explicit values win.
     clear_context()
     bind_context(**{RUN_ID: "bound"})
     event = inject_context(None, "info", {"event": "x", RUN_ID: "explicit"})

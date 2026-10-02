@@ -94,7 +94,7 @@ def evaluate_while(
     authorized_imports: list[str],
 ) -> None:
     iterations = 0
-    # U2: per-executor limit threaded via state; falls back to the module global.
+    # Per-executor limit threaded via state; falls back to the module global.
     max_while_iterations = state.get("_max_while_iterations", MAX_WHILE_ITERATIONS)
     while evaluate_ast(while_loop.test, state, static_tools, custom_tools, authorized_imports):
         for node in while_loop.body:
@@ -1047,7 +1047,7 @@ def evaluate_ast(
             The list of modules that can be imported by the code. By default, only a few safe modules are allowed.
             If it contains "*", it will authorize any import. Use this at your own risk!
     """
-    # U2: per-executor limit threaded via state; falls back to the module global.
+    # Per-executor limit threaded via state; falls back to the module global.
     max_operations = state.get("_max_operations", MAX_OPERATIONS)
     if state.setdefault("_operations_count", {"counter": 0})["counter"] >= max_operations:
         raise InterpreterError(

@@ -1,24 +1,23 @@
-"""Agent-level ``submit`` plane mechanics + ``say()``/``reply()`` wrappers (§2.3, §2.4, §5).
+"""Agent-level ``submit`` plane mechanics + ``say()``/``reply()`` wrappers.
 
-Covers the contract behaviors session-control.md explicitly owns and no other
-red suite pins:
+Covers the contract behaviors that no other suite pins:
 
-- §2.4: 'the agent-level submit(Abort()) ALSO returns NOT_RUNNING when phase is
-  IDLE (belt-and-suspenders)' — the second half of the A10 closure.
-- §2.3 plane 1: the mailbox is bounded — over-capacity offer is backpressure,
+- 'the agent-level submit(Abort()) ALSO returns NOT_RUNNING when phase is
+  IDLE (belt-and-suspenders)'.
+- Plane 1: the mailbox is bounded — over-capacity offer is backpressure,
   ``Ack(REJECTED, detail='mailbox_full')``, never a silent drop.
-- §2.3 plane 3: control commands target the ROOT (A9) — Abort/Steer from a
+- Plane 3: control commands target the ROOT — Abort/Steer from a
   non-root agent → ``Ack(REJECTED, detail='not_root')``.
-- §2.3 steer modes: FORCEFUL awaits ``_do_abort`` BEFORE enqueueing the
+- Steer modes: FORCEFUL awaits ``_do_abort`` BEFORE enqueueing the
   instruction; COOPERATIVE only enqueues (the open round's join finishes first).
-- §5 Produces: ``say()``/``reply()`` are friendly wrappers that delegate a
+- ``say()``/``reply()`` are friendly wrappers that delegate a
   ``UserMessage``/``ToolReply`` to ``submit``.
 
 The runtime under test is the real ``AgentRuntime`` (canonical home
-``agent_base/core/runtime.py`` per R29 / Fork E = P-A), constructed exactly the
-way the agent_loop_hooks suite pins (§2.7: profiles + default_profile + hooks).
-The observed seams — ``_do_abort``, ``_mailbox``, ``_root_session_id_value`` /
-``_root_session_id()`` — are the ones §2.3's pseudocode and R24 name verbatim.
+``agent_base/core/runtime.py``), constructed exactly the
+way the agent_loop_hooks suite pins (profiles + default_profile + hooks).
+The observed seams are ``_do_abort``, ``_mailbox``, ``_root_session_id_value`` /
+``_root_session_id()``.
 """
 from __future__ import annotations
 
@@ -44,7 +43,7 @@ def fresh_await_table():
 
 
 class RecordingRuntime(AgentRuntime):
-    """Real runtime that records the §2.3 seams (same subclass style the
+    """Real runtime that records the seams (same subclass style the
     agent_loop_hooks registration suite uses)."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -72,23 +71,23 @@ def make_runtime(cls: type[AgentRuntime] = RecordingRuntime) -> Any:
     )
 
 
-# ── §2.4 belt-and-suspenders: idle Abort → NOT_RUNNING ─────────────────────
+# ── Belt-and-suspenders: idle Abort → NOT_RUNNING ───────────────────────────
 
 
 async def test_abort_on_idle_agent_returns_not_running():
-    """§2.3/§2.4: phase IDLE + no running actor ⇒ Ack(NOT_RUNNING) — a typed
-    'nothing to abort', distinguishable from a real cancel (closes A10)."""
+    """Phase IDLE + no running actor ⇒ Ack(NOT_RUNNING) — a typed
+    'nothing to abort', distinguishable from a real cancel."""
     agent = make_runtime()
     ack = await agent.submit(Abort())
     assert ack.disposition is Disposition.NOT_RUNNING
     assert agent.abort_calls == []  # nothing in flight ⇒ no teardown ran
 
 
-# ── §2.3 plane 1: mailbox backpressure ──────────────────────────────────────
+# ── Plane 1: mailbox backpressure ───────────────────────────────────────────
 
 
 async def test_full_mailbox_user_message_is_rejected_with_mailbox_full():
-    """§2.3: the mailbox is bounded — once full, submit(UserMessage) returns
+    """The mailbox is bounded — once full, submit(UserMessage) returns
     Ack(REJECTED, detail='mailbox_full') instead of silently dropping."""
     agent = make_runtime()
     last = None
@@ -101,13 +100,13 @@ async def test_full_mailbox_user_message_is_rejected_with_mailbox_full():
     assert last.detail == "mailbox_full"
 
 
-# ── §2.3 plane 3: control targets the ROOT (A9) ─────────────────────────────
+# ── Plane 3: control targets the ROOT ───────────────────────────────────────
 
 
 async def test_abort_from_non_root_agent_is_rejected_not_root():
-    """§2.3: a sub-agent (root id stamped at spawn per R24) refuses Abort."""
+    """A sub-agent (root id stamped at spawn) refuses Abort."""
     agent = make_runtime()
-    agent._root_session_id_value = "root-elsewhere"  # R24: != own uuid ⇒ non-root
+    agent._root_session_id_value = "root-elsewhere"  # != own uuid ⇒ non-root
     ack = await agent.submit(Abort())
     assert ack.disposition is Disposition.REJECTED
     assert ack.detail == "not_root"
@@ -124,11 +123,11 @@ async def test_steer_from_non_root_agent_is_rejected_not_root():
     assert ack.detail == "not_root"
 
 
-# ── §2.3 steer modes: FORCEFUL preempts, COOPERATIVE defers ─────────────────
+# ── Steer modes: FORCEFUL preempts, COOPERATIVE defers ───────────────────────
 
 
 async def test_forceful_steer_awaits_abort_before_enqueueing():
-    """§2.3: FORCEFUL = preempt the open round (awaited _do_abort) THEN enqueue
+    """FORCEFUL = preempt the open round (awaited _do_abort) THEN enqueue
     the instruction — the mailbox is still empty when the abort runs."""
     agent = make_runtime()
     instruction = Message.user("pivot now")
@@ -141,7 +140,7 @@ async def test_forceful_steer_awaits_abort_before_enqueueing():
 
 
 async def test_cooperative_steer_enqueues_without_aborting():
-    """§2.3: COOPERATIVE only enqueues — the in-flight round's join finishes
+    """COOPERATIVE only enqueues — the in-flight round's join finishes
     first; _do_abort is never called."""
     agent = make_runtime()
     instruction = Message.user("after this round")
@@ -155,11 +154,11 @@ async def test_cooperative_steer_enqueues_without_aborting():
     assert queued.message is instruction
 
 
-# ── §5: say()/reply() friendly wrappers ─────────────────────────────────────
+# ── say()/reply() friendly wrappers ─────────────────────────────────────────
 
 
 async def test_say_wraps_user_message_submission():
-    """§5 Produces: say(text) delegates a UserMessage to submit() — plane 1."""
+    """say(text) delegates a UserMessage to submit() — plane 1."""
     agent = make_runtime()
     ack = await agent.say("hello there")
     assert len(agent.routed) == 1
@@ -173,7 +172,7 @@ async def test_say_wraps_user_message_submission():
 
 
 async def test_reply_wraps_tool_reply_and_resolves_a_parked_await():
-    """§5 Produces: reply(cid, results) delegates a ToolReply to submit() —
+    """reply(cid, results) delegates a ToolReply to submit() —
     plane 2 — and a live parked await resolves to RESOLVED."""
     agent = make_runtime()
     root = agent._root_session_id()

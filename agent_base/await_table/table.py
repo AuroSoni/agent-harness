@@ -10,21 +10,21 @@ Resolution authority is the generation: once the interrupt critical section
 calls ``interrupt`` / ``bump_generation``, a late ``resolve`` for the retired
 generation returns ``IGNORED_STALE`` and never wakes the turn.
 
-Reply-auth (relay-await.md §2.1, R7/R9, AMENDMENTS §I1): ``resolve`` is THE
+Reply-auth: ``resolve`` is THE
 single auth+resolve method — the claimant ``principal`` is checked against the
 record's owner principal via the per-call ``policy`` (``StrictScopePolicy``
-default, tenancy §A.4: ``pol = policy or StrictScopePolicy()``). Check order is
+default: ``pol = policy or StrictScopePolicy()``). Check order is
 lookup → auth → generation/dedupe, so a principal mismatch is ALWAYS
 ``REJECTED``, never downgraded to ``IGNORED_STALE`` — and a rejected reply
 leaves the record OPEN and the future pending.
 
-``cancel`` (AMENDMENTS §I6) closes ONE record (siblings stay parked, the root
+``cancel`` closes ONE record (siblings stay parked, the root
 generation is NOT bumped) and cancels its future as an abort — the parked
 ``await_external`` wakes cancelled and runs ``_repair_self_chain`` for just
 that pause. Distinct from ``interrupt``, which retires the WHOLE root.
 
 In-memory / single-process for Rung 1; Rung 2 backs it with Redis behind the
-same surface. ``get_await_table`` / ``set_await_table`` are the DI seam (§3.5).
+same surface. ``get_await_table`` / ``set_await_table`` are the DI seam.
 """
 from __future__ import annotations
 
@@ -83,10 +83,10 @@ class AwaitTable:
     ) -> Join:
         """Register a parked await and return the :class:`Join` to await on.
 
-        §2.1: keyword-only; stamps the owning ``principal`` (replaces the
-        legacy ``organization_id=``/``member_id=`` kwargs — G0, removed
+        Keyword-only; stamps the owning ``principal`` (replaces the
+        legacy ``organization_id=``/``member_id=`` kwargs — removed
         outright, no ``**kwargs`` swallowing) and the open-vocabulary
-        ``reason`` (§O9) on the record.
+        ``reason`` on the record.
         """
         loop = asyncio.get_running_loop()
         future: asyncio.Future[list[ContentBlock]] = loop.create_future()
@@ -124,15 +124,15 @@ class AwaitTable:
         policy: "PrincipalPolicy | None" = None,
     ) -> Disposition:
         """Deliver ``results`` to a parked await — THE single auth+resolve
-        entry point (R7); blocks are delivered verbatim (reconciliation
-        happens in ``await_external``, §2.5).
+        entry point; blocks are delivered verbatim (reconciliation
+        happens in ``await_external``).
 
-        Check order (tenancy §A.4): (1) record lookup, (2) principal auth via
-        ``policy or StrictScopePolicy()`` (I1), (3) generation/dedupe/stale.
+        Check order: (1) record lookup, (2) principal auth via
+        ``policy or StrictScopePolicy()``, (3) generation/dedupe/stale.
 
         - ``RESOLVED``      — open, current generation, authorized; future set.
         - ``REJECTED``      — ``policy.authorizes(owner, claimant)`` is False
-          (R9: NEVER downgraded to ``IGNORED_STALE``, even on a retired
+          (NEVER downgraded to ``IGNORED_STALE``, even on a retired
           generation). The record stays OPEN; the future stays pending.
         - ``IGNORED_DUP``   — already resolved/closed (double delivery).
         - ``IGNORED_STALE`` — unknown cid, or the await's generation was
@@ -143,9 +143,9 @@ class AwaitTable:
             future = self._futures.get(cid)
             if record is None or future is None:
                 return Disposition.IGNORED_STALE  # no live target → stale, not auth
-            pol = policy or StrictScopePolicy()   # I1: the ONE injected policy
+            pol = policy or StrictScopePolicy()   # the ONE injected policy
             if not pol.authorizes(record.principal, principal):
-                return Disposition.REJECTED       # cid-layer auth failure (R9)
+                return Disposition.REJECTED       # cid-layer auth failure
             if record.await_generation != self._generation.get(record.root_session_id, 0):
                 # Retired by an interrupt → stale, even if the interrupt also
                 # CLOSED the record (the generation is the authority; the
@@ -163,7 +163,7 @@ class AwaitTable:
         *,
         principal: "SessionPrincipal | None" = None,
     ) -> Disposition:
-        """Close ONE parked await and cancel its future as an abort (§I6).
+        """Close ONE parked await and cancel its future as an abort.
 
         Distinct from :meth:`interrupt`: sibling pauses on the same root stay
         OPEN and the root generation is NOT bumped. The cancelled future wakes
@@ -275,7 +275,7 @@ def get_await_table() -> AwaitTable:
 
 
 def set_await_table(table: AwaitTable) -> None:
-    """Replace the process-wide await table singleton (§3.5 DI seam —
+    """Replace the process-wide await table singleton (DI seam —
     Rung-2 Redis swaps in behind the same surface; tests isolate here)."""
     global _await_table
     _await_table = table

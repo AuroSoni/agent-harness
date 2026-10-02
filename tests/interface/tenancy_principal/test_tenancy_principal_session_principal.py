@@ -1,25 +1,24 @@
 """Interface spec — ``SessionPrincipal`` and the identity vocabulary module.
 
-Covers interface_plan/subsystems/tenancy-principal.md:
-  - §2.0 "The shared type" — ``SessionPrincipal`` at ``agent_base/core/identity.py``
-    (R1 canonical home): frozen dataclass, ``tenant``/``subject``/``claims`` with
+Covers:
+  - ``SessionPrincipal`` at ``agent_base/core/identity.py``
+    (canonical home): frozen dataclass, ``tenant``/``subject``/``claims`` with
     defaults, ``scope_key`` property, ``is_anonymous()``, ``to_dict()``/``from_dict()``.
-  - R34 — identity + correlation field-name constants live in ``core.identity``.
-  - I1 deletion note honored: ``SessionPrincipal.authorizes`` is NOT referenced
+  - Identity + correlation field-name constants live in ``core.identity``.
+  - Deletion note honored: ``SessionPrincipal.authorizes`` is NOT referenced
     anywhere in this suite (deleted; auth lives in ``PrincipalPolicy``).
-  - B2 (tenancy side): the in-process ``to_dict()`` keeps full fidelity including
-    ``claims`` (billing-wire serialization that strips claims is pricing-cost's).
-
-DESIGN_CONTRACT.md §1.1 / §4 and AMENDMENTS.md I1/O2 back these shapes.
+  - Tenancy side: the in-process ``to_dict()`` keeps full fidelity including
+    ``claims`` (billing-wire serialization that strips claims is told in
+    mental_model/features/billing-a-run.md).
 """
 from __future__ import annotations
 
 import dataclasses
 
-# RECONCILED (2026-06-10, maintainer-ratified): R34 pins ONE canonical spelling —
-# the BARE names (logging.md §2.1 / O5 re-exports them verbatim). The FIELD_*-
-# prefixed aliases the earlier tenancy §2.0 draft documented are DELETED (G0:
-# no dual spellings); tenancy §2.0 is amended to the bare names.
+# RECONCILED (2026-06-10, maintainer-ratified): ONE canonical spelling is pinned —
+# the BARE names (logging re-exports them verbatim). The FIELD_*-
+# prefixed aliases are DELETED (no dual
+# spellings).
 from agent_base.core.identity import (
     AGENT_ID,
     EVENT_ID,
@@ -122,7 +121,7 @@ def test_to_dict_shape_is_exactly_tenant_subject_claims():
 
 
 def test_to_dict_keeps_claims_full_fidelity_in_process():
-    # B2: only the BILLING/USAGE wire strips claims; the in-process dict keeps them.
+    # Only the BILLING/USAGE wire strips claims; the in-process dict keeps them.
     claims = {"role": "admin", "delegation": {"of": "member_2"}}
     d = SessionPrincipal(tenant="t", subject="s", claims=claims).to_dict()
     assert d["claims"] == claims
@@ -163,7 +162,7 @@ def test_from_dict_null_claims_defaults_to_empty_mapping():
     assert dict(p.claims) == {}
 
 
-# ─── R34 — identity/correlation field-name constants ─────────────────
+# ─── Identity/correlation field-name constants ───────────────────────
 
 
 def test_identity_field_name_constants_spellings():
@@ -186,7 +185,7 @@ def test_field_constants_match_principal_field_spellings():
 
 
 def test_field_prefixed_aliases_are_deleted():
-    # R34 "one spelling, never redeclared" — the FIELD_* aliases are GONE.
+    # "One spelling, never redeclared" — the FIELD_* aliases are GONE.
     import agent_base.core.identity as identity
 
     for alias in (

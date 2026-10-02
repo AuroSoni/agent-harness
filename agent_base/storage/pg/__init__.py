@@ -1,14 +1,14 @@
-"""Postgres adapter machinery — storage.md §2.2/§2.3/§2.4/§2.5/§2.6.
+"""Postgres adapter machinery.
 
 The base Postgres adapter is a **template**: it composes INSERT / UPSERT-set /
 SELECT-list / WHERE from a declared column set = library base columns ⊕
-consumer ``extra_columns()`` (the A1 ``ColumnSpec`` engine — Fork B amended,
-AMENDMENTS O1). Identity is bound through the ONE public seam
-``adapter.for_principal(principal)`` (tenancy O2); ``_scoped_where`` folds
+consumer ``extra_columns()`` (the ``ColumnSpec`` engine).
+Identity is bound through the ONE public seam
+``adapter.for_principal(principal)``; ``_scoped_where`` folds
 every ``scope="filter"`` column into every WHERE so a missed tenant predicate
-is structurally impossible (E2).
+is structurally impossible.
 
-Public surface (consumed by a Nova-like consumer — storage.md §3):
+Public surface (consumed by a Nova-like consumer):
 
     from agent_base.storage.pg import (
         PgConfigAdapterBase, PgConversationAdapterBase, PgRunAdapterBase,
@@ -67,8 +67,8 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# Library base columns — reproduce today's 28/15/9 columns in the same order
-# (storage.md §6), built from the row_mappers single source of truth.
+# Library base columns — reproduce today's 28/15/9 columns in the same order,
+# built from the row_mappers single source of truth.
 # =============================================================================
 
 def _base_spec(
@@ -137,12 +137,12 @@ _CHECKPOINT_BASE_COLUMNS: list[ColumnSpec] = [
 
 # =============================================================================
 # Shared adapter base — pool handling, principal binding, scoped WHERE,
-# the ONE concrete is_owned probe (O16(a)), ensure_schema delegation.
+# the ONE concrete is_owned probe, ensure_schema delegation.
 # =============================================================================
 
 
 class _PgAdapterBase:
-    """The SHARED base all three Pg adapters inherit (storage.md §2.4)."""
+    """The SHARED base all three Pg adapters inherit."""
 
     table: str
     id_column: str = "agent_uuid"
@@ -151,14 +151,14 @@ class _PgAdapterBase:
 
     def __init__(self, pool: PgPool, *, principal: SessionPrincipal | None = None):
         self._pool = pool
-        self._principal = principal               # §2.4 ambient half
-        self._owned = False                       # injected pool = borrowed (E4)
+        self._principal = principal               # ambient half
+        self._owned = False                       # injected pool = borrowed
         self._dsn: str | None = None
         self._pool_size = 10
         self._timezone = "UTC"
         self._registry = self._build_registry()   # base ⊕ extra_columns()
 
-    # ----- §2.3 injectable pool ------------------------------------------------
+    # ----- injectable pool -----------------------------------------------------
 
     @classmethod
     def from_dsn(
@@ -178,7 +178,7 @@ class _PgAdapterBase:
         return adapter
 
     async def connect(self) -> None:
-        """Acts iff the pool is owned; no-op iff borrowed (E4)."""
+        """Acts iff the pool is owned; no-op iff borrowed."""
         if self._owned and self._pool is None and self._dsn is not None:
             cfg = PgConnectConfig(
                 dsn=self._dsn, max_size=self._pool_size, timezone=self._timezone
@@ -186,7 +186,7 @@ class _PgAdapterBase:
             self._pool = await _pool_module.create_pool(cfg)
 
     async def close(self) -> None:
-        """Acts iff the pool is owned; no-op iff borrowed (E4)."""
+        """Acts iff the pool is owned; no-op iff borrowed."""
         if self._owned and self._pool is not None:
             await self._pool.close()
             self._pool = None
@@ -198,7 +198,7 @@ class _PgAdapterBase:
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.close()
 
-    # ----- the ONE public binding seam (tenancy O2) ------------------------------
+    # ----- the ONE public binding seam --------------------------------------------
     # Scope / set_scope() / Scoped*Adapter.wrap are DELETED; this is the sole
     # consumer-facing binding API. The bound adapter reads principal.tenant /
     # principal.subject by convention and ignores claims by not reading them.
@@ -213,10 +213,10 @@ class _PgAdapterBase:
         bound._registry = bound._build_registry()
         return bound
 
-    # ----- the seam a subclass overrides (A1, the v1 surface) --------------------
+    # ----- the seam a subclass overrides (the v1 surface) -------------------------
 
     def extra_columns(self) -> list[ColumnSpec]:
-        """Declare consumer extra columns here (A1). Default: none."""
+        """Declare consumer extra columns here. Default: none."""
         return []
 
     # ----- registry composition ---------------------------------------------------
@@ -243,7 +243,7 @@ class _PgAdapterBase:
 
         return dataclasses.replace(spec, get=bound_get)
 
-    # ----- §2.4 principal-scoped WHERE (single chokepoint — fixes E2) -------------
+    # ----- principal-scoped WHERE (single chokepoint) ------------------------------
 
     def _scoped_where(self, eq: Mapping[str, Any]) -> tuple[str, list[Any]]:
         """Compose ``col = $n`` for the caller's keys PLUS every
@@ -261,7 +261,7 @@ class _PgAdapterBase:
             clauses.append(f"{spec.name} = ${len(args)}")
         return " AND ".join(clauses) or "TRUE", args
 
-    # ----- §2.4 is_owned: ONE concrete SELECT-1 probe (O16(a), closes E8) ---------
+    # ----- is_owned: ONE concrete SELECT-1 probe ------------------------------------
 
     async def is_owned(
         self, id: str, principal: SessionPrincipal | None = None
@@ -277,14 +277,14 @@ class _PgAdapterBase:
             )
         return hit is not None
 
-    # ----- §2.6 ensure_schema delegation -------------------------------------------
+    # ----- ensure_schema delegation ------------------------------------------------
 
     def _schema_registries(self) -> SchemaRegistries:
         return SchemaRegistries(**{self._registry_slot: self._registry})
 
     async def ensure_schema(self) -> None:
         """Create this adapter's library table (+ version bookkeeping) and run
-        pending migrations. Idempotent (E6); delegates to :class:`PgSchema`."""
+        pending migrations. Idempotent; delegates to :class:`PgSchema`."""
         schema = PgSchema(self._pool, registries=self._schema_registries())
         await schema.ensure_schema()
 
@@ -295,7 +295,7 @@ class _PgAdapterBase:
 
 
 class PgConfigAdapterBase(_PgAdapterBase, AgentConfigAdapter):
-    """Template Postgres adapter for ``agent_config`` (storage.md §2.2)."""
+    """Template Postgres adapter for ``agent_config``."""
 
     table = "agent_config"
     id_column = "agent_uuid"
@@ -305,7 +305,7 @@ class PgConfigAdapterBase(_PgAdapterBase, AgentConfigAdapter):
     def _base_columns(self) -> list[ColumnSpec]:
         return _AGENT_CONFIG_BASE_COLUMNS
 
-    # ----- composed CRUD (written ONCE, in the library — E1) ----------------------
+    # ----- composed CRUD (written ONCE, in the library) ---------------------------
 
     async def save(self, config: AgentConfig) -> None:
         cols = self._registry.insert_columns()
@@ -329,7 +329,7 @@ class PgConfigAdapterBase(_PgAdapterBase, AgentConfigAdapter):
             row = await conn.fetchrow(sql, *args)
         if row is None:
             return None
-        config = row_to_config(row)              # public mapper (§2.1)
+        config = row_to_config(row)              # public mapper
         self._registry.hydrate(config, row)      # set() callbacks for extras
         return config
 
@@ -377,7 +377,7 @@ class PgConfigAdapterBase(_PgAdapterBase, AgentConfigAdapter):
         ]
         return sessions, int(total or 0)
 
-    # ----- §2.5 optimized media lookup (overrides the ABC concrete default) -------
+    # ----- optimized media lookup (overrides the ABC concrete default) -------------
 
     async def get_media_metadata(
         self, agent_uuid: str, media_id: str
@@ -526,7 +526,7 @@ class PgConversationAdapterBase(_PgAdapterBase, ConversationAdapter):
             rows = await conn.fetch(sql, *args)
         return len(rows)
 
-    # ----- §2.5 the LATERAL query the library now owns (fixes E5) ------------------
+    # ----- the LATERAL query the library now owns -----------------------------------
 
     async def find_generated_file(
         self, agent_uuid: str, media_id: str
@@ -733,7 +733,7 @@ class PgCheckpointAdapterBase(_PgAdapterBase, CheckpointAdapter):
 
 
 # =============================================================================
-# Factories + one-shot schema helper (storage.md §2.3 / §2.6)
+# Factories + one-shot schema helper
 # =============================================================================
 
 
@@ -745,7 +745,7 @@ def create_adapters_from_pool(
     conv_cls: type[PgConversationAdapterBase] = PgConversationAdapterBase,
     run_cls: type[PgRunAdapterBase] = PgRunAdapterBase,
 ) -> tuple[AgentConfigAdapter, ConversationAdapter, AgentRunAdapter]:
-    """One shared pool across all three adapters (fixes E4); the threaded
+    """One shared pool across all three adapters; the threaded
     principal scopes them via ``for_principal`` (no per-request rebuild)."""
 
     def _make(cls: type) -> Any:
@@ -760,7 +760,7 @@ def create_adapters_from_pool(
 async def ensure_all_schemas(pool: PgPool, *adapters: Any) -> None:
     """Create the 3 library tables (+ version stamp) in one shot, generated
     from the given adapters' registries so consumer extra columns are in the
-    DDL automatically (storage.md §2.6). Consumer product tables are NOT
+    DDL automatically. Consumer product tables are NOT
     library DDL (scope guard)."""
     slots: dict[str, ColumnRegistry] = {}
     for adapter in adapters:

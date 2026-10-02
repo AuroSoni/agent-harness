@@ -1,19 +1,20 @@
-"""The public, versioned storage codec (storage.md §2.1 — fixes E3/E10).
+"""The public, versioned storage codec.
 
-Per R22, ``AgentConfig`` is the exception in the entity-serialization story:
+``AgentConfig`` is the exception in the entity-serialization story:
 it stays **storage-codec-owned** (``serialize_config``/``deserialize_config``)
 and never grows a wire ``to_dict()`` — it is heavy and never crosses the FE
 wire as a unit. ``Conversation``/``LogEntry`` have canonical entity
-``to_dict()/from_dict()`` (core Variant S1); this codec internally calls them.
+``to_dict()/from_dict()``; this codec internally calls them.
 
-Entity-dict versioning DEFERS to core (R12): every dict embeds
+Entity-dict versioning DEFERS to core: every dict embeds
 ``{"_v": CORE_SCHEMA_VERSION}`` (the entity-wire axis) — distinct from
 ``LIBRARY_SCHEMA_VERSION`` (DDL axis, ``storage.pg.schema``) and
 ``streaming.WIRE_PROTOCOL_VERSION`` (SSE byte axis). Three axes, three owners.
 
-R23: ``PendingToolRelay.cid`` round-trips through ``AgentConfig.pending_relay``
+``PendingToolRelay.cid`` round-trips through ``AgentConfig.pending_relay``
 serialization — additive and nullable, so legacy payloads without ``cid``
-deserialize cleanly. Storage owns the round-trip; relay-await owns the meaning.
+deserialize cleanly. Storage owns the round-trip; the meaning is told in
+``mental_model/features/pause-and-resume.md``.
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ from agent_base.tools.tool_types import ToolSchema
 
 def _media_metadata_from_dict(data: dict[str, Any]) -> MediaMetadata:
     """Hydrate MediaMetadata via its own ``from_dict`` when the media
-    subsystem provides one (it owns legacy key normalization — E5);
+    subsystem provides one (it owns legacy key normalization);
     otherwise field-filtered construction."""
     from_dict = getattr(MediaMetadata, "from_dict", None)
     if callable(from_dict):
@@ -95,7 +96,7 @@ def serialize_config(config: AgentConfig) -> dict[str, Any]:
         "pending_relay": _serialize_pending_relay(config.pending_relay),
         # Run tracking
         "current_step": config.current_step,
-        # Profiles (contract §6; CM-G3e)
+        # Profiles
         "active_profile": config.active_profile,
         # Hierarchy
         "parent_agent_uuid": config.parent_agent_uuid,
@@ -111,7 +112,7 @@ def serialize_config(config: AgentConfig) -> dict[str, Any]:
         "total_runs": config.total_runs,
         # Abort/steer state
         "agent_phase": config.agent_phase,
-        # Ownership projection (tenancy §B.1 — persisted scope key)
+        # Ownership projection (persisted scope key)
         "owner_tenant": config.owner_tenant,
         "owner_subject": config.owner_subject,
         # Extension
@@ -174,7 +175,7 @@ def deserialize_config(
         pending_relay=_deserialize_pending_relay(data.get("pending_relay")),
         # Run tracking
         current_step=data.get("current_step", 0),
-        # Profiles (contract §6; CM-G3e — absent on pre-profile rows)
+        # Profiles (absent on pre-profile rows)
         active_profile=data.get("active_profile"),
         # Hierarchy
         parent_agent_uuid=data.get("parent_agent_uuid"),
@@ -205,7 +206,7 @@ def deserialize_config(
 
 def serialize_conversation(conv: Conversation) -> dict[str, Any]:
     """Serialize a Conversation (delegates to the canonical entity
-    ``to_dict()`` — R22/core S1 — which stamps ``_v``), plus the storage-only
+    ``to_dict()`` — which stamps ``_v``), plus the storage-only
     ownership projection the FE wire deliberately omits."""
     data = conv.to_dict()
     data["owner_tenant"] = conv.owner_tenant
@@ -245,7 +246,7 @@ def deserialize_log_entry(data: dict[str, Any]) -> LogEntry:
 def _serialize_pending_relay(relay: PendingToolRelay | None) -> dict[str, Any] | None:
     """Serialize a PendingToolRelay to a JSON-safe dict.
 
-    R23: ``cid`` (the pause-level reply key) round-trips additively — on a
+    ``cid`` (the pause-level reply key) round-trips additively — on a
     cold-load resume, SessionManager reads it to re-arm the parked await.
     """
     if relay is None:
@@ -266,7 +267,7 @@ def _serialize_pending_relay(relay: PendingToolRelay | None) -> dict[str, Any] |
 def _deserialize_pending_relay(data: dict[str, Any] | None) -> PendingToolRelay | None:
     """Deserialize a dict into a PendingToolRelay.
 
-    R23: ``cid`` is additive + nullable — legacy payloads without it
+    ``cid`` is additive + nullable — legacy payloads without it
     deserialize cleanly (``cid=None``).
     """
     if data is None:

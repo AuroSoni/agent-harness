@@ -1,9 +1,9 @@
-"""Red-suite specs — storage §2.0: the ``StorageHandles`` bundle.
+"""Interface specs — storage: the ``StorageHandles`` bundle.
 
 Covers:
-- interface_plan/subsystems/storage.md §2.0 (StorageHandles, storage-owned at
-  ``agent_base/storage/handles.py``; consumed by hooks as ``HookContext.storage``).
-- DESIGN_CONTRACT.md §1.2 (hook context carries config/conversation/run adapters).
+- StorageHandles, storage-owned at
+  ``agent_base/storage/handles.py``; consumed by hooks as ``HookContext.storage``.
+- The hook context carries config/conversation/run adapters.
 
 StorageHandles is a frozen dataclass with fields
 ``config, conversation, run, analytics, checkpoint, blobs`` where ``analytics``,

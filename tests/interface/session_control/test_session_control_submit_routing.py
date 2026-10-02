@@ -1,12 +1,12 @@
-"""``SessionManager.submit`` routing — one front door to the resident agent (§2.2, §2.3).
+"""``SessionManager.submit`` routing — one front door to the resident agent.
 
-Covers session-control.md §2.2 (``submit(root_session_id, command, principal=None)``
+Covers ``submit(root_session_id, command, principal=None)``, which
 resolves the resident session and routes the command to ``agent.submit``, returning
-its ``Ack`` — the abort-by-id seam resolving A9) and the §2.3 contract framing: the
+its ``Ack`` (the abort-by-id seam), and the contract framing: the
 manager classifies nothing itself; all four ``AgentInput`` planes flow through the
 agent's single entry point unchanged. The principal-checked paths live in
 ``test_session_control_principal_policy.py``; here the claimant is omitted
-(``principal`` defaults to ``None``). The agent-level §2.3 plane mechanics
+(``principal`` defaults to ``None``). The agent-level plane mechanics
 (idle-Abort → NOT_RUNNING, mailbox_full, not_root, FORCEFUL/COOPERATIVE steer,
 ``say()``/``reply()``) are pinned in
 ``test_session_control_agent_submit_planes.py`` — NOT deferred to
@@ -43,7 +43,7 @@ async def test_submit_routes_tool_reply_to_agent():
 
 
 async def test_submit_routes_abort_to_agent():
-    """A9: abort-by-id — public, routed, no reaching into a private registry."""
+    """Abort-by-id — public, routed, no reaching into a private registry."""
     factory = make_recording_factory()
     manager = SessionManager(factory)
     agent = await manager.get_or_create("sid-1")

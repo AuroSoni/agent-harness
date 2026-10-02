@@ -1,8 +1,8 @@
 """Anthropic-native LLM configuration.
 
 Moved out of ``anthropic_agent.py`` so ``provider.py`` can land it via
-``AnthropicProvider.make_llm_config`` (O12b) without importing the agent
-module (Fork P-A: the provider is a value, not part of the loop).
+``AnthropicProvider.make_llm_config`` without importing the agent
+module (the provider is a value, not part of the loop).
 """
 from __future__ import annotations
 

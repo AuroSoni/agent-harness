@@ -1,15 +1,15 @@
-"""Layer C — the versioned wire adapter (streaming-and-meta §2.5; D4 + X5).
+"""Layer C — the versioned wire adapter.
 
 ``WireCodec`` owns BOTH directions of the boundary: encode (typed → frames)
 and a paired ``StreamDecoder`` (frames → typed).  Shipping both halves from
-one module is the core X5 fix — the protocol cannot drift between ends
+one module is the core fix — the protocol cannot drift between ends
 because there is exactly one definition.
 
-Also homed here (per the doc's canonical-homes table):
+Also homed here:
 
-- ``DeltaSink`` (§2.4a, R30) — the producer-side seam providers emit into,
-- ``WireToolResult`` (§2.7) — the canonical inbound reply schema whose
-  ``to_tool_reply()`` produces the contract §1.5 ``ToolReply(cid, results)``.
+- ``DeltaSink`` — the producer-side seam providers emit into,
+- ``WireToolResult`` — the canonical inbound reply schema whose
+  ``to_tool_reply()`` produces the ``ToolReply(cid, results)``.
 """
 from __future__ import annotations
 
@@ -75,17 +75,17 @@ def _utf8_safe_split(payload_bytes: bytes, max_bytes: int) -> list[bytes]:
 class WireFrame:
     """One framed unit.  For SSE: rendered as ``data: {json}\\n\\n``.
 
-    §O11d: the ``event:`` line field is DELETED — v1 SSE carries only
+    The ``event:`` line field is DELETED — v1 SSE carries only
     ``data:`` frames.
     """
 
     data: str  # compact JSON of a StreamItem.to_wire() (or "[DONE]")
 
 
-#: The ONE defined terminal frame (D4), owned by ``sse_response`` (O11c).
+#: The ONE defined terminal frame, owned by ``sse_response``.
 TERMINAL = WireFrame(data="[DONE]")
 
-#: The ONE defined keepalive frame (SSE-1), owned by ``sse_response``.  Emitted
+#: The ONE defined keepalive frame, owned by ``sse_response``.  Emitted
 #: while the item iterator is idle so app-level client watchdogs see a data
 #: frame (an SSE ``:`` comment would not fire ``onmessage``); carries no
 #: ``StreamItem`` and the paired decoder drops it.
@@ -108,7 +108,7 @@ class WireCodec(ABC):
         ...
 
     def encode_keepalive(self) -> WireFrame:
-        """The keepalive frame (SSE-1).  Concrete by design: every codec
+        """The keepalive frame.  Concrete by design: every codec
         inherits the one ``KEEPALIVE`` so the ping stays codec-rendered
         (``render`` remains the single place the transport string lives)."""
         return KEEPALIVE
@@ -120,7 +120,7 @@ class WireCodec(ABC):
 
     @abstractmethod
     def decoder(self) -> StreamDecoder:
-        """The paired decoder type for THIS codec version (D1/D2)."""
+        """The paired decoder type for THIS codec version."""
         ...
 
 
@@ -139,7 +139,7 @@ class SseCodec(WireCodec):
         return TERMINAL
 
     def render(self, frame: WireFrame) -> str:
-        return f"data: {frame.data}\n\n"  # the ONE place this string lives (D4)
+        return f"data: {frame.data}\n\n"  # the ONE place this string lives
 
     def decoder(self) -> SseStreamDecoder:
         return SseStreamDecoder()
@@ -164,7 +164,7 @@ class SseCodec(WireCodec):
             yield WireFrame(data=_dumps(wire))
             return
         # Multi-frame: payload JSON chunks ride as `delta` strings; the
-        # paired decoder reassembles ONE envelope (absorbs the D2 smell).
+        # paired decoder reassembles ONE envelope.
         yield from self._chunk_frames(base, payload=payload_json, final_on_last=True)
 
     def _max_payload_bytes(self, base: dict[str, Any]) -> int:
@@ -208,7 +208,7 @@ def get_codec(name: str = "sse", **kwargs: Any) -> WireCodec:
 
 
 # ---------------------------------------------------------------------------
-# DeltaSink — the producer-side seam (§2.4a, R30)
+# DeltaSink — the producer-side seam
 # ---------------------------------------------------------------------------
 
 
@@ -217,8 +217,8 @@ class DeltaSink(Protocol):
 
     The provider/runtime emits into this; the runtime forwards onto every
     ``agent.stream()`` reader, stamping ``parent_agent_uuid``/``seq`` on
-    every StreamDelta (R6) and wrapping a MetaBody into a MetaEnvelope with
-    the stamped §3 header.  Providers NEVER construct a MetaEnvelope.
+    every StreamDelta and wrapping a MetaBody into a MetaEnvelope with
+    the stamped header.  Providers NEVER construct a MetaEnvelope.
     """
 
     def emit(self, delta: StreamDelta) -> None:
@@ -226,12 +226,12 @@ class DeltaSink(Protocol):
         ...
 
     def emit_meta(self, body: MetaBody) -> None:
-        """Control event; the runtime stamps the §3 header."""
+        """Control event; the runtime stamps the header."""
         ...
 
 
 # ---------------------------------------------------------------------------
-# WireToolResult — the canonical inbound reply schema (§2.7; D5 + C1-meta)
+# WireToolResult — the canonical inbound reply schema
 # ---------------------------------------------------------------------------
 
 
@@ -252,7 +252,7 @@ def _attachment_to_api(attachment: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class WireToolResult:
-    """One inbound frontend tool result, keyed by the pause-level cid (§B7).
+    """One inbound frontend tool result, keyed by the pause-level cid.
 
     ``cid`` == the AwaitInput envelope's ``correlation_id`` — NOT a per-call
     ``tool_use_id``.  Per-call results are attributed by ``tool_use_id``
@@ -267,7 +267,7 @@ class WireToolResult:
     # attachment dict shape: {kind, media_type, source_type, data, filename}
 
     def to_tool_reply(self) -> ToolReply:
-        """→ the contract §1.5 reply primitive, correlated by cid."""
+        """→ the reply primitive, correlated by cid."""
         blocks: list[ContentBlock] = [
             ContentBlock.from_api_dict(_attachment_to_api(a)) for a in self.attachments
         ]

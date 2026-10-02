@@ -1,15 +1,15 @@
-"""Matcher semantics + outcome composition — agent-loop-hooks.md §2.4 / §2.1.
+"""Matcher semantics + outcome composition.
 
 Covers:
-- §2.4 ``HookMatcher.matcher`` semantics per event family:
+- ``HookMatcher.matcher`` semantics per event family:
   tool events → ``tool_name`` (glob + exact, on ALL THREE tool hooks —
   ``before_tool`` / ``after_tool`` / ``on_tool_error``), subagent events →
   ``agent_type``, ``on_session_start`` → ``source``, ``on_session_end`` →
-  ``reason`` (contract §2 row + doc §2.3 catalog annotation), compaction →
-  ``trigger`` (incl. ``"overflow"``, I10), turn AND abort events → matcher
-  ignored, ``on_profile_changed`` → new-profile name (§2.3a), and
+  ``reason``, compaction →
+  ``trigger`` (incl. ``"overflow"``), turn AND abort events → matcher
+  ignored, ``on_profile_changed`` → new-profile name, and
   ``matcher=None`` / ``"*"`` match everything.
-- §2.1 the LOCKED composition rule, folded by the one engine:
+- The LOCKED composition rule, folded by the one engine:
   decision most-restrictive-wins (any block blocks — an explicit later
   ``proceed`` never resets it; first block's reason surfaces),
   ``update`` chains in registration order (h2's ctx reflects h1's update;
@@ -18,7 +18,7 @@ Covers:
 - ``None`` hook return = proceed unchanged (never resets earlier outcomes).
 
 Behavior is exercised through ``agent._run_hook(event, ctx)`` — the seam this
-subsystem owns (doc §7 item 6).
+subsystem owns.
 """
 
 from agent_base.core.hooks.context import (
@@ -209,8 +209,8 @@ async def test_matcher_star_matches_everything():
 
 
 async def test_after_tool_matcher_matches_tool_name_glob_and_exact():
-    # §2.4: ALL tool events match on tool_name — name_key extraction must work
-    # on ToolResultContext too (doc §3.3's load-bearing example registers
+    # ALL tool events match on tool_name — name_key extraction must work
+    # on ToolResultContext too (the load-bearing example registers
     # after_tool with matcher="excel_screenshot"), not only ToolCallContext.
     log = []
     agent = make_agent(
@@ -227,7 +227,7 @@ async def test_after_tool_matcher_matches_tool_name_glob_and_exact():
 
 
 async def test_on_tool_error_matcher_matches_tool_name_glob_and_exact():
-    # §2.4: name_key extraction must also work on ToolErrorContext.
+    # name_key extraction must also work on ToolErrorContext.
     log = []
     agent = make_agent(
         {
@@ -268,11 +268,9 @@ async def test_session_matcher_matches_source():
 
 
 async def test_session_end_matcher_matches_reason():
-    # Contract §2 row ("on_session_end | SessionContext(reason) | reason") and
-    # doc §2.3's catalog annotation ("matcher: source ∈ {create, resume} /
-    # reason") give on_session_end the matcher key `reason`. (§2.4's HookMatcher
-    # docstring summarizes session events as `source` only — the per-hook
-    # catalog annotation wins; this test pins the `reason` reading.)
+    # The hook catalog gives on_session_end the matcher key `reason`. (The
+    # HookMatcher docstring summarizes session events as `source` only — the
+    # per-hook catalog annotation wins; this test pins the `reason` reading.)
     log = []
     agent = make_agent(
         {
@@ -303,7 +301,7 @@ async def test_compaction_matcher_matches_trigger_including_overflow():
 
 
 async def test_turn_events_ignore_the_matcher():
-    # §2.4: turn / abort have no matcher key — the matcher field is ignored.
+    # Turn / abort have no matcher key — the matcher field is ignored.
     log = []
     agent = make_agent(
         {"on_turn_start": [HookMatcher(matcher="totally-ignored", hooks=[recording_hook(log, "hit")])]}
@@ -313,7 +311,7 @@ async def test_turn_events_ignore_the_matcher():
 
 
 async def test_abort_events_ignore_the_matcher():
-    # §2.4: "turn / abort → no matcher" — a bogus matcher on on_abort is
+    # "turn / abort → no matcher" — a bogus matcher on on_abort is
     # ignored, mirroring test_turn_events_ignore_the_matcher.
     log = []
     agent = make_agent(
@@ -333,7 +331,7 @@ async def test_profile_changed_matcher_matches_new_profile_name():
     assert log == ["hit"]
 
 
-# ── composition / fold rules (§2.1, LOCKED) ──────────────────────────────────
+# ── composition / fold rules (LOCKED) ──────────────────────────────────
 
 
 async def test_fold_decision_most_restrictive_wins():
@@ -375,7 +373,7 @@ async def test_fold_first_blocks_reason_surfaces():
 
 
 async def test_fold_explicit_proceed_after_block_does_not_reset_the_block():
-    # §2.1 LOCKED: "any block blocks". A naive latest-outcome-wins fold passes
+    # LOCKED: "any block blocks". A naive latest-outcome-wins fold passes
     # the other decision tests — this is the distinguishing case: an EXPLICIT
     # HookOutcome(decision="proceed") AFTER a block must not reset it.
     agent = make_agent(
@@ -455,7 +453,7 @@ async def test_fold_update_chains_later_update_wins():
 
 
 async def test_fold_update_chains_h2_sees_h1s_rewritten_tool_call():
-    # §2.1: "update chains in registration order (h2 sees h1's update as its
+    # "update chains in registration order (h2 sees h1's update as its
     # input)" — for TOOL events, h2's ctx must reflect h1's rewritten ToolCall,
     # not just the final folded outcome.update.
     rewritten = _Obj(

@@ -1,23 +1,23 @@
-"""Red-suite specs for ``LocalPythonExecutor`` — one-call construction,
+"""Interface specs for ``LocalPythonExecutor`` — one-call construction,
 bind seam, no-raise run contract, reset, ctx read-only.
 
-Covers python-executors.md:
-  - §2.4 ``LocalPythonExecutor.__init__(policy=None, *, tools=None)`` — one-call
+Covers:
+  - ``LocalPythonExecutor.__init__(policy=None, *, tools=None)`` — one-call
     construction; default policy; install-check on effective imports; builtins
     merged once.
-  - §2.3/§2.4 ``bind_tools(tools, *, replace=False)`` COMPOSES by default
-    (O14(c)); ``replace=True`` drops the prior set first.
+  - ``bind_tools(tools, *, replace=False)`` COMPOSES by default;
+    ``replace=True`` drops the prior set first.
   - ``bind_variables(variables)``; ``reset()`` clears per-session state.
-  - §2.3/§2.4/§6 ``run(code, *, ctx=None)`` NO-RAISE structured-error contract
-    (O14/G0): returns ``ExecutorResult`` with ``error`` set on
+  - ``run(code, *, ctx=None)`` NO-RAISE structured-error contract:
+    returns ``ExecutorResult`` with ``error`` set on
     ``InterpreterError`` instead of raising; ``truncated`` reflects the print
     buffer reaching ``max_output_chars``.
-  - §2.3 ``arun`` default mixin: ``await asyncio.to_thread(run, ...)`` — same
+  - ``arun`` default mixin: ``await asyncio.to_thread(run, ...)`` — same
     no-raise contract.
-  - §5 / R3: ``ctx`` is OPTIONAL and READ-ONLY (executor never calls
+  - ``ctx`` is OPTIONAL and READ-ONLY (executor never calls
     ``ctx.emit``); local executor ignores it; runs with ``ctx=None``.
-  - §2.4 install-check raises ``InterpreterError`` for a non-installed module.
-  - §6 deletions (G0): legacy kwargs, ``send_tools``/``send_variables``,
+  - Install-check raises ``InterpreterError`` for a non-installed module.
+  - Deletions: legacy kwargs, ``send_tools``/``send_variables``,
     ``__call__`` re-raise shim, ``_coalesce_policy`` are all GONE.
 
 The implementation does not exist yet; ImportError/AttributeError at runtime is
@@ -47,16 +47,16 @@ class _FakePrincipal:
 @dataclasses.dataclass
 class _FakeCtx:
     """Read-only collaborator carrying the two fields the executor may read
-    (R3: identity + idempotency only; the executor never calls ``emit``)."""
+    (identity + idempotency only; the executor never calls ``emit``)."""
 
     idempotency_key: str = "idem_test"
     principal: _FakePrincipal | None = None
 
     def emit(self, *a, **k):  # pragma: no cover - presence is a tripwire
-        raise AssertionError("executor must never call ctx.emit (R3)")
+        raise AssertionError("executor must never call ctx.emit")
 
 
-# --- construction (§2.4) ---------------------------------------------------
+# --- construction ----------------------------------------------------------
 
 
 def test_construct_with_no_policy_uses_default_policy():
@@ -92,7 +92,7 @@ def test_construct_state_seeded_with_main_module():
 
 def test_install_check_raises_for_missing_module():
     # numpy is not installed in this environment; the effective-imports install
-    # check must raise InterpreterError at construction (§2.4).
+    # check must raise InterpreterError at construction.
     try:
         LocalPythonExecutor(policy=ExecutorPolicy(authorized_imports=("numpy",)))
     except InterpreterError:
@@ -106,7 +106,7 @@ def test_install_check_skips_wildcard():
     assert ex.policy.allow_all_imports is True
 
 
-# --- bind_tools compose / replace (O14(c)) ---------------------------------
+# --- bind_tools compose / replace ------------------------------------------
 
 
 def test_bind_tools_composes_by_default():
@@ -151,7 +151,7 @@ def test_bind_tools_second_compose_call_accumulates():
 
 
 def test_bound_tool_is_callable_from_executed_code():
-    # §2.3 PRIMARY contract: "Make agent tools callable from executed code."
+    # PRIMARY contract: "Make agent tools callable from executed code."
     # Membership in static_tools is necessary but not sufficient — exercise the
     # static_tools -> evaluate_python_code wiring end-to-end: calling the bound
     # name inside run() must resolve to the bound callable and return its value.
@@ -217,7 +217,7 @@ def test_run_truncated_flag_when_buffer_hits_cap():
     assert result.truncated is True
 
 
-# --- run() NO-RAISE structured-error contract (O14/G0) ---------------------
+# --- run() NO-RAISE structured-error contract ------------------------------
 
 
 def test_run_does_not_raise_on_interpreter_error():
@@ -245,7 +245,7 @@ def test_run_syntax_error_is_returned_not_raised():
     assert isinstance(result.error, InterpreterError)
 
 
-# --- ctx is OPTIONAL + READ-ONLY (R3 / §5) ---------------------------------
+# --- ctx is OPTIONAL + READ-ONLY -------------------------------------------
 
 
 def test_run_works_with_ctx_none():
@@ -262,7 +262,7 @@ def test_run_accepts_ctx_without_emitting():
     assert result.output == 8
 
 
-# --- arun() shares the contract (§2.3 mixin) -------------------------------
+# --- arun() shares the contract (mixin) ------------------------------------
 
 
 async def test_arun_returns_executor_result():
@@ -298,7 +298,7 @@ def test_reset_clears_session_variables():
 
 
 def test_reset_preserves_bound_tools_and_builtins():
-    # §2.3: reset() clears ONLY per-session state (variables, print buffer, op
+    # reset() clears ONLY per-session state (variables, print buffer, op
     # counters) — it must KEEP the executor usable: bound tools and base builtins
     # survive. A buggy reset that wiped static_tools would still pass the
     # variables-cleared test (an undefined name errors either way), so assert the
@@ -318,7 +318,7 @@ def test_reset_preserves_bound_tools_and_builtins():
 
 
 def test_reset_clears_print_buffer():
-    # §2.3: reset() clears the captured print buffer, not just variables. Run code
+    # reset() clears the captured print buffer, not just variables. Run code
     # producing a distinctive print, reset, then a no-print run: the prior log must
     # NOT carry over into the new run's logs.
     ex = LocalPythonExecutor()
@@ -332,9 +332,9 @@ _OP_LOOP = "total = 0\nfor i in range(100):\n    total += i"  # ~205 evaluator o
 
 
 def test_run_errors_when_op_budget_too_small_for_loop():
-    # §2.4/U2: max_operations is a PER-EXECUTOR budget threaded into the
+    # max_operations is a PER-EXECUTOR budget threaded into the
     # evaluator (not a module global). A loop costing ~205 ops under a budget of
-    # 200 must exhaust it -> error set on the result (no-raise contract, O14).
+    # 200 must exhaust it -> error set on the result (no-raise contract).
     ex = LocalPythonExecutor(policy=ExecutorPolicy(max_operations=200))
     result = ex.run(_OP_LOOP)
     assert result.error is not None
@@ -351,7 +351,7 @@ def test_run_succeeds_when_op_budget_exceeds_loop_cost():
 
 
 def test_reset_keeps_op_budget_run_succeeding():
-    # §2.3: reset() clears the op counters (per-session state). The op counter is
+    # reset() clears the op counters (per-session state). The op counter is
     # already per-run by design (the evaluator re-zeroes it at the start of every
     # run), so reset() is asserted here only to be a no-op for the *budget*: a run
     # that fits the budget still succeeds after a reset.
@@ -362,7 +362,7 @@ def test_reset_keeps_op_budget_run_succeeding():
     assert second.error is None
 
 
-# --- deletions (§6 / G0): legacy surface must NOT exist --------------------
+# --- deletions: legacy surface must NOT exist ------------------------------
 
 
 def test_send_tools_alias_deleted():
@@ -374,7 +374,7 @@ def test_send_variables_alias_deleted():
 
 
 def test_call_reraise_shim_deleted():
-    # The __call__ = run re-raise shim is deleted (O14/G0); the executor is not
+    # The __call__ = run re-raise shim is deleted; the executor is not
     # callable as executor(code).
     ex = LocalPythonExecutor()
     assert not callable_as_function(ex)
@@ -391,7 +391,7 @@ def test_coalesce_policy_helper_deleted():
 
 def test_legacy_positional_import_kwarg_rejected():
     # `additional_authorized_imports` was the old first positional/kw arg; it is
-    # deleted (G0). Passing it must raise TypeError (unexpected kwarg).
+    # deleted. Passing it must raise TypeError (unexpected kwarg).
     try:
         LocalPythonExecutor(additional_authorized_imports=["json"])  # type: ignore[call-arg]
     except TypeError:

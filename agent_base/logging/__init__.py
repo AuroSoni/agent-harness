@@ -86,7 +86,7 @@ __all__ = [
     # Correlation binding (scope-safe; replaces leaky clear-in-finally)
     "correlation_scope",
     "principal_fields",
-    # Re-exported core.identity correlation constants (O5: no LogField wrapper)
+    # Re-exported core.identity correlation constants (no LogField wrapper)
     "RUN_ID",
     "AGENT_ID",
     "PARENT_AGENT_ID",

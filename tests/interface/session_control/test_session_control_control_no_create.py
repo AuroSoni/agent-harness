@@ -1,17 +1,17 @@
-"""Control commands never CREATE a session (NV-3).
+"""Control commands never CREATE a session.
 
-Covers session-control.md §2.2 (submit) — an ``Abort``/``Steer`` addressed to a
-NON-resident session must not ride ``get_or_create`` into the GF-P6G1
+Covers ``submit`` — an ``Abort``/``Steer`` addressed to a
+NON-resident session must not ride ``get_or_create`` into the
 create-branch (which materializes a fresh persisted session as a side effect of
 a control probe). The target is probed with a throwaway, never-initialized
 build:
 
 - no persisted state → ``Ack(NOT_FOUND)`` (404; unknown and not-yours stay
-  indistinguishable — R9 layer a),
+  indistinguishable),
 - persisted Abort target → ``Ack(NOT_RUNNING)`` (409) WITHOUT resuming
   residency (Rung 1: a non-resident session has nothing in flight),
 - persisted Steer target → the normal resume path proceeds (steer queues for
-  the next turn — the new-contract "no more 409" row).
+  the next turn — "no more 409").
 
 Surfaced by api_test.ipynb's "Abort a non-existent agent" cell: live behavior
 was 409 + a junk ``agent_config`` row for ``nonexistent-uuid``.
@@ -62,8 +62,8 @@ async def test_abort_persisted_idle_session_is_not_running_without_residency():
 
 
 async def test_steer_persisted_session_resumes_and_queues():
-    # Steer-to-idle queues for the next turn (the contract's "no more 409"
-    # row) — a persisted target legitimately resumes through get_or_create.
+    # Steer-to-idle queues for the next turn ("no more 409")
+    # — a persisted target legitimately resumes through get_or_create.
     factory = make_recording_factory(persisted=True)
     manager = SessionManager(factory)
     command = Steer(instruction="new direction")
@@ -75,8 +75,8 @@ async def test_steer_persisted_session_resumes_and_queues():
 
 
 async def test_abort_resident_session_routes_to_agent_unchanged():
-    # The NV-3 probe applies ONLY to non-resident targets — a resident abort
-    # still routes straight to agent.submit (the A9 abort-by-id seam).
+    # The probe applies ONLY to non-resident targets — a resident abort
+    # still routes straight to agent.submit (the abort-by-id seam).
     factory = make_recording_factory()
     manager = SessionManager(factory)
     agent = await manager.get_or_create("sid-1")

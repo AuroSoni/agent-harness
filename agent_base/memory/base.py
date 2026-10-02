@@ -5,13 +5,13 @@ boundaries only: ``retrieve()`` at the start of a run to inject relevant prior
 knowledge, and ``update()`` at the end to extract and persist new learnings for
 future runs. Memory is independent of context compaction.
 
-This module is the canonical home (O13) for:
+This module is the canonical home for:
 
   - ``MemoryContribution`` — what ``retrieve()`` returns (recall blocks + placement).
   - ``MemoryUpdate`` — the typed, serializable outcome of ``update()``.
-  - ``MemoryStore`` — the ``@runtime_checkable`` Protocol (the ABC is DELETED, O5/O13).
+  - ``MemoryStore`` — the ``@runtime_checkable`` Protocol (the ABC is DELETED).
 
-The store methods take the locked ``HookContext`` directly (O13): the bespoke
+The store methods take the locked ``HookContext`` directly: the bespoke
 ``MemoryRetrieveContext`` / ``MemoryUpdateContext`` types are deleted. A store reads
 ``ctx.principal`` for tenant scoping and ``ctx.emit(...)`` for correlated control
 events; everything else on the hook context is ignored.
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Contributed recall shape (NEW — O13; homed here per AMENDMENTS canonical-homes)
+# Contributed recall shape (NEW — homed here)
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -46,14 +46,14 @@ class MemoryContribution:
 
 
 # ---------------------------------------------------------------------------
-# Typed update outcome (NEW — replaces dict[str, Any]; O13)
+# Typed update outcome (NEW — replaces dict[str, Any])
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class MemoryUpdate:
     """Typed, serializable result of a memory write.
 
-    Replaces the free ``dict[str, Any]``. O13 slims this to ``store_type`` plus a
+    Replaces the free ``dict[str, Any]``. Slimmed to ``store_type`` plus a
     free ``details`` mapping; the typed counters (``memories_created`` /
     ``memories_updated`` / ``memories_evicted``) are dropped — a store puts whatever
     counters it cares about into ``details``.
@@ -63,12 +63,12 @@ class MemoryUpdate:
     details: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        """Canonical serialization (§6): exactly ``{store_type, details}``."""
+        """Canonical serialization: exactly ``{store_type, details}``."""
         return {"store_type": self.store_type, "details": dict(self.details)}
 
 
 # ---------------------------------------------------------------------------
-# The store contract (Protocol ONLY — O5/O13; the BaseMemoryStore ABC is deleted)
+# The store contract (Protocol ONLY; the BaseMemoryStore ABC is deleted)
 # ---------------------------------------------------------------------------
 
 @runtime_checkable
@@ -80,7 +80,7 @@ class MemoryStore(Protocol):
     ``SessionPrincipal`` (read off ``ctx.principal``) so multi-tenant stores isolate
     by org/member for free.
 
-    FAILURE CONTRACT (O13):
+    FAILURE CONTRACT:
       - retrieve(): best-effort. The runtime SWALLOWS+LOGS any exception and
         proceeds with no contribution — a recall miss never fails a turn —
         UNLESS the store was registered ``strict=True``, which flips a recall

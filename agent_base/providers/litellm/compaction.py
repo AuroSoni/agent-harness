@@ -61,7 +61,7 @@ class CompactionController:
         provider: "LiteLLMProvider",
         token_estimator: "LiteLLMTokenEstimator",
     ) -> None:
-        # O12(c): no max_retries/base_delay -- the provider reads its own
+        # No max_retries/base_delay -- the provider reads its own
         # self.retry_policy when it does the backoff.
         self.config = config
         self.provider = provider

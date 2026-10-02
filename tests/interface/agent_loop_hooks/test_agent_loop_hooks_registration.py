@@ -1,19 +1,19 @@
-"""Registration — ONE composition engine — agent-loop-hooks.md §2.4 (O8).
+"""Registration — ONE composition engine.
 
 Covers:
-- §2.4 ``HookMatcher`` shape: defaults (``matcher=None``, fresh ``hooks`` list),
+- ``HookMatcher`` shape: defaults (``matcher=None``, fresh ``hooks`` list),
   explicit construction, ``HookRegistry`` as the ctor ``hooks=`` payload.
-- O8: method-style hooks AUTO-REGISTER via ``__init_subclass__`` into the same
+- Method-style hooks AUTO-REGISTER via ``__init_subclass__`` into the same
   matcher registry (implicit ``HookMatcher(matcher=None, hooks=[bound_method])``);
   no second resolution path.
-- §2.4 / contract §2.2(3): per-instance ``agent.hooks.add(...)`` AND direct
+- Per-instance ``agent.hooks.add(...)`` AND direct
   attribute assignment (``agent.before_tool = fn``) both APPEND (single-slot
   trap fixed); explicit replacement is ``agent.hooks.replace(event, ...)``.
-- §2.4 deterministic chain order: subclass-declared → constructor registry →
+- Deterministic chain order: subclass-declared → constructor registry →
   per-instance appended.
 
 The chains are observed behaviorally through ``agent._run_hook(event, ctx)`` —
-the documented seam this subsystem owns (doc §7 item 6: session-control invokes
+the documented seam this subsystem owns (session-control invokes
 ``agent._run_hook("on_session_start", ctx)``).
 """
 
@@ -133,7 +133,7 @@ def test_hook_registry_is_the_ctor_payload():
     assert agent is not None
 
 
-# ── method-style auto-registration (O8) ──────────────────────────────────────
+# ── method-style auto-registration ──────────────────────────────────────
 
 
 async def test_method_style_hook_auto_registers_into_the_registry():
@@ -204,11 +204,11 @@ async def test_per_instance_add_appends_to_the_chain():
 
 
 async def test_per_instance_attribute_assignment_appends_to_the_chain():
-    # Contract §2.2(3): "Per-instance assignment (agent.hooks.add(...) /
+    # "Per-instance assignment (agent.hooks.add(...) /
     # ASSIGNING A HOOK) APPENDS" — direct attribute assignment is a
-    # registration path with append semantics (the doc's "old
+    # registration path with append semantics (the "old
     # agent.before_tool = fn single-slot trap is gone" means the single-slot
-    # REPLACEMENT semantics are gone, not the path). O8 does not contradict.
+    # REPLACEMENT semantics are gone, not the path).
     order = []
 
     async def ctor_hook(ctx):

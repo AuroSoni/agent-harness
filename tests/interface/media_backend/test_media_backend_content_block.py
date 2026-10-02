@@ -1,12 +1,12 @@
-"""Red-suite specs for media-backend §2.1 — MediaBackend content-block projection.
+"""Interface specs for media-backend — MediaBackend content-block projection.
 
-Covers media-backend.md §2.1: the two concrete-default methods added to the
+Covers the two concrete-default methods added to the
 `MediaBackend` ABC:
   - `MediaBackend.to_content_block(media_id, agent_uuid, *, budget, crop_bbox)`
-    (I13(b): caps-WHILE-reading for projectable types; reference-only for
+    (caps-WHILE-reading for projectable types; reference-only for
     non-projectable types, never reading the bytes).
   - `MediaBackend.content_block_from_bytes(raw, mime_type, *, ...)` — a
-    @staticmethod, pure (no I/O); I13(c): inline-under-threshold only, raises a
+    @staticmethod, pure (no I/O); inline-under-threshold only, raises a
     typed error for over-threshold non-image payloads, directing callers to
     `to_content_block`.
 
@@ -121,11 +121,11 @@ def _meta(media_id: str, mime: str, raw: bytes, *, filename: str, url: str | Non
     )
 
 
-# ─── to_content_block — concrete default on the ABC (§2.1) ─────────────────
+# ─── to_content_block — concrete default on the ABC ─────────────────
 
 
 def test_to_content_block_is_concrete_not_abstract() -> None:
-    """The doc requires concrete defaults so backends inherit them unchanged."""
+    """Concrete defaults are required so backends inherit them unchanged."""
     assert "to_content_block" not in MediaBackend.__abstractmethods__
 
 
@@ -151,7 +151,7 @@ async def test_to_content_block_pdf_returns_document_content_base64() -> None:
 
 
 async def test_to_content_block_other_returns_attachment_reference() -> None:
-    """I13(b): non-projectable types return a reference, never reading bytes."""
+    """Non-projectable types return a reference, never reading bytes."""
     backend = FakeMediaBackend()
     raw = b"\x00\x01\x02zipdata"
     meta = _meta("m3", "application/zip", raw, filename="bundle.zip", url="https://cdn/x.zip")
@@ -164,7 +164,7 @@ async def test_to_content_block_other_returns_attachment_reference() -> None:
 
 
 async def test_to_content_block_non_projectable_does_not_read_bytes() -> None:
-    """I13(b): the AttachmentContent branch never calls retrieve() (no bytes in memory)."""
+    """The AttachmentContent branch never calls retrieve() (no bytes in memory)."""
     backend = FakeMediaBackend()
     raw = b"huge-binary-payload"
     backend.add("m4", raw, _meta("m4", "application/octet-stream", raw, filename="blob.bin"))
@@ -192,7 +192,7 @@ async def test_to_content_block_missing_media_raises_file_not_found() -> None:
     assert raised
 
 
-# ─── content_block_from_bytes — pure @staticmethod (§2.1, I13(c)) ─────────
+# ─── content_block_from_bytes — pure @staticmethod ─────────
 
 
 def test_content_block_from_bytes_is_staticmethod() -> None:
@@ -210,13 +210,13 @@ def test_content_block_from_bytes_image_under_threshold_inlines() -> None:
 
 
 def test_content_block_from_bytes_applies_budget_to_oversized_image() -> None:
-    """I13(c)/§2.1: the static method APPLIES the budget itself (not just delegates
+    """The static method APPLIES the budget itself (not just delegates
     type selection). An oversized image fed with a small max_dimension must come back
     inlined with its base64 downscaled — proving fit_image_to_budget runs inside.
 
     Without budget application a 4000x4000 image would not survive an inline threshold;
-    the doc's image path is 'fit_image_to_budget usually brings the payload under the
-    threshold', so this also exercises the image-survives-downscale-under-threshold case.
+    in the image path fit_image_to_budget usually brings the payload under the
+    threshold, so this also exercises the image-survives-downscale-under-threshold case.
     """
     raw = _png_bytes(4000, 4000)
     block = MediaBackend.content_block_from_bytes(
@@ -229,7 +229,7 @@ def test_content_block_from_bytes_applies_budget_to_oversized_image() -> None:
 
 
 def test_content_block_from_bytes_passes_crop_bbox_through() -> None:
-    """§2.1: the doc signature includes crop_bbox=; it must flow into the projection.
+    """The signature includes crop_bbox=; it must flow into the projection.
 
     A 200x200 image cropped to [10, 10, 110, 110] (a 100x100 region) must yield an
     inlined image whose decoded dimensions are the cropped 100x100, proving crop_bbox
@@ -254,7 +254,7 @@ def test_content_block_from_bytes_small_pdf_under_threshold_inlines() -> None:
 
 
 def test_content_block_from_bytes_over_threshold_non_image_raises() -> None:
-    """I13(c): an over-threshold non-image payload cannot be inlined — typed error
+    """An over-threshold non-image payload cannot be inlined — typed error
     directing the caller to store-then-`to_content_block`."""
     raw = b"x" * 64
     raised = False
@@ -276,7 +276,7 @@ def test_content_block_from_bytes_inline_threshold_default_constant() -> None:
 
 
 def test_content_block_from_bytes_takes_no_media_id_or_self() -> None:
-    """It is the X14 codec — usable WITHOUT a stored media_id (pure bytes+mime)."""
+    """It is the codec — usable WITHOUT a stored media_id (pure bytes+mime)."""
     sig = inspect.signature(MediaBackend.content_block_from_bytes)
     params = list(sig.parameters)
     assert "self" not in params

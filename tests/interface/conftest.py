@@ -1,4 +1,4 @@
-"""Conftest for the interface red suite.
+"""Conftest for the interface suite.
 
 Deliberately import-free: every module under tests/interface imports the
 not-yet-implemented ``agent_base`` interfaces at module level, and collection

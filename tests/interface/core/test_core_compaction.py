@@ -1,17 +1,17 @@
-"""Red-suite spec: the provider-agnostic compaction interface + hook context.
+"""Interface spec: the provider-agnostic compaction interface + hook context.
 
-Covers interface_plan/subsystems/core.md:
-  - §2.3 — ``agent_base/core/compaction_types.py``: ``CompactionConfig``
+Covers:
+  - ``agent_base/core/compaction_types.py``: ``CompactionConfig``
     (declarative, Serializable convention), ``CompactionStats`` (typed result,
     replaces the ``last_compaction_meta`` dict), and the ``Compactor``
     protocol; ``agent_base/hooks/compaction.py``: ``CompactionContext``.
-  - I10 — ``trigger`` vocabulary gains ``"overflow"`` on config/stats/context.
-  - Fork L (V1) — veto semantics are enforced by the runtime (loop subsystem);
+  - ``trigger`` vocabulary gains ``"overflow"`` on config/stats/context.
+  - Veto semantics are enforced by the runtime (loop subsystem);
     here we spec only the typed seam the loop consumes (trigger + stats on
     the context, dataclasses.replace for the after_compact view).
 
 ``HookContext`` (agent_loop_hooks subsystem) is a collaborator: we construct
-its R4 canonical field set with in-file fakes, never deep-test it.
+its canonical field set with in-file fakes, never deep-test it.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from agent_base.core.config import AgentConfig
 from agent_base.core.hooks.context import CompactionContext, HookContext
 from agent_base.core.serializable import CORE_SCHEMA_VERSION, SCHEMA_VERSION_KEY
 
-# ── collaborator fakes (R4 canonical HookContext field set) ─────────────────
+# ── collaborator fakes (canonical HookContext field set) ─────────────────
 
 
 class _FakeStorageHandles:
@@ -114,7 +114,7 @@ def test_compaction_config_round_trips():
 
 
 def test_compaction_config_from_dict_missing_keys_take_defaults():
-    # §2.1 Serializable convention: "missing keys take defaults".
+    # Serializable convention: "missing keys take defaults".
     cfg = CompactionConfig.from_dict({})
     assert cfg.threshold_tokens == 160_000
     assert cfg.preserve_recent_tokens == 40_000
@@ -158,7 +158,7 @@ def test_compaction_stats_is_frozen():
 
 
 def test_compaction_stats_accepts_every_trigger_value():
-    # I10: "overflow" joined the vocabulary.
+    # "overflow" joined the vocabulary.
     for trigger in ("auto", "manual", "overflow"):
         assert _stats(trigger).trigger == trigger
 
@@ -180,9 +180,9 @@ def test_compactor_protocol_cannot_be_instantiated():
 
 
 def test_compactor_compact_signature_is_async_keyword_only_with_auto_default():
-    # §2.3 pins the concrete seam: async compact(context_messages, *, model,
+    # The concrete seam: async compact(context_messages, *, model,
     # ctx, trigger="auto") -> (messages, CompactionStats). The keyword-only
-    # params and the trigger default are the I10 surface the loop drives.
+    # params and the trigger default are the surface the loop drives.
     assert inspect.iscoroutinefunction(Compactor.compact)
     params = inspect.signature(Compactor.compact).parameters
     assert list(params) == ["self", "context_messages", "model", "ctx", "trigger"]
@@ -194,7 +194,7 @@ def test_compactor_compact_signature_is_async_keyword_only_with_auto_default():
 
 
 def test_compactor_should_compact_signature_is_sync_two_positional():
-    # §2.3: should_compact(context_messages, estimated_tokens) -> bool — a
+    # should_compact(context_messages, estimated_tokens) -> bool — a
     # plain sync predicate, no keyword-only ceremony.
     assert not inspect.iscoroutinefunction(Compactor.should_compact)
     params = inspect.signature(Compactor.should_compact).parameters
@@ -212,14 +212,14 @@ def test_compaction_context_subclasses_hook_context():
 
 def test_compaction_context_before_compact_defaults():
     # before_compact view: trigger set, stats=None.
-    # estimated_tokens defaults to None per agent-loop-hooks.md §2.2 — the doc
-    # that OWNS the HookContext hierarchy (R4: superset is canonical) — and its
-    # suite pins `is None`; core.md §2.3's `int = 0` was the stale draft line.
+    # estimated_tokens defaults to None — the agent_loop_hooks subsystem
+    # OWNS the HookContext hierarchy (superset is canonical) and its suite
+    # pins `is None`.
     ctx = CompactionContext(**_base_hook_kwargs())
     assert ctx.trigger == "auto"
     assert ctx.estimated_tokens is None
     assert ctx.stats is None
-    # Inherited identity threading (contract §1.2): stamped, not hand-passed.
+    # Inherited identity threading: stamped, not hand-passed.
     assert ctx.run_id == "run-1"
     assert ctx.agent_id == "agent-1"
     assert callable(ctx.emit)
@@ -227,7 +227,7 @@ def test_compaction_context_before_compact_defaults():
 
 
 def test_compaction_context_accepts_the_overflow_trigger():
-    # I10: overflow routes through before_compact(trigger="overflow").
+    # Overflow routes through before_compact(trigger="overflow").
     ctx = CompactionContext(
         trigger="overflow", estimated_tokens=205_000, **_base_hook_kwargs()
     )
@@ -236,7 +236,7 @@ def test_compaction_context_accepts_the_overflow_trigger():
 
 
 def test_compaction_context_after_compact_view_carries_typed_stats():
-    # §2.3 wiring: after_compact receives replace(cc, stats=stats).
+    # Wiring: after_compact receives replace(cc, stats=stats).
     before = CompactionContext(
         trigger="auto", estimated_tokens=170_000, **_base_hook_kwargs()
     )

@@ -1,14 +1,14 @@
 """Value types of the relay/await subsystem.
 
-Covers interface_plan/subsystems/relay-await.md:
-  - §2.1 ``AwaitState`` / ``AwaitRecord`` (frozen, principal-bearing, open reason
-    vocabulary) and the ``AWAIT_REASON_*`` string constants (AMENDMENTS §O9 —
-    plain ``str``, NOT an enum).
-  - §2.1 ``Join`` (the parked rendezvous).
-  - §2.2 / AMENDMENTS §B3 ``ResumeOutcome`` dataclass, homed at
-    ``agent_base/await_table/types.py`` (canonical-homes table).
-  - §6 migration row: ``AwaitRecord.organization_id``/``member_id`` are gone —
-    replaced by ``principal: SessionPrincipal | None`` (G0, breaking allowed).
+Covers:
+  - ``AwaitState`` / ``AwaitRecord`` (frozen, principal-bearing, open reason
+    vocabulary) and the ``AWAIT_REASON_*`` string constants (plain
+    ``str``, NOT an enum).
+  - ``Join`` (the parked rendezvous).
+  - ``ResumeOutcome`` dataclass, homed at
+    ``agent_base/await_table/types.py``.
+  - Migration: ``AwaitRecord.organization_id``/``member_id`` are gone —
+    replaced by ``principal: SessionPrincipal | None`` (breaking allowed).
 """
 from __future__ import annotations
 
@@ -55,12 +55,12 @@ def test_await_state_members_and_values():
 
 
 def test_await_state_is_a_str_enum():
-    # §2.1: ``class AwaitState(str, Enum)`` — comparable/serializable as str.
+    # ``class AwaitState(str, Enum)`` — comparable/serializable as str.
     assert isinstance(AwaitState.OPEN, str)
     assert AwaitState.CLOSED == "closed"
 
 
-# ── AWAIT_REASON_* constants (§O9) ────────────────────────────────────────
+# ── AWAIT_REASON_* constants ──────────────────────────────────────────────
 
 
 def test_await_reason_constants_values():
@@ -71,7 +71,7 @@ def test_await_reason_constants_values():
 
 
 def test_await_reason_constants_are_plain_strings_not_enum_members():
-    # §O9: AwaitReason is NOT an enum — open vocabulary of documented strings.
+    # AwaitReason is NOT an enum — open vocabulary of documented strings.
     for constant in (
         AWAIT_REASON_FRONTEND_TOOL,
         AWAIT_REASON_CONFIRMATION,
@@ -102,7 +102,7 @@ def test_await_record_carries_session_principal():
 
 
 def test_await_record_accepts_open_vocabulary_reason():
-    # §O9: a consumer may park with a brand-new reason without a library change.
+    # A consumer may park with a brand-new reason without a library change.
     record = _record(reason="wait_for_human_review")
     assert record.reason == "wait_for_human_review"
 
@@ -123,14 +123,14 @@ def test_await_record_full_construction():
 
 
 def test_await_record_is_frozen():
-    # §2.1 pseudocode: ``@dataclass(frozen=True) class AwaitRecord``.
+    # ``@dataclass(frozen=True) class AwaitRecord``.
     record = _record()
     with pytest.raises(dataclasses.FrozenInstanceError):
         record.state = AwaitState.RESOLVED  # type: ignore[misc]
 
 
 def test_await_record_has_no_legacy_owner_tuple_fields():
-    # §6 migration (G0): organization_id/member_id are removed outright;
+    # organization_id/member_id are removed outright;
     # the principal field replaces the tuple. No legacy property either.
     field_names = {f.name for f in dataclasses.fields(AwaitRecord)}
     assert "principal" in field_names
@@ -158,7 +158,7 @@ async def test_join_carries_the_parked_future():
     assert await join.future == results
 
 
-# ── ResumeOutcome (§B3) ───────────────────────────────────────────────────
+# ── ResumeOutcome ─────────────────────────────────────────────────────────
 
 
 def test_resume_outcome_resumed_carries_spliced_results():
@@ -178,7 +178,7 @@ def test_resume_outcome_aborted_has_empty_results():
 
 
 def test_resume_outcome_is_a_frozen_dataclass():
-    # §B3: ResumeOutcome is a dataclass (not an enum); frozen per the spec.
+    # ResumeOutcome is a dataclass (not an enum); frozen.
     assert dataclasses.is_dataclass(ResumeOutcome)
     outcome = ResumeOutcome(status="resumed", results=[])
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -192,6 +192,6 @@ def test_resume_outcome_value_equality():
 
 
 def test_resume_outcome_shape_is_exactly_status_and_results():
-    # §B3 pins the full shape: {status, results} — nothing else rides along.
+    # The full shape is {status, results} — nothing else rides along.
     field_names = {f.name for f in dataclasses.fields(ResumeOutcome)}
     assert field_names == {"status", "results"}

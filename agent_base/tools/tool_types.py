@@ -56,7 +56,7 @@ class ToolResultEnvelope(ABC):
     ended_at: str | None = field(default=None, kw_only=True)
     queued_ms: float | None = field(default=None, kw_only=True)
 
-    # CM-G4: when tool execution RAISED (vs returning an error result), the
+    # When tool execution RAISED (vs returning an error result), the
     # registry stamps the live exception onto the instance so the loop's
     # ``on_tool_error`` hook fires with the real error. Runtime-only state —
     # a ClassVar default, NOT a dataclass field, so it never serializes into
@@ -98,7 +98,7 @@ class ToolResultEnvelope(ABC):
             is_error=True, error_message=message,
         )
 
-    # ─── Parameterized builders (Fork J DECIDED -> A, R10; tools.md §2.1) ───
+    # ─── Parameterized builders ───
 
     @classmethod
     def from_blocks(
@@ -114,9 +114,9 @@ class ToolResultEnvelope(ABC):
     ) -> "ToolResultEnvelope":
         """Build a fully-projected result from data — no subclass required.
 
-        PRIMARY builder (R10, Fork J DECIDED -> A): ``from_text`` delegates here;
+        PRIMARY builder: ``from_text`` delegates here;
         the ``with_text``/``append_text`` mutation surface rebuilds via the same
-        path. (O11(b): ``from_image`` is deferred — removed from the v1 surface.)
+        path. (``from_image`` is deferred — removed from the v1 surface.)
         """
         return _StructuredEnvelope(
             tool_name=tool_name, tool_id=tool_id, is_error=is_error,
@@ -144,11 +144,11 @@ class ToolResultEnvelope(ABC):
             tool_id=tool_id,
         )
 
-    # ─── Stable mutation surface (R10, O11(b)) — the after_tool/on_tool_error update= path ───
+    # ─── Stable mutation surface — the after_tool/on_tool_error update= path ───
     # CONCRETE default implementations on the ABC: each returns a NEW
     # _StructuredEnvelope rebuilt from this envelope's own projections, so a
     # genuinely-custom subclass inherits working mutation without overriding
-    # anything. (O11(b): with_blocks is deferred — removed from the v1 surface.)
+    # anything. (with_blocks is deferred — removed from the v1 surface.)
 
     def with_text(self, text: str) -> "ToolResultEnvelope":
         """Replace the context-window projection with a single ``TextContent(text)``.
@@ -212,7 +212,7 @@ class _StructuredEnvelope(ToolResultEnvelope):
     """Concrete envelope produced by ``from_blocks``/``from_text`` and the
     ``with_text``/``append_text`` mutators.
 
-    PRIVATE only (O3: no public ``StructuredEnvelope`` alias).
+    PRIVATE only (no public ``StructuredEnvelope`` alias).
     """
 
     _context_blocks: list[ContentBlock] = field(default_factory=list)

@@ -1,9 +1,9 @@
 """Anthropic chain-repair seams: ``plan_stream_abort`` + ``sanitize_chain``.
 
-providers.md §6 (G0): the module-level ``message_sanitizer`` helpers are
+The module-level ``message_sanitizer`` helpers are
 REMOVED — ``provider.plan_stream_abort(turn)`` (reading the provider-private
-``stream_bookkeeping``, O12a) and ``provider.sanitize_chain`` (delegating to
-the shared ``agent_base.core.chain.ensure_chain_validity``, R18a) are the only
+``stream_bookkeeping``) and ``provider.sanitize_chain`` (delegating to
+the shared ``agent_base.core.chain.ensure_chain_validity``) are the only
 seams.  The shared rule set itself is pinned in
 ``tests/unit/core/test_chain.py``; here we cover the Anthropic-private
 completed-block-index filtering.
@@ -46,7 +46,7 @@ def _turn(partial: Message, completed_indices: set[int]) -> ProviderTurn:
 
 
 # ===========================================================================
-# plan_stream_abort — O12a block-index bookkeeping
+# plan_stream_abort — block-index bookkeeping
 # ===========================================================================
 
 
@@ -132,12 +132,12 @@ class TestPlanStreamAbort:
 
 
 # ===========================================================================
-# sanitize_chain (R18a — delegates to the shared core.chain helper)
+# sanitize_chain (delegates to the shared core.chain helper)
 # ===========================================================================
 
 
 class TestSanitizeChain:
-    """Provider chain repair via ``sanitize_chain`` (providers.md §2.1 / R18a).
+    """Provider chain repair via ``sanitize_chain``.
 
     ``Provider.sanitize_chain`` delegates to the shared
     ``agent_base.core.chain.ensure_chain_validity`` so Anthropic/LiteLLM never

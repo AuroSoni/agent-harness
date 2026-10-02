@@ -1,14 +1,14 @@
-"""HookOutcome capability model — agent-loop-hooks.md §2.1 (contract §1.3).
+"""HookOutcome capability model.
 
 Covers:
-- §2.1 ``HookOutcome`` base shape: constructor defaults, block semantics,
+- ``HookOutcome`` base shape: constructor defaults, block semantics,
   ``update``/``additional_context``/``events`` payloads.
-- O7 (AMENDMENTS): NO ``switch_profile`` outcome field on ``HookOutcome`` or
+- NO ``switch_profile`` outcome field on ``HookOutcome`` or
   any specialized outcome — profile switching is imperative-only.
-- §2.1 ``TurnStartOutcome``: ``update=Message`` + ``prompt_prefix``/``prompt_suffix``.
-- §2.1 ``EndTurnOutcome``: ``action`` ("pass"/"continue") + ``continue_prompt``;
-  events carry MetaBodies (Rollback is decoupled — emitted via events, doc §3.6).
-- B1 adjacency: outcomes carry no settlement data.
+- ``TurnStartOutcome``: ``update=Message`` + ``prompt_prefix``/``prompt_suffix``.
+- ``EndTurnOutcome``: ``action`` ("pass"/"continue") + ``continue_prompt``;
+  events carry MetaBodies (Rollback is decoupled — emitted via events).
+- Outcomes carry no settlement data.
 """
 
 import dataclasses
@@ -65,7 +65,7 @@ def test_hook_outcome_events_accept_meta_bodies():
 
 
 def test_hook_outcome_has_no_switch_profile_field():
-    # O7: the HookOutcome.switch_profile outcome field is DELETED. Switching is
+    # The HookOutcome.switch_profile outcome field is DELETED. Switching is
     # the imperative ctx.switch_profile(name) capability only.
     names = {f.name for f in dataclasses.fields(HookOutcome)}
     assert "switch_profile" not in names
@@ -130,7 +130,7 @@ def test_end_turn_outcome_continue_reruns_with_synthetic_prompt():
 
 
 def test_end_turn_outcome_events_carry_custom_bodies():
-    # Doc §3.6: events=[Custom(name="todo", data=...)] is the delivery-guaranteed
+    # events=[Custom(name="todo", data=...)] is the delivery-guaranteed
     # channel for end-of-turn FE events (Rollback is the same mechanism).
     body = Custom(name="todo", data={"operation": "reset"})
     outcome = EndTurnOutcome(action="pass", events=[body])
@@ -138,6 +138,6 @@ def test_end_turn_outcome_events_carry_custom_bodies():
 
 
 def test_end_turn_outcome_has_no_switch_profile_field():
-    # O7: on_turn_end has no profile-switch capability at all.
+    # on_turn_end has no profile-switch capability at all.
     names = {f.name for f in dataclasses.fields(EndTurnOutcome)}
     assert "switch_profile" not in names

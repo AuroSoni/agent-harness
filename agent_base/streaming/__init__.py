@@ -1,6 +1,6 @@
 """Streaming module for agent_base.
 
-Three layers, strictly separated (streaming-and-meta.md §2 / contract §1.4):
+Three layers, strictly separated:
 
   Layer A — typed objects:  ``StreamDelta`` (content) + ``MetaEnvelope`` /
             ``MetaBody`` (control, homed at ``agent_base.streaming.meta``)
@@ -16,8 +16,7 @@ there, not from this package root).
 
 The legacy formatter/queue surface (``MetaDelta``, ``RollbackDelta``,
 ``StreamFormatter``, ``JsonStreamFormatter``, ``get_formatter``,
-``build_envelope``, ``chunk_and_emit``, ``emit_stream_delta``) is DELETED
-(streaming-and-meta.md §6 / AMENDMENTS O3 / G0) — ``DeltaSink`` is the only
+``build_envelope``, ``chunk_and_emit``, ``emit_stream_delta``) is DELETED — ``DeltaSink`` is the only
 producer write path and ``WireCodec`` the only framing owner.
 
 Usage::
@@ -79,12 +78,12 @@ from .decode import (
     decode_sse_text,
 )
 
-#: §2.4 — the union a consumer reads; the wire is a downstream concern.
+#: The union a consumer reads; the wire is a downstream concern.
 StreamItem = Union[StreamDelta, MetaEnvelope]
 
 
 def __getattr__(name: str):
-    # Lazy re-export (R8 ergonomics): defined in core.errors, re-exported
+    # Lazy re-export (ergonomics): defined in core.errors, re-exported
     # here.  Lazy to avoid a hard import cycle while core.errors itself
     # imports streaming.meta/types for its projections.
     if name == "classify_provider_error":
@@ -139,6 +138,6 @@ __all__ = [
     "DecodedRun",
     "decode_sse_text",
     "decode_sse_lines",
-    # Re-exported from core.errors (R8)
+    # Re-exported from core.errors
     "classify_provider_error",
 ]

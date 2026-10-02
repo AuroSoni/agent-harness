@@ -1,21 +1,21 @@
 """Reply-auth on the await table: one resolve method, policy-driven REJECTED.
 
-Covers interface_plan/subsystems/relay-await.md:
-  - §2.1 / R7 — ``resolve(cid, results, *, principal=None)`` is THE single
+Covers:
+  - ``resolve(cid, results, *, principal=None)`` is THE single
     auth+resolve method; there is no separate ``resolve_authorized``.
-  - §2.1 / R9 — a cid-record principal mismatch is ALWAYS ``REJECTED``,
-    never downgraded to ``IGNORED_STALE``; per tenancy §A.4 the auth check
+  - A cid-record principal mismatch is ALWAYS ``REJECTED``,
+    never downgraded to ``IGNORED_STALE``; the auth check
     runs after record lookup and BEFORE the generation/dedupe/stale checks.
-  - §2.1 / AMENDMENTS §I1 — resolve consults the ONE injected
+  - Resolve consults the ONE injected
     ``PrincipalPolicy`` (``StrictScopePolicy`` default, homed at
     ``agent_base/core/identity.py``); authorization is
     ``policy.authorizes(owner, claimant)``, never a method on
     ``SessionPrincipal``. The instance is injected at
     ``SessionManager.__init__(principal_policy=...)`` (session_control's
-    ctor) and forwarded per call as ``resolve(..., policy=...)`` — tenancy
-    §A.4: ``pol = policy or StrictScopePolicy()``. The table itself grows no
+    ctor) and forwarded per call as ``resolve(..., policy=...)`` —
+    ``pol = policy or StrictScopePolicy()``. The table itself grows no
     constructor knob for it.
-  - §3.1 — an auth failure is a REJECTED ack, not a side-channel abort: the
+  - An auth failure is a REJECTED ack, not a side-channel abort: the
     await stays parked and a later authorized reply still resolves it.
 
 ``SessionPrincipal`` / ``PrincipalPolicy`` / ``StrictScopePolicy`` are
@@ -92,7 +92,7 @@ async def test_cross_tenant_reply_is_rejected():
 
 
 async def test_principal_mismatch_is_never_downgraded_to_stale():
-    # R9: auth failures are not hidden behind staleness.
+    # Auth failures are not hidden behind staleness.
     table = AwaitTable()
     await _open(table)
     disposition = await table.resolve("relay_run_1_0", [_tr()], principal=OTHER_TENANT)
@@ -101,9 +101,9 @@ async def test_principal_mismatch_is_never_downgraded_to_stale():
 
 
 async def test_auth_check_precedes_staleness_for_retired_generations():
-    # R9's actual legislation: the one scenario where REJECTED could be
+    # The one scenario where REJECTED could be
     # downgraded to IGNORED_STALE is a record whose generation was retired
-    # AND whose claimant mismatches. Tenancy §A.4 orders the checks
+    # AND whose claimant mismatches. The checks run in the order
     # lookup → auth → generation, so the mismatch still surfaces as REJECTED.
     table = AwaitTable()
     join = await _open(table)
@@ -131,7 +131,7 @@ async def test_matching_claimant_on_retired_generation_is_stale():
 
 
 async def test_rejected_reply_leaves_the_await_parked():
-    # §3.1: "an auth failure is a REJECTED Ack, not a side-channel abort" —
+    # An auth failure is a REJECTED Ack, not a side-channel abort —
     # the record stays OPEN, the future stays pending, and the rightful
     # claimant can still resolve it afterwards.
     table = AwaitTable()
@@ -159,7 +159,7 @@ async def test_anonymous_owner_and_anonymous_claimant_resolve():
 
 
 async def test_claims_are_not_part_of_the_scope_check():
-    # O2/B2 spirit: policies read tenant/subject; claims never gate scope.
+    # Policies read tenant/subject; claims never gate scope.
     table = AwaitTable()
     await _open(table, principal=SessionPrincipal(
         tenant="org_1", subject="member_1", claims={"role": "admin"}))
@@ -168,11 +168,11 @@ async def test_claims_are_not_part_of_the_scope_check():
         is Disposition.RESOLVED
 
 
-# ── single method (R7) ────────────────────────────────────────────────────
+# ── single method ─────────────────────────────────────────────────────────
 
 
 def test_resolve_is_the_single_auth_method():
-    # R7: no separate resolve_authorized on the table.
+    # No separate resolve_authorized on the table.
     assert not hasattr(AwaitTable, "resolve_authorized")
 
 
@@ -183,8 +183,8 @@ async def test_resolve_principal_is_keyword_only():
         table.resolve("relay_run_1_0", [_tr()], OTHER_TENANT)
 
 
-# ── injected PrincipalPolicy (I1) ─────────────────────────────────────────
-# The policy rides the resolve CALL (tenancy §A.4: ``resolve(..., policy=)``
+# ── injected PrincipalPolicy ──────────────────────────────────────────────
+# The policy rides the resolve CALL (``resolve(..., policy=)``
 # with ``pol = policy or StrictScopePolicy()``); SessionManager forwards its
 # one ctor-injected instance. The table has no policy constructor knob — the
 # docs home the injection at SessionManager.__init__ only.
@@ -216,7 +216,7 @@ async def test_forwarded_allow_policy_admits_a_cross_tenant_claimant():
 
 
 async def test_policy_is_consulted_with_owner_and_claimant():
-    # I1: authorization is policy.authorizes(owner, claimant) — owner is the
+    # Authorization is policy.authorizes(owner, claimant) — owner is the
     # principal stamped at open(), claimant rides the resolve call.
     policy = _RecordingPolicy()
     table = AwaitTable()

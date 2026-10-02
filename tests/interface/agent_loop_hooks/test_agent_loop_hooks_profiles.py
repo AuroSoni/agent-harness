@@ -1,21 +1,21 @@
-"""Declarative Profile / mode system — agent-loop-hooks.md §2.7 (contract §6).
+"""Declarative Profile / mode system.
 
 Covers:
-- §2.7 ``Profile`` is a frozen, declarative dataclass: ``name`` (required),
+- ``Profile`` is a frozen, declarative dataclass: ``name`` (required),
   ``tools`` / ``frontend_tools`` (independent default lists), ``system_prompt``,
   ``tail`` (replaces ``_select_tail_for_mode``).
-- 2026-06-10 amendment / §2.3a: NO ``ui_capabilities`` field — FE-facing
+- 2026-06-10 amendment: NO ``ui_capabilities`` field — FE-facing
   payloads are consumer vocabulary, emitted from ``on_profile_changed``.
-- §2.7 constructor wiring: ``profiles=`` + ``default_profile=`` + ``hooks=``
-  are the runtime's declarative surface (R20: ctor default is the cold-create
+- Constructor wiring: ``profiles=`` + ``default_profile=`` + ``hooks=``
+  are the runtime's declarative surface (ctor default is the cold-create
   default, lowest precedence).
-- §2.3a / Fork G: ``agent.on_usage_report(cb)`` registers the usage observer.
+- ``agent.on_usage_report(cb)`` registers the usage observer.
 
 Not covered here (owned elsewhere):
-- ``on_usage_report`` FIRING. Contract §6's per-turn ``UsageReport`` auto-emit
-  is settlement behavior owned by pricing-cost (AMENDMENTS I9:
-  ``SettlementAggregator`` / ``settle_turn`` home in ``agent_base/core/cost.py``
-  on the UsageReport channel). I7's ``record_turn`` enumeration (splice + dual
+- ``on_usage_report`` FIRING. The per-turn ``UsageReport`` auto-emit
+  is settlement behavior owned by pricing-cost (``SettlementAggregator`` /
+  ``settle_turn`` home in ``agent_base/core/cost.py``
+  on the UsageReport channel). ``record_turn``'s enumeration (splice + dual
   persistence + RunStarted/RunCompleted + checkpoint) does not promise a
   ``UsageReport`` for a scripted, no-provider-call turn, so only the
   registration shape is pinned in this suite; the firing contract belongs to
@@ -81,7 +81,7 @@ def test_profile_carries_the_declarative_bundle():
     assert profile.tools == [backend_tool]
     assert profile.frontend_tools == [frontend_tool]
     assert profile.system_prompt == "PLAN MODE PROMPT"
-    # §2.7 guarantee 3: Profile.tail feeds the renderer's tail_instruction;
+    # Profile.tail feeds the renderer's tail_instruction;
     # _select_tail_for_mode is deleted.
     assert profile.tail == "plan-mode tail"
 
@@ -98,7 +98,7 @@ def test_profile_value_equality():
     assert Profile(name="full") != Profile(name="plan")
 
 
-# ── constructor wiring (§2.7) ────────────────────────────────────────────────
+# ── constructor wiring ────────────────────────────────────────────────
 
 
 def test_runtime_accepts_profiles_default_profile_and_hooks():
@@ -106,13 +106,13 @@ def test_runtime_accepts_profiles_default_profile_and_hooks():
     plan = Profile(name="plan", system_prompt="plan prompt", tail="plan tail")
     agent = AgentRuntime(
         profiles=[full, plan],
-        default_profile="full",  # cold-create default ONLY; lowest precedence (R20)
+        default_profile="full",  # cold-create default ONLY; lowest precedence
         hooks={},
     )
     assert agent is not None
 
 
-# ── observer registration (Fork G / §2.3a) ───────────────────────────────────
+# ── observer registration ───────────────────────────────────
 
 
 def test_on_usage_report_registers_a_callback():
@@ -126,9 +126,9 @@ def test_on_usage_report_registers_a_callback():
     def on_report(report):
         received.append(report)
 
-    # Fork G sugar over the UsageReport channel: registration must be accepted.
+    # Sugar over the UsageReport channel: registration must be accepted.
     # NOTE: only the registration SHAPE is pinned here — the firing contract
-    # (contract §6 per-turn auto-emit) is pricing-cost's to test (see the
+    # (per-turn auto-emit) is pricing-cost's to test (see the
     # module docstring's "Not covered" entry).
     agent.on_usage_report(on_report)
     assert received == []  # nothing fires at registration time

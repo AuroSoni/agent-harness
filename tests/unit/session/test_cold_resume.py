@@ -1,17 +1,17 @@
-"""Cold rehydrate-then-resolve (relay-await.md §2.4) — the ONE resume contract.
+"""Cold rehydrate-then-resolve — the ONE resume contract.
 
-The legacy ``resume_with_relay_results`` cold endpoint is DELETED (§6, G0).
+The legacy ``resume_with_relay_results`` cold endpoint is DELETED.
 An evicted/restarted session resumes through the SAME front door,
 ``SessionManager.submit(root_session_id, ToolReply(cid, results))``:
 
 1. no live record for the cid on the await table → cold path;
 2. the session rehydrates from storage (``pending_relay`` carries the
-   persisted cold-match ``cid``, R23);
+   persisted cold-match ``cid``);
 3. ``_rearm_pending_await(reply=...)`` re-opens the SAME cid WITHOUT
-   re-emitting the await frame (AMENDMENTS §B4);
+   re-emitting the await frame;
 4. the redelivered reply resolves it and the runtime re-enters the suspended
    turn out-of-band (reconcile → splice → checkpoint → resume the loop —
-   the §2.5 guarantee runs for hot AND cold).
+   the guarantee runs for hot AND cold).
 """
 from __future__ import annotations
 
@@ -141,18 +141,18 @@ async def test_submit_tool_reply_cold_resumes_through_the_same_cid(fresh_table):
 
 
 async def test_named_principal_cold_resume_resolves_through_plane2(fresh_table):
-    """GF-P8G2 x GF-P8G3 (the cold-path interlock at unit level).
+    """The cold-path interlock at unit level.
 
     A NAMED-owner session evicted mid-pause resumes through the same front
-    door: the factory threads the principal (G2), ``_rearm_pending_await``
+    door: the factory threads the principal, ``_rearm_pending_await``
     re-opens the cid stamped with the NAMED owner, and the plane-2 resolve
-    presents the runtime's own principal as claimant (G3/D1). Before G3 this
+    presents the runtime's own principal as claimant. Previously this
     exact flow was REJECTED — a named agent could never resume its own pause
     (the live 422 loop).
     """
     seed = await _seed_parked_session(principal=OWNER)
     root_id = seed.agent_uuid
-    # G2: the seeded checkpoint stamped the owner columns.
+    # The seeded checkpoint stamped the owner columns.
     persisted = await seed.config_adapter.load(root_id)
     assert persisted.owner_tenant == "org_1"
     assert persisted.owner_subject == "member_1"
@@ -203,7 +203,7 @@ async def test_named_principal_cold_resume_resolves_through_plane2(fresh_table):
 
 
 async def test_wait_idle_awaits_the_cold_continuation(fresh_table):
-    """GF-P6G4: after a RESOLVED ``submit(ToolReply)`` the caller awaits
+    """After a RESOLVED ``submit(ToolReply)`` the caller awaits
     ``wait_idle()`` — the PUBLIC completion handle — instead of polling the
     private ``_rearmed_resume_task``."""
     seed = await _seed_parked_session()

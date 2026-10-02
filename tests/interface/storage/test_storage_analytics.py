@@ -1,16 +1,16 @@
-"""Red-suite specs — storage §2.7: typed cross-agent analytics (fixes X8).
+"""Interface specs — storage: typed cross-agent analytics.
 
 Covers:
-- interface_plan/subsystems/storage.md §2.7 (``agent_base/storage/analytics.py``):
+- ``agent_base/storage/analytics.py``:
   the storage-owned ``stop_reason`` taxonomy (``TERMINAL_STOP_REASONS`` /
-  ``is_error_stop`` — R27), the frozen filter/row shapes (``RunFilter``,
+  ``is_error_stop``), the frozen filter/row shapes (``RunFilter``,
   ``RunSummary``, ``AnalyticsTotals``, ``ToolUsageStat``, ``LatencyStats``,
   ``TimeBucket``), the ``AnalyticsReader`` ABC surface, and
   ``PgAnalyticsReader(pool, *, filter_columns=...)`` composing the SAME
-  registry filter specs as the write adapters (AMENDMENTS I2).
-- AMENDMENTS I2: ``runs_matching(filter) -> AsyncIterator[RunSummary]`` — the
+  registry filter specs as the write adapters.
+- ``runs_matching(filter) -> AsyncIterator[RunSummary]`` — the
   ONE escape hatch; consumers never hand-cast JSONB.
-- AMENDMENTS O5 cross-ref: the aggregate is ``AnalyticsTotals`` — the deleted
+- The aggregate is ``AnalyticsTotals`` — the deleted
   ``UsageTotals`` shadow type is never imported here.
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ from agent_base.storage.pg import principal_columns
 
 
 # ---------------------------------------------------------------------------
-# stop_reason taxonomy (storage-owned, R27)
+# stop_reason taxonomy (storage-owned)
 # ---------------------------------------------------------------------------
 
 def test_terminal_stop_reasons_taxonomy():
@@ -188,7 +188,7 @@ def test_analytics_reader_abstract_surface_is_locked():
 
 
 def test_analytics_reader_keyword_only_defaults_are_pinned_on_the_abc():
-    # §2.7: volume_timeseries(*, bucket="hour"), tool_usage(*, sample_limit=5000),
+    # volume_timeseries(*, bucket="hour"), tool_usage(*, sample_limit=5000),
     # subagent_fanout(*, limit=20) — documented keyword-only defaults on the ABC.
     bucket = inspect.signature(AnalyticsReader.volume_timeseries).parameters["bucket"]
     assert bucket.default == "hour"
@@ -199,7 +199,7 @@ def test_analytics_reader_keyword_only_defaults_are_pinned_on_the_abc():
     limit = inspect.signature(AnalyticsReader.subagent_fanout).parameters["limit"]
     assert limit.default == 20
     assert limit.kind is inspect.Parameter.KEYWORD_ONLY
-    # GF-P7G2: agent_totals(*, limit=50, offset=0) — keyword-only pagination.
+    # agent_totals(*, limit=50, offset=0) — keyword-only pagination.
     agent_sig = inspect.signature(AnalyticsReader.agent_totals)
     a_limit = agent_sig.parameters["limit"]
     assert a_limit.default == 50
@@ -285,7 +285,7 @@ async def test_fake_reader_satisfies_abc_and_streams_typed_rows():
 
 
 # ---------------------------------------------------------------------------
-# PgAnalyticsReader (I2 — same filter specs as the write adapters)
+# PgAnalyticsReader (same filter specs as the write adapters)
 # ---------------------------------------------------------------------------
 
 class _Acquired:
@@ -364,7 +364,7 @@ def test_pg_runs_matching_returns_an_async_iterator():
 
 
 async def test_pg_reader_composes_filter_columns_into_every_where():
-    # AMENDMENTS I2: filter_columns are the SAME registry scope="filter" specs
+    # filter_columns are the SAME registry scope="filter" specs
     # the write adapters use, composed into EVERY WHERE — an unscoped dashboard
     # query is impossible.
     conn = _FakeConn()
@@ -385,7 +385,7 @@ async def test_pg_reader_composes_filter_columns_into_every_where():
 
 
 # ---------------------------------------------------------------------------
-# GF-P7G2 — per-AGENT aggregate accessor (agent_totals)
+# Per-AGENT aggregate accessor (agent_totals)
 # ---------------------------------------------------------------------------
 
 def _agent_totals(**overrides) -> AgentTotals:

@@ -1,7 +1,7 @@
 """McpToolSource / McpServerHandle — connection lifecycle, 401 contract,
-tool compilation, and runtime verbs (mcp.md §3, §4, §5, §7).
+tool compilation, and runtime verbs.
 
-One ``McpServerHandle`` per configured server owns the §3 state machine::
+One ``McpServerHandle`` per configured server owns the state machine::
 
     pending ──connect──> connected ──transport drop──> reconnecting ──> connected
        │ failure             │ 401 (after failed refresh)   │ attempts exhausted
@@ -9,7 +9,7 @@ One ``McpServerHandle`` per configured server owns the §3 state machine::
      failed               needs_auth ──reconnect()──>    failed ──reconnect()/call──> reconnecting
                 any state ──set_enabled(False)──> disabled ──set_enabled(True)──> pending
 
-The 401 contract runs at two layers (§4, spike-verified): the handle bridges
+The 401 contract runs at two layers (spike-verified): the handle bridges
 its ``McpAuthProvider`` into an ``httpx.Auth`` so refresh-retry-once happens
 *inside* httpx without tearing the transport down; a 401 that escapes kills
 the transport by SDK design and surfaces as
@@ -75,7 +75,7 @@ _PROVIDER_NAME_MAX = 64
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Status / diff types (mcp.md §7)
+# Status / diff types
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -108,7 +108,7 @@ class McpProbeResult:
 
 @dataclass
 class McpToolDiff:
-    """Registered-name delta of one applied reconciliation (mcp.md §5)."""
+    """Registered-name delta of one applied reconciliation."""
 
     added: dict[str, list[str]] = field(default_factory=dict)
     removed: dict[str, list[str]] = field(default_factory=dict)
@@ -119,7 +119,7 @@ class McpToolDiff:
 
 
 def render_change_notice(diff: McpToolDiff) -> str:
-    """The MC-D13 boundary change notice — spliced into the next model-bound
+    """The boundary change notice — spliced into the next model-bound
     user content by the agent (never a standalone transcript message)."""
     lines: list[str] = ["MCP servers changed since your last turn:"]
     for server, names in sorted(diff.added.items()):
@@ -136,7 +136,7 @@ def render_change_notice(diff: McpToolDiff) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 401 / 403 classification (§4 supervisor layer)
+# 401 / 403 classification (supervisor layer)
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -190,7 +190,7 @@ def _describe_failure(exc: BaseException | None) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# The httpx.Auth bridge (§4 primary layer)
+# The httpx.Auth bridge (primary layer)
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -298,7 +298,7 @@ class _Runner:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# McpServerHandle — per-server state machine (§3)
+# McpServerHandle — per-server state machine
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -341,7 +341,7 @@ class McpServerHandle:
         return await self._auth.headers()
 
     async def _single_flight_unauthorized(self) -> bool:
-        """Exactly one ``on_unauthorized()`` per outage (§4). Late callers of
+        """Exactly one ``on_unauthorized()`` per outage. Late callers of
         a finished flight get ``False`` — retry-once already happened."""
         if self._auth is None:
             return False
@@ -376,7 +376,7 @@ class McpServerHandle:
     def _make_http_client(self, transport: McpHttpSpec) -> httpx.AsyncClient:
         """The transport's httpx client: static headers + the provider bridge
         + a jar-clearing response hook (provider headers are authoritative —
-        the implicit jar must never become a second credential store, §4)."""
+        the implicit jar must never become a second credential store)."""
 
         async def _clear_jar(response: httpx.Response) -> None:
             client.cookies.clear()
@@ -442,7 +442,7 @@ class McpServerHandle:
 
     async def _connect_once(self, *, timeout: float) -> bool:
         """One full connect attempt: fresh runner, MCP handshake, tools/list.
-        Never raises — classifies into state (E7)."""
+        Never raises — classifies into state."""
         await self._teardown_runner()
         runner = _Runner(self)
         self._runner = runner
@@ -474,7 +474,7 @@ class McpServerHandle:
         return True
 
     async def _ensure_connect_flight(self, *, timeout: float) -> bool:
-        """Join-or-start the single-flight connect attempt (§3 calls-while-down)."""
+        """Join-or-start the single-flight connect attempt."""
         if self._connect_flight is None or self._connect_flight.done():
             self._connect_flight = asyncio.create_task(
                 self._connect_once(timeout=timeout)
@@ -487,7 +487,7 @@ class McpServerHandle:
             return False
 
     async def _watch_runner(self, runner: _Runner) -> None:
-        """Supervisor: classify a mid-life transport death (§3/§4)."""
+        """Supervisor: classify a mid-life transport death."""
         await runner.stopped.wait()
         if self._closing or runner is not self._runner or self.state != "connected":
             return
@@ -520,7 +520,7 @@ class McpServerHandle:
             if await self._connect_once(timeout=CONNECT_TIMEOUT_S):
                 return
             if self.state == "needs_auth":
-                return  # quiet — no retry storm (§4)
+                return  # quiet — no retry storm
             self._set_state("reconnecting", error=self.error)
         self._set_state("failed", error=self.error or "reconnect attempts exhausted")
 
@@ -528,8 +528,8 @@ class McpServerHandle:
 
     async def connect(self, *, timeout: float = CONNECT_TIMEOUT_S) -> bool:
         """Idempotent: an already-connected handle is left alone (a sub-agent
-        sharing the source by reference must never bounce live connections —
-        E9); ``reconnect()`` is the force-fresh verb."""
+        sharing the source by reference must never bounce live connections);
+        ``reconnect()`` is the force-fresh verb."""
         started = time.monotonic()
         try:
             if self.state == "disabled":
@@ -597,7 +597,7 @@ class McpServerHandle:
                 task.cancel()
         await self._teardown_runner()
 
-    # ── the call path (§3 calls-while-down + §4 escaped-401) ─────────
+    # ── the call path ────────────────────────────────────────────────
 
     def _fail_fast_reason(self) -> str | None:
         if self.state == "disabled":
@@ -618,7 +618,7 @@ class McpServerHandle:
         tool_id: str = "",
         ctx: "ToolContext | None" = None,
     ) -> ToolResultEnvelope:
-        """One remote tool call — ALWAYS returns an envelope (E7): a dead
+        """One remote tool call — ALWAYS returns an envelope: a dead
         server degrades that call, never the turn."""
         envelope = await self._call_attempt(
             remote_name, arguments, registered_name=registered_name, tool_id=tool_id, ctx=ctx
@@ -755,7 +755,7 @@ class McpServerHandle:
                         registered_name=registered_name,
                         tool_id=tool_id,
                         ctx=ctx,
-                        retried=True,  # §4: retry exactly once
+                        retried=True,  # retry exactly once
                     )
             self._set_state(
                 "needs_auth", error=_describe_failure(root), challenge=challenge
@@ -783,7 +783,7 @@ class McpServerHandle:
     ) -> ToolResultEnvelope:
         envelope = ToolResultEnvelope.error(tool_name, tool_id, message)
         if raised is not None:
-            envelope.raised_error = raised  # CM-G4: transport/protocol failure
+            envelope.raised_error = raised  # transport/protocol failure
         return envelope
 
     def status(self, tool_names: list[str] | None = None) -> McpServerStatus:
@@ -798,16 +798,16 @@ class McpServerHandle:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# McpToolSource — per-agent (§5, §7)
+# McpToolSource — per-agent
 # ──────────────────────────────────────────────────────────────────────
 
 
 class McpToolSource:
     """Owns the agent's server handles, compiles registry tools, tracks the
-    applied surface for diffs/notices, and exposes the §7 verbs.
+    applied surface for diffs/notices, and exposes the verbs.
 
-    Runtime resource: shared BY REFERENCE with sub-agents (E9); never
-    persisted, never checkpointed (E11)."""
+    Runtime resource: shared BY REFERENCE with sub-agents; never
+    persisted, never checkpointed."""
 
     def __init__(
         self,
@@ -845,7 +845,7 @@ class McpToolSource:
     # ── lifecycle ────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        """Eager concurrent connect (MC-D1) with per-server failure isolation;
+        """Eager concurrent connect with per-server failure isolation;
         a failed ``required=True`` server raises out of ``initialize()``."""
         if not self._handles:
             return
@@ -867,13 +867,13 @@ class McpToolSource:
 
     async def aclose(self) -> None:
         """Teardown: cancels reconnect tasks, terminates stdio children —
-        no leaked subprocesses past the session actor (E6)."""
+        no leaked subprocesses past the session actor."""
         await asyncio.gather(
             *(handle.aclose() for handle in self._handles.values()),
             return_exceptions=True,
         )
 
-    # ── compilation (§5) ─────────────────────────────────────────────
+    # ── compilation ──────────────────────────────────────────────────
 
     def _filtered_remote_tools(self, spec: McpServerSpec, tools) -> list:
         include = spec.include_tools
@@ -925,7 +925,7 @@ class McpToolSource:
         _invoke.__tool_schema__ = schema  # type: ignore[attr-defined]
         _invoke.__tool_executor__ = "backend"  # type: ignore[attr-defined]
         _invoke.__tool_needs_confirmation__ = needs_confirmation  # type: ignore[attr-defined]
-        _invoke.__mcp_server__ = handle.name  # type: ignore[attr-defined] — MC-D12 marker
+        _invoke.__mcp_server__ = handle.name  # type: ignore[attr-defined] — marker
         _invoke.__mcp_remote_name__ = remote_name  # type: ignore[attr-defined]
         return _invoke
 
@@ -933,7 +933,7 @@ class McpToolSource:
         """Registry-ready callables for the CURRENT discovered surface.
 
         Tools stay compiled while a server is ``reconnecting``/``failed``
-        (calls degrade to error envelopes, E7); ``disabled`` servers and
+        (calls degrade to error envelopes); ``disabled`` servers and
         servers that never completed discovery compile nothing."""
         compiled: list[Callable[..., Any]] = []
         taken: set[str] = set()
@@ -953,7 +953,7 @@ class McpToolSource:
             surface.setdefault(func.__mcp_server__, []).append(func.__tool_schema__.name)  # type: ignore[attr-defined]
         return {key: sorted(names) for key, names in surface.items()}
 
-    # ── diff + notice (MC-D12 / MC-D13) ──────────────────────────────
+    # ── diff + notice ────────────────────────────────────────────────
 
     def commit_applied(self) -> McpToolDiff:
         """Record that the agent just applied the current surface to its
@@ -962,7 +962,7 @@ class McpToolSource:
         new_surface = self.current_surface()
         previous, self._applied = self._applied, new_surface
         if previous is None:
-            return McpToolDiff()  # boot — not a change (MC-D13)
+            return McpToolDiff()  # boot — not a change
         diff = McpToolDiff()
         for key, names in new_surface.items():
             old_names = previous.get(key)
@@ -988,7 +988,7 @@ class McpToolSource:
         if self.on_surface_changed is not None:
             self.on_surface_changed()
 
-    # ── verbs (§7) ───────────────────────────────────────────────────
+    # ── verbs ────────────────────────────────────────────────────────
 
     def statuses(self) -> list[McpServerStatus]:
         surface = self._applied or self.current_surface()
@@ -1009,7 +1009,7 @@ class McpToolSource:
         self._notify_surface_changed()
 
     async def refresh(self, name: str) -> McpToolDiff:
-        """Manual re-discovery (MC-D4's v1 verb). Returns the pending diff
+        """Manual re-discovery (the v1 verb). Returns the pending diff
         vs the applied surface; the registry applies at the boundary."""
         handle = self._require(name)
         await handle.refresh()
@@ -1017,7 +1017,7 @@ class McpToolSource:
         return self._pending_diff_for(name)
 
     async def add_server(self, name: str, spec: McpServerSpec) -> McpServerStatus:
-        """Dynamic registration on a live agent (§3, MC-D8). A 401 parks the
+        """Dynamic registration on a live agent. A 401 parks the
         handle in needs_auth — the registration itself still succeeds."""
         validate_server_key(name)
         if name in self._handles:
@@ -1040,7 +1040,7 @@ class McpToolSource:
         self._notify_surface_changed()
 
     async def reconcile(self, desired: dict[str, McpServerSpec]) -> list[McpServerStatus]:
-        """Declarative diff-to-set (MC-D14): keys are the identity — existing
+        """Declarative diff-to-set: keys are the identity — existing
         keys with a changed spec are untouched; a no-op diff does nothing."""
         for key in desired:
             validate_server_key(key)
@@ -1077,12 +1077,12 @@ class McpToolSource:
             raise KeyError(f"Unknown MCP server '{name}'")
         return handle
 
-    # ── the mcp_status native tool (MC-D13) ──────────────────────────
+    # ── the mcp_status native tool ───────────────────────────────────
 
     def make_status_tool(self) -> Callable[..., Any]:
         """Ground-truth introspection: answers from ``statuses()``. Native
         library tool — no ``mcp__`` prefix, ``__``-free name, executor
-        backend, credential-free output (E8)."""
+        backend, credential-free output."""
         source = self
 
         async def mcp_status(server: str | None = None) -> str:
@@ -1126,7 +1126,7 @@ class McpToolSource:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# probe() — module-level, agent-free (MC-D10)
+# probe() — module-level, agent-free
 # ──────────────────────────────────────────────────────────────────────
 
 

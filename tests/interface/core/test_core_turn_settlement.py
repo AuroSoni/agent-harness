@@ -1,21 +1,21 @@
-"""Red-suite spec: ``TurnSettlement`` — the once-per-turn billing fact.
+"""Interface spec: ``TurnSettlement`` — the once-per-turn billing fact.
 
-Covers the CANONICAL shape from pricing-cost.md §2.2 (the owning doc — the
+Covers the CANONICAL shape (the
 README ownership table assigns ``TurnSettlement`` deep-testing to the
 pricing_cost suite; this file exercises core's carrier-side view of the same
 contract and must agree with it):
-  - R11 — type + serialization homed at ``agent_base/core/cost.py``.
-  - §2.2 — all fields REQUIRED (``agent_id``, not ``agent_uuid``; the runtime
+  - Type + serialization homed at ``agent_base/core/cost.py``.
+  - All fields REQUIRED (``agent_id``, not ``agent_uuid``; the runtime
     constructs settlements fully populated via ``settle_turn``).
-  - O14(d) — TURN-LEVEL ONLY: no ``cumulative_*`` fields on the type.
-  - B2 — claims never serialize: ``to_dict`` writes the FLAT ``tenant``/
+  - TURN-LEVEL ONLY: no ``cumulative_*`` fields on the type.
+  - Claims never serialize: ``to_dict`` writes the FLAT ``tenant``/
     ``subject`` scope key; the in-process ``principal`` keeps the full object.
-  - R2 — the streaming projection is ``UsageReport.of(settlement)`` with
+  - The streaming projection is ``UsageReport.of(settlement)`` with
     dict payloads (``usage`` = ``totals_dict()``, ``cost`` = ``to_dict()``).
 
-NOTE: this file originally pinned a stale core.md sketch (``agent_uuid``,
+NOTE: this file originally pinned a stale sketch (``agent_uuid``,
 all-optional fields, nested ``principal`` dict, ``as_usage_report()`` with
-object payloads). Re-pinned by the orchestrator to pricing-cost.md §2.2 per
+object payloads). Re-pinned by the orchestrator per
 the suite ownership rule; the pricing_cost suite is authoritative.
 
 ``SessionPrincipal`` (tenancy subsystem) and ``UsageReport`` (streaming
@@ -58,7 +58,7 @@ def _settlement(**overrides) -> TurnSettlement:
 
 
 def test_all_fields_are_required():
-    # §2.2: settle_turn always builds a fully-populated settlement — the type
+    # settle_turn always builds a fully-populated settlement — the type
     # has no optional ceremony.
     with pytest.raises(TypeError):
         TurnSettlement(agent_id="agent-1", run_id="run-1")  # type: ignore[call-arg]
@@ -71,7 +71,7 @@ def test_turn_settlement_is_frozen():
 
 
 def test_turn_level_only_field_set():
-    # O14(d): cumulative_* removed — run-to-date totals live on the
+    # cumulative_* removed — run-to-date totals live on the
     # SettlementAggregator / AgentResult, never on the per-turn settlement.
     names = {f.name for f in dataclasses.fields(TurnSettlement)}
     assert names == {
@@ -111,7 +111,7 @@ def test_to_dict_canonical_shape_and_stamp():
 
 
 def test_nested_usage_and_cost_serialize_via_their_own_methods():
-    # usage = turn_usage.totals_dict() (O5: X8 keys, no raw_usage);
+    # usage = turn_usage.totals_dict() (no raw_usage);
     # cost = turn_cost.to_dict() (stamped, currency default).
     d = _settlement().to_dict()
     assert d["usage"]["input_tokens"] == 10
@@ -124,7 +124,7 @@ def test_nested_usage_and_cost_serialize_via_their_own_methods():
 
 
 def test_to_dict_serializes_flat_scope_key_only():
-    # B2: flat tenant/subject keys ONLY — claims must never reach the wire,
+    # Flat tenant/subject keys ONLY — claims must never reach the wire,
     # and there is no nested "principal" mapping.
     d = _settlement(principal=_principal()).to_dict()
     assert d["tenant"] == "org-1"
@@ -140,7 +140,7 @@ def test_to_dict_with_no_principal_serializes_none_scope():
 
 
 def test_in_process_principal_keeps_the_full_claims():
-    # B2: only the WIRE is scope-only; the carried object is intact.
+    # Only the WIRE is scope-only; the carried object is intact.
     s = _settlement(principal=_principal())
     assert s.principal is not None
     assert s.principal.claims["role"] == "admin"
@@ -161,7 +161,7 @@ def test_from_dict_round_trips_the_current_version():
 
 
 def test_from_dict_claims_are_not_recoverable_from_the_wire():
-    # B2: only tenant/subject were serialized.
+    # Only tenant/subject were serialized.
     back = TurnSettlement.from_dict(_settlement(principal=_principal()).to_dict())
     assert back.principal is not None
     assert back.principal.tenant == "org-1"
@@ -182,7 +182,7 @@ def test_from_dict_missing_optionals_take_defaults():
 
 
 def test_usage_report_of_projects_turn_level_dict_payloads():
-    # R2: pricing supplies the projection — UsageReport.of(settlement) with
+    # Pricing supplies the projection — UsageReport.of(settlement) with
     # DICT payloads (the wire body), not live Usage/CostBreakdown objects.
     s = _settlement()
     report = UsageReport.of(s)

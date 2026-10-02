@@ -1,6 +1,6 @@
 """Shared content-hash + namespace-derivation helpers for the blob store.
 
-media-backend.md §2.4 + I13(a): one blake3 routine (``compute_blake3``) and one
+One blake3 routine (``compute_blake3``) and one
 scope→namespace derivation (``derive_namespace``) so the local/s3 backends — and
 ``MediaBackend.find_by_content_hash`` — agree on the tenant-isolation rule.
 """
@@ -25,7 +25,7 @@ def compute_blake3(data: bytes) -> str:
 
 
 def derive_namespace(namespace: str, scope: "MediaScope | None") -> str:
-    """Derive the effective storage namespace (I13(a)).
+    """Derive the effective storage namespace.
 
     When a ``scope`` with a non-anonymous principal is present, the namespace is
     ``"{tenant}/{subject}"`` so two tenants never collide and an existence probe

@@ -1,15 +1,15 @@
-"""Red-suite spec: shipped commands/ack vocabulary + principal-stamped audit.
+"""Interface spec: shipped commands/ack vocabulary + principal-stamped audit.
 
-Covers interface_plan/subsystems/core.md:
-  - §2.5 — ``agent_base/core/commands.py`` (``AgentInput``/``UserMessage``/
+Covers:
+  - ``agent_base/core/commands.py`` (``AgentInput``/``UserMessage``/
     ``ToolReply``/``Abort``/``Steer`` + ``CommandMeta``/``Target``/
     ``SteerMode``) and ``agent_base/core/ack.py`` (``Ack``/``Disposition``)
-    kept verbatim as the contract §1.5 vocabulary.
-  - O4 — ``Disposition.MISDIRECTED`` enum member retained (Rung 2).
-  - §2.5 audit additions — ``CommandAuditRecord`` gains ``principal``
-    (scope-only on the wire, B2 spirit) + ``ts``, with a stamped ``to_dict``;
+    kept verbatim.
+  - ``Disposition.MISDIRECTED`` enum member retained (Rung 2).
+  - Audit additions — ``CommandAuditRecord`` gains ``principal``
+    (scope-only on the wire) + ``ts``, with a stamped ``to_dict``;
     ``InMemoryCommandAuditLog`` stays a bounded ring buffer.
-  - §6 migration table — the principal/ts additions are ``_v``-tolerant
+  - Migration — the principal/ts additions are ``_v``-tolerant
     additive fields: ``from_dict`` round-trips the current version and
     "tolerates missing ``principal``/``ts``" on v0-style payloads.
 
@@ -40,7 +40,7 @@ from agent_base.core.messages import Message
 from agent_base.core.serializable import CORE_SCHEMA_VERSION, SCHEMA_VERSION_KEY
 from agent_base.core.types import TextContent
 
-# ── commands (§1.5, kept verbatim) ──────────────────────────────────────────
+# ── commands (kept verbatim) ──────────────────────────────────────────
 
 
 def test_command_meta_defaults():
@@ -59,7 +59,7 @@ def test_user_message_shape_and_defaults():
 
 
 def test_tool_reply_is_the_reply_primitive():
-    # ToolReply(cid, results) — THE reply primitive, including for relay (§1.5).
+    # ToolReply(cid, results) — THE reply primitive, including for relay.
     reply = ToolReply(cid="cid-1", results=[TextContent(text="ok")])
     assert reply.cid == "cid-1"
     assert reply.is_error is False
@@ -90,7 +90,7 @@ def test_agent_input_is_the_sealed_four_member_union():
     assert set(get_args(AgentInput)) == {UserMessage, ToolReply, Abort, Steer}
 
 
-# ── ack (§1.5, kept verbatim + O4) ──────────────────────────────────────────
+# ── ack (kept verbatim) ──────────────────────────────────────────
 
 
 def test_ack_shape_and_frozen():
@@ -103,7 +103,7 @@ def test_ack_shape_and_frozen():
 
 
 def test_disposition_vocabulary_includes_misdirected():
-    # O4: MISDIRECTED stays as an enum member (Rung 2 behavior).
+    # MISDIRECTED stays as an enum member (Rung 2 behavior).
     names = {m.name for m in Disposition}
     assert {
         "ACCEPTED",
@@ -118,7 +118,7 @@ def test_disposition_vocabulary_includes_misdirected():
     assert Disposition.MISDIRECTED.value == "misdirected"
 
 
-# ── audit (§2.5 — principal + ts additions) ─────────────────────────────────
+# ── audit (principal + ts additions) ─────────────────────────────────
 
 
 def _record(principal: SessionPrincipal | None = None) -> CommandAuditRecord:
@@ -177,7 +177,7 @@ def test_audit_record_to_dict_canonical_keys_and_stamp():
 
 
 def test_audit_record_to_dict_serializes_principal_scope_only():
-    # B2 spirit: tenant/subject only — claims never reach the wire.
+    # Tenant/subject only — claims never reach the wire.
     principal = SessionPrincipal(
         tenant="org-1", subject="member-9", claims={"secret": "no"}
     )
@@ -199,7 +199,7 @@ def test_audit_record_from_dict_round_trips_the_current_version():
     assert back.disposition == "resolved"
     assert back.detail == "resolved cid-1"
     assert back.ts == rec.ts
-    # B2 spirit: only the scope key crossed the wire — the principal comes back
+    # Only the scope key crossed the wire — the principal comes back
     # tenant/subject only; claims are not recoverable.
     assert back.principal is not None
     assert back.principal.tenant == "org-1"
@@ -208,7 +208,7 @@ def test_audit_record_from_dict_round_trips_the_current_version():
 
 
 def test_audit_record_from_dict_tolerates_a_v0_payload_missing_principal_and_ts():
-    # §6 migration table: "from_dict tolerates missing principal/ts" — records
+    # "from_dict tolerates missing principal/ts" — records
     # written before the additive principal/ts fields still load.
     back = CommandAuditRecord.from_dict(
         {

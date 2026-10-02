@@ -1,6 +1,6 @@
-"""Red-suite spec: the conversation log's trace surface (AMENDMENTS TR-1/TR-2).
+"""Interface spec: the conversation log's trace surface.
 
-Covers interface_plan/subsystems/core.md §2.1.4 (AMENDED 2026-09-22):
+Covers (AMENDED 2026-09-22):
   - ``ConversationLog.spans`` — plain dicts, each stamped with its own axis
     (``v = SPAN_SCHEMA_VERSION``); omitted from ``to_dict`` while empty, so a
     log without spans serialises exactly as before; round-tripped by

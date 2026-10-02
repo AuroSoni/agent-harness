@@ -1,29 +1,29 @@
 """``SessionManager`` — resident in-process sessions keyed by ``root_session_id``.
 
-Promoted to PUBLIC, supported API (session-control.md §2.2). One front door to a
+Promoted to PUBLIC, supported API. One front door to a
 live agent tree: a resident, id-keyed manager plus the ``submit(AgentInput) ->
 Ack`` three-plane control surface.
 
-- **Residency** (A5/X7): ``get_or_create`` is an atomic get-or-create — a RAM
+- **Residency**: ``get_or_create`` is an atomic get-or-create — a RAM
   hit on the resident table, or one factory build shared by concurrent callers.
-- **Identity** (contract §4 / I1): the factory is principal-aware; the resident
+- **Identity**: the factory is principal-aware; the resident
   attach-check and ``submit`` both route through the ONE ctor-injected
   ``PrincipalPolicy`` (``StrictScopePolicy`` by default). A session-addressing
   mismatch surfaces as ``SessionNotFound`` / ``Ack(NOT_FOUND)`` — no existence
-  leak (R9 layer a).
-- **Hooks** (R19): ``on_session_start`` fires exactly once, inside the build
+  leak.
+- **Hooks**: ``on_session_start`` fires exactly once, inside the build
   path, pre-publish; ``block`` discards the half-built agent
   (``SessionBlocked``). ``on_session_end`` fires in ``evict()`` after abort,
   before checkpoint.
 - **Lifecycle**: eviction is a clean teardown — abort → end-hook → checkpoint →
   unregister + ``drop_tree`` — and REFUSES while a turn is in flight or an
-  await is parked (``_is_evictable``). ``detach()`` is disconnect ≠ cancel
-  (A8): only the reader leaves; the turn keeps running.
-- **Peek** (§2.4 / I8 / O15d): ``status()`` never materializes a session;
+  await is parked (``_is_evictable``). ``detach()`` is disconnect ≠ cancel:
+  only the reader leaves; the turn keeps running.
+- **Peek**: ``status()`` never materializes a session;
   ``SessionStatus.in_flight`` is a derived property and ``open_awaits``
   surfaces the parked awaits.
 
-Id allocation: NONE (§O15a). The consumer mints ``root_session_id`` (==
+Id allocation: NONE. The consumer mints ``root_session_id`` (==
 root agent_uuid, ratified) — e.g. ``str(uuid.uuid4())`` — and passes it in.
 Rung 1 is single-process (dict + LRU + idle-TTL); Rung 2 fronts the SAME
 surface with a Redis lease + write-through checkpoint.
@@ -53,21 +53,21 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-#: §2.2 — the principal-aware factory: ``(root_session_id, principal) -> AgentRuntime``
+#: The principal-aware factory: ``(root_session_id, principal) -> AgentRuntime``
 #: (sync or async). A legacy single-arg factory is still accepted via arity
-#: detection (§6 — an ergonomic convenience, not a deprecation shim).
+#: detection (an ergonomic convenience, not a deprecation shim).
 AgentFactory = Callable[
     [str, "SessionPrincipal | None"],
     Union["AgentRuntime", Awaitable["AgentRuntime"]],
 ]
 
 #: Fallback ``OpenAwait.reason`` when the await-table record predates the
-#: amended ``AwaitTable.open`` surface (relay-await §O9 string vocabulary).
+#: amended ``AwaitTable.open`` surface.
 _DEFAULT_AWAIT_REASON = "frontend_tool"
 
 
 class SessionNotFound(Exception):
-    """The caller may not address this session (R9 layer a — no existence leak).
+    """The caller may not address this session (no existence leak).
 
     Raised by ``get_or_create`` on a principal-policy rejection; mapped by
     ``submit`` to ``Ack(disposition=NOT_FOUND)`` and by HTTP layers to 404.
@@ -77,7 +77,7 @@ class SessionNotFound(Exception):
 
 class SessionBlocked(Exception):
     """``on_session_start`` returned ``decision="block"`` — the build was
-    discarded (§2.5). ``str(exc)`` carries the hook's reason; the consumer maps
+    discarded. ``str(exc)`` carries the hook's reason; the consumer maps
     it to a 4xx."""
 
 
@@ -92,12 +92,12 @@ class SessionEntry:
 
 @dataclass(frozen=True)
 class OpenAwait:
-    """§I8: one parked await, surfaced on a non-materializing status peek."""
+    """One parked await, surfaced on a non-materializing status peek."""
 
     cid: str
     tool_use_ids: tuple[str, ...]
     tool_names: tuple[str, ...]
-    reason: str          # an AWAIT_REASON_* string constant (relay-await §O9)
+    reason: str          # an AWAIT_REASON_* string constant
     opened_at: float
 
 
@@ -108,12 +108,12 @@ class SessionStatus:
     resident: bool
     phase: AgentPhase                       # IDLE if not resident
     has_open_await: bool
-    open_awaits: tuple[OpenAwait, ...]      # §I8: the parked awaits (empty when none)
+    open_awaits: tuple[OpenAwait, ...]      # the parked awaits (empty when none)
     actor_running: bool                     # raw signal feeding the derived in_flight
     principal: "SessionPrincipal | None"
 
     @property
-    def in_flight(self) -> bool:            # §O15d: DERIVED, not a stored field
+    def in_flight(self) -> bool:            # DERIVED, not a stored field
         """A turn is in flight when the actor is running OR the phase is non-IDLE."""
         return self.actor_running or self.phase is not AgentPhase.IDLE
 
@@ -123,7 +123,7 @@ class SessionManager:
 
     Keyed by ``root_session_id`` (== root agent_uuid, ratified). Rung 1 is
     single-process (dict + LRU + idle-TTL). Rung 2 fronts the SAME surface with
-    a Redis lease + write-through checkpoint (fork B); no consumer call changes.
+    a Redis lease + write-through checkpoint; no consumer call changes.
     """
 
     def __init__(
@@ -134,7 +134,7 @@ class SessionManager:
         idle_ttl_s: float = 900.0,
         principal_policy: PrincipalPolicy = StrictScopePolicy(),
     ) -> None:
-        """``principal_policy`` (§I1) is the ONE authorization policy, shared by
+        """``principal_policy`` is the ONE authorization policy, shared by
         BOTH the ``get_or_create`` session-attach check AND
         ``AwaitTable.resolve``/``cancel`` (forwarded per-call by the actor).
         Default ``StrictScopePolicy()``. There is no
@@ -149,7 +149,7 @@ class SessionManager:
 
     @property
     def principal_policy(self) -> PrincipalPolicy:
-        """The ONE injected authorization policy (§I1)."""
+        """The ONE injected authorization policy."""
         return self._principal_policy
 
     def _now(self) -> float:
@@ -166,9 +166,9 @@ class SessionManager:
 
         ATOMIC: concurrent callers for the same id share one build. On a
         RESIDENT hit the attach-check routes through ``self.principal_policy``
-        (§I1) — rejection ⇒ ``SessionNotFound`` (NOT_FOUND, no existence leak).
+        — rejection ⇒ ``SessionNotFound`` (NOT_FOUND, no existence leak).
         On a fresh build the principal is threaded into the agent and
-        ``on_session_start`` fires pre-publish (R19); ``block`` ⇒ the build is
+        ``on_session_start`` fires pre-publish; ``block`` ⇒ the build is
         discarded and ``SessionBlocked`` is raised.
         """
         entry = self._sessions.get(root_session_id)
@@ -198,7 +198,7 @@ class SessionManager:
                 agent = await agent
 
             # Create-vs-resume probe BEFORE initialize() — a cold build may
-            # create initial persisted state during hydration (§2.5).
+            # create initial persisted state during hydration.
             cold = True
             probe = getattr(agent, "has_persisted_state", None)
             if callable(probe):
@@ -209,12 +209,12 @@ class SessionManager:
             if not getattr(agent, "_initialized", False):
                 await agent.initialize()
 
-            # Thread identity BEFORE the hook & before publishing (contract §4).
+            # Thread identity BEFORE the hook & before publishing.
             set_principal = getattr(agent, "set_principal", None)
             if callable(set_principal):
                 set_principal(principal)
 
-            # R19: on_session_start fires exactly once, pre-publish.
+            # on_session_start fires exactly once, pre-publish.
             await self._fire_session_start(agent, cold=cold, principal=principal)
 
             self._sessions[root_session_id] = SessionEntry(
@@ -236,7 +236,7 @@ class SessionManager:
         principal: "SessionPrincipal | None",
     ) -> "AgentRuntime":
         """Resident hit: the attach-check runs through the ONE injected policy
-        (§2.5 — unconditionally; omitting the claimant must not bypass auth)."""
+        (unconditionally; omitting the claimant must not bypass auth)."""
         if not self._principal_policy.authorizes(entry.principal, principal):
             raise SessionNotFound(root_session_id)
         entry.last_active = self._now()
@@ -246,8 +246,8 @@ class SessionManager:
         self, root_session_id: str, principal: "SessionPrincipal | None"
     ) -> "AgentRuntime | Awaitable[AgentRuntime]":
         """Invoke the factory. The factory always receives a principal — never
-        ``None``; anonymous when unsupplied (tenancy §A.1). A legacy single-arg
-        factory is called with just the id (§6 arity detection)."""
+        ``None``; anonymous when unsupplied. A legacy single-arg
+        factory is called with just the id (arity detection)."""
         threaded = principal if principal is not None else SessionPrincipal()
         if self._factory_accepts_principal():
             return self._build_agent(root_session_id, threaded)
@@ -268,7 +268,7 @@ class SessionManager:
         )
         return has_var_positional or len(positional) >= 2
 
-    # ── Hook firing points (R19; §2.5) ──────────────────────────────────────
+    # ── Hook firing points ──────────────────────────────────────────────────
 
     async def _fire_session_start(
         self,
@@ -294,7 +294,7 @@ class SessionManager:
             raise SessionBlocked(
                 getattr(outcome, "reason", None) or "on_session_start blocked"
             )
-        # §2.7 guarantee 4 (CM-G4): after the R20 precedence resolved
+        # After the precedence resolved
         # (persisted restore in initialize() > the handler's
         # set_default_profile above > ctor default), the runtime announces
         # the active profile ONCE — auto ProfileChanged + on_profile_changed
@@ -306,7 +306,7 @@ class SessionManager:
     async def _fire_session_end(
         self, agent: "AgentRuntime", entry: SessionEntry, *, reason: str
     ) -> None:
-        """§2.5 note: fires in ``evict()`` after abort, before checkpoint, so an
+        """Fires in ``evict()`` after abort, before checkpoint, so an
         end-hook can still ``emit`` a final ``MetaBody``. Best-effort."""
         make_ctx = getattr(agent, "_make_session_context", None)
         run_hook = getattr(agent, "_run_hook", None)
@@ -334,21 +334,21 @@ class SessionManager:
         """Resolve the resident session and route ``command`` to ``agent.submit``.
 
         ``principal`` is checked against the resident session's principal via
-        the ONE injected policy (§I1) — rejection ⇒
+        the ONE injected policy — rejection ⇒
         ``Ack(disposition=NOT_FOUND)`` (no information leak). This is the
-        abort-by-id seam that resolves A9. The agent's ``Ack`` is returned
+        abort-by-id seam. The agent's ``Ack`` is returned
         verbatim, never re-wrapped.
 
-        relay-await §2.4 (rehydrate-then-resolve): a ``ToolReply`` whose cid
+        Rehydrate-then-resolve: a ``ToolReply`` whose cid
         has NO live record on the await table is the cold path — the session
         is brought back, its persisted ``pending_relay`` pause is re-armed on
-        the SAME cid (§B4: reply in hand → re-open WITHOUT re-emit), and the
+        the SAME cid (reply in hand → re-open WITHOUT re-emit), and the
         redelivered reply then resolves it through the one ``agent.submit``
-        contract. (The doc sketch gates on residency; the live record is the
+        contract. (An earlier sketch gated on residency; the live record is the
         sharper discriminator — a freshly-resident agent whose parked
         coroutine died with a prior process still needs the re-arm.)
 
-        NV-3: control commands (``Abort``/``Steer``) addressed to a
+        Control commands (``Abort``/``Steer``) addressed to a
         NON-resident session never CREATE one — see
         ``_probe_non_resident_control``.
         """
@@ -396,10 +396,10 @@ class SessionManager:
         command: "AgentInput",
         principal: "SessionPrincipal | None",
     ) -> Ack | None:
-        """Control commands never CREATE a session (NV-3).
+        """Control commands never CREATE a session.
 
-        Before NV-3 an ``Abort``/``Steer`` addressed to an unknown id rode
-        ``get_or_create`` into the GF-P6G1 create-branch — materializing a
+        Previously an ``Abort``/``Steer`` addressed to an unknown id rode
+        ``get_or_create`` into the create-branch — materializing a
         fresh persisted session as a side effect of a control probe and
         answering 409 where the documented contract says 404. Instead the
         target is probed with a throwaway, never-``initialize()``d build
@@ -407,7 +407,7 @@ class SessionManager:
         and runs under the claimant's adapter scope):
 
         - no persisted state → ``Ack(NOT_FOUND)`` — unknown and not-yours stay
-          indistinguishable (R9 layer a);
+          indistinguishable;
         - persisted ``Abort`` target → ``Ack(NOT_RUNNING)`` without resuming
           residency (Rung 1: a non-resident session has nothing in flight);
         - persisted ``Steer`` target → ``None`` — steer queues for the next
@@ -434,7 +434,7 @@ class SessionManager:
             return None
         return Ack(seq=-1, disposition=Disposition.NOT_RUNNING)
 
-    # ── Peek (§2.4 — drives NOT_RUNNING; never materializes) ────────────────
+    # ── Peek (drives NOT_RUNNING; never materializes) ───────────────────────
 
     async def status(self, root_session_id: str) -> SessionStatus:
         """Non-materializing peek (does NOT build the agent)."""
@@ -460,10 +460,10 @@ class SessionManager:
         )
 
     def _open_awaits_for(self, root_session_id: str) -> tuple[OpenAwait, ...]:
-        """Project the table's parked records into §I8 ``OpenAwait`` rows.
+        """Project the table's parked records into ``OpenAwait`` rows.
 
         Fields the amended ``AwaitTable.open`` stamps (``tool_names``,
-        ``reason``, ``opened_at``) are read defensively until the relay-await
+        ``reason``, ``opened_at``) are read defensively until the
         rework lands them on ``AwaitRecord``."""
         snapshot: list[OpenAwait] = []
         for record in get_await_table().walk(root_session_id):
@@ -485,11 +485,11 @@ class SessionManager:
     # ── Lifecycle / eviction (clean teardown = abort → checkpoint → unregister) ─
 
     async def detach(self, root_session_id: str) -> bool:
-        """Caller (e.g. an SSE generator) is leaving. Disconnect ≠ cancel (A8):
+        """Caller (e.g. an SSE generator) is leaving. Disconnect ≠ cancel:
         the turn keeps running on the resident agent; only the reader detaches.
         No-op on the actor AND on the stream — a reader that wants the
         runtime's read point released calls ``agent.detach_stream()`` itself
-        (GF-P6G2; the manager never guesses whether the leaving caller is
+        (the manager never guesses whether the leaving caller is
         still the live reader)."""
         return root_session_id in self._sessions
 
@@ -529,7 +529,7 @@ class SessionManager:
         checkpoint → unregister + ``drop_tree`` (await table). Refuses while a
         turn is in flight or an await is parked (``_is_evictable``).
 
-        GF-P6G3 teardown contract: eviction never leaks driver tasks — the
+        Teardown contract: eviction never leaks driver tasks — the
         runtime's ``_shutdown_actor`` reaps the ``ensure_actor`` task and any
         cold-resume continuation (a spawned-but-not-yet-started task is
         cancelled; an actually in-flight turn was already refused above).
@@ -579,7 +579,7 @@ class SessionManager:
             logger.warning(
                 "SessionManager: sandbox pause during evict failed for %s", root_session_id
             )
-        # mcp.md E6: close runtime resources (MCP client sessions, stdio
+        # Close runtime resources (MCP client sessions, stdio
         # children) — no leaked subprocesses past the session actor.
         try:
             aclose = getattr(agent, "aclose", None)
@@ -680,7 +680,7 @@ class SessionManager:
     def is_resident(self, root_session_id: str) -> bool:
         return root_session_id in self._sessions
 
-    # ── Id allocation: NONE (§O15a). The consumer mints root_session_id. ────
+    # ── Id allocation: NONE. The consumer mints root_session_id. ────────────
 
 
 __all__ = [

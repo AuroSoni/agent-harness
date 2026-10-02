@@ -1,7 +1,7 @@
-"""Red-suite specs for media-backend §2.0 — identity / `MediaScope` namespacing.
+"""Interface specs for media-backend — identity / `MediaScope` namespacing.
 
-Covers media-backend.md §2.0 ("Identity: principal threads in, agent_uuid stays
-as the namespace key") and the I13(a) amendment (scope-derived namespace, default
+Covers "Identity: principal threads in, agent_uuid stays
+as the namespace key" and the scope-derived namespace (default
 scope-filtered existence probes).
 
 Symbols under test (owned by media_backend):
@@ -27,7 +27,7 @@ def test_media_scope_is_frozen_dataclass() -> None:
 
 
 def test_media_scope_principal_defaults_to_none() -> None:
-    """§2.0: principal is OPTIONAL; None ⇒ single-tenant (today's behaviour)."""
+    """Principal is OPTIONAL; None ⇒ single-tenant (today's behaviour)."""
     scope = MediaScope(agent_uuid="agent-1")
     assert scope.agent_uuid == "agent-1"
     assert scope.principal is None

@@ -1,9 +1,9 @@
 """Example usage of AnthropicAgent with math tools.
 
-Ported (2026-06-10, P-A lift) from the deleted ``anthropic_agent`` package to
+Ported (2026-06-10) from the deleted ``anthropic_agent`` package to
 ``agent_base``: streaming rides the Rung-1 ``agent.stream()`` read path
-(``run_stream(prompt, queue)`` is deleted — streaming-and-meta.md §6 / I3 / G0),
-and per-turn cost rides ``result.settlement`` (pricing-cost.md §6 / B6).
+(``run_stream(prompt, queue)`` is deleted),
+and per-turn cost rides ``result.settlement``.
 """
 import asyncio
 

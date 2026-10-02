@@ -1,11 +1,11 @@
-"""The canonical versioned-serialization convention (core.md §2.1, O15(c), R12).
+"""The canonical versioned-serialization convention.
 
 One **library-wide** ``CORE_SCHEMA_VERSION``, one ``to_dict()`` per wire-crossing
 entity that always stamps it via :func:`_stamp`, one ``from_dict()`` that
 tolerates older versions and unknown keys.
 
 ``Serializable`` is a **documented convention, not a runtime-checkable
-Protocol** (O15(c)) — nothing does ``isinstance(x, Serializable)``. Every core
+Protocol** — nothing does ``isinstance(x, Serializable)``. Every core
 entity that is persisted or crosses the wire SHOULD provide:
 
 * ``to_dict()`` — total: serializes EVERY field, recursively, via the child's
@@ -17,7 +17,7 @@ entity that is persisted or crosses the wire SHOULD provide:
 It is a structural expectation enforced by review + tests, not an isinstance
 check.
 
-Version axes (R12): this is the **entity-wire** version. Storage's
+Version axes: this is the **entity-wire** version. Storage's
 ``LIBRARY_SCHEMA_VERSION`` (DDL) and ``streaming.WIRE_PROTOCOL_VERSION``
 (SSE bytes) are *distinct* axes.
 """
@@ -27,8 +27,7 @@ from typing import Any
 
 #: The ONE entity-wire version. Bumped only on a BREAKING shape change to ANY
 #: core entity. Additive fields do not bump it (from_dict tolerates unknown
-#: keys; missing keys take defaults). There are NO per-entity version counters
-#: (O15(c)).
+#: keys; missing keys take defaults). There are NO per-entity version counters.
 CORE_SCHEMA_VERSION: int = 1
 
 #: Reserved key stamped into every canonical dict. Readers branch on it.
@@ -36,7 +35,7 @@ SCHEMA_VERSION_KEY = "_v"
 
 
 def _stamp(d: dict[str, Any]) -> dict[str, Any]:
-    """Stamp the single library-wide CORE_SCHEMA_VERSION (O15(c) — no per-entity arg)."""
+    """Stamp the single library-wide CORE_SCHEMA_VERSION (no per-entity arg)."""
     d[SCHEMA_VERSION_KEY] = CORE_SCHEMA_VERSION
     return d
 

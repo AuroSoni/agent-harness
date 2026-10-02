@@ -1,8 +1,8 @@
 """Unit tests for ``agent_base.core.chain`` — the ONE shared chain-repair home.
 
-providers.md §2.1 Notes / R18a: the two divergent per-provider
+The two divergent per-provider
 ``message_sanitizer`` implementations are collapsed onto this module and the
-module-level provider helpers are REMOVED (§6, G0).  These tests pin the
+module-level provider helpers are REMOVED.  These tests pin the
 shared rule set: synthetic abort results, ``ensure_chain_validity``'s
 structural fixes, user-content reordering, and the loop-owned relay-abort
 patch (``plan_relay_abort``).
@@ -160,7 +160,7 @@ class TestEnsureChainValidity:
         assert isinstance(user_content[-1], TextContent)
 
     def test_consecutive_user_messages_merged(self):
-        # CM-G5c NOTE: the tool_result needs a live tool_use upstream — a
+        # NOTE: the tool_result needs a live tool_use upstream — a
         # result with NO matching tool_use anywhere is an orphan and is now
         # DROPPED by the scrub pass (the API rejects such a chain anyway).
         chain = [
@@ -210,7 +210,7 @@ class TestEnsureChainValidity:
 
 
 # ===========================================================================
-# Persisted-history scrub (AMENDMENTS CM-G5 — consumer gaps G5a–d; the
+# Persisted-history scrub (the
 # scenarios replicate nova's strict-xfail repros in
 # tests/unit/test_chain_integrity_regression.py, which flip to XPASS now)
 # ===========================================================================

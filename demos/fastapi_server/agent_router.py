@@ -1,6 +1,6 @@
 """Agent endpoint for streaming responses via SSE.
 
-Reference-consumer wiring (GF-P6G1..G4): every endpoint runs on the PUBLIC
+Reference-consumer wiring: every endpoint runs on the PUBLIC
 surface only — ``get_or_create`` → ``attach_stream()`` → ``submit`` → SSE.
 No private seams: the per-request read point is ``agent.attach_stream()``
 (never a queue swap), turns are driven by the submit auto-kick (never a
@@ -38,12 +38,12 @@ from storage import config_adapter, conversation_adapter, run_adapter
 
 logger = logging.getLogger(__name__)
 
-# The ONE wire codec (streaming-and-meta.md §2.5): typed StreamItems → SSE
-# frames. Replaces the deleted get_formatter/JSON-string queue pipeline (G0).
+# The ONE wire codec: typed StreamItems → SSE
+# frames. Replaces the deleted get_formatter/JSON-string queue pipeline.
 _SSE_CODEC = SseCodec()
 
 #: Frame kinds that close a request's SSE response. ``run_completed`` is
-#: GUARANTEED at every completed/errored turn end (GF-P6G4); ``await_input``
+#: GUARANTEED at every completed/errored turn end; ``await_input``
 #: pauses the turn (the continuation streams from /tool_results); the
 #: ``aborted`` Custom frame is the abort-path terminal.
 _TERMINAL_KINDS = frozenset({"run_completed", "await_input"})
@@ -565,12 +565,12 @@ async def _sse_frames_until_terminal(
 ) -> AsyncGenerator[str, None]:
     """Encode StreamItems as SSE frames until the turn completes or pauses.
 
-    Closing at ``await_input`` leaves the actor PARKED in RAM on the cid
-    (relay-await §2.3) — the continuation streams from /tool_results, whose
-    ``attach_stream()`` takes over the live read point (GF-P6G2/D3). A dropped
+    Closing at ``await_input`` leaves the actor PARKED in RAM on the cid —
+    the continuation streams from /tool_results, whose
+    ``attach_stream()`` takes over the live read point. A dropped
     SSE connection lands in the ``except``: ``detach_stream()`` releases the
     read point (frames drop while detached) but the resident turn keeps
-    running to its checkpoint — disconnect ≠ cancel (A8).
+    running to its checkpoint — disconnect ≠ cancel.
     """
     try:
         async for item in stream:
@@ -594,7 +594,7 @@ async def stream_agent_response(
 ) -> AsyncGenerator[str, None]:
     """Generate SSE-formatted stream of agent responses.
 
-    The reference consumer flow (GF-P6G2/G3): get_or_create →
+    The reference consumer flow: get_or_create →
     ``attach_stream()`` (the public per-request read point — a second request
     steals the live stream, the prior reader ends cleanly) →
     ``submit(UserMessage)`` (the auto-kicked actor drives the turn; no
@@ -611,9 +611,9 @@ async def stream_agent_response(
     """
     try:
         # Resolve a RESIDENT agent (keyed by agent_uuid) instead of cold-loading.
-        # The CONSUMER mints the id for new sessions (O15a) so the run is
+        # The CONSUMER mints the id for new sessions so the run is
         # addressable by /abort and /steer; a fresh minted id initializes with
-        # ZERO pre-seeding (GF-P6G1).
+        # ZERO pre-seeding.
         import uuid as _uuid
         session_id = agent_uuid or f"agent_{_uuid.uuid4().hex}"
         agent = await session_manager.get_or_create(session_id)
@@ -645,12 +645,12 @@ async def stream_tool_results_response(
 ) -> AsyncGenerator[str, None]:
     """Generate SSE-formatted stream after frontend tools complete.
 
-    The ONE resume contract (relay-await §2.4 / §6): ``submit(ToolReply(cid))``
+    The ONE resume contract: ``submit(ToolReply(cid))``
     through the SessionManager. Hot (resident, parked) sessions wake in place;
     evicted sessions rehydrate-then-resolve on the SAME cid — there is no
-    separate cold endpoint, and ``resume_with_relay_results`` is deleted (G0).
+    separate cold endpoint, and ``resume_with_relay_results`` is deleted.
 
-    The completion handle (GF-P6G4): the continuation ALWAYS ends with a
+    The completion handle: the continuation ALWAYS ends with a
     ``RunCompleted`` frame on the attached stream (unconditional at turn end),
     so this response closes on it — no private task-handle watcher. A
     non-streaming caller would use ``await agent.wait_idle()`` instead.
@@ -663,8 +663,8 @@ async def stream_tool_results_response(
     """
     try:
         # Resolve the RESIDENT session (cold-loads persisted state if evicted)
-        # and take over the live read point for this request (GF-P6G2/D3:
-        # attach BEFORE the reply so the continuation's first frames land
+        # and take over the live read point for this request (attach BEFORE
+        # the reply so the continuation's first frames land
         # here; the /run reader — if still attached — ends cleanly).
         agent = await session_manager.get_or_create(request.agent_uuid)
         stream = agent.attach_stream()

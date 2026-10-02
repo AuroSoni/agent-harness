@@ -1,4 +1,4 @@
-"""AC-1: durable answers, actor-owned recovery, and publication/billing retries."""
+"""Durable answers, actor-owned recovery, and publication/billing retries."""
 import asyncio
 
 import pytest

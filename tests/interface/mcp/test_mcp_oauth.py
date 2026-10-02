@@ -1,4 +1,4 @@
-"""oauth.py split-phase helpers + OAuthTokenAuth (mcp.md §4; MC-D9 + the
+"""oauth.py split-phase helpers + OAuthTokenAuth (the
 2025-11-25 spec-review deltas).
 
 Discovery (RFC 9728 → 8414), client identity (CIMD ahead of DCR), the PKCE
@@ -108,7 +108,7 @@ async def test_build_authorize_url_carries_pkce_state_and_resource():
     assert params["resource"] == "https://srv.example/mcp"  # RFC 8707 MUST
     assert params["state"] == pending.state
     assert params["scope"] == "files:read files:write"
-    # PendingAuth survives a consumer store round-trip (serializable, §4)
+    # PendingAuth survives a consumer store round-trip (serializable)
     assert PendingAuth.from_dict(pending.to_dict()) == pending
 
 

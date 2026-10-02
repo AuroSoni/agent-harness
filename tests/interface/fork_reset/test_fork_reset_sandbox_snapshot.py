@@ -1,9 +1,9 @@
-"""Red-suite specs — fork-reset: the sandbox snapshot (CAS content-manifest).
+"""Interface specs — fork-reset: the sandbox snapshot (CAS content-manifest).
 
 Covers:
-- interface_plan/subsystems/fork-reset.md §3 + SPEC §F3 / §D2.
+- mental_model/features/fork-and-reset.md.
 - the additive recursive ``Sandbox.walk()`` primitive; capture/materialize
-  round-trips the EXACT file set (criterion #1, sandbox half); unchanged files
+  round-trips the EXACT file set; unchanged files
   dedupe to 0 new blobs; over-cap files mark ``skipped`` →
   ``fidelity="degraded"``.
 """

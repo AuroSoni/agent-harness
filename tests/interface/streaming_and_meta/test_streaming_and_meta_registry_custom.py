@@ -1,12 +1,12 @@
-"""Red-suite interface specs: register_meta_body + typed custom bodies.
+"""Interface specs: register_meta_body + typed custom bodies.
 
-Covers interface_plan/subsystems/streaming-and-meta.md:
-- §2.2 ``register_meta_body(cls)`` as amended by AMENDMENTS I11 (consumer
+Covers:
+- ``register_meta_body(cls)`` (consumer
   frozen dataclass with ``kind: ClassVar[str]``; decoder yields typed
   instances; usable as a decorator; library kinds pre-registered),
-- §4 Fork F-2 (open ``Custom(name, data)`` primary; registered typed bodies
-  opt-in on top),
-- §2.6 ``DecodedRun.custom`` projection (registered bodies keyed by ``kind``;
+- Open ``Custom(name, data)`` primary; registered typed bodies
+  opt-in on top,
+- ``DecodedRun.custom`` projection (registered bodies keyed by ``kind``;
   open Custom bodies keyed by ``name``).
 """
 from __future__ import annotations
@@ -115,7 +115,7 @@ def test_register_meta_body_requires_string_kind():
 
 
 def test_decoder_yields_typed_instances_for_registered_kind():
-    # I11: after registration the decoder yields a typed instance of the
+    # After registration the decoder yields a typed instance of the
     # consumer class (not a Custom) whenever it sees that kind on the wire.
     cls = register_meta_body(_make_body_cls("test_reg_mode_change"))
     try:
@@ -141,7 +141,7 @@ def test_registered_bodies_surface_in_decoded_run_custom_by_kind():
 
 
 def test_open_custom_bodies_grouped_by_name_in_decoded_run():
-    # Fork F-2 Variant A: the open path needs no registration; DecodedRun.custom
+    # The open path needs no registration; DecodedRun.custom
     # keys open Custom bodies by their `name`.
     raw = _encode(
         _envelope(Custom(name="todo", data={"items": [1]}), seq=1),

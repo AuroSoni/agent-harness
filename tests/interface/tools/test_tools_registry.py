@@ -1,16 +1,16 @@
-"""ToolRegistry — Toolish registration, executor_for, execution (tools.md §2.3).
+"""ToolRegistry — Toolish registration, executor_for, execution.
 
 Covers:
-- §2.3: ``register_tools`` accepts the ``Toolish`` union — ``@tool``-decorated
+- ``register_tools`` accepts the ``Toolish`` union — ``@tool``-decorated
   callables, ``ConfigurableToolBase`` INSTANCES (registry calls ``as_tool()``
   internally — no consumer-side plumbing), and ``ToolBundle``s (expanded).
   Non-registrable items raise ``ValueError``.
-- §2.3: ``executor_for(tool_name)`` is the public read of a tool's execution
+- ``executor_for(tool_name)`` is the public read of a tool's execution
   mode (the value ``ctx.executor`` exposes to the tool hooks); unknown names
   default to ``"backend"``.
-- §2.3: ``attach_sandbox`` reaches instances via the auto-attached
+- ``attach_sandbox`` reaches instances via the auto-attached
   ``__tool_instance__``.
-- §2.2/§6 (retained behavior): the ``@tool`` decorator path (``__tool_schema__``,
+- Retained behavior: the ``@tool`` decorator path (``__tool_schema__``,
   ``__tool_executor__``, ``__tool_needs_confirmation__``), ctx injection,
   string auto-wrap, error envelopes, and relay classification.
 """
@@ -136,7 +136,7 @@ def _projected_text(envelope: ToolResultEnvelope) -> str:
     return "".join(getattr(b, "text", "") for b in envelope.for_context_window())
 
 
-# ─── @tool decorator path (retained — §6 migration table) ──────────────────
+# ─── @tool decorator path (retained) ───────────────────────────────────────
 
 
 def test_tool_decorator_attaches_schema_and_metadata():
@@ -156,7 +156,7 @@ def test_decorated_schema_skips_ctx_param():
     assert "ctx" not in props
 
 
-# ─── register_tools — the Toolish union (§2.3) ─────────────────────────────
+# ─── register_tools — the Toolish union ────────────────────────────────────
 
 
 async def test_register_tools_accepts_decorated_callable():
@@ -197,7 +197,7 @@ def test_register_tools_rejects_non_registrable():
         registry.register_tools([42])
 
 
-# ─── executor_for (§2.3) ────────────────────────────────────────────────────
+# ─── executor_for ───────────────────────────────────────────────────────────
 
 
 def test_executor_for_reads_execution_mode():
@@ -212,7 +212,7 @@ def test_executor_for_unknown_tool_defaults_backend():
     assert registry.executor_for("no_such_tool") == "backend"
 
 
-# ─── attach_sandbox via auto-attached __tool_instance__ (§2.3) ──────────────
+# ─── attach_sandbox via auto-attached __tool_instance__ ─────────────────────
 
 
 def test_attach_sandbox_reaches_instance_registered_tools():
@@ -240,15 +240,15 @@ async def test_execute_wraps_string_returns():
     registry.register_tools([echo])
     env = await registry.execute("echo", "toolu_4", {"text": "plain"})
     assert isinstance(env, ToolResultEnvelope)
-    # §2.1: GenericTextEnvelope remains — it IS the registry's string auto-wrap.
+    # GenericTextEnvelope remains — it IS the registry's string auto-wrap.
     assert isinstance(env, GenericTextEnvelope)
     assert env.is_error is False
     assert env.for_conversation_log().summary.startswith("plain")
 
 
 async def test_execute_passes_envelope_returns_through_unwrapped():
-    # §2.2: "Return a ToolResultEnvelope, a str (auto-wrapped)" — an envelope
-    # return is the primary §3 authoring path and must NOT be re-wrapped.
+    # "Return a ToolResultEnvelope, a str (auto-wrapped)" — an envelope
+    # return is the primary authoring path and must NOT be re-wrapped.
     registry = ToolRegistry()
     registry.register_tools([enveloper])
     env = await registry.execute("enveloper", "toolu_8", {"text": "model body"})
@@ -285,7 +285,7 @@ async def test_execute_stamps_duration():
     assert env.duration_ms >= 0
 
 
-# ─── Relay classification (contract §2.1 selector) ─────────────────────────
+# ─── Relay classification ──────────────────────────────────────────────────
 
 
 def test_classify_tool_calls_buckets_by_execution_mode():

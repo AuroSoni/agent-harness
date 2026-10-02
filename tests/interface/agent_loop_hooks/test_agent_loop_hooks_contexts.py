@@ -1,19 +1,19 @@
-"""HookContext hierarchy — agent-loop-hooks.md §2.2 (contract §1.2, R4 superset).
+"""HookContext hierarchy.
 
 Covers:
-- §2.2 base ``HookContext``: the R4-canonical field superset (identity/topology,
+- Base ``HookContext``: the canonical field superset (identity/topology,
   resource handles, ``executor``, ``agent_config``, ``conversation``, ``logger``)
-  plus the two universal capabilities ``emit`` (B8 signature — pinned both on a
-  hand-built context AND on the runtime-WIRED emit via a scripted turn, R21:
+  plus the two universal capabilities ``emit`` (its signature — pinned both on a
+  hand-built context AND on the runtime-WIRED emit via a scripted turn;
   never raises into a hook) and ``once``.
-- §2.2 capability scoping by type for every subclass: ``SessionContext``,
+- Capability scoping by type for every subclass: ``SessionContext``,
   ``TurnContext``, ``EndTurnContext``, ``ToolCallContext``, ``ToolResultContext``,
   ``ToolErrorContext``, ``SubagentContext``, ``CompactionContext``, ``AbortContext``,
-  ``ProfileChangedContext`` (§2.3a).
-- B1 (AMENDMENTS): ``EndTurnContext`` carries NO ``settlement`` field.
-- O7 (AMENDMENTS): ``switch_profile`` lives ONLY on ``TurnContext`` and
+  ``ProfileChangedContext``.
+- ``EndTurnContext`` carries NO ``settlement`` field.
+- ``switch_profile`` lives ONLY on ``TurnContext`` and
   ``ToolResultContext``.
-- I10 (AMENDMENTS): ``CompactionContext.trigger`` admits ``"overflow"``.
+- ``CompactionContext.trigger`` admits ``"overflow"``.
 """
 
 import dataclasses
@@ -51,7 +51,7 @@ class _Obj:
 
 
 class EmitRecorder:
-    """Records calls made through the B8 emit signature."""
+    """Records calls made through the emit signature."""
 
     def __init__(self):
         self.calls = []
@@ -75,7 +75,7 @@ async def _once(key, fn):
 
 
 def base_kwargs(**overrides):
-    """Keyword args for the R4-canonical HookContext base field set."""
+    """Keyword args for the canonical HookContext base field set."""
     kw = dict(
         run_id="run-1",
         agent_id="agent-1",
@@ -104,8 +104,8 @@ def _field_names(cls):
 
 
 def test_hook_context_canonical_field_superset():
-    # R4: this superset (executor, agent_config, conversation, logger included)
-    # is AUTHORITATIVE; contract §1.2 is only the minimum.
+    # This superset (executor, agent_config, conversation, logger included)
+    # is AUTHORITATIVE.
     expected = {
         "run_id",
         "agent_id",
@@ -148,9 +148,9 @@ def test_hook_context_emit_uses_b8_keyword_only_signature():
 
 
 async def test_runtime_wired_emit_accepts_b8_keywords_and_never_raises():
-    # B8 on the LIVE path: record_turn (I7) delivers a runtime-built context
+    # On the LIVE path: record_turn delivers a runtime-built context
     # whose emit is the runtime-WIRED channel — not a test-defined recorder.
-    # The keyword-only B8 call shape must be accepted, and per R21 the hook
+    # The keyword-only call shape must be accepted, and the hook
     # emit never raises into the hook body.
     fired = []
 
@@ -204,7 +204,7 @@ def test_session_context_resume_source_and_end_reason():
 
 
 def test_session_context_configure_via_handlers():
-    # R20 dynamic override path: set_profiles / set_default_profile handlers.
+    # Dynamic override path: set_profiles / set_default_profile handlers.
     seen = {}
     ctx = SessionContext(
         **base_kwargs(),
@@ -220,7 +220,7 @@ def test_session_context_configure_via_handlers():
 
 
 def test_session_context_has_no_switch_profile():
-    # Contract §2: NO profile switch at session start.
+    # NO profile switch at session start.
     assert "switch_profile" not in _field_names(SessionContext)
     ctx = SessionContext(**base_kwargs(), source="create", is_cold_load=False)
     assert not hasattr(ctx, "switch_profile")
@@ -265,7 +265,7 @@ def test_end_turn_context_fields():
 
 
 def test_end_turn_context_has_no_settlement_field():
-    # B1: maintainer overruled the settlement add. Billing subscribes via
+    # Maintainer overruled the settlement add. Billing subscribes via
     # agent.on_usage_report(cb), never ctx.settlement.
     assert "settlement" not in _field_names(EndTurnContext)
     ctx = EndTurnContext(
@@ -280,7 +280,7 @@ def test_end_turn_context_has_no_settlement_field():
 
 
 def test_end_turn_context_has_no_switch_profile():
-    # O7: on_turn_end has no profile-switch capability at all.
+    # on_turn_end has no profile-switch capability at all.
     assert "switch_profile" not in _field_names(EndTurnContext)
 
 
@@ -300,7 +300,7 @@ def test_tool_call_context_fields_and_executor_branch():
     assert ctx.tool_input == {"plan_id": "p1"}
     assert ctx.tool_use_id == "toolu_1"
     assert ctx.call is call
-    # §2.1/§2.5: ctx.executor lets a before_tool hook branch backend vs frontend.
+    # ctx.executor lets a before_tool hook branch backend vs frontend.
     assert ctx.executor == "frontend"
 
 
@@ -371,7 +371,7 @@ def test_compaction_context_defaults_and_before_payload():
 
 
 def test_compaction_context_admits_overflow_trigger():
-    # I10: overflow routes through before_compact(trigger="overflow").
+    # Overflow routes through before_compact(trigger="overflow").
     ctx = CompactionContext(**base_kwargs(), trigger="overflow")
     assert ctx.trigger == "overflow"
     assert ctx.estimated_tokens is None
@@ -394,7 +394,7 @@ def test_abort_context_fields():
     assert "switch_profile" not in _field_names(AbortContext)
 
 
-# ── ProfileChangedContext (§2.3a observer hook) ──────────────────────────────
+# ── ProfileChangedContext (observer hook) ──────────────────────────────
 
 
 def test_profile_changed_context_initial_announce():
@@ -424,7 +424,7 @@ def test_profile_changed_context_all_sources_constructible():
 
 
 def test_profile_changed_context_cannot_switch_profiles():
-    # §2.3a: deliberately NO switch capability — a profile change can never
+    # Deliberately NO switch capability — a profile change can never
     # cascade into another profile change.
     assert "switch_profile" not in _field_names(ProfileChangedContext)
     ctx = ProfileChangedContext(

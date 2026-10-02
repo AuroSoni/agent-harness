@@ -1,6 +1,6 @@
-"""``ToolBundle`` — a named, registrable group of tools (tools.md §2.6).
+"""``ToolBundle`` — a named, registrable group of tools.
 
-A bundle is the F5 fix: instead of re-pasting the same N-tool stanza per
+Instead of re-pasting the same N-tool stanza per
 sub-agent (instantiating each tool and calling ``.get_tool()`` on it), a
 consumer declares one bundle and hands it straight to
 ``ToolRegistry.register_tools`` / ``SubAgentSpec.tools``.
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Union
 if TYPE_CHECKING:
     from .base import ConfigurableToolBase
 
-    #: Anything ``ToolRegistry.register_tools`` accepts (tools.md §2.3).
+    #: Anything ``ToolRegistry.register_tools`` accepts.
     Toolish = Union[Callable[..., Any], "ConfigurableToolBase", "ToolBundle"]
 
 

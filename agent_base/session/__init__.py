@@ -1,10 +1,10 @@
 """Single-writer session actor: mailbox, resident-session manager, HTTP map.
 
-The session-control subsystem's public surface (session-control.md §2):
+The session-control subsystem's public surface:
 ``SessionManager`` (residency + the ``submit`` front door), the status peek
-types (``SessionStatus``/``OpenAwait`` — §I8/§O15d), the addressing exceptions
+types (``SessionStatus``/``OpenAwait``), the addressing exceptions
 (``SessionNotFound``/``SessionBlocked``), and the shared disposition → HTTP
-map (``agent_base.session.http`` — §2.1, closes A10).
+map (``agent_base.session.http``).
 """
 
 from .http import DISPOSITION_HTTP_STATUS, ack_to_http

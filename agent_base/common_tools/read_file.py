@@ -1,12 +1,11 @@
 """Read text and image files from the sandbox.
 
-Migrated to the template-method ``run()`` authoring style (tools.md §2.2/§3):
+Migrated to the template-method ``run()`` authoring style:
 no ``get_tool()`` closure, no ``_apply_schema``, no manual
 ``__tool_instance__``. The bespoke ``ReadFileResultEnvelope`` subclass and the
-~140-LOC Pillow pipeline are deleted (F1/F4) — projections go through
+~140-LOC Pillow pipeline are deleted — projections go through
 ``ToolResultEnvelope.from_blocks`` and the image path through the thin
-``image_block`` wrapper over media-backend's canonical ``fit_image_to_budget``
-(R16).
+``image_block`` wrapper over media-backend's canonical ``fit_image_to_budget``.
 """
 from __future__ import annotations
 
@@ -315,7 +314,7 @@ Returns:
         rel_path: str,
         crop_bbox: List[int] | None,
     ) -> ToolResultEnvelope:
-        # R16: the canonical Pillow pipeline lives ONCE in media-backend;
+        # The canonical Pillow pipeline lives ONCE in media-backend;
         # imported lazily so the text path never needs Pillow/media.
         from agent_base.tools.media_helpers import image_block
 

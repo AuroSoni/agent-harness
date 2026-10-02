@@ -1,17 +1,17 @@
-"""Red-suite specs for LocalSandbox after the redesign (the reference impl) + cross-subsystem.
+"""Interface specs for LocalSandbox after the redesign (the reference impl) + cross-subsystem.
 
-Covers sandbox.md:
-  - §2.6 `LocalSandboxConfig.extra_zones` field (default ()), serialization round-trip.
-  - §2.6 `LocalSandbox(__init__)` gains `extra_zones` and `layout` ctor args (X11); `layout`
+Covers:
+  - `LocalSandboxConfig.extra_zones` field (default ()), serialization round-trip.
+  - `LocalSandbox(__init__)` gains `extra_zones` and `layout` ctor args; `layout`
     property returns DEFAULT_ZONE_LAYOUT.with_extra_zones(*extra_zones).
-  - §2.6 `LocalSandbox` is a `ConfigDrivenSandbox` (F9: config/from_config inherited).
-  - §2.6 `@register_sandbox("local")` — "local" resolves to LocalSandbox via the registry.
-  - §2.6 setup() materializes every layout zone (incl. extra zones); .context present (R33).
-  - §2.6 inherited grammar/bulk methods are present on LocalSandbox (F7, X10).
-  - §5 cross-subsystem: Sandbox is the shared type referenced by HookContext.sandbox /
+  - `LocalSandbox` is a `ConfigDrivenSandbox` (config/from_config inherited).
+  - `@register_sandbox("local")` — "local" resolves to LocalSandbox via the registry.
+  - setup() materializes every layout zone (incl. extra zones); .context present.
+  - inherited grammar/bulk methods are present on LocalSandbox.
+  - Cross-subsystem: Sandbox is the shared type referenced by HookContext.sandbox /
     ToolContext.sandbox; the layout.exports field replaces the literal ".exports".
 
-LocalSandbox is the type under test here; SessionPrincipal is a collaborator for the X12
+LocalSandbox is the type under test here; SessionPrincipal is a collaborator for the
 construction example.
 """
 
@@ -65,7 +65,7 @@ def test_local_config_extra_zones_is_a_field():
     assert "extra_zones" in field_names
 
 
-# ─── LocalSandbox layout / extra_zones ctor args (X11) ───────────────────
+# ─── LocalSandbox layout / extra_zones ctor args ─────────────────────────
 
 
 def test_local_sandbox_default_layout_is_default_zone_layout():
@@ -101,7 +101,7 @@ def test_local_sandbox_layout_plus_extra_zones_compose():
     assert ".more" in names
 
 
-# ─── F9: LocalSandbox is config-driven ───────────────────────────────────
+# ─── LocalSandbox is config-driven ───────────────────────────────────────
 
 
 def test_local_sandbox_is_config_driven():
@@ -137,7 +137,7 @@ def test_local_sandbox_type_stamped():
     assert LocalSandbox.sandbox_type == "local"
 
 
-# ─── setup() materializes every layout zone (X11) ────────────────────────
+# ─── setup() materializes every layout zone ──────────────────────────────
 
 
 async def test_setup_creates_all_layout_zones_including_extra(tmp_path):
@@ -149,7 +149,7 @@ async def test_setup_creates_all_layout_zones_including_extra(tmp_path):
     await sb.setup()
     for zone in sb.layout.zones:
         assert (sb.root / zone.name).is_dir(), f"zone {zone.name} not created"
-    # R33: .context is a default zone and exists.
+    # .context is a default zone and exists.
     assert (sb.root / ".context").is_dir()
     await sb.teardown()
 
@@ -167,7 +167,7 @@ async def test_setup_creates_context_zone_without_extra(tmp_path):
 
 def test_local_sandbox_has_inherited_grammar_methods():
     sb = LocalSandbox(sandbox_id="g", base_dir="/tmp/base")
-    # F7: grammar inherited from the base, callable on a LocalSandbox.
+    # Grammar inherited from the base, callable on a LocalSandbox.
     resolved = sb.resolve_agent_path("data.csv")
     assert resolved.sandbox_path == "workspace/data.csv"
     assert sb.check_allowed("workspace/data.csv") is True
@@ -179,12 +179,12 @@ def test_local_sandbox_allowed_roots_includes_exports():
 
 
 def test_local_sandbox_has_bulk_op_methods():
-    # X10: import_tree / extract_archive inherited from the base.
+    # import_tree / extract_archive inherited from the base.
     assert hasattr(LocalSandbox, "import_tree")
     assert hasattr(LocalSandbox, "extract_archive")
 
 
-# ─── §5 cross-subsystem: layout.exports replaces literal ".exports" ──────
+# ─── Cross-subsystem: layout.exports replaces literal ".exports" ─────────
 
 
 def test_layout_exports_field_is_dot_exports():
@@ -193,7 +193,7 @@ def test_layout_exports_field_is_dot_exports():
     assert sb.layout.exports == ".exports"
 
 
-# ─── X12 construction example: principal → namespaced base_dir ───────────
+# ─── Construction example: principal → namespaced base_dir ───────────────
 
 
 def test_namespaced_base_dir_feeds_local_sandbox_construction(tmp_path):

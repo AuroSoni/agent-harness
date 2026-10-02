@@ -1,15 +1,15 @@
-"""ToolResultEnvelope — builders, mutation surface, projections (tools.md §2.1, §4).
+"""ToolResultEnvelope — builders, mutation surface, projections.
 
 Covers:
-- §2.1 / §4 (Fork J DECIDED -> A, R10): ``from_blocks`` is the PRIMARY builder,
+- ``from_blocks`` is the PRIMARY builder,
   ``from_text`` the convenience builder; both produce a fully-projected envelope
   with no subclass required.
-- §2.1 (O11(b)): the v1 mutation surface is ``with_text`` / ``append_text`` with
+- The v1 mutation surface is ``with_text`` / ``append_text`` with
   CONCRETE default implementations on the ABC — custom subclasses inherit
   working mutation. ``with_blocks`` / ``from_image`` are deferred (absent).
-- §2.1 (O3): no public ``StructuredEnvelope`` alias — the concrete envelope is
+- No public ``StructuredEnvelope`` alias — the concrete envelope is
   the private ``_StructuredEnvelope`` only.
-- §2.1: ``error()`` factory and the abstract dual-projection contract remain.
+- ``error()`` factory and the abstract dual-projection contract remain.
 """
 
 import pytest
@@ -21,7 +21,7 @@ from agent_base.tools.tool_types import GenericErrorEnvelope, ToolResultEnvelope
 import agent_base.tools.tool_types as tool_types_module
 
 
-# ─── from_blocks (PRIMARY builder — Fork J A, R10) ─────────────────────────
+# ─── from_blocks (PRIMARY builder) ─────────────────────────────────────────
 
 
 def test_from_blocks_builds_envelope_without_subclass():
@@ -132,7 +132,7 @@ def test_from_text_projects_single_text_block():
 
 
 def test_from_text_details_is_keyword_only():
-    # §2.1 doc signature: from_text(summary, *, details=None, tool_name="", tool_id="")
+    # Signature: from_text(summary, *, details=None, tool_name="", tool_id="")
     with pytest.raises(TypeError):
         ToolResultEnvelope.from_text("s", {"a": 1})
 
@@ -151,7 +151,7 @@ def test_from_text_truncates_log_summary_to_200_chars():
 def test_error_factory_builds_error_envelope():
     env = ToolResultEnvelope.error("read_file", "toolu_9", "boom")
     assert isinstance(env, ToolResultEnvelope)
-    # §2.1: GenericErrorEnvelope remains — error() returns it by contract.
+    # GenericErrorEnvelope remains — error() returns it by contract.
     assert isinstance(env, GenericErrorEnvelope)
     assert env.is_error is True
     assert env.error_message == "boom"
@@ -170,7 +170,7 @@ def test_envelope_abc_is_not_directly_instantiable():
         ToolResultEnvelope()
 
 
-# ─── with_text / append_text (stable mutation surface — R10/O11(b)) ─────────
+# ─── with_text / append_text (stable mutation surface) ──────────────────────
 
 
 def _structured_base():
@@ -222,9 +222,9 @@ def test_builders_and_mutators_chain():
 
 
 class _LegacyCustomEnvelope(ToolResultEnvelope):
-    """Custom subclass implementing ONLY the two projections (§2.1 amended).
+    """Custom subclass implementing ONLY the two projections.
 
-    Per O11(b) the with_text/append_text defaults are concrete on the ABC and
+    The with_text/append_text defaults are concrete on the ABC and
     delegate through the projections, so this class inherits working mutation
     without overriding anything.
     """
@@ -269,12 +269,12 @@ def test_custom_subclass_inherits_append_text():
     assert texts == ["raw payload", "more"]
 
 
-# ─── Deletions (O3 / O11(b)) ────────────────────────────────────────────────
+# ─── Deletions ──────────────────────────────────────────────────────────────
 
 
 def test_no_public_structured_envelope_and_deferred_surface_absent():
-    # O3: the concrete envelope is private — no public StructuredEnvelope alias.
+    # The concrete envelope is private — no public StructuredEnvelope alias.
     assert not hasattr(tool_types_module, "StructuredEnvelope")
-    # O11(b): with_blocks / from_image are deferred — not on the v1 surface.
+    # with_blocks / from_image are deferred — not on the v1 surface.
     assert not hasattr(ToolResultEnvelope, "with_blocks")
     assert not hasattr(ToolResultEnvelope, "from_image")

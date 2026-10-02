@@ -1,13 +1,13 @@
-"""Breaking-change deletion guarantees — pricing-cost §6 migration table (G0).
+"""Breaking-change deletion guarantees — pricing-cost migration table.
 
-The library is preview/unreleased (G0): every "kept for one major" shim is DELETED,
+The library is preview/unreleased: every "kept for one major" shim is DELETED,
 not maintained. These specs pin the pricing-cost-owned deletions so the surface
 cannot quietly grow a back-compat bridge back:
-  - O5: `UsageTotals` is DELETED (Usage gains __add__/totals_dict instead).
-  - O14(d): `TurnSettlement` carries NO `cumulative_usage`/`cumulative_cost` fields.
-  - B6: `AgentResult.as_settlement()` builder is DELETED (runtime always attaches).
-  - §6 / G0: `AgentResult.cost` / `.cumulative_usage` shim properties are DELETED.
-  - R12: pricing defines NO local `SERIALIZATION_VERSION` (collapsed into
+  - `UsageTotals` is DELETED (Usage gains __add__/totals_dict instead).
+  - `TurnSettlement` carries NO `cumulative_usage`/`cumulative_cost` fields.
+  - `AgentResult.as_settlement()` builder is DELETED (runtime always attaches).
+  - `AgentResult.cost` / `.cumulative_usage` shim properties are DELETED.
+  - Pricing defines NO local `SERIALIZATION_VERSION` (collapsed into
     `CORE_SCHEMA_VERSION`).
 
 We assert ABSENCE without importing any deleted name (importing a deleted symbol
@@ -60,7 +60,7 @@ def _make_result(**overrides):
 
 
 # ---------------------------------------------------------------------------
-# O5 — UsageTotals is deleted
+# UsageTotals is deleted
 # ---------------------------------------------------------------------------
 
 
@@ -73,7 +73,7 @@ def test_usage_totals_type_is_deleted_from_cost():
 
 
 # ---------------------------------------------------------------------------
-# O14(d) — TurnSettlement has no cumulative_* fields
+# TurnSettlement has no cumulative_* fields
 # ---------------------------------------------------------------------------
 
 
@@ -98,7 +98,7 @@ def test_turn_settlement_instance_has_no_cumulative_attrs():
 
 
 # ---------------------------------------------------------------------------
-# B6 — AgentResult.as_settlement() builder is deleted
+# AgentResult.as_settlement() builder is deleted
 # ---------------------------------------------------------------------------
 
 
@@ -107,7 +107,7 @@ def test_agent_result_as_settlement_is_deleted():
 
 
 # ---------------------------------------------------------------------------
-# §6 / G0 — AgentResult.cost / .cumulative_usage shim properties are deleted
+# AgentResult.cost / .cumulative_usage shim properties are deleted
 # ---------------------------------------------------------------------------
 
 
@@ -120,7 +120,7 @@ def test_agent_result_cumulative_usage_shim_is_deleted():
 
 
 # ---------------------------------------------------------------------------
-# R12 — no pricing-local SERIALIZATION_VERSION
+# No pricing-local SERIALIZATION_VERSION
 # ---------------------------------------------------------------------------
 
 
@@ -133,7 +133,7 @@ def test_no_pricing_local_serialization_version_in_calculator_module():
 
 
 # ---------------------------------------------------------------------------
-# O14(d) — the _Settler class is dropped; settle_turn is a module function
+# The _Settler class is dropped; settle_turn is a module function
 # ---------------------------------------------------------------------------
 
 

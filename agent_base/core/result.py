@@ -4,8 +4,8 @@ AgentResult is returned by the runtime's awaited entrypoint (``run()``).
 AgentRunLog captures step-by-step execution logs for a single run.
 LogEntry is a single step-level log entry.
 
-``AgentResult`` and ``LogEntry`` follow the ``Serializable`` convention
-(core.md §2.1.3 / O15(c)): canonical ``to_dict()`` stamps the library-wide
+``AgentResult`` and ``LogEntry`` follow the ``Serializable`` convention:
+canonical ``to_dict()`` stamps the library-wide
 ``CORE_SCHEMA_VERSION`` under ``_v``; ``from_dict()`` tolerates older versions
 and unknown/missing keys. Every child serializes via ITS OWN ``to_dict()`` —
 never ``dataclasses.asdict``.
@@ -105,12 +105,12 @@ class AgentResult:
             was enabled.
         generated_files: Media files created during this run.
         settlement: The awaited-caller copy of the once-per-turn billing
-            fact (``TurnSettlement``). The runtime ALWAYS attaches it (B6 —
-            ``as_settlement()`` is deleted; there is no builder fallback).
-            Per-turn cost rides here (pricing-cost.md §6 / G0: the legacy
+            fact (``TurnSettlement``). The runtime ALWAYS attaches it
+            (``as_settlement()`` is deleted; there is no builder fallback).
+            Per-turn cost rides here (the legacy
             ``cost`` / ``cumulative_usage`` fields are DELETED); cumulative
             totals are a consumer-side fold over the per-turn ``UsageReport``
-            stream (O14(d)).
+            stream.
     """
     final_message: Message
     final_answer: str
@@ -127,7 +127,7 @@ class AgentResult:
     abort_phase: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Canonical, versioned, JSON-safe projection (core.md §2.1.3)."""
+        """Canonical, versioned, JSON-safe projection."""
         return _stamp({
             "final_message": self.final_message.to_dict(),
             "final_answer": self.final_answer,
@@ -149,8 +149,7 @@ class AgentResult:
         raw_settlement = data.get("settlement")
         settlement = None
         if raw_settlement:
-            # Lazy: TurnSettlement's home is agent_base/core/cost.py (R11,
-            # pricing-cost subsystem).
+            # Lazy: TurnSettlement's home is agent_base/core/cost.py.
             from agent_base.core.cost import TurnSettlement
 
             settlement = TurnSettlement.from_dict(raw_settlement)
@@ -174,7 +173,7 @@ class AgentResult:
             abort_phase=data.get("abort_phase"),
         )
 
-    # (B6) `as_settlement()` is DELETED. The runtime always attaches
+    # `as_settlement()` is DELETED. The runtime always attaches
     # `settlement`, so there is no on-demand builder fallback — read
     # `result.settlement`.
 

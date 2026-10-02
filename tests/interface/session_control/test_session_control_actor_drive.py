@@ -1,15 +1,15 @@
-"""Driving queued turns is PUBLIC: submit auto-kick + ``ensure_actor()`` (GF-P6G3).
+"""Driving queued turns is PUBLIC: submit auto-kick + ``ensure_actor()``.
 
-Covers session-control.md §2.3 (amended): ``submit(UserMessage)`` /
+Covers ``submit(UserMessage)`` /
 ``submit(Steer)`` on a drivable runtime never park work undriven — the runtime
 auto-kicks its single-writer actor task; ``ensure_actor()`` is the public,
 idempotent explicit handle (kills Nova's ``stream_glue.spawn_turn_driver``
 over the private ``agent._actor_loop``). ``wait_idle()`` is the blessed
-completion handle (GF-P6G4). Teardown: ``SessionManager.evict``/``shutdown``
+completion handle. Teardown: ``SessionManager.evict``/``shutdown``
 reap the actor task — eviction never leaks a pending driver.
 
 The runtime under test is a real ``AgentRuntime`` subclass that overrides
-``run()`` (the Fork-E seam a concrete provider runtime fills): auto-drive is
+``run()`` (the seam a concrete provider runtime fills): auto-drive is
 keyed on exactly that override, so a bare base runtime — whose ``run()``
 raises by design — never auto-spawns a doomed task.
 """
@@ -151,7 +151,7 @@ async def test_ensure_actor_respects_a_foreign_driven_loop():
 
 
 async def test_base_runtime_submit_parks_without_spawning():
-    """A bare AgentRuntime has no model loop (run() raises by design, Fork E):
+    """A bare AgentRuntime has no model loop (run() raises by design):
     plane 1 still ACCEPTS + parks, but no actor task is spawned for it."""
     agent = AgentRuntime()
     ack = await agent.submit(UserMessage(message=Message.user("hi")))
@@ -160,7 +160,7 @@ async def test_base_runtime_submit_parks_without_spawning():
     assert len(agent._mailbox) == 1
 
 
-# ── wait_idle(): the blessed completion handle (GF-P6G4) ────────────────────
+# ── wait_idle(): the blessed completion handle ──────────────────────────────
 
 
 async def test_wait_idle_returns_immediately_when_idle():

@@ -1,4 +1,4 @@
-"""Reconnect state machine + the two-layer 401 contract (mcp.md §3/§4).
+"""Reconnect state machine + the two-layer 401 contract.
 
 Connect-time 401 → needs_auth with the challenge captured (incl. scope);
 403 insufficient_scope classifies as a challenge too (spec rev 2025-11-25);
@@ -66,7 +66,7 @@ async def test_httpx_auth_bridge_serves_fresh_headers_and_connects():
 async def test_bridge_refreshes_in_flight_on_401_without_teardown():
     """Token rotates server-side mid-session: the NEXT request 401s, the
     bridge runs on_unauthorized + re-issues inside httpx — the transport
-    survives and the call succeeds (§4 primary layer)."""
+    survives and the call succeeds (primary layer)."""
     handler = JsonHttpMcpHandler(require_token="old")
     tokens = ["old", "new"]  # token_cb serves old first, then new
 
@@ -95,7 +95,7 @@ async def test_static_auth_401_lands_needs_auth_quietly():
         assert await handle.connect(timeout=5) is False
         assert handle.state == "needs_auth"
         requests_after_park = len(handler.requests)
-        # needs_auth is QUIET: calls fail fast with no upstream traffic (§3).
+        # needs_auth is QUIET: calls fail fast with no upstream traffic.
         envelope = await handle.call("ping", {}, registered_name="x")
         assert envelope.is_error and "needs_auth" in (envelope.error_message or "")
         assert len(handler.requests) == requests_after_park
@@ -171,7 +171,7 @@ async def test_transport_drop_schedules_backoff_and_recovers(monkeypatch):
 
 async def test_attempts_exhausted_lands_failed_then_call_retriggers(monkeypatch):
     """All reconnect attempts fail → terminal ``failed`` until poked; a tool
-    call joins/triggers ONE bounded connect attempt (§3 calls-while-down)."""
+    call joins/triggers ONE bounded connect attempt (calls-while-down)."""
     from agent_base.mcp.source import _Runner
 
     attempts = {"n": 0}
@@ -208,7 +208,7 @@ async def test_attempts_exhausted_lands_failed_then_call_retriggers(monkeypatch)
 
 async def test_single_flight_one_on_unauthorized_per_outage():
     """N parallel calls hitting 401 together → exactly ONE provider refresh
-    (the §4 handle contract, not provider politeness)."""
+    (the handle contract, not provider politeness)."""
     handler = JsonHttpMcpHandler(require_token="t0")
     refreshes = {"n": 0}
     current = ["t0"]

@@ -39,7 +39,7 @@ class LocalMediaBackend(MediaBackend):
             url_prefix: Optional URL prefix for to_url(). When set,
                 to_url() returns "{url_prefix}/{agent_uuid}/{media_id}".
                 When None, returns a file:// URI.
-            blob_store: Optional content-addressed object store (§2.4).
+            blob_store: Optional content-addressed object store.
         """
         super().__init__(blob_store=blob_store)
         self.base_path = Path(base_path)
@@ -267,7 +267,7 @@ class LocalMediaBackend(MediaBackend):
         *,
         scope: MediaScope | None = None,
     ) -> MediaMetadata | None:
-        # I13(a): scope-derived namespace, default scope-filtered.
+        # Scope-derived namespace, default scope-filtered.
         namespace = derive_namespace(agent_uuid, scope)
         agent_dir = self.base_path / namespace
         if not agent_dir.exists():

@@ -1,9 +1,9 @@
-"""``HookOutcome`` — the structured hook capability model (contract §1.3).
+"""``HookOutcome`` — the structured hook capability model.
 
 A hook never mutates the agent. It returns a typed outcome; the runtime
 applies it and keeps invariants. ``None`` means "proceed unchanged".
 
-Composition rule (LOCKED, contract §1.3) — the runtime folds multiple
+Composition rule (LOCKED) — the runtime folds multiple
 outcomes per event:
 
 - ``decision``           : most-restrictive-wins (any ``"block"`` blocks; the
@@ -13,7 +13,7 @@ outcomes per event:
 - ``additional_context`` : concatenated in order, newline-joined.
 - ``events``             : concatenated in order.
 
-O7 (AMENDMENTS): there is NO ``switch_profile`` outcome field. Profile
+There is NO ``switch_profile`` outcome field. Profile
 switching is the imperative ``ctx.switch_profile(name)`` capability only (on
 ``TurnContext`` / ``ToolResultContext``); the last call in the chain wins,
 applied once post-composition.
@@ -40,7 +40,7 @@ class HookOutcome:
     #: Injected into the model (SDK-style additionalContext).
     additional_context: str | None = None
     #: Emitted as ``MetaEnvelope``s by the runtime (delivery-guaranteed — use
-    #: this instead of ``ctx.emit`` when delivery matters, R21).
+    #: this instead of ``ctx.emit`` when delivery matters).
     events: list["MetaBody"] = field(default_factory=list)
 
 
@@ -62,8 +62,8 @@ class EndTurnOutcome(HookOutcome):
 
     ``action="continue"`` reruns the loop (was ``"retry"``);
     ``continue_prompt`` is the synthetic user message injected before the
-    rerun. There is no result transform at end-of-turn (contract §2) and no
-    profile-switch capability at all (O7). Rollback is decoupled: emit it via
+    rerun. There is no result transform at end-of-turn and no
+    profile-switch capability at all. Rollback is decoupled: emit it via
     ``events=[Rollback(...)]`` — it never alters context append.
     """
 

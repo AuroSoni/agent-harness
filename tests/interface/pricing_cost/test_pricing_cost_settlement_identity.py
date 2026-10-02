@@ -1,15 +1,14 @@
-"""Settlement identity + child usage-report propagation (GF-P8G2 / GF-P7G1).
+"""Settlement identity + child usage-report propagation.
 
-Covers interface_plan/subsystems/pricing-cost.md §2.4 + tenancy-principal.md
-§A.1 + the AMENDMENTS "Open-gap fixes (2026-06-12)" GF-P8G2/GF-P7G1 entries:
+Covers mental_model/features/billing-a-run.md and mental_model/subsystems/identity.md:
 
   - **Settlement carries the runtime's NAMED principal** once identity is
     threaded — via the ``principal=`` ctor passthrough on ``AnthropicAgent``
     (forwarded to the ``AgentRuntime`` base) OR via ``set_principal`` after
-    build (the ``SessionManager`` path). Before GF-P8G2 every resident agent
+    build (the ``SessionManager`` path). Before the fix every resident agent
     settled ANONYMOUS and consumer billing callbacks skipped (the live smoke
     billed ZERO turns).
-  - **GF-P7G1 (ratified D2): child sub-agents get the parent's
+  - **Child sub-agents get the parent's
     ``on_usage_report`` subscribers propagated AT BUILD TIME, recursively** —
     a child turn's ``TurnSettlement`` reaches the parent-registered
     subscriber, stamped with the child's ``agent_id``, the parent's id as
@@ -18,7 +17,7 @@ Covers interface_plan/subsystems/pricing-cost.md §2.4 + tenancy-principal.md
     subscribers registered on the parent AFTER a child was built do NOT
     retro-attach to that child — the next spawn picks them up (the same
     semantics the consumer's ``_propagate_to_subagents`` workaround had).
-    No ``SettlementAggregator`` involvement (I9 RESOLVED: deleted 2026-07-14).
+    No ``SettlementAggregator`` involvement (deleted 2026-07-14).
 
 The provider generation step is stubbed (one ``end_turn`` assistant message);
 everything else — spawn, propagation, settle, emit — is the real path.
@@ -79,12 +78,12 @@ def _wire_subagent_tool(parent: AnthropicAgent, tool: SubAgentTool) -> None:
     )
 
 
-# ─── settlement carries the named principal (GF-P8G2) ─────────────────────
+# ─── settlement carries the named principal ─────────────────────
 
 
 async def test_settlement_carries_the_ctor_principal():
     # AnthropicAgent(principal=...) forwards to the AgentRuntime base — the
-    # exposed passthrough GF-P8G2 specs.
+    # exposed passthrough.
     agent = AnthropicAgent(system_prompt="t", principal=OWNER)
     _stub_provider(agent, "done")
     await agent.initialize()
@@ -132,7 +131,7 @@ async def test_anonymous_runtime_still_settles_anonymous():
     assert result.settlement.principal.is_anonymous()
 
 
-# ─── GF-P7G1: child propagation reaches the parent subscriber ─────────────
+# ─── Child propagation reaches the parent subscriber ─────────────
 
 
 async def test_child_settlement_reaches_the_parent_registered_subscriber():
@@ -158,13 +157,13 @@ async def test_child_settlement_reaches_the_parent_registered_subscriber():
     settlement = seen[0]
     assert settlement.agent_id == child.agent_uuid
     assert settlement.parent_agent_id == parent.agent_uuid
-    # G2 x G1: the child inherited the parent's NAMED principal at spawn, so
+    # The child inherited the parent's NAMED principal at spawn, so
     # the propagated settlement is billable (not anonymous-skipped).
     assert settlement.principal == OWNER
 
 
 async def test_propagation_is_recursive_through_the_childs_own_subagent_tool():
-    # D2: a child's own SubAgentTool propagates AGAIN — the parent-registered
+    # A child's own SubAgentTool propagates AGAIN — the parent-registered
     # subscriber receives the GRANDCHILD's settlement too.
     parent = AnthropicAgent(system_prompt="p", principal=OWNER)
     await parent.initialize()
@@ -209,7 +208,7 @@ async def test_propagation_is_recursive_through_the_childs_own_subagent_tool():
 
 
 async def test_late_parent_subscribers_do_not_retro_attach():
-    # Timing contract (D2): propagation happens AT BUILD TIME. A subscriber
+    # Timing contract: propagation happens AT BUILD TIME. A subscriber
     # registered on the parent after a child was built does not retro-attach
     # to that child; the NEXT spawn picks it up.
     parent = AnthropicAgent(system_prompt="p", principal=OWNER)

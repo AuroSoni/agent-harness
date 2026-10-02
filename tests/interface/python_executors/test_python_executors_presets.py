@@ -1,15 +1,15 @@
-"""Red-suite specs for the shipped import-policy presets.
+"""Interface specs for the shipped import-policy presets.
 
-Covers python-executors.md:
-  - §2.2 ``agent_base.python_executors.presets`` — ``STDLIB_FILE_IO`` tuple and
-    ``file_io_policy(extra=(), **kw)`` factory (kills the F5/F6 hand-rolled
+Covers:
+  - ``agent_base.python_executors.presets`` — ``STDLIB_FILE_IO`` tuple and
+    ``file_io_policy(extra=(), **kw)`` factory (kills the hand-rolled
     "standard stdlib" merge).
-  - O14(b) deletion: the ``DATA_SCIENCE`` preset is DROPPED.
-  - §3.1 after-example: ``file_io_policy(extra=..., allow_all_imports=...,
+  - Deletion: the ``DATA_SCIENCE`` preset is DROPPED.
+  - After-example: ``file_io_policy(extra=..., allow_all_imports=...,
     extra_builtins=..., max_output_chars=...)`` builds a usable ``ExecutorPolicy``.
 
-Imports target ``agent_base.python_executors.presets`` (canonical home per the
-doc's §2.2 module path). The implementation does not exist yet.
+Imports target ``agent_base.python_executors.presets`` (canonical home).
+The implementation does not exist yet.
 """
 
 import agent_base.python_executors.presets as presets
@@ -60,7 +60,7 @@ def test_file_io_policy_appends_extra_after_stdlib():
     assert "lxml" in policy.authorized_imports
     # stdlib block still present
     assert "csv" in policy.authorized_imports
-    # §2.2: constructor is authorized_imports=(*STDLIB_FILE_IO, *extra) — the
+    # Constructor is authorized_imports=(*STDLIB_FILE_IO, *extra) — the
     # stdlib block comes FIRST, then extra is appended (order, not just membership).
     # A prepend or interleave of extra must fail this.
     assert policy.authorized_imports[: len(STDLIB_FILE_IO)] == STDLIB_FILE_IO
@@ -90,5 +90,5 @@ def test_file_io_policy_effective_imports_include_base_and_stdlib():
 
 
 def test_data_science_preset_is_dropped():
-    # O14(b): DATA_SCIENCE preset removed; spell those imports inline instead.
+    # DATA_SCIENCE preset removed; spell those imports inline instead.
     assert not hasattr(presets, "DATA_SCIENCE")

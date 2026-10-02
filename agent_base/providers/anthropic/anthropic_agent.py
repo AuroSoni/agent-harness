@@ -1,24 +1,23 @@
-"""``AnthropicAgent`` — the concrete Anthropic runtime (providers.md Fork P-A).
+"""``AnthropicAgent`` — the concrete Anthropic runtime.
 
-The P-A lift (RECONCILIATION R29, sequenced last): the agent derives its turn
+The agent derives its turn
 machinery from :class:`~agent_base.core.runtime.AgentRuntime` — ``record_turn``,
 the hook engine, ``checkpoint``, ``await_external``, ``submit`` — and the loop
 is written against the NEW ``Provider`` protocol only:
 
 - generation goes through ``AgentRuntime._provider_turn`` (chain repair +
-  ``classify_error`` normalisation + ``_Recompact`` overflow routing — §2.2),
+  ``classify_error`` normalisation + ``_Recompact`` overflow routing),
 - streaming rides a ``DeltaSink`` into the Rung-1 ``agent.stream()`` queue
-  (R30/G0 — the ``(queue, stream_formatter)`` pair is DELETED, not shimmed),
+  (the ``(queue, stream_formatter)`` pair is DELETED, not shimmed),
 - the provider-touch-points in finalize shrink to ``provider.name``,
-  ``provider.collect_api_files`` and ``provider.default_model()`` (the single
-  change that collapses B2),
+  ``provider.collect_api_files`` and ``provider.default_model()``,
 - per-turn cost is settled once via ``settle_turn`` and attached to
   ``AgentResult.settlement``; ``UsageReport.of(settlement)`` auto-emits exactly
-  once per turn (pricing-cost.md §2.4; B6),
-- memory call sites use the O13 signatures with the documented failure
-  contract (memory.md §6),
-- ``_await_inline_relay`` and the ``agent_base.relay`` shim are DELETED
-  (relay-await.md §6 / O3 / G0) — the one relay primitive is the runtime's
+  once per turn,
+- memory call sites follow the documented signatures and failure
+  contract,
+- ``_await_inline_relay`` and the ``agent_base.relay`` shim are DELETED:
+  the one relay primitive is the runtime's
   ``await_external`` over the cid-keyed ``AwaitTable``.
 """
 from __future__ import annotations
@@ -182,10 +181,10 @@ def _strip_binary_data(obj: Any) -> Any:
 
 
 class _RuntimeDeltaSink:
-    """``DeltaSink`` wired into the agent's Rung-1 stream (R30).
+    """``DeltaSink`` wired into the agent's Rung-1 stream.
 
     ``emit`` forwards content deltas onto the ``agent.stream()`` queue;
-    ``emit_meta`` routes through the runtime's ``_hook_emit`` so the §3
+    ``emit_meta`` routes through the runtime's ``_hook_emit`` so the
     ``MetaEnvelope`` header is stamped by the runtime (providers never
     construct envelopes).
     """
@@ -211,7 +210,7 @@ class _RuntimeDeltaSink:
 class AnthropicAgent(AgentRuntime):
     """Concrete Anthropic runtime: ``AgentRuntime`` + ``AnthropicProvider``.
 
-    Style-3 construction (providers.md §2.4): ``AnthropicAgent(...)`` is the
+    Style-3 construction: ``AnthropicAgent(...)`` is the
     canonical factory that pre-binds ``provider=AnthropicProvider(...)``;
     ``LiteLLMAgent`` is the same class with ``provider=LiteLLMProvider()``.
     """
@@ -242,10 +241,10 @@ class AnthropicAgent(AgentRuntime):
         early_answer_completion: bool = False,
         end_turn_hook: EndTurnHook | None = None,
         agent_uuid: str | None = None,
-        # Tenancy §A.1 / GF-P8G2: the ONE identity input, forwarded to the
+        # The ONE identity input, forwarded to the
         # AgentRuntime base (anonymous default — never None internally).
         principal: "SessionPrincipal | None" = None,
-        # Declarative profiles + hook registry (contract §6 / §2.2; CM-G3d).
+        # Declarative profiles + hook registry.
         profiles: "list[Any] | None" = None,
         default_profile: str | None = None,
         hooks: "dict[str, list[Any]] | None" = None,
@@ -262,17 +261,17 @@ class AnthropicAgent(AgentRuntime):
         blob_store: "KeyedBlobStore | None" = None,
         media_backend: "MediaBackend | None" = None,
         fallback_api_keys: list[str] | None = None,
-        # Fork P-A: the provider VALUE (Style-3 factory subclasses pre-bind it).
+        # The provider VALUE (Style-3 factory subclasses pre-bind it).
         provider_value: "Provider | None" = None,
         pricing_policy: Any | None = None,
-        # External MCP servers (mcp.md §2, MC-D3): key -> McpServerSpec.
-        # Requires the agent-base[mcp] extra (MC-D7 — ImportError at
+        # External MCP servers: key -> McpServerSpec.
+        # Requires the agent-base[mcp] extra (ImportError at
         # construction, not first call). Pure object construction here; the
-        # eager connect happens in initialize() (MC-D1).
+        # eager connect happens in initialize().
         mcp_servers: "dict[str, McpServerSpec] | None" = None,
     ) -> None:
         # ── AgentRuntime base: hooks engine, mailbox/audit (submit planes),
-        #    profiles, principal, stream state (Fork P-A derivation).
+        #    profiles, principal, stream state.
         super().__init__(
             agent_uuid=agent_uuid,
             principal=principal,
@@ -294,14 +293,14 @@ class AnthropicAgent(AgentRuntime):
         self.config_adapter = config_adapter or MemoryAgentConfigAdapter()
         self.conversation_adapter = conversation_adapter or MemoryConversationAdapter()
         self.run_adapter = run_adapter or MemoryAgentRunAdapter()
-        # fork-reset: opt-in — NO Memory default (D1: capture is off unless a
+        # fork-reset: opt-in — NO Memory default (capture is off unless a
         # consumer wires an adapter). ``_blobs`` is the content-addressed store
         # for transcript segments + the sandbox snapshot.
         self.checkpoint_adapter = checkpoint_adapter
         self._blobs = blob_store
-        # GF-P8G2: the concrete ctor replaces the base-bound adapters with the
+        # The concrete ctor replaces the base-bound adapters with the
         # defaulted ones above — re-bind them to a NAMED ctor principal via the
-        # ONE for_principal seam (O2) so AnthropicAgent(principal=...) scopes
+        # ONE for_principal seam so AnthropicAgent(principal=...) scopes
         # storage exactly like the base runtime does. _rebind_adapters also
         # binds the checkpoint adapter (getattr-guarded) now that it is set.
         if self.principal is not None and not self.principal.is_anonymous():
@@ -342,7 +341,7 @@ class AnthropicAgent(AgentRuntime):
         # Tools (backend and frontend) - registry takes care of how to execute tools.
         self.tool_registry: ToolRegistry = ToolRegistry()
 
-        # CM-G3d: the boot profile's declarative tool bundle seeds the registry
+        # The boot profile's declarative tool bundle seeds the registry
         # when no explicit tools=/frontend_tools= kwargs are given (the kwargs
         # stay the override for profile-less construction).
         boot_profile = self.active_profile
@@ -365,7 +364,7 @@ class AnthropicAgent(AgentRuntime):
         if subagents:
             from agent_base.common_tools.sub_agent_tool import SubAgentTool
             self._sub_agent_tool = SubAgentTool(agents=subagents)
-            # tools.md G0: ``get_tool`` is deleted — ``as_tool()`` is the one
+            # ``get_tool`` is deleted — ``as_tool()`` is the one
             # compilation seam.
             subagent_func = self._sub_agent_tool.as_tool()
             self.tool_registry.register_tools([subagent_func])
@@ -396,15 +395,15 @@ class AnthropicAgent(AgentRuntime):
         self._runtime_contributions: list[Contribution] = []
         self._runtime_target_msg_id: str | None = None
 
-        # Composition (Fork P-A): the provider is a VALUE on the runtime.
-        # O12(c): the retry budget is the provider's RetryPolicy — there are
+        # Composition: the provider is a VALUE on the runtime.
+        # The retry budget is the provider's RetryPolicy — there are
         # no ctor retry scalars; customize via ``provider_value=``.
         if provider_value is not None:
             self.provider = provider_value
         else:
             self.provider = AnthropicProvider(fallback_api_keys=fallback_api_keys)
 
-        # Pricing policy for settle_turn (pricing-cost.md §2.5; CSV default).
+        # Pricing policy for settle_turn (CSV default).
         self.pricing_policy = pricing_policy or CsvPricingPolicy()
 
         # Abort/steer state — cooperative cancellation.
@@ -417,11 +416,11 @@ class AnthropicAgent(AgentRuntime):
         # children fold their per-step tokens and $ into the root's sinks.
         self._parent_usage_forward: "AnthropicAgent | None" = None
 
-        # External MCP servers (mcp.md): runtime resource — NEVER persisted,
-        # checkpointed, or logged (E8/E11); shared by reference with
-        # sub-agents (E9). Keys validate here (ValueError immediately, §1).
+        # External MCP servers: runtime resource — NEVER persisted,
+        # checkpointed, or logged; shared by reference with
+        # sub-agents. Keys validate here (ValueError immediately).
         self._mcp: "McpToolSource | None" = None
-        # Ownership (E9): a sub-agent sharing the parent's source by
+        # Ownership: a sub-agent sharing the parent's source by
         # reference must not re-wire callbacks, re-baseline diffs, drain the
         # owner's notices, or close the source on its own teardown.
         self._mcp_owned = False
@@ -443,7 +442,7 @@ class AnthropicAgent(AgentRuntime):
         self.system_prompt = system_prompt
         self.model = model
         self.messages = messages
-        # O12(b): the ONE LLMConfig landing path.
+        # The ONE LLMConfig landing path.
         self.config = self.provider.make_llm_config(config)
         self._compaction_config = compaction_config
         self._externalization_config = externalization_config
@@ -455,7 +454,7 @@ class AnthropicAgent(AgentRuntime):
         self._run_cumulative_usage: Usage = Usage()
         self._cumulative_usage: Usage = Usage()
         self._cumulative_cost: CostBreakdown = CostBreakdown()
-        # The turn's provider steps — settle_turn input (pricing-cost §2.4).
+        # The turn's provider steps — settle_turn input.
         self._turn_steps: list[Message] = []
         # Settlement watermark: index into _turn_steps below which steps are
         # already billed. INVARIANT: reset to 0 wherever _turn_steps is reset
@@ -876,9 +875,9 @@ class AnthropicAgent(AgentRuntime):
             # Fresh agent - create a new UUID. Initialize with fresh state.
             return await self._initialize_fresh(str(uuid.uuid4()))
 
-        # A ctor-supplied uuid: load-or-CREATE (GF-P6G1). Probe the row first —
+        # A ctor-supplied uuid: load-or-CREATE. Probe the row first —
         # a consumer-minted root id with no persisted state is a CREATE under
-        # that exact uuid (root_session_id == agent_uuid, O15a), not a load
+        # that exact uuid (root_session_id == agent_uuid), not a load
         # failure. No pre-seeding required.
         try:
             loaded_config = await self.config_adapter.load(self._agent_uuid)
@@ -889,13 +888,13 @@ class AnthropicAgent(AgentRuntime):
 
         # Agent already persisted - load state from storage backend.
         try:
-            # O12(b): re-land the persisted llm_config as the provider's
+            # Re-land the persisted llm_config as the provider's
             # NATIVE config class (storage deserializes the base LLMConfig).
             loaded_config.llm_config = self.provider.make_llm_config(
                 loaded_config.llm_config
             )
             self.agent_config = loaded_config
-            # GF-P8G2 / I12(d): bidirectional reconciliation on a cold load —
+            # Bidirectional reconciliation on a cold load —
             # adopt a persisted owner when the ambient principal is anonymous
             # (re-binding the adapters), raise PrincipalConflict on a scope
             # mismatch, and forward-stamp the owner columns.
@@ -905,7 +904,7 @@ class AnthropicAgent(AgentRuntime):
                 self._cumulative_usage = Usage.from_dict(raw_session_usage)
             self._configure_compaction_controller()
 
-            # R20 "persisted wins" (CM-G3a): re-apply the persisted
+            # "Persisted wins": re-apply the persisted
             # active_profile to the live registry + prompt BEFORE the sandbox
             # attaches and BEFORE initialize_run() re-stamps tool_schemas.
             self._restore_persisted_profile()
@@ -943,7 +942,7 @@ class AnthropicAgent(AgentRuntime):
             return self.agent_config, self.conversation
 
         except PrincipalConflict:
-            # I12(d): an identity conflict is a typed auth failure, never
+            # An identity conflict is a typed auth failure, never
             # wrapped into the generic load error.
             raise
         except Exception as e:
@@ -954,14 +953,14 @@ class AnthropicAgent(AgentRuntime):
     ) -> tuple[AgentConfig, Conversation | None]:
         """Initialize fresh state UNDER ``agent_uuid`` — the create branch
         shared by lazy-uuid construction AND a consumer-minted root id with no
-        persisted row (GF-P6G1). Calls ``_reconcile_identity()`` exactly like
-        the load branch (GF-P8G2: both paths share the I12(d) logic)."""
+        persisted row. Calls ``_reconcile_identity()`` exactly like
+        the load branch (both paths share that logic)."""
         self._agent_uuid = agent_uuid
 
         self.agent_config = AgentConfig(agent_uuid=agent_uuid)
-        # CM-G3e: stamp the boot profile so the first checkpoint persists it.
+        # Stamp the boot profile so the first checkpoint persists it.
         self.agent_config.active_profile = self._active_profile_name
-        # GF-P8G2 / I12(d): forward-stamp the ambient principal onto the
+        # Forward-stamp the ambient principal onto the
         # owner columns so the first checkpoint persists ownership.
         self._reconcile_identity()
         self.conversation = None  # Created per-run in initialize_run()
@@ -976,7 +975,7 @@ class AnthropicAgent(AgentRuntime):
         await self._initialize_mcp()
 
         self._initialized = True
-        # GF-P6G1: persist the fresh row at create (parity with the base
+        # Persist the fresh row at create (parity with the base
         # runtime's initialize() checkpoint) — the consumer-minted id is
         # externally addressable from this moment (has_persisted_state()
         # flips True; a parallel cold attach resolves the same session).
@@ -986,7 +985,7 @@ class AnthropicAgent(AgentRuntime):
     def initialize_run(self, prompt: Message, *, run_id: str | None = None) -> None:
         """Initialize tracking state for a new agent run.
 
-        ``run_id`` may be pre-minted by ``run()`` (CM-G2) so the
+        ``run_id`` may be pre-minted by ``run()`` so the
         ``on_turn_start`` hook context already carries the live run id.
         """
         run_id = run_id or str(uuid.uuid4())
@@ -1011,7 +1010,7 @@ class AnthropicAgent(AgentRuntime):
         # must stay monotonic across every mid-run path (pause, rearm, steer).
         self.agent_config.current_step = 0
 
-        # Populate AgentConfig with constructor params. CM-G3b: the active
+        # Populate AgentConfig with constructor params. The active
         # profile's prompt WINS over the ctor default (``None`` on the profile
         # = inherit the agent default) — a profile switch survives the next run.
         active = self.active_profile
@@ -1072,7 +1071,7 @@ class AnthropicAgent(AgentRuntime):
             self._compaction_controller = None
             return
 
-        # O12(c): no retry scalars — the provider reads self.retry_policy.
+        # No retry scalars — the provider reads self.retry_policy.
         self._compaction_controller = CompactionController(
             config=resolved_config,
             provider=self.provider,
@@ -1133,11 +1132,11 @@ class AnthropicAgent(AgentRuntime):
         self.agent_config.context_messages.append(context_message)
         self._append_message_to_logs(history_variant)
 
-    # ── memory (O13 — memory.md §6) ────────────────────────────────────────
+    # ── memory ─────────────────────────────────────────────────────────────
 
     def _memory_hook_context(self) -> Any:
-        """The locked ``HookContext`` passed directly to memory stores (O13 —
-        the bespoke retrieve/update context types are deleted)."""
+        """The locked ``HookContext`` passed directly to memory stores (the
+        bespoke retrieve/update context types are deleted)."""
         from agent_base.core.hooks.context import HookContext
 
         return HookContext(**self._base_hook_kwargs())
@@ -1145,8 +1144,8 @@ class AnthropicAgent(AgentRuntime):
     async def _build_runtime_contributions(self, prompt: Message) -> list[Contribution]:
         """Collect per-run augmentations (memory, future hooks) as Contributions.
 
-        O13: ``store.retrieve(hook_ctx, user_message) -> MemoryContribution``.
-        Failure contract (memory.md §6): retrieve is best-effort — any
+        ``store.retrieve(hook_ctx, user_message) -> MemoryContribution``.
+        Failure contract: retrieve is best-effort — any
         exception is swallowed + logged and the turn proceeds with no
         contribution.
         """
@@ -1173,10 +1172,10 @@ class AnthropicAgent(AgentRuntime):
                         position=ContributionPosition.BEFORE.value,
                     )
                 )
-        # MC-D13: the MCP boundary change notice rides the next model-bound
+        # The MCP boundary change notice rides the next model-bound
         # user content as a render-time contribution — never a standalone
         # transcript message (provider alternation rules), never persisted.
-        # Only the source's OWNER consumes notices (E9).
+        # Only the source's OWNER consumes notices.
         if self._mcp is not None and self._mcp_owned:
             notice = self._mcp.consume_pending_notice()
             if notice:
@@ -1191,7 +1190,7 @@ class AnthropicAgent(AgentRuntime):
         return runtime
 
     def _apply_profile_resources(self, profile: Any) -> None:
-        """CM-G3b: apply a profile to the LIVE agent — rebuild the tool
+        """Apply a profile to the LIVE agent — rebuild the tool
         registry from the profile's declarative bundle and resolve the
         system prompt (``None`` on the profile = the agent ctor default).
 
@@ -1208,29 +1207,29 @@ class AnthropicAgent(AgentRuntime):
                 profile.system_prompt or self.system_prompt
             )
 
-    # ── external MCP servers (mcp.md §2/§3/§7 — MC-D1/D8/D13/D14) ─────────
+    # ── external MCP servers ───────────────────────────────────────────────
 
     def _wire_mcp_source(self) -> None:
         """Attach the agent-side callbacks: meta-frame emission (dropped with
-        no stream reader, by design) + the §5 boundary discipline."""
+        no stream reader, by design) + the boundary discipline."""
         assert self._mcp is not None
         self._mcp.on_event = lambda body: self._hook_emit(body)
         self._mcp.on_surface_changed = self._on_mcp_surface_changed
 
     async def _initialize_mcp(self) -> None:
-        """Eager concurrent connect + boot registration (MC-D1). The boot
-        surface is the diff baseline — no change notice (MC-D13). A failed
-        ``required=True`` server raises out of ``initialize()`` (§2)."""
+        """Eager concurrent connect + boot registration. The boot
+        surface is the diff baseline — no change notice. A failed
+        ``required=True`` server raises out of ``initialize()``."""
         if self._mcp is None:
             return
-        await self._mcp.start()  # idempotent for a shared (E9) source
+        await self._mcp.start()  # idempotent for a shared source
         self.tool_registry.register_tools(self._mcp.compile_tools())
         self.tool_registry.register_tools([self._mcp.make_status_tool()])
         if self._mcp_owned:
             self._mcp.commit_applied()
 
     def _on_mcp_surface_changed(self) -> None:
-        """§5 boundary discipline: apply immediately when no run is active,
+        """Boundary discipline: apply immediately when no run is active,
         queue to the next turn boundary otherwise (never mid-turn)."""
         run_task = self._run_task
         if run_task is None or run_task.done():
@@ -1246,7 +1245,7 @@ class AnthropicAgent(AgentRuntime):
 
     def _require_mcp(self) -> "McpToolSource":
         """The source, created lazily for dynamic registration on an agent
-        booted without ``mcp_servers=`` (E14)."""
+        booted without ``mcp_servers=``."""
         if self._mcp is None:
             from agent_base.mcp import require_mcp_sdk
 
@@ -1260,7 +1259,7 @@ class AnthropicAgent(AgentRuntime):
 
     @property
     def mcp_source(self) -> "McpToolSource | None":
-        """Runtime resource — shared BY REFERENCE with sub-agents (E9)."""
+        """Runtime resource — shared BY REFERENCE with sub-agents."""
         return self._mcp
 
     def mcp_statuses(self) -> "list[McpServerStatus]":
@@ -1276,7 +1275,7 @@ class AnthropicAgent(AgentRuntime):
         return await self._require_mcp().refresh(name)
 
     async def add_mcp_server(self, name: str, spec: "McpServerSpec") -> "McpServerStatus":
-        """Dynamic registration on a live agent (MC-D8): connects out-of-band;
+        """Dynamic registration on a live agent: connects out-of-band;
         a 401 parks the handle needs_auth but the registration succeeds."""
         return await self._require_mcp().add_server(name, spec)
 
@@ -1286,13 +1285,13 @@ class AnthropicAgent(AgentRuntime):
     async def reconcile_mcp_servers(
         self, desired: "dict[str, McpServerSpec]"
     ) -> "list[McpServerStatus]":
-        """Declarative diff-to-set (MC-D14): keys are the identity."""
+        """Declarative diff-to-set: keys are the identity."""
         return await self._require_mcp().reconcile(desired)
 
     async def aclose(self) -> None:
         """Teardown runtime resources: MCP client sessions, reconnect tasks,
-        stdio children — no leaked subprocesses past the session actor (E6).
-        A sub-agent sharing the parent's source (E9) closes nothing."""
+        stdio children — no leaked subprocesses past the session actor.
+        A sub-agent sharing the parent's source closes nothing."""
         if self._mcp is not None and self._mcp_owned:
             await self._mcp.aclose()
 
@@ -1300,9 +1299,9 @@ class AnthropicAgent(AgentRuntime):
         """Render every message for the LLM wire, applying runtime contributions
         to the target user message only.
 
-        CM-G3c: the tail instruction comes from the ACTIVE profile
-        (``Profile.tail`` — §2.7 guarantee 3; the ``_select_tail_for_mode``
-        override stub is deleted, G0)."""
+        The tail instruction comes from the ACTIVE profile
+        (``Profile.tail``; the ``_select_tail_for_mode``
+        override stub is deleted)."""
         target_id = self._runtime_target_msg_id
         runtime = self._runtime_contributions
         active = self.active_profile
@@ -1317,7 +1316,7 @@ class AnthropicAgent(AgentRuntime):
             rendered.append(view_msg.render(tail_instruction=tail))
         return rendered
 
-    # ── streaming plumbing (R30 — DeltaSink over the Rung-1 stream) ────────
+    # ── streaming plumbing (DeltaSink over the Rung-1 stream) ──────────────
 
     def _active_sink(self) -> "DeltaSink | None":
         """The loop's DeltaSink when a stream read-path exists (a subscriber
@@ -1349,7 +1348,7 @@ class AnthropicAgent(AgentRuntime):
             self._sandbox_preparation_pending = True
             self._sandbox_preparation_error = None
 
-        # §5 boundary discipline: a surface change queued while the previous
+        # Boundary discipline: a surface change queued while the previous
         # run was active applies HERE — the turn boundary — so this turn's
         # schemas and change notice are consistent.
         if self._mcp is not None and self._mcp_surface_dirty:
@@ -1360,11 +1359,11 @@ class AnthropicAgent(AgentRuntime):
         if isinstance(prompt, str):
             prompt = Message.user(prompt)
 
-        # ── on_turn_start fires on the LIVE loop (CM-G4; same chain as
+        # ── on_turn_start fires on the LIVE loop (same chain as
         # record_turn): block aborts the turn, update replaces the prompt,
-        # ctx.switch_profile applies once post-composition (O7), and
+        # ctx.switch_profile applies once post-composition, and
         # prefix/suffix/additional_context land as render-time contributions.
-        # The run id is pre-minted (CM-G2) so the hook context carries it.
+        # The run id is pre-minted so the hook context carries it.
         pending_run_id = str(uuid.uuid4())
         self._run_id = pending_run_id
         prompt, turn_start_outcome = await self._run_live_turn_start(prompt)
@@ -1430,12 +1429,12 @@ class AnthropicAgent(AgentRuntime):
     async def _resume_rearmed(self) -> "AgentResult | None":
         """Re-enter a cold-rehydrated turn after rehydrate-then-resolve.
 
-        relay-await §2.4 / §6: the public ``resume_with_relay_results`` is
-        DELETED (G0) — the one resume contract is ``submit(ToolReply(cid))``.
+        The public ``resume_with_relay_results`` is
+        DELETED — the one resume contract is ``submit(ToolReply(cid))``.
         On the cold path ``_rearm_pending_await(reply=...)`` re-opened the
         persisted pause's cid and parked the join here; ``submit`` resolved it
         and kicked this continuation. It runs the ``await_external`` tail
-        (reconcile → splice → checkpoint — the §2.5 guarantee runs for hot
+        (reconcile → splice → checkpoint — the guarantee runs for hot
         AND cold) and then resumes the loop.
         """
         join = self._rearmed_join
@@ -1520,7 +1519,7 @@ class AnthropicAgent(AgentRuntime):
         """Fold completed backend + incoming frontend results into context.
 
         Overrides the runtime's relay splice with the externalizer-aware fold:
-        ``after_tool`` (``executor="frontend"`` — agent-loop-hooks §2.1, the
+        ``after_tool`` (``executor="frontend"``, the
         replacement for the deleted ``on_relay_result``) fires per incoming
         ToolResult as a pre-splice transform; ``pending_relay.completed_results``
         + the (possibly transformed) reply land as ONE user message;
@@ -1536,7 +1535,7 @@ class AnthropicAgent(AgentRuntime):
                 "relay_cid_mismatch", expected=pending.cid, received=cid
             )
 
-        # after_tool per incoming ToolResult — pre-splice transform (§2.1).
+        # after_tool per incoming ToolResult — pre-splice transform.
         calls_by_id = {
             call.tool_id: call
             for call in (*pending.frontend_calls, *pending.confirmation_calls)
@@ -1586,11 +1585,11 @@ class AnthropicAgent(AgentRuntime):
     def _tool_ctx_factory(self):
         """Build a per-call ``ToolContext`` factory for the current run.
 
-        WT-1: the factory is the call-time population point tools.md §2.2
-        promises — capability fields (``sandbox``/``principal``/``media``)
+        The factory is the call-time population point —
+        capability fields (``sandbox``/``principal``/``media``)
         come from the agent by constructor arg, ``emit`` binds to the wired
-        ``_hook_emit`` (exact B8 signature), and ``call_frontend_tool`` binds
-        to the runtime relay primitive (§2.6/I4) with the ctx itself as the
+        ``_hook_emit`` (exact signature), and ``call_frontend_tool`` binds
+        to the runtime relay primitive with the ctx itself as the
         emit carrier. The binds are per-INSTANCE attribute assignments —
         a bare-constructed ``ToolContext`` keeps the loud unwired raises.
         """
@@ -1638,7 +1637,7 @@ class AnthropicAgent(AgentRuntime):
                 return await self.call_frontend_tool(name, input, ctx=ctx)
 
             ctx.call_frontend_tool = _call_frontend
-            # WT-4: user-facing display line — live TextDelta + replay log entry.
+            # User-facing display line — live TextDelta + replay log entry.
             ctx.emit_text = self._emit_display_text
             return ctx
 
@@ -1649,7 +1648,7 @@ class AnthropicAgent(AgentRuntime):
     def _root_session_id(self) -> str:
         """The owning root-session tree id (== root agent_uuid).
 
-        Tenancy §A.4 / §6 (G0): spawn-stamped ``_root_session_id_value`` for
+        Spawn-stamped ``_root_session_id_value`` for
         sub-agents; a root is its own root. The legacy ``extras['owner']``
         read-through is REMOVED — no fallback.
         """
@@ -1660,7 +1659,7 @@ class AnthropicAgent(AgentRuntime):
         return self.agent_uuid or self._agent_uuid or ""
 
     def _nothing_in_flight(self) -> bool:
-        """§2.4 idle check — a persisted ``pending_relay`` pause counts as
+        """Idle check — a persisted ``pending_relay`` pause counts as
         in-flight (an Abort must repair it), even while the loop is idle."""
         if self.agent_config is not None and self.agent_config.pending_relay is not None:
             return False
@@ -1671,7 +1670,7 @@ class AnthropicAgent(AgentRuntime):
         if self.agent_config.pending_relay is not None:
             await self._abort_awaiting_relay()
 
-    # ── the loop (written ONCE against the Provider protocol — §2.2) ───────
+    # ── the loop (written ONCE against the Provider protocol) ──────────────
 
     def _record_provider_response(self, turn: ProviderTurn) -> None:
         response_message = turn.message
@@ -1712,7 +1711,7 @@ class AnthropicAgent(AgentRuntime):
                 self._phase = AgentPhase.STREAMING
 
                 # --- Proactive compaction check (before/after_compact fire,
-                # trigger="auto" — CM-G4; an auto veto skips the compaction) ---
+                # trigger="auto"; an auto veto skips the compaction) ---
                 estimated_tokens = self.estimate_current_context_tokens()
                 if (
                     self._compaction_controller is not None
@@ -1728,7 +1727,7 @@ class AnthropicAgent(AgentRuntime):
                         estimated_tokens=estimated_tokens,
                     )
 
-                # --- The ONE provider invocation (runtime seam, §2.2) ---
+                # --- The ONE provider invocation (runtime seam) ---
                 try:
                     # Repair the chain first, so the request sent is the
                     # repaired one (_provider_turn repairs again: a no-op).
@@ -1740,7 +1739,7 @@ class AnthropicAgent(AgentRuntime):
                         render_view=render_view, sink=sink
                     )
                 except _Recompact as recompact:
-                    # I10: overflow routes through before_compact(trigger=
+                    # Overflow routes through before_compact(trigger=
                     # "overflow"); a block fails the turn upward with a typed
                     # CONTEXT_OVERFLOW (raised inside _compact_with_hooks).
                     if await self._compact_with_hooks(
@@ -1753,7 +1752,7 @@ class AnthropicAgent(AgentRuntime):
                 if turn.was_cancelled:
                     return await self._handle_stream_abort(turn, sink)
 
-                # O12(d): cooperative mid-stream failure — partials kept,
+                # Cooperative mid-stream failure — partials kept,
                 # typed report emitted, content survives into the chain.
                 if turn.partial_error is not None and sink is not None:
                     sink.emit_meta(
@@ -1832,7 +1831,7 @@ class AnthropicAgent(AgentRuntime):
                     # ---- Tool execution phase ----
                     self._phase = AgentPhase.EXECUTING_TOOLS
 
-                    # CM-G4: the unified tool lifecycle fires on the LIVE
+                    # The unified tool lifecycle fires on the LIVE
                     # backend path — before_tool (update→ToolCall / block) →
                     # execute → on_tool_error (raised → recovery) →
                     # after_tool (PRE-splice transform + switch_profile).
@@ -1885,7 +1884,7 @@ class AnthropicAgent(AgentRuntime):
                     if should_retry:
                         continue
 
-                    # CM-G4: the catalog on_turn_end fires on the live
+                    # The catalog on_turn_end fires on the live
                     # end-of-turn boundary (after the legacy ctor seam);
                     # EndTurnOutcome(action="continue") reruns the loop.
                     if await self._run_turn_end_hooks(
@@ -1909,7 +1908,7 @@ class AnthropicAgent(AgentRuntime):
                 await self._salvage_hard_cancelled_abort()
             raise
         except _Recompact:
-            raise  # internal mechanics (I10), never a turn's failure
+            raise  # internal mechanics, never a turn's failure
         except Exception as exc:
             # The turn failed: a provider error past its retries, a tool phase
             # or hook that raised, a save that failed (finalize's included).
@@ -1926,14 +1925,14 @@ class AnthropicAgent(AgentRuntime):
             # Always clear streaming context to avoid stale references.
             self._inject_stream_context_to_tools(None)
 
-    # ── live-loop lifecycle-hook dispatch (CM-G4 / CM-G1) ──────────────────
+    # ── live-loop lifecycle-hook dispatch ──────────────────────────────────
 
     async def _run_live_turn_start(
         self, prompt: Message
     ) -> tuple[Message, Any]:
         """Fire ``on_turn_start`` on the live loop (same chain as
         ``record_turn``): block → typed ABORTED; update → replaces the
-        prompt; ``ctx.switch_profile`` applied once post-composition (O7).
+        prompt; ``ctx.switch_profile`` applied once post-composition.
         Returns ``(possibly-replaced prompt, folded outcome)``."""
         pending_switches: list[str] = []
 
@@ -1997,7 +1996,7 @@ class AnthropicAgent(AgentRuntime):
         self, response_message: Message, *, stop_reason: str
     ) -> bool:
         """Fire the catalog ``on_turn_end`` on the live end-of-turn boundary
-        (CM-G4 — distinct from the legacy ``end_turn_hook=`` ctor seam, which
+        (distinct from the legacy ``end_turn_hook=`` ctor seam, which
         runs first). ``EndTurnOutcome(action="continue")`` injects the
         synthetic ``continue_prompt`` and reruns the loop; events ride the
         delivery-guaranteed channel. Returns True when the loop must rerun."""
@@ -2036,7 +2035,7 @@ class AnthropicAgent(AgentRuntime):
     async def _run_backend_before_tool(
         self, tool_calls: list[Any]
     ) -> tuple[list[Any], dict[str, ToolResultEnvelope]]:
-        """``before_tool`` per backend call (CM-G4): update→ToolCall rewrites
+        """``before_tool`` per backend call: update→ToolCall rewrites
         the input that executes; block DENIES the call (an ``is_error``
         envelope stands in so the chain stays valid). Returns
         ``(allowed_calls_with_rewritten_input, denied_envelopes_by_id)``."""
@@ -2081,9 +2080,9 @@ class AnthropicAgent(AgentRuntime):
         self, envelopes: list[ToolResultEnvelope], tool_calls: list[Any]
     ) -> list[ToolResultEnvelope]:
         """``on_tool_error`` (for RAISED executions, update→recovery envelope)
-        then ``after_tool`` (PRE-splice, update→ToolResultEnvelope, R10) per
+        then ``after_tool`` (PRE-splice, update→ToolResultEnvelope) per
         backend result; ``ctx.switch_profile`` applies once post-composition
-        (O7 — last call in the chain wins).
+        (last call in the chain wins).
 
         A replacement envelope still stands for the execution it replaces,
         so it inherits any timing it lacks (``inherit_tool_timing``)."""
@@ -2109,7 +2108,7 @@ class AnthropicAgent(AgentRuntime):
                         "tool_hooks.recovery_timing",
                         inherit_tool_timing, outcome.update, envelope,
                     )
-                    envelope = outcome.update  # synthesized recovery (R10)
+                    envelope = outcome.update  # synthesized recovery
             outcome = await self._fire_hooks(
                 "after_tool",
                 tool_name=envelope.tool_name,
@@ -2123,7 +2122,7 @@ class AnthropicAgent(AgentRuntime):
                     "tool_hooks.after_tool_timing",
                     inherit_tool_timing, outcome.update, envelope,
                 )
-                envelope = outcome.update  # pre-splice transform (R10)
+                envelope = outcome.update  # pre-splice transform
             out.append(envelope)
         if pending_switches:
             await self._apply_profile_switch(
@@ -2139,7 +2138,7 @@ class AnthropicAgent(AgentRuntime):
         sink: "DeltaSink | None",
         estimated_tokens: int | None = None,
     ) -> bool:
-        """``before_compact`` → compact → ``after_compact`` (CM-G4; I10).
+        """``before_compact`` → compact → ``after_compact``.
 
         ``before_compact`` block on ``trigger="auto"`` skips the compaction;
         on ``trigger="overflow"`` the turn FAILS UPWARD with a typed
@@ -2191,7 +2190,7 @@ class AnthropicAgent(AgentRuntime):
         else the AgentResult to surface (root persist_return / abort).
         """
         # Execute backend calls immediately — the full tool-hook lifecycle
-        # (before_tool / on_tool_error / after_tool) fires here too (CM-G4).
+        # (before_tool / on_tool_error / after_tool) fires here too.
         backend_results: list[ToolResultEnvelope] = []
         if classification.backend_calls:
             allowed_calls, denied = await self._run_backend_before_tool(
@@ -2220,7 +2219,7 @@ class AnthropicAgent(AgentRuntime):
                 self._build_tool_result_message(backend_results)
             )
 
-        # ── CM-G1: before_tool fires per pending frontend/confirmation call
+        # ── before_tool fires per pending frontend/confirmation call
         # BEFORE the AwaitInput emit (exactly what call_frontend_tool already
         # did on the scripted path): update→ToolCall enrichment lands on BOTH
         # the outbound FrontendCallView AND the persisted pause (a cold
@@ -2293,17 +2292,17 @@ class AnthropicAgent(AgentRuntime):
             else AWAIT_REASON_FRONTEND_TOOL
         )
 
-        # ONE relay primitive for root and child alike (relay-await §2.3 — the
-        # ``_relay_mode`` fork is GONE, G0): persist the pause (the cold-match
-        # cid rides ``pending_relay.cid``, R23), then park on the cid-keyed
+        # ONE relay primitive for root and child alike (the
+        # ``_relay_mode`` fork is GONE): persist the pause (the cold-match
+        # cid rides ``pending_relay.cid``), then park on the cid-keyed
         # AwaitTable via the runtime's ``await_external``. The actor stays
         # parked in RAM; ``submit(ToolReply(cid))`` wakes it in place, and an
-        # evicted session rehydrates through the SAME cid (§2.4).
+        # evicted session rehydrates through the SAME cid.
         cid = self._allocate_relay_cid(classification)
 
         # Leak-2 fix: stamp the pre-pause billing/analytics facts onto the
         # pause record so a process death while parked cannot erase the leg's
-        # spend. Priced NOW (at generation, D13), billed at finalize — nothing
+        # spend. Priced NOW (at generation), billed at finalize — nothing
         # is emitted here. _resume_rearmed restores these on the cold path; the
         # hot path keeps _turn_steps in memory and never reads them back.
         unbilled = (
@@ -2427,7 +2426,7 @@ class AnthropicAgent(AgentRuntime):
             await coordinator.validate_resident(self)
             await persist()
 
-    # ``_actor_loop`` is INHERITED from ``AgentRuntime`` (GF-P6G3 — the
+    # ``_actor_loop`` is INHERITED from ``AgentRuntime`` (the
     # single-writer drain was lifted into the base so ``ensure_actor()`` and
     # the submit auto-kick drive every concrete runtime identically).
 
@@ -2516,9 +2515,9 @@ class AnthropicAgent(AgentRuntime):
                 # Signal cancellation, then let cooperative tools clean up.
                 self._cancellation_event.set()
 
-                # CM-G4: the catalog on_abort observer fires on the live
+                # The catalog on_abort observer fires on the live
                 # abort path (observe + emit only; tool-level on_abort()
-                # cleanup below is retained separately — §2.6).
+                # cleanup below is retained separately).
                 await self._fire_hooks(
                     "on_abort",
                     grace_ms=int(self._abort_grace_seconds() * 1000),
@@ -2576,7 +2575,7 @@ class AnthropicAgent(AgentRuntime):
     ) -> AgentResult:
         """Abort the current turn and redirect with a new instruction."""
         # Step 1: Abort cleanly (produces valid chain). The steered turn follows
-        # on the same stream, so the preemption marker is 'steered' (NV-4).
+        # on the same stream, so the preemption marker is 'steered'.
         self._steer_preempting = True
         try:
             await self._do_abort()
@@ -2602,14 +2601,14 @@ class AnthropicAgent(AgentRuntime):
         """Handle abort during streaming (Scenario A).
 
         ``provider.plan_stream_abort(turn)`` reads the provider-private
-        ``stream_bookkeeping`` (O12a) and synthesizes tool_results for
+        ``stream_bookkeeping`` and synthesizes tool_results for
         orphaned tool_use blocks, producing a valid chain.
         """
         patch = self.provider.plan_stream_abort(turn)
         self._append_messages_to_histories(patch.append_messages)
 
         if self._abort_pending is None and sink is not None and not getattr(self, "_parent_agent_uuid", None):
-            # No Abort command decided the marker (a direct caller): NV-4 — a
+            # No Abort command decided the marker (a direct caller): a
             # forceful-steer preemption is NOT a terminal abort, the steered
             # turn follows on the same stream, so the marker differs.
             marker = (
@@ -2913,7 +2912,7 @@ class AnthropicAgent(AgentRuntime):
         """Handle abort during relay wait (Scenario C).
 
         Uses the shared ``agent_base.core.chain`` planner — the per-provider
-        ``message_sanitizer`` modules are removed (providers.md §6, G0).
+        ``message_sanitizer`` modules are removed.
         """
         from agent_base.core.chain import ChainToolCall, plan_relay_abort
 
@@ -3164,12 +3163,12 @@ class AnthropicAgent(AgentRuntime):
             log.add_span(span)
         conversation.conversation_log = log
 
-    # ─── WT-4: display-only emission (live stream + replay log, NEVER context) ───
+    # ─── Display-only emission (live stream + replay log, NEVER context) ───
 
     def _emit_display_text(self, text: str) -> None:
         """Stream a user-facing text line AND persist it for history replay.
 
-        WT-4 wired implementation behind ``ctx.emit_text``. Live half: one
+        Wired implementation behind ``ctx.emit_text``. Live half: one
         ``TextDelta`` (``is_final=True``, line rendered as its own paragraph)
         on the run's stream — lossy-by-policy when no consumer is attached,
         like every content delta. Replay half: a DISPLAY-ONLY assistant
@@ -3187,7 +3186,7 @@ class AnthropicAgent(AgentRuntime):
     def _append_display_message_to_logs(self, text: str) -> None:
         """Append a display-only assistant message to BOTH conversation logs.
 
-        WT-4 replay carrier: deliberately NEVER paired with a
+        Replay carrier: deliberately NEVER paired with a
         ``context_messages`` append (unlike every `_append_message_to_logs`
         loop call site) — the entry exists only so history replay shows the
         same conversation the live stream did.
@@ -3274,7 +3273,7 @@ class AnthropicAgent(AgentRuntime):
             projection.executor = self.tool_registry.executor_for(envelope.tool_name)
 
     def log_tool_result_for_replay(self, envelope: ToolResultEnvelope) -> None:
-        """WT-4 public seam: persist a tool result to the conversation logs.
+        """Public seam: persist a tool result to the conversation logs.
 
         For workflow-tool bodies that execute tools or sub-agents
         PROGRAMMATICALLY — outside the model loop, where the loop's own log
@@ -3399,7 +3398,7 @@ class AnthropicAgent(AgentRuntime):
         rollback_message: str,
         sink: "DeltaSink | None",
     ) -> None:
-        """Emit the ``Rollback`` MetaBody (O3/G0 — ``RollbackDelta`` deleted;
+        """Emit the ``Rollback`` MetaBody (``RollbackDelta`` deleted;
         rollback rides the control channel)."""
         if sink is None:
             return
@@ -3561,13 +3560,13 @@ class AnthropicAgent(AgentRuntime):
         tools: list[Callable] | None,
         frontend_tools: list[Callable] | None,
     ) -> None:
-        """THE canonical recompose (mcp.md MC-D12): build a fresh registry
+        """THE canonical recompose: build a fresh registry
         from the declared sources — explicit tool lists or the old registry's
         non-MCP entries — then re-add the CURRENT MCP surface + ``mcp_status``,
         swap, re-attach the sandbox, re-inject uuids, refresh the persisted
         schemas. Profile switches and MCP reconciliation share this one
         function, so a profile rebuild can never silently drop the MCP
-        surface (E10). Compiled MCP callables carry ``__mcp_server__`` so
+        surface. Compiled MCP callables carry ``__mcp_server__`` so
         composition filters deterministically — never copy-from-old
         heuristics for MCP entries."""
         old_registry = self.tool_registry
@@ -3609,7 +3608,7 @@ class AnthropicAgent(AgentRuntime):
                 s.name for s in self.agent_config.tool_schemas
             ]
         if self._mcp is not None and self._mcp_owned:
-            # Record the applied surface; a non-empty diff queues the MC-D13
+            # Record the applied surface; a non-empty diff queues the
             # change notice for the next model-bound turn.
             self._mcp.commit_applied()
 
@@ -3629,7 +3628,7 @@ class AnthropicAgent(AgentRuntime):
         """Inject or clear the live stream queue into tools that support it.
 
         Tools like ``SubAgentTool`` use the queue so child agents emit into
-        the same ``agent.stream()`` read path (R30 — formatter plumbing is
+        the same ``agent.stream()`` read path (formatter plumbing is
         deleted).
         """
         for registered in self.tool_registry._tools.values():
@@ -3838,7 +3837,7 @@ class AnthropicAgent(AgentRuntime):
     ) -> AgentResult:
         """Construct the AgentResult returned to the caller.
 
-        pricing-cost.md §6 / B6 / G0: no ``cost`` / ``cumulative_usage`` —
+        No ``cost`` / ``cumulative_usage`` —
         per-turn cost rides ``result.settlement`` (attached in
         ``_finalize_run``); cumulative is a consumer-side fold over the
         per-turn ``UsageReport`` stream.
@@ -3868,11 +3867,11 @@ class AnthropicAgent(AgentRuntime):
             return None
         return self._cumulative_cost
 
-    # ── settlement (pricing-cost.md §2.4 — the unified chokepoint) ─────────
+    # ── settlement (the unified chokepoint) ────────────────────────────────
 
     def _settle_turn(self, steps: "list[Message] | None" = None) -> "TurnSettlement":
         """Compute a billing fact for ``steps`` via pricing's
-        ``settle_turn(ctx, steps)`` (O14d module function). Defaults to the
+        ``settle_turn(ctx, steps)`` (module function). Defaults to the
         whole ``_turn_steps`` list for back-compat callers."""
         ctx = SimpleNamespace(
             pricing_policy=self.pricing_policy,
@@ -3912,7 +3911,7 @@ class AnthropicAgent(AgentRuntime):
     def _price_unbilled_fact(self) -> "TurnSettlement":
         """Price the run's unbilled spend — the ``_turn_steps`` tail plus any
         restored pre-pause leg — WITHOUT mutating the watermark or the restored
-        record. Priced at generation (D13): the rate applied is the rate in
+        record. Priced at generation: the rate applied is the rate in
         effect now; the fact never gets re-priced later. Shared by
         ``_settle_delta`` (which commits the mutation) and the pre-park persist
         (which must leave in-memory state untouched)."""
@@ -3952,7 +3951,7 @@ class AnthropicAgent(AgentRuntime):
 
     async def _emit_usage_report(self, settlement: "TurnSettlement") -> None:
         """Emit ``UsageReport.of(settlement)`` and deliver to ``on_usage_report``
-        subscribers (Fork G / B1). At most once per BILLABLE LEG of a run: the
+        subscribers. At most once per BILLABLE LEG of a run: the
         happy path emits once at finalize; an aborted run emits once at the abort
         (previously: never — aborted turns billed $0)."""
         self._hook_emit(UsageReport.of(settlement))
@@ -3982,7 +3981,7 @@ class AnthropicAgent(AgentRuntime):
             return  # finalization already captured the required turn boundary
         await self.checkpoint()
 
-    # ── finalize (written ONCE — kills B2's duplication) ───────────────────
+    # ── finalize (written ONCE) ────────────────────────────────────────────
 
     #: What the user reads when the model declines a request.
     REFUSAL_NOTICE = (
@@ -4038,7 +4037,7 @@ class AnthropicAgent(AgentRuntime):
     ) -> AgentResult:
         """Finalize the run: flush exports, update memory, settle the turn,
         persist, emit — provider-touch-points reduced to ``provider.name`` /
-        ``provider.collect_api_files`` (providers.md §2.2)."""
+        ``provider.collect_api_files``."""
         if self._cancellation_event is not None and self._cancellation_event.is_set():
             # An abort raced the turn's own completion: RunCompleted is the
             # terminal frame, so _do_abort must neither wait out its grace
@@ -4057,7 +4056,7 @@ class AnthropicAgent(AgentRuntime):
             self.agent_config.agent_uuid
         )
 
-        # Provider-hosted artifacts (R31): Anthropic Files API; LiteLLM = [].
+        # Provider-hosted artifacts: Anthropic Files API; LiteLLM = [].
         api_files = await self.provider.collect_api_files(self)
         generated_files.extend(api_files)
 
@@ -4065,8 +4064,8 @@ class AnthropicAgent(AgentRuntime):
         for media_meta in generated_files:
             self.agent_config.media_registry[media_meta.media_id] = media_meta
 
-        # Update memory store (O13: update(ctx, log, stop_reason); failure =
-        # ErrorReport via the control channel, never turn-fatal — memory.md §6).
+        # Update memory store (update(ctx, log, stop_reason); failure =
+        # ErrorReport via the control channel, never turn-fatal).
         if self.memory_store is not None:
             log = (
                 self.conversation.conversation_log
@@ -4140,7 +4139,7 @@ class AnthropicAgent(AgentRuntime):
         result = self._build_agent_result(response_message, stop_reason)
         result.generated_files = generated_files
 
-        # ── Settlement chokepoint (pricing-cost.md §2.4 / B6): settle the
+        # ── Settlement chokepoint: settle the
         # unbilled delta, attach to the result, emit UsageReport. Uses
         # _settle_delta (NOT _settle_and_emit_delta) deliberately: finalize must
         # produce a settlement even when the delta is empty — RunCompleted below
@@ -4157,7 +4156,7 @@ class AnthropicAgent(AgentRuntime):
                 sink.emit_meta(
                     FilesUpdated(files=[f.to_dict() for f in generated_files])
                 )
-            # GF-P6G4: RunCompleted is UNCONDITIONAL at turn end — the ONE
+            # RunCompleted is UNCONDITIONAL at turn end — the ONE
             # guaranteed terminal frame for every completed turn (LLM and
             # ToolReply-continuation alike). The
             # ``stream_meta_history_and_tool_results`` flag now gates ONLY the
@@ -4255,8 +4254,8 @@ class AnthropicAgent(AgentRuntime):
             except Exception as exc:
                 failures.append(self._persist_bookkeeping_failed("run_logs", exc))
 
-        # fork-reset: capture a checkpoint at the quiescent turn boundary. Auto
-        # (SPEC §D1) — a single insertion point that covers both the live
+        # fork-reset: capture a checkpoint at the quiescent turn boundary. Auto —
+        # a single insertion point that covers both the live
         # finalize path and the scripted record_turn path (both reach here via
         # _persist_state). No-op unless a CheckpointAdapter is wired.
         if not capture:
@@ -4331,9 +4330,9 @@ class AnthropicAgent(AgentRuntime):
         config_snapshot: "AgentConfig | None" = None,
     ) -> "CheckpointRef | None":
         """Capture a fork/reset checkpoint of the agent + sandbox at this turn
-        boundary. Core runtime behavior gated on adapter presence (SPEC §D1) —
+        boundary. Core runtime behavior gated on adapter presence —
         NOT a lifecycle hook. Captures the codec-split ``AgentConfig`` and the
-        sandbox snapshot as ONE row (SPEC §F2). Returns the ref, or ``None`` when
+        sandbox snapshot as ONE row. Returns the ref, or ``None`` when
         the feature is off (no adapter), there is no turn to capture, or the
         agent is paused mid-turn (``pending_relay`` set — NOT a quiescent
         boundary). ``conversation`` defaults to the live ``self.conversation``;
@@ -4433,9 +4432,9 @@ class AnthropicAgent(AgentRuntime):
     # ─── Run lifecycle control events (RunStarted supersedes meta_init) ───
 
     def _emit_run_started(self, prompt: Message, sink: "DeltaSink") -> None:
-        """Emit ``RunStarted`` at stream start (streaming-and-meta §6 — the
+        """Emit ``RunStarted`` at stream start (the
         ``meta_init`` MetaDelta and the private ``_emit_meta_init`` are
-        deleted per G0)."""
+        deleted)."""
         text_parts = [b.text for b in prompt.content if isinstance(b, TextContent)]
         user_query = " ".join(text_parts) if text_parts else json.dumps(
             _strip_binary_data(prompt.to_dict()), ensure_ascii=False

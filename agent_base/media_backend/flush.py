@@ -1,12 +1,12 @@
-"""Incremental media flush — the B2 fix as a first-class strategy.
+"""Incremental media flush as a first-class strategy.
 
-media-backend.md §2.2: a default ``MediaFlushStrategy`` (persisted blake3
-registry; returns the delta) the backend owns, overridable per contract §6.
+A default ``MediaFlushStrategy`` (persisted blake3
+registry; returns the delta) the backend owns, overridable.
 
 Amendments:
-  - O3: ``IncrementalBlake3Flush`` is the ONLY shipped strategy; ``FullReuploadFlush``
+  - ``IncrementalBlake3Flush`` is the ONLY shipped strategy; ``FullReuploadFlush``
     is DELETED. The ``MediaFlushStrategy`` ABC stays as the custom-registry seam.
-  - R28: ``flush_exports`` returns the DELTA; ``flush_exports_result`` returns the
+  - ``flush_exports`` returns the DELTA; ``flush_exports_result`` returns the
     rich ``FlushResult``.
 """
 
@@ -63,7 +63,7 @@ class FlushResult:
 class MediaFlushRegistry(Protocol):
     """Persistence seam for the cross-turn hash registry, keyed by export path.
 
-    R15: the DEFAULT registry is MEDIA-LOCAL and consumer-injectable. It is NOT
+    The DEFAULT registry is MEDIA-LOCAL and consumer-injectable. It is NOT
     one of the three library tables and NOT storage-owned by default. A consumer
     who wants it in Postgres injects a ``MediaFlushRegistry`` impl.
     """
@@ -74,7 +74,7 @@ class MediaFlushRegistry(Protocol):
 
 
 class _InMemoryFlushRegistry:
-    """Default media-local registry (R15) when no registry is injected.
+    """Default media-local registry when no registry is injected.
 
     Keeps the per-(agent_uuid) hash map in process. A consumer who needs
     durability injects their own ``MediaFlushRegistry``.
@@ -93,8 +93,8 @@ class _InMemoryFlushRegistry:
 class MediaFlushStrategy(ABC):
     """Policy for turning sandbox exports into stored media.
 
-    Overridable per contract §0.2 / §6 ("default in the library + consumer
-    override"). The ABC is the custom-registry seam (O3).
+    Overridable ("default in the library + consumer
+    override"). The ABC is the custom-registry seam.
     """
 
     @abstractmethod

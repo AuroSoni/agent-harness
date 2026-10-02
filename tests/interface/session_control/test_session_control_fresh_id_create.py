@@ -1,6 +1,6 @@
-"""Fresh consumer-minted root ids initialize with ZERO pre-seeding (GF-P6G1).
+"""Fresh consumer-minted root ids initialize with ZERO pre-seeding.
 
-Covers session-control.md §2.5 + the O15a invariant: the CONSUMER mints
+Covers the invariant: the CONSUMER mints
 ``root_session_id`` (== root ``agent_uuid``, ratified) and passes it straight
 to ``get_or_create`` — the library owns the create-vs-resume split:
 
@@ -14,10 +14,10 @@ to ``get_or_create`` — the library owns the create-vs-resume split:
 - ``on_session_start`` fires ``source="create"`` / ``is_cold_load=True`` for
   the fresh id and ``source="resume"`` once the row exists;
 - ``set_principal`` raising ``PrincipalConflict`` inside the build path
-  propagates to the ``get_or_create`` caller untouched (GF-P8G2 contract,
-  preserved through this create branch).
+  propagates to the ``get_or_create`` caller untouched
+  (preserved through this create branch).
 
-Kills Nova's factory pre-seed (``excel_agent/agent_factory.py`` "P6-G1"
+Kills Nova's factory pre-seed (``excel_agent/agent_factory.py``
 scoped-row insert).
 """
 from __future__ import annotations
@@ -103,7 +103,7 @@ async def test_create_branch_stamps_owner_columns_for_a_named_principal():
         system_prompt="t", agent_uuid=sid, principal=owner, **_adapters()
     )
     config, _ = await agent.initialize()
-    # _reconcile_identity runs on the create branch too (GF-P8G2 shared seam).
+    # _reconcile_identity runs on the create branch too (shared seam).
     assert config.owner_tenant == "org_1"
     assert config.owner_subject == "member_1"
 
@@ -157,7 +157,7 @@ async def test_get_or_create_resumes_once_the_row_exists():
     sid = _minted()
     await SessionManager(factory).get_or_create(sid)  # create + persist
     # A NEW manager (process restart): the same id now hydrates as a resume —
-    # the §2.5 probe drives BOTH fields (cold == "no persisted state", so a
+    # the probe drives BOTH fields (cold == "no persisted state", so a
     # storage-hydrated resume reports is_cold_load=False).
     await SessionManager(factory).get_or_create(sid)
 
@@ -165,7 +165,7 @@ async def test_get_or_create_resumes_once_the_row_exists():
 
 
 async def test_set_principal_conflict_propagates_out_of_the_build_path():
-    """GF-P8G2 preserved through the create branch: the manager's post-build
+    """Preserved through the create branch: the manager's post-build
     ``set_principal`` raising ``PrincipalConflict`` reaches the caller —
     never swallowed into a NOT_FOUND/None."""
     adapters = _adapters()

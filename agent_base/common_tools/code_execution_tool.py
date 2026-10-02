@@ -1,12 +1,12 @@
 """Execute Python code in a persistent sandboxed environment.
 
-Migrated to the rebuilt executor surface (python-executors.md §3.1/§6, G0):
+Migrated to the rebuilt executor surface:
 ``ExecutorPolicy``/``file_io_policy`` replace the legacy ctor kwargs,
 ``bind_tools`` replaces ``send_tools``, ``executor.arun(code)`` replaces the
 ``executor(code)`` call style, and the no-raise ``ExecutorResult.error``
 contract replaces try/except around the call. Output budgeting goes through
-``ctx.emit_capped`` (tools.md §2.4, I5/O11(a)) — ``_truncate_tail`` and the
-``tool_result_storage`` fork are deleted (F6, G0).
+``ctx.emit_capped`` — ``_truncate_tail`` and the
+``tool_result_storage`` fork are deleted.
 """
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ Returns:
 
     def _get_executor(self) -> LocalPythonExecutor:
         if self._executor is None:
-            # python-executors.md §3.1 "after": preset + policy; `open` is a
+            # Preset + policy; `open` is a
             # typed extra-builtin; one-call construction (bind_tools composes).
             policy = file_io_policy(
                 extra=tuple(imp for imp in self.authorized_imports if imp != "*"),
@@ -187,7 +187,7 @@ Returns:
         if "*" in self.authorized_imports:
             return "All imports are allowed (unrestricted mode)."
         # Single source of truth: the executor policy's effective import set
-        # (python-executors.md §3.2 — no hand re-merged lists).
+        # (no hand re-merged lists).
         return ", ".join(sorted(self._get_executor().policy.effective_imports))
 
     def _get_template_context(self) -> Dict[str, Any]:
@@ -314,7 +314,7 @@ Returns:
                     execution_cwd = self._get_execution_cwd()
                     try:
                         os.chdir(execution_cwd)
-                        # No-raise structured-error contract (O14): arun never
+                        # No-raise structured-error contract: arun never
                         # raises an InterpreterError — check result.error.
                         result = await executor.arun(code, ctx=ctx)
                         self._persist_execution_cwd()
@@ -342,7 +342,7 @@ Returns:
         full_output = "".join(output_parts) if output_parts else "[No output]"
         if ctx is not None:
             # One call replaces save_tool_result + _truncate_tail +
-            # truncation_reference + hint (tools.md §3 "After F6").
+            # truncation_reference + hint.
             return await ctx.emit_capped(full_output, max_chars=self.max_output_chars)
         if len(full_output) <= self.max_output_chars:
             return full_output

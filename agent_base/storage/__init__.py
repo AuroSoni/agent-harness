@@ -46,10 +46,10 @@ from .base import (
 # Checkpoint entities (fork/reset) — canonical home is core.checkpoint
 from ..core.checkpoint import Checkpoint, CheckpointRef
 
-# The bundle the runtime threads onto HookContext.storage (storage.md §2.0)
+# The bundle the runtime threads onto HookContext.storage
 from .handles import StorageHandles
 
-# Typed cross-agent analytics read-API (storage.md §2.7)
+# Typed cross-agent analytics read-API
 from .analytics import (
     TERMINAL_STOP_REASONS,
     AgentTotals,

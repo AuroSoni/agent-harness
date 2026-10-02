@@ -17,7 +17,7 @@ class Usage:
     identity (provider/model) and billing context (usage_kwargs) live on
     Message where they are unambiguous when summing across steps.
 
-    Follows the ``Serializable`` convention (core.md §2.1, O15(c)):
+    Follows the ``Serializable`` convention:
     ``to_dict()`` stamps the library-wide ``CORE_SCHEMA_VERSION`` under ``_v``;
     ``from_dict()`` tolerates the stamp, unknown keys, and missing keys.
     """
@@ -26,7 +26,7 @@ class Usage:
     cache_write_tokens: int | None = None
     cache_read_tokens: int | None = None
     thinking_tokens: int | None = None
-    # ``None`` after ``__add__`` (O5: raw_usage is dropped on add — summing
+    # ``None`` after ``__add__`` (raw_usage is dropped on add — summing
     # provider-opaque payloads is meaningless).
     raw_usage: Dict[str, Any] | None = field(default_factory=dict)
 
@@ -43,7 +43,7 @@ class Usage:
         })
 
     def totals_dict(self) -> Dict[str, Any]:
-        """``to_dict()`` MINUS ``raw_usage`` (O5) — the stable numeric keys,
+        """``to_dict()`` MINUS ``raw_usage`` — the stable numeric keys,
         ``None`` cache/thinking fields coalesced to 0, ``_v`` stamped."""
         from agent_base.core.serializable import _stamp
 
@@ -56,7 +56,7 @@ class Usage:
         })
 
     def __add__(self, other: "Usage") -> "Usage":
-        """Field-wise sum (O5). ``None`` cache/thinking fields coalesce to 0;
+        """Field-wise sum. ``None`` cache/thinking fields coalesce to 0;
         ``raw_usage`` is dropped (set to ``None``). Pure — neither operand is
         mutated."""
         if not isinstance(other, Usage):

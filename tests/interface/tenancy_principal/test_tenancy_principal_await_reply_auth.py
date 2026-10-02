@@ -1,30 +1,30 @@
 """Interface spec — principal threading into relay/await reply-auth.
 
-Covers interface_plan/subsystems/tenancy-principal.md:
-  - §A.4: ``AwaitRecord`` gains ``principal: SessionPrincipal | None = None``;
+Covers:
+  - ``AwaitRecord`` gains ``principal: SessionPrincipal | None = None``;
     ``AwaitTable.open(..., principal=)`` records the owner; auth is enforced
     centrally INSIDE ``AwaitTable.resolve(cid, results, *, principal=, policy=)``
-    (R7 — one method, no ``resolve_authorized``).
-  - R9 (cid layer): unknown cid → ``IGNORED_STALE``; principal mismatch on a
+    (one method, no ``resolve_authorized``).
+  - cid layer: unknown cid → ``IGNORED_STALE``; principal mismatch on a
     live record → ``REJECTED``, NEVER downgraded to ``IGNORED_STALE``.
-  - §A.4 ordering: (1) record lookup → (2) principal auth → (3) the existing
+  - Ordering: (1) record lookup → (2) principal auth → (3) the existing
     generation/dedupe checks; a rejected reply must not consume the await.
-  - I1: the ``policy=`` kwarg threads the ONE injected ``PrincipalPolicy``;
+  - The ``policy=`` kwarg threads the ONE injected ``PrincipalPolicy``;
     default behavior is ``StrictScopePolicy``.
 
 The ``AwaitTable``/``Join`` machinery itself belongs to the relay_await
 subsystem — it is used here strictly as the collaborator carrying the
 principal field and the auth check that this subsystem specifies.
 
-NOTE (cross-doc divergence, flagged for reconciliation): this suite threads
-the policy per-call via ``resolve(..., policy=)`` exactly per the amended
-tenancy-principal.md §A.4 signature, while relay-await.md (which OWNS
+NOTE (divergence, flagged for reconciliation): this suite threads
+the policy per-call via ``resolve(..., policy=)``, while the relay_await
+subsystem (which OWNS
 ``AwaitTable``) specs ``resolve(cid, results, *, principal=None)`` with no
 ``policy=`` kwarg, and its suite injects the policy at construction
 (``AwaitTable(principal_policy=...)``). The two suites are co-satisfiable
 only if the implementation supports BOTH seams (ctor default + per-call
-override, ``policy or self._principal_policy``) — no doc states the dual
-seam explicitly; one of the two signatures should be ratified.
+override, ``policy or self._principal_policy``) — the dual
+seam is not stated explicitly; one of the two signatures should be ratified.
 """
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ def test_await_record_stores_the_owning_principal():
     assert record.principal == OWNER
 
 
-# ─── resolve(): the single auth+resolve entry point (R7) ─────────────
+# ─── resolve(): the single auth+resolve entry point ──────────────────
 
 
 async def test_resolve_unknown_cid_is_ignored_stale_even_with_principal():
@@ -121,7 +121,7 @@ async def test_resolve_cross_tenant_claimant_is_rejected():
 
 
 async def test_rejected_is_never_downgraded_to_ignored_stale():
-    # R9: a cid whose record exists but whose principal mismatches is a VALID
+    # A cid whose record exists but whose principal mismatches is a VALID
     # reply target refused for auth — REJECTED, not any IGNORED_* disposition.
     table = AwaitTable()
     await _open(table, "cid-1", OWNER)
@@ -143,7 +143,7 @@ async def test_rejected_reply_does_not_consume_the_await():
 
 
 async def test_auth_check_precedes_dedupe_check():
-    # §A.4 order: lookup → auth → generation/dedupe. A wrong-principal reply
+    # Order: lookup → auth → generation/dedupe. A wrong-principal reply
     # to an ALREADY-RESOLVED record is REJECTED (auth fires first), while the
     # owner's own double delivery is IGNORED_DUP.
     table = AwaitTable()
@@ -154,9 +154,9 @@ async def test_auth_check_precedes_dedupe_check():
 
 
 async def test_auth_check_precedes_the_stale_generation_check():
-    # §A.4 order on the strongest downgrade path (R9): interrupt() retires the
+    # Order on the strongest downgrade path: interrupt() retires the
     # record's generation, so the OWNER's late reply is merely stale
-    # (IGNORED_STALE — relay-await.md: "generation retired by an interrupt").
+    # (IGNORED_STALE — "generation retired by an interrupt").
     # An INTRUDER's reply to the SAME retired record is still REJECTED — auth
     # (step 2) fires before the generation/stale classification (step 3), so
     # REJECTED is never downgraded to IGNORED_STALE even for a retired record.
@@ -186,7 +186,7 @@ async def test_unscoped_record_resolves_for_trusted_in_process_caller():
 
 
 async def test_open_without_principal_kwarg_creates_an_unscoped_record():
-    # §A.4 open signature: ``principal: SessionPrincipal | None = None`` — the
+    # Open signature: ``principal: SessionPrincipal | None = None`` — the
     # kwarg is genuinely OPTIONAL. Omitting it (not passing an explicit None)
     # yields an unscoped record that a principal-free resolve completes.
     table = AwaitTable()
@@ -201,7 +201,7 @@ async def test_open_without_principal_kwarg_creates_an_unscoped_record():
     assert await asyncio.wait_for(join.future, timeout=1.0) == RESULTS
 
 
-# ─── policy= threads the ONE injected PrincipalPolicy (I1) ───────────
+# ─── policy= threads the ONE injected PrincipalPolicy ────────────────
 
 
 async def test_injected_policy_can_authorize_a_cross_scope_claimant():

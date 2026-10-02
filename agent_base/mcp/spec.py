@@ -1,16 +1,16 @@
-"""Config surface for external MCP servers (mcp.md §1).
+"""Config surface for external MCP servers.
 
 Transport specs say *how to reach* a server; ``McpServerSpec`` says *how this
 agent uses it*. All are plain dataclasses (repo convention) and are **never
 persisted** — ``env``/``headers`` may carry secrets and the secrecy invariant
-(mcp.md E8) forbids them from ever reaching a storage adapter, checkpoint, or
+forbids them from ever reaching a storage adapter, checkpoint, or
 log line.
 
 Server keys (the dict key in ``mcp_servers={...}``) must match
 ``^[a-zA-Z0-9_-]+$`` and must not contain ``__`` — it is the compiled-name
-separator (mcp.md §5). Keys are validated at construction (``ValueError``
+separator. Keys are validated at construction (``ValueError``
 immediately, not at connect time); the same rule applies to dynamically added
-servers (mcp.md §3, MC-D8).
+servers.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ _SERVER_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def validate_server_key(key: str) -> str:
-    """Validate an ``mcp_servers`` key (mcp.md §1). Returns the key unchanged.
+    """Validate an ``mcp_servers`` key. Returns the key unchanged.
 
     Raises ``ValueError`` for anything outside ``^[a-zA-Z0-9_-]+$`` or
     containing ``__`` (reserved as the ``mcp__{server}__{tool}`` separator).
@@ -52,7 +52,7 @@ class McpStdioSpec:
 
     command: str
     args: list[str] = field(default_factory=list)
-    env: dict[str, str] = field(default_factory=dict)  # secrets — never persisted/logged (E8)
+    env: dict[str, str] = field(default_factory=dict)  # secrets — never persisted/logged
     cwd: str | None = None
 
 
@@ -62,7 +62,7 @@ class McpHttpSpec:
 
     url: str
     headers: dict[str, str] = field(default_factory=dict)
-    auth: "McpAuthProvider | None" = None  # §4; wins over static headers on overlap
+    auth: "McpAuthProvider | None" = None  # wins over static headers on overlap
     # Optional httpx transport factory (proxies; specs inject MockTransport
     # here — the handle still applies its auth bridge + jar hook on top).
     httpx_transport_factory: "object | None" = None
@@ -91,16 +91,16 @@ class McpReconnectPolicy:
 
 @dataclass
 class McpServerSpec:
-    """How this agent uses one MCP server (mcp.md §1).
+    """How this agent uses one MCP server.
 
     ``required`` is an init-time-only contract: it governs ``initialize()``
-    failure and is ignored by ``add_server`` (mcp.md §3).
+    failure and is ignored by ``add_server``.
     """
 
     transport: McpTransportSpec
     include_tools: list[str] | None = None  # allowlist of REMOTE names; None = all
     exclude_tools: list[str] = field(default_factory=list)
-    confirm_destructive: bool = False  # destructiveHint -> needs_confirmation (§5)
+    confirm_destructive: bool = False  # destructiveHint -> needs_confirmation
     tool_timeout_s: float = 60.0  # per tools/call round-trip
     required: bool = False  # True: connect failure fails initialize()
     reconnect: McpReconnectPolicy = field(default_factory=McpReconnectPolicy)

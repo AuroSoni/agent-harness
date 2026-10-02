@@ -1,13 +1,13 @@
-"""Red-suite interface specs: the shipped reference decoder + DecodedRun.
+"""Interface specs: the shipped reference decoder + DecodedRun.
 
-Covers interface_plan/subsystems/streaming-and-meta.md:
-- §2.6 StreamDecoder ABC (feed_line/feed_done incremental contract,
+Covers:
+- StreamDecoder ABC (feed_line/feed_done incremental contract,
   data:/[DONE] stripping, partial-delta re-accumulation keyed by
-  (type, agent_uuid), tool_result/tool_call pairing) — resolves D1/D2,
-- §2.6 one-shot helpers decode_sse_text / decode_sse_lines,
-- §2.6 DecodedRun typed projections incl. the AMENDMENTS I11 additions
+  (type, agent_uuid), tool_result/tool_call pairing),
+- One-shot helpers decode_sse_text / decode_sse_lines,
+- DecodedRun typed projections incl. the additions
   (usage_reports, profile_changes, custom) and blocks_in_order(),
-- §3.1 consumer example (`from agent_base.streaming import decode_sse_lines`).
+- Consumer example (`from agent_base.streaming import decode_sse_lines`).
 """
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ def test_decode_sse_text_and_decode_sse_lines_agree():
 
 
 def test_partial_text_deltas_merge_into_one_delta():
-    # §2.6: partial-delta re-accumulation — the merged view, not the chunks.
+    # Partial-delta re-accumulation — the merged view, not the chunks.
     raw = _encode(
         TextDelta(agent_uuid="a1", text="Hel", is_final=False, seq=1),
         TextDelta(agent_uuid="a1", text="lo", is_final=True, seq=2),
@@ -115,7 +115,7 @@ def test_partial_text_deltas_merge_into_one_delta():
 
 
 def test_partial_accumulation_is_keyed_by_agent_uuid():
-    # §2.6: re-accumulation keyed by (type, agent_uuid) — interleaved
+    # Re-accumulation keyed by (type, agent_uuid) — interleaved
     # sub-agent partials never bleed into each other.
     raw = _encode(
         TextDelta(agent_uuid="a1", text="roo", is_final=False, seq=1),
@@ -130,7 +130,7 @@ def test_partial_accumulation_is_keyed_by_agent_uuid():
 
 
 def test_partial_accumulation_is_keyed_by_type_for_the_same_agent():
-    # §2.6: re-accumulation is keyed by (type, agent_uuid) — interleaved
+    # Re-accumulation is keyed by (type, agent_uuid) — interleaved
     # partials of DIFFERENT types for the SAME agent never merge into one
     # delta. An implementation keying only by agent_uuid would fold the
     # thinking partials into the text accumulator.
@@ -195,7 +195,7 @@ def test_error_deltas_are_collected_typed():
 
 
 def test_usage_reports_and_profile_changes_are_projected():
-    # I11: typed projections so a consumer never re-walks `events`.
+    # Typed projections so a consumer never re-walks `events`.
     usage = UsageReport(
         usage={"input_tokens": 5},
         cost={"total_usd": 0.01},
@@ -224,7 +224,7 @@ def test_events_preserve_seq_order():
 
 
 def test_blocks_in_order_places_tool_result_after_its_call():
-    # §2.6: tool_result/tool_call pairing is library code (was Nova's
+    # tool_result/tool_call pairing is library code (was Nova's
     # merge_nodes_with_tool_results).
     raw = _encode(
         ToolCallDelta(
@@ -272,7 +272,7 @@ def test_feed_line_strips_data_prefix_and_done():
 
 
 def test_feed_line_drops_ping_keepalives():
-    # SSE-1c: [PING] is transport-level — no StreamItem, no decoder state.
+    # [PING] is transport-level — no StreamItem, no decoder state.
     decoder = SseStreamDecoder()
     assert decoder.feed_line("data: [PING]") == []
     # A ping mid-accumulation must not disturb an open partial either.
@@ -299,5 +299,5 @@ def test_feed_done_flushes_open_partials():
 
 
 def test_decode_sse_lines_is_reexported_at_package_level():
-    # §3.1 example: `from agent_base.streaming import decode_sse_lines`.
+    # Example: `from agent_base.streaming import decode_sse_lines`.
     assert streaming_pkg.decode_sse_lines is decode_sse_lines

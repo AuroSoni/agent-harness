@@ -1,15 +1,15 @@
-"""Breaking-change deletion guarantees — logging §6 migration table (G0).
+"""Breaking-change deletion guarantees — logging migration table.
 
-The library is preview/unreleased (G0): every "kept for one major" shim / proposed
+The library is preview/unreleased: every "kept for one major" shim / proposed
 wrapper is DELETED, not maintained. These specs pin the logging-owned deletions so the
 surface cannot quietly regrow a back-compat bridge:
-  - O5: the ``LogField`` accessor class is DELETED — logging re-exports the
+  - The ``LogField`` accessor class is DELETED — logging re-exports the
     ``core.identity`` constants directly (no ``LogField.*`` indirection).
-  - O15(d): the public ``bind_from_hook_context(ctx)`` helper is DELETED — inlined at
+  - The public ``bind_from_hook_context(ctx)`` helper is DELETED — inlined at
     its single call site (the hook dispatcher calls ``correlation_scope(...)`` directly).
-  - Fork K (variant A) / §4 / §7.1: NO ``LogConfig.claims_allowlist`` ships in v1
-    (variant B deferred); ``principal_fields`` is the only flatten surface.
-  - O5 (cross-check): ``LogField`` is also absent from ``core.identity`` (the home).
+  - NO ``LogConfig.claims_allowlist`` ships in v1
+    (deferred); ``principal_fields`` is the only flatten surface.
+  - Cross-check: ``LogField`` is also absent from ``core.identity`` (the home).
 
 We assert ABSENCE without importing any deleted name (importing a deleted symbol is
 banned and would be a different kind of failure than the spec intends). The retained
@@ -27,7 +27,7 @@ from agent_base.logging import LogConfig
 
 
 # ---------------------------------------------------------------------------
-# O5 — the LogField accessor class is DELETED everywhere logging touches.
+# The LogField accessor class is DELETED everywhere logging touches.
 # ---------------------------------------------------------------------------
 
 
@@ -40,7 +40,7 @@ def test_logfield_not_in_correlation_module():
 
 
 def test_logfield_not_in_core_identity_home():
-    # O5/R34: the constants live bare in core.identity — no wrapper class there.
+    # The constants live bare in core.identity — no wrapper class there.
     assert not hasattr(identity_mod, "LogField")
 
 
@@ -50,7 +50,7 @@ def test_logging_package_all_does_not_advertise_logfield():
 
 
 # ---------------------------------------------------------------------------
-# O15(d) — the public bind_from_hook_context helper is DELETED (inlined).
+# The public bind_from_hook_context helper is DELETED (inlined).
 # ---------------------------------------------------------------------------
 
 
@@ -68,7 +68,7 @@ def test_bind_from_hook_context_not_in_all():
 
 
 # ---------------------------------------------------------------------------
-# Fork K (variant A) — NO LogConfig.claims_allowlist field ships in v1.
+# NO LogConfig.claims_allowlist field ships in v1.
 # ---------------------------------------------------------------------------
 
 
@@ -87,7 +87,7 @@ def test_log_config_instance_has_no_claims_allowlist_attr():
 
 
 def test_correlation_scope_is_the_retained_binder():
-    # O15d removed the helper but ships correlation_scope as the one binder.
+    # The helper is removed but ships correlation_scope as the one binder.
     assert callable(correlation_mod.correlation_scope)
 
 
@@ -96,7 +96,7 @@ def test_principal_fields_is_the_retained_flattener():
 
 
 def test_bind_context_is_retained_existing_api():
-    # §6 row 1: kept by design, not a compat shim.
+    # Kept by design, not a compat shim.
     assert callable(logging_pkg.bind_context)
 
 

@@ -1,14 +1,14 @@
-"""Interface red-suite: the binder's runtime-facing contract (logging subsystem).
+"""Interface spec: the binder's runtime-facing contract (logging subsystem).
 
-Covers logging.md:
-  - §2.4 "Where the runtime opens the scope (the actual auto-binding)"
+Covers:
+  - "Where the runtime opens the scope (the actual auto-binding)"
       * loop/session actor opens correlation_scope(...) at run/turn entry
       * hook dispatcher opens correlation_scope(...) DIRECTLY off the hook ctx
-        (O15d: bind_from_hook_context inlined/removed)
-  - §2.4 task-isolation invariant: snapshot/restore handles NESTING; per-task
+        (bind_from_hook_context inlined/removed)
+  - Task-isolation invariant: snapshot/restore handles NESTING; per-task
     asyncio spawning handles CONCURRENCY (both required).
-  - §5 Produces: correlation_scope consumed by the loop/session subsystems and the
-    hook dispatcher; this doc ships the binder, the runtime owns calling it.
+  - Produces: correlation_scope consumed by the loop/session subsystems and the
+    hook dispatcher; logging ships the binder, the runtime owns calling it.
 
 This file pins the SHIPPED contract logging owns: that ``correlation_scope`` accepts
 exactly the ``run_id``/``agent_id``/``parent_agent_id``/``principal`` shape the
@@ -36,7 +36,7 @@ from agent_base.logging import (
 from agent_base.logging.correlation import correlation_scope
 
 
-# --- collaborator fake: shaped like agent_loop_hooks.HookContext (§1.2) ------
+# --- collaborator fake: shaped like agent_loop_hooks.HookContext ------
 
 
 @dataclass
@@ -51,7 +51,7 @@ class _FakeHookContext:
 
 
 # ---------------------------------------------------------------------------
-# §2.4 — correlation_scope accepts the keyword shape the runtime/loop passes.
+# correlation_scope accepts the keyword shape the runtime/loop passes.
 # ---------------------------------------------------------------------------
 
 
@@ -73,14 +73,14 @@ def test_correlation_scope_id_params_default_to_none():
 
 
 def test_correlation_scope_accepts_var_keyword_extra():
-    # **extra ad-hoc keys (§2.2) — the signature must allow arbitrary kwargs.
+    # **extra ad-hoc keys — the signature must allow arbitrary kwargs.
     sig = inspect.signature(correlation_scope)
     kinds = {p.kind for p in sig.parameters.values()}
     assert inspect.Parameter.VAR_KEYWORD in kinds
 
 
 # ---------------------------------------------------------------------------
-# §2.4 — run/turn entry: the loop actor opens the scope from its ids+principal.
+# Run/turn entry: the loop actor opens the scope from its ids+principal.
 # ---------------------------------------------------------------------------
 
 
@@ -98,7 +98,7 @@ def test_run_entry_scope_stamps_all_runtime_fields():
 
 
 # ---------------------------------------------------------------------------
-# §2.4 — hook dispatch opens the scope DIRECTLY off the hook ctx (O15d inline).
+# Hook dispatch opens the scope DIRECTLY off the hook ctx (inline).
 # We exercise the exact inlined call shape the dispatcher uses.
 # ---------------------------------------------------------------------------
 
@@ -164,7 +164,7 @@ async def test_hook_dispatch_inline_scope_around_async_hook_body():
 
 
 # ---------------------------------------------------------------------------
-# §2.4 task-isolation invariant — overlapping runs on SEPARATE asyncio tasks
+# Task-isolation invariant — overlapping runs on SEPARATE asyncio tasks
 # do not see each other's correlation fields (contextvar is task-isolated).
 # ---------------------------------------------------------------------------
 

@@ -1,12 +1,12 @@
-"""The shipped reference decoder (streaming-and-meta §2.6; resolves D1/D2).
+"""The shipped reference decoder.
 
 The library ships the *inverse* of its own encoder.  ``SseStreamDecoder``
 turns SSE lines back into typed ``StreamItem`` objects, absorbing:
 
-- ``data:`` / ``[DONE]`` stripping (and dropping ``[PING]`` keepalives, SSE-1),
+- ``data:`` / ``[DONE]`` stripping (and dropping ``[PING]`` keepalives),
 - partial-delta re-accumulation keyed by ``(type, agent_uuid)``
   (plus ``id`` for tool frames),
-- ``MetaEnvelope`` reconstruction across chunked frames (the D2
+- ``MetaEnvelope`` reconstruction across chunked frames (the
   buffer-until-final smell), and
 - tool_result/tool_call pairing (``DecodedRun.blocks_in_order``).
 
@@ -104,7 +104,7 @@ class SseStreamDecoder(StreamDecoder):
         if line == "[DONE]":
             self._done = True
             return []
-        if line == "[PING]":  # SSE-1 keepalive — transport-level, no StreamItem
+        if line == "[PING]":  # keepalive — transport-level, no StreamItem
             return []
         try:
             obj = json.loads(line)
@@ -170,7 +170,7 @@ class DecodedRun:
     """Fully-assembled view of a finished stream (typed).
 
     The typed analog of a consumer's hand-rolled parse tree, produced by the
-    library.  §I11: ``usage_reports``/``profile_changes``/``custom`` are
+    library.  ``usage_reports``/``profile_changes``/``custom`` are
     typed projections of the control channel so a consumer never re-walks
     ``events``; ``custom`` keys consumer-registered bodies by ``kind`` and
     open ``Custom`` bodies by ``name``.
@@ -227,7 +227,7 @@ def _build_decoded_run(items: Iterable[_StreamItem]) -> DecodedRun:
                 isinstance(body, MetaBody)
                 and getattr(type(body), "kind", "") not in LIBRARY_META_KINDS
             ):
-                # consumer-registered typed body (I11) — keyed by its kind
+                # consumer-registered typed body — keyed by its kind
                 run.custom.setdefault(type(body).kind, []).append(body)
         else:
             run.deltas.append(item)

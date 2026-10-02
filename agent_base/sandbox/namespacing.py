@@ -1,6 +1,6 @@
-"""Tenant namespacing via the principal (resolves X12, ties to X1).
+"""Tenant namespacing via the principal.
 
-O10: ``NamespacePolicy`` is DELETED. The base dir is built directly by
+``NamespacePolicy`` is DELETED. The base dir is built directly by
 ``namespaced_base_dir(storage_root, principal, *, feature=None)``, which composes the
 FIXED layout ``tenant/subject[/feature]`` — there is no configurable segment order.
 ``validate_segment`` (the id-validation Nova hand-rolled) is retained as a module helper.
@@ -45,7 +45,7 @@ def namespaced_base_dir(
 ) -> str:
     """``storage_root/<tenant>/<subject>[/<feature>]`` — what Nova's tenant_layout did.
 
-    O10: FIXED ``tenant/subject[/feature]`` layout (no configurable segments). Each
+    FIXED ``tenant/subject[/feature]`` layout (no configurable segments). Each
     present segment is run through ``validate_segment()``. ``principal=None`` ⇒
     feature-only (or ``storage_root`` when no feature), so single-tenant callers are
     unaffected.

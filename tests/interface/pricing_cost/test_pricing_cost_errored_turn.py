@@ -1,20 +1,20 @@
-"""Errored turns are not settled; a saved turn is (AMENDMENTS TR-5..TR-7).
+"""Errored turns are not settled; a saved turn is.
 
-Covers interface_plan/subsystems/pricing-cost.md §2.7:
+Covers:
   - an errored turn (``stop_reason='error'``) emits no ``UsageReport``, and no
     later settle point bills its spend: the eviction's abort of the idle
-    session bills nothing (TR-6, the write-off);
-  - the errored row is persisted with ``extras['error'] = {code, type}``
-    (TR-5), and the driven turn still ends ``ErrorReport`` +
+    session bills nothing (the write-off);
+  - the errored row is persisted with ``extras['error'] = {code, type}``,
+    and the driven turn still ends ``ErrorReport`` +
     ``RunCompleted('error')``;
   - a turn whose config and row finalize saved is complete: a checkpoint
     capture that fails after them is recorded on the row
     (``extras['persist_errors']``) and reported with a non-fatal
-    ``ErrorReport``, and the turn settles once and ends ``end_turn`` (TR-7).
+    ``ErrorReport``, and the turn settles once and ends ``end_turn``.
 
 The provider generation step is stubbed; everything else (the loop, tool
 execution, finalize, settlement, the session manager) is the real path. The
-sub-agent half of TR-6 (a completed child stays billed) is pinned by the unit
+sub-agent half of the write-off (a completed child stays billed) is pinned by the unit
 suite (tests/unit/providers/anthropic/test_errored_run.py).
 """
 from __future__ import annotations

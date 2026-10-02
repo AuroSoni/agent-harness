@@ -1,4 +1,4 @@
-"""SB-2: opt-in model overlap, readiness before I/O, scoped cancellation."""
+"""Opt-in model overlap, readiness before I/O, scoped cancellation."""
 import asyncio
 import copy
 

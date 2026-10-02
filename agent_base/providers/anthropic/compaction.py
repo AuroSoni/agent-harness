@@ -73,7 +73,7 @@ class CompactionController:
         provider: AnthropicProvider,
         token_estimator: AnthropicTokenEstimator,
     ) -> None:
-        # O12(c): no max_retries/base_delay -- the provider reads its own
+        # No max_retries/base_delay -- the provider reads its own
         # self.retry_policy when it does the backoff.
         self.config = config
         self.provider = provider
@@ -285,6 +285,6 @@ class CompactionController:
         event_type: str,
         payload: dict[str, Any],
     ) -> None:
-        """Emit a compaction Custom control event (streaming-and-meta SS3 --
-        meta events are MetaEnvelope bodies; legacy MetaDelta deleted O3/G0)."""
+        """Emit a compaction Custom control event (meta events are
+        MetaEnvelope bodies; legacy MetaDelta deleted)."""
         sink.emit_meta(Custom(name=event_type, data=dict(payload)))

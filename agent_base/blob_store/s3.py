@@ -1,6 +1,6 @@
 """S3-backed content-addressed blob store.
 
-media-backend.md §2.4 (Variant A): the ONE S3 client + region/endpoint resolver
+The ONE S3 client + region/endpoint resolver
 for content-addressed bytes. Layout::
 
     s3://{bucket}/{prefix}/{namespace}/{hh}/{hash}
@@ -65,14 +65,14 @@ class S3BlobStore(BlobStore):
     def _key(self, namespace: str, content_hash: str) -> str:
         bare = self._bare(content_hash)
         shard = bare[:2] if len(bare) >= 2 else "00"
-        # CM-P4G2: split a multi-segment namespace ("tenant/subject" from
-        # derive_namespace, I13a) so safe_blob_key validates each segment.
+        # Split a multi-segment namespace ("tenant/subject" from
+        # derive_namespace) so safe_blob_key validates each segment.
         return f"{self.prefix}/" + safe_blob_key(
             *split_namespace(namespace), shard, bare
         )
 
     def _keyed_key(self, key: str) -> str:
-        # CM-P4G1: caller key validated segment-wise under the store prefix.
+        # Caller key validated segment-wise under the store prefix.
         return f"{self.prefix}/" + safe_blob_key(*split_namespace(key))
 
     def _location(self, key: str) -> str:
@@ -175,7 +175,7 @@ class S3BlobStore(BlobStore):
         )
         return True
 
-    # ─── KeyedBlobStore surface (CM-P4G1) ─────────────────────────────
+    # ─── KeyedBlobStore surface ─────────────────────────────
 
     async def put_at(
         self, key: str, data: bytes, *, mime_type: str | None = None

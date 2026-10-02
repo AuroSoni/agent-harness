@@ -1,13 +1,13 @@
-"""Red-suite specs — fork-reset: auto-capture (D1) + the fork/reset verbs.
+"""Interface specs — fork-reset: auto-capture + the fork/reset verbs.
 
 Covers:
-- interface_plan/subsystems/fork-reset.md §4/§5 + SPEC §D1/§5/§4.
-- D1: the library auto-captures a checkpoint at the turn boundary when a
+- mental_model/features/fork-and-reset.md.
+- The library auto-captures a checkpoint at the turn boundary when a
   CheckpointAdapter is wired (NOT a hook); feature-off without one.
-- criterion #1 (reset round-trips config + sandbox), #2 (archive-not-delete),
-  #3 (fork: owned session, history copied with usage/cost zeroed, CAS shared by
-  reference, source unchanged), #7 (reset of a resident session refuses with
-  SessionBusy when a turn is in flight).
+- reset round-trips config + sandbox; archive-not-delete;
+  fork: owned session, history copied with usage/cost zeroed, CAS shared by
+  reference, source unchanged; reset of a resident session refuses with
+  SessionBusy when a turn is in flight.
 """
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ def _handles(agent, blobs):
     )
 
 
-# ── D1: auto-capture at the turn boundary ───────────────────────────────────
+# ── Auto-capture at the turn boundary ───────────────────────────────────
 
 
 async def test_library_auto_captures_when_adapter_wired(tmp_path):
@@ -134,7 +134,7 @@ async def test_reset_reverts_config_and_sandbox_and_archives_tail(tmp_path):
         sandbox_factory=lambda _uuid: sb,
     )
     assert ref.sequence_number == 1
-    # criterion #2: tail archived, not deleted
+    # tail archived, not deleted
     refs, total = await handles.checkpoint.for_principal(P).list_refs(src)
     assert total == 1 and refs[0].sequence_number == 1
     _, total_all = await handles.checkpoint.for_principal(P).list_refs(
@@ -142,7 +142,7 @@ async def test_reset_reverts_config_and_sandbox_and_archives_tail(tmp_path):
     )
     assert total_all == 2                                   # seq-2 row still exists
     assert len(await handles.conversation.for_principal(P).load_history(src)) == 1
-    # criterion #1: config reverted + sandbox materialized to seq-1
+    # config reverted + sandbox materialized to seq-1
     assert len((await handles.config.for_principal(P).load(src)).context_messages) == 2
     assert await _read(sb, "workspace/a.txt") == "A1"       # content reverted
     exists_b, _ = await sb.file_exists("workspace/b.txt")
@@ -150,7 +150,7 @@ async def test_reset_reverts_config_and_sandbox_and_archives_tail(tmp_path):
 
 
 async def test_reset_of_a_resident_busy_session_raises(tmp_path):
-    # criterion #7 — a turn in flight blocks the reset.
+    # A turn in flight blocks the reset.
     agent, sb, handles = await _two_turn_agent(tmp_path)
 
     class _BusyManager:

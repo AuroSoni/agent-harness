@@ -1,9 +1,8 @@
 """TodoWriteTool — create, update, or delete todos in bulk.
 
-Migrated to the template-method ``run()`` authoring style (tools.md §2.2).
+Migrated to the template-method ``run()`` authoring style.
 Streaming migrated off the deleted legacy ``MetaDelta`` surface to
-``ctx.emit(Custom(...))`` on the MetaEnvelope control channel (tools.md §2.2
-B8; streaming meta union per DESIGN_CONTRACT §3).
+``ctx.emit(Custom(...))`` on the MetaEnvelope control channel.
 """
 from __future__ import annotations
 
@@ -77,7 +76,7 @@ Returns:
     def _emit_event(ctx: ToolContext | None, event_data: dict[str, Any]) -> None:
         """Emit a ``meta_todo`` Custom body on the control channel when wired.
 
-        ``ctx.emit`` RAISES when unwired (B8) — todo events are best-effort UI
+        ``ctx.emit`` RAISES when unwired — todo events are best-effort UI
         notifications, so an unwired context simply skips the emit.
         """
         if ctx is None:

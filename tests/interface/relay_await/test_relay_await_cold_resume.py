@@ -1,6 +1,6 @@
 """Cold-resume state: the persisted ``PendingToolRelay.cid`` match field.
 
-Covers interface_plan/subsystems/relay-await.md §2.4 + R23:
+Covers:
   - ``PendingToolRelay.cid`` is the persisted cold-match field on
     ``AgentConfig.pending_relay`` — additive and NULLABLE for old rows —
     so a ``ToolReply(cid)`` for an evicted session can rehydrate-then-resolve
@@ -8,9 +8,9 @@ Covers interface_plan/subsystems/relay-await.md §2.4 + R23:
 
 The rehydrate-then-resolve routing itself (``SessionManager.submit`` cold
 path) belongs to session_control; the conditional re-emit split
-(AMENDMENTS §B4) is pinned on the runtime in
+is pinned on the runtime in
 ``test_relay_await_runtime_contract.py``. Storage's round-trip of the field
-is specified by the storage suite (R23 is coordinated).
+is specified by the storage suite.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def test_pending_relay_carries_the_cold_match_cid():
 
 
 def test_pending_relay_cid_is_nullable_for_old_rows():
-    # R23: additive field — rows persisted before the redesign deserialize
+    # Additive field — rows persisted before the redesign deserialize
     # with cid=None and the library copes.
     relay = PendingToolRelay()
     assert relay.cid is None
@@ -41,7 +41,7 @@ def test_pending_relay_cid_is_a_real_dataclass_field():
 
 
 def test_agent_config_pending_relay_defaults_to_none():
-    # §2.4: pending_relay is None when no relay is pending; when set (with a
+    # pending_relay is None when no relay is pending; when set (with a
     # cid) the session is mid-turn awaiting external results on that cid.
     config = AgentConfig(agent_uuid="agent_1")
     assert config.pending_relay is None

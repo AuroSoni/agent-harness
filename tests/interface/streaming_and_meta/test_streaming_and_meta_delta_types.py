@@ -1,16 +1,15 @@
-"""Red-suite interface specs: Layer A content deltas.
+"""Interface specs: Layer A content deltas.
 
-Covers interface_plan/subsystems/streaming-and-meta.md:
-- §2.1 Layer A content deltas (kept StreamDelta taxonomy, WIRE_PROTOCOL_VERSION,
-  correlation-header parity per R6, ``to_wire()``/``from_wire()``, typed
-  ErrorDelta taxonomy resolving D3),
-- §5 cross-deps (ErrorCode imported from ``agent_base.core.errors`` per R8;
+Covers:
+- Layer A content deltas (kept StreamDelta taxonomy, WIRE_PROTOCOL_VERSION,
+  correlation-header parity, ``to_wire()``/``from_wire()``, typed
+  ErrorDelta taxonomy),
+- Cross-deps (ErrorCode imported from ``agent_base.core.errors``;
   ``classify_provider_error`` re-exported through ``agent_base.streaming``),
-- §6 wire-spelling continuity row (``agent``/``final``/``delta``/``id``/``name``
+- Wire-spelling continuity (``agent``/``final``/``delta``/``id``/``name``
   unchanged at WIRE_PROTOCOL_VERSION "1"),
-- §2.4 ``StreamItem = StreamDelta | MetaEnvelope`` homed at
-  ``agent_base/streaming/__init__.py``,
-- DESIGN_CONTRACT.md §1.4 (stream surface).
+- ``StreamItem = StreamDelta | MetaEnvelope`` homed at
+  ``agent_base/streaming/__init__.py``.
 """
 from __future__ import annotations
 
@@ -34,13 +33,13 @@ from agent_base.streaming.types import (
 
 
 def test_wire_protocol_version_is_the_v1_wire_axis():
-    # §2.1 / O15c: WIRE_PROTOCOL_VERSION is the only version axis this
+    # WIRE_PROTOCOL_VERSION is the only version axis this
     # subsystem owns, and v1 keeps today's byte spellings.
     assert WIRE_PROTOCOL_VERSION == "1"
 
 
 def test_stream_delta_correlation_header_defaults():
-    # R6: every StreamDelta carries the same attribution/ordering header as a
+    # Every StreamDelta carries the same attribution/ordering header as a
     # MetaEnvelope; the loop stamps it, so the constructor defaults are inert.
     delta = TextDelta(agent_uuid="agent-1", text="hi")
     assert delta.agent_uuid == "agent-1"
@@ -51,7 +50,7 @@ def test_stream_delta_correlation_header_defaults():
 
 
 def test_text_delta_wire_uses_v1_field_spellings():
-    # §6 continuity row: type/agent/final/delta spellings unchanged at v1.
+    # Continuity: type/agent/final/delta spellings unchanged at v1.
     obj = TextDelta(agent_uuid="a1", text="hello", is_final=True).to_wire()
     assert obj["type"] == "text"
     assert obj["agent"] == "a1"
@@ -60,7 +59,7 @@ def test_text_delta_wire_uses_v1_field_spellings():
 
 
 def test_text_delta_round_trip_preserves_attribution_header():
-    # to_wire/from_wire are lossless, including the R6 header
+    # to_wire/from_wire are lossless, including the header
     # (parent_agent_uuid + seq survive the wire).
     delta = TextDelta(
         agent_uuid="child-1",
@@ -87,7 +86,7 @@ def test_thinking_delta_round_trips():
 
 
 def test_tool_call_delta_wire_uses_id_and_name_spellings():
-    # §6 continuity row: id/name/delta spellings unchanged at v1.
+    # Continuity: id/name/delta spellings unchanged at v1.
     obj = ToolCallDelta(
         agent_uuid="a1",
         tool_name="grep",
@@ -138,7 +137,7 @@ def test_tool_result_delta_round_trips():
 
 
 def test_server_tool_result_delta_round_trips():
-    # §2.1 ("UNCHANGED field sets"): ToolResultDelta keeps the same server-tool
+    # ToolResultDelta keeps the same server-tool
     # type switch as ToolCallDelta, so from_wire must dispatch on
     # "server_tool_result" too — not only on "tool_result".
     delta = ToolResultDelta(
@@ -174,7 +173,7 @@ def test_citation_delta_round_trips():
 
 
 def test_from_wire_dispatches_on_type_discriminator():
-    # §2.1: ``from_wire(obj)`` dispatches on ``obj["type"]`` and returns the
+    # ``from_wire(obj)`` dispatches on ``obj["type"]`` and returns the
     # matching subclass — the type, not a formatter, owns its serialization.
     samples: list[tuple[StreamDelta, type]] = [
         (TextDelta(agent_uuid="a1", text="t"), TextDelta),
@@ -196,7 +195,7 @@ def test_from_wire_dispatches_on_type_discriminator():
 
 
 def test_error_delta_typed_defaults():
-    # §2.1 (D3): ErrorDelta is typed — code/retriable/terminal, no payload sniffing.
+    # ErrorDelta is typed — code/retriable/terminal, no payload sniffing.
     delta = ErrorDelta(agent_uuid="a1")
     assert delta.code is ErrorCode.INTERNAL
     assert delta.message == ""
@@ -225,17 +224,15 @@ def test_error_delta_round_trips_typed_code():
 
 
 def test_classify_provider_error_is_reexported_from_streaming():
-    # §2.1 / §5: defined in core.errors (R8), re-exported through
+    # Defined in core.errors, re-exported through
     # agent_base.streaming for ergonomics — the same object, not a copy.
     assert classify_provider_error is core_classify_provider_error
 
 
 def test_classify_provider_error_returns_agent_error_projecting_to_delta():
-    # core.md §2.4 / R8 (the OWNING doc): classify_provider_error(exc) ->
+    # classify_provider_error(exc) ->
     # AgentError; the typed ErrorDelta terminal frame is its projection via
-    # to_error_delta(). (streaming-and-meta.md §2.1's `-> ErrorDelta` line is
-    # the stale draft — its own §4/§5 integration notes concede core.errors
-    # owns the symbol and the return type.)
+    # to_error_delta().
     err = classify_provider_error(RuntimeError("boom"))
     assert isinstance(err, AgentError)
     assert isinstance(err.code, ErrorCode)
@@ -247,7 +244,7 @@ def test_classify_provider_error_returns_agent_error_projecting_to_delta():
 
 
 def test_stream_item_union_is_delta_or_envelope():
-    # §2.4: StreamItem = StreamDelta | MetaEnvelope, homed at streaming/__init__.py.
+    # StreamItem = StreamDelta | MetaEnvelope, homed at streaming/__init__.py.
     args = typing.get_args(StreamItem)
     assert StreamDelta in args
     assert MetaEnvelope in args

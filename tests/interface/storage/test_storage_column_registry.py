@@ -1,15 +1,14 @@
-"""Red-suite specs — storage §2.2: ColumnSpec / ColumnRegistry / principal_columns.
+"""Interface specs — storage: ColumnSpec / ColumnRegistry / principal_columns.
 
 Covers:
-- interface_plan/subsystems/storage.md §2.2 (A1 ColumnSpec engine: shared
+- The ColumnSpec engine: shared
   scaffolding at ``agent_base/storage/pg/columns.py``; ``principal_columns()``
-  canned helper on the ``agent_base.storage.pg`` package surface).
-- DESIGN_CONTRACT.md §5 (storage extensibility) as amended by AMENDMENTS O1
-  (v1 = A1 engine + ``principal_columns()`` ONLY — no A2 annotated-model
-  symbols are imported or tested here).
+  canned helper on the ``agent_base.storage.pg`` package surface.
+- Storage extensibility (v1 = ColumnSpec engine + ``principal_columns()``
+  ONLY — no annotated-model symbols are imported or tested here).
 
-Fixes specified: E1 (no CRUD re-typing), E2/E7 (filter-scope columns), and the
-DDL generation feeding §2.6 ``ensure_schema()``.
+Fixes specified: no CRUD re-typing, filter-scope columns, and the
+DDL generation feeding ``ensure_schema()``.
 """
 from __future__ import annotations
 
@@ -107,8 +106,8 @@ def test_registry_upsert_set_omits_immutable_on_conflict_columns():
 
 
 def test_registry_select_columns_include_filter_scope_columns():
-    # scope="filter" columns ALSO participate in INSERT/UPSERT/SELECT (§2.2:
-    # "filter" means *additionally* folded into every WHERE).
+    # scope="filter" columns ALSO participate in INSERT/UPSERT/SELECT
+    # ("filter" means *additionally* folded into every WHERE).
     registry = ColumnRegistry(base=_base_specs(), extra=[_filter_spec()])
     assert set(registry.select_columns()) >= {"agent_uuid", "payload", "organization_id"}
 
@@ -144,7 +143,7 @@ def test_registry_hydrate_invokes_set_callbacks_and_skips_setless_specs():
 
 
 # ---------------------------------------------------------------------------
-# ColumnRegistry — DDL generation (feeds §2.6 ensure_schema)
+# ColumnRegistry — DDL generation (feeds ensure_schema)
 # ---------------------------------------------------------------------------
 
 def test_registry_ddl_columns_emits_name_and_sql_type():
@@ -180,7 +179,7 @@ def test_principal_columns_keyword_form_returns_filter_specs():
 
 
 def test_principal_columns_positional_form_matches_consumer_example():
-    # §3 consumer example: principal_columns("organization_id", "member_id")
+    # Consumer example: principal_columns("organization_id", "member_id")
     specs = principal_columns("organization_id", "member_id")
     assert [s.name for s in specs] == ["organization_id", "member_id"]
     assert all(s.scope == "filter" for s in specs)

@@ -1,12 +1,12 @@
-"""Red-suite specs for auto-derived config/from_config + @register_sandbox (resolves F9).
+"""Interface specs for auto-derived config/from_config + @register_sandbox.
 
-Covers sandbox.md:
-  - §2.5 `ConfigDrivenSandbox` mixin — auto-derived `config` property + `from_config` classmethod
+Covers:
+  - `ConfigDrivenSandbox` mixin — auto-derived `config` property + `from_config` classmethod
     from the paired SandboxConfig dataclass (no per-field copy); round-trips.
-  - §2.5 I12(b): `__init_subclass__` VALIDATES the config-field↔attribute mapping at class
+  - `__init_subclass__` VALIDATES the config-field↔attribute mapping at class
     creation and RAISES (TypeError) when a config field has no matching __init__ parameter.
     An intermediate base without `config_class` is tolerated.
-  - §2.5 `register_sandbox(sandbox_type, *, config_class=None)` decorator — registers the pair
+  - `register_sandbox(sandbox_type, *, config_class=None)` decorator — registers the pair
     in one line via the existing registry fn; stamps `cls.sandbox_type`; raises if no config_class
     can be resolved.
   - The underlying `register_sandbox_type` registry fn (agent_base/sandbox/registry.py) stays
@@ -148,7 +148,7 @@ def test_config_round_trips_through_from_config():
     assert rebuilt.config == original.config
 
 
-# ─── I12(b): __init_subclass__ validation ────────────────────────────────
+# ─── __init_subclass__ validation ────────────────────────────────────────
 
 
 def test_init_subclass_raises_on_unmapped_config_field():

@@ -1,7 +1,6 @@
-"""``AgentRuntime.set_principal`` — the contract-§4 threading seam (GF-P8G2).
+"""``AgentRuntime.set_principal`` — the threading seam.
 
-Covers interface_plan/subsystems/session-control.md §2.5 + tenancy-principal.md
-§B.4 (the AMENDMENTS "Open-gap fixes (2026-06-12)" GF-P8G2 entry):
+Covers:
 
   - ``SessionManager.get_or_create`` duck-calls ``agent.set_principal(principal)``
     post-build ("Thread identity BEFORE the hook & before publishing") — before
@@ -11,9 +10,9 @@ Covers interface_plan/subsystems/session-control.md §2.5 + tenancy-principal.md
     manager and proves the principal lands.
   - Runtime-side semantics:
       * ``None`` / anonymous input → no-op (a missing claimant never unscopes —
-        the I12(d) "never silently unscope" rule extends to this seam);
+        the "never silently unscope" rule extends to this seam);
       * named over anonymous → ADOPT: ``agent.principal`` swaps, all three
-        adapters re-bind via the ONE ``for_principal`` seam (O2), and the live
+        adapters re-bind via the ONE ``for_principal`` seam, and the live
         ``agent_config`` owner columns are stamped so the next ``checkpoint()``
         persists ownership;
       * named over the SAME named scope → the (possibly richer, claims-bearing)
@@ -45,7 +44,7 @@ OTHER = SessionPrincipal(tenant="org_2", subject="member_9")
 
 
 class _Bound:
-    """Distinct bound view returned by ``for_principal`` (O2)."""
+    """Distinct bound view returned by ``for_principal``."""
 
     def __init__(self, inner, principal: SessionPrincipal) -> None:
         self._inner = inner
@@ -120,14 +119,14 @@ def test_adoption_rebinds_all_three_adapters_via_for_principal():
     assert cfg.bindings[-1] == OWNER
     assert conv.bindings[-1] == OWNER
     assert run.bindings[-1] == OWNER
-    # O2: the runtime keeps the BOUND views, not the originals.
+    # The runtime keeps the BOUND views, not the originals.
     assert agent.config_adapter is cfg.bound_views[-1]
     assert agent.conversation_adapter is conv.bound_views[-1]
     assert agent.run_adapter is run.bound_views[-1]
 
 
 async def test_adoption_stamps_owner_columns_for_the_next_checkpoint():
-    # GF-P8G2 symptom: checkpoints never stamped an owner. After
+    # Symptom: checkpoints never stamped an owner. After
     # set_principal the live config carries the owner columns and the next
     # checkpoint() persists them.
     agent, cfg, _, _ = _runtime()
@@ -150,7 +149,7 @@ def test_set_principal_none_is_a_no_op():
 
 
 def test_set_principal_anonymous_never_unscopes_a_named_runtime():
-    # I12(d) extended to this seam: an anonymous claimant (the manager passes
+    # An anonymous claimant (the manager passes
     # the raw get_or_create principal, possibly None/anonymous) must never
     # strip an adopted/persisted owner identity.
     agent, _, _, _ = _runtime(principal=OWNER)
@@ -191,7 +190,7 @@ def test_different_named_scope_raises_principal_conflict():
 
 
 async def test_manager_threading_lands_on_the_real_runtime():
-    # The GF-P8G2 regression: SessionManager.get_or_create duck-calls
+    # The regression: SessionManager.get_or_create duck-calls
     # set_principal, but no runtime implemented it — the factory below
     # deliberately IGNORES the principal, so ONLY the manager's post-build
     # set_principal can scope the session. Before the fix this agent ran

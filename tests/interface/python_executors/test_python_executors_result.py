@@ -1,15 +1,15 @@
-"""Red-suite specs for ``ExecutorResult`` (was ``CodeOutput``).
+"""Interface specs for ``ExecutorResult`` (was ``CodeOutput``).
 
-Covers python-executors.md:
-  - §2.3 ``ExecutorResult`` dataclass: positional ``output``/``logs``/
+Covers:
+  - ``ExecutorResult`` dataclass: positional ``output``/``logs``/
     ``is_final_answer`` + NEW ``truncated: bool = False`` and
     ``error: InterpreterError | None = None``.
-  - §6 migration: ``CodeOutput`` alias is DELETED (G0); new fields default so
+  - Migration: ``CodeOutput`` alias is DELETED; new fields default so
     construction is unchanged.
-  - §3.2: ``result.truncated`` flag lets the tool skip re-truncation (F6).
+  - ``result.truncated`` flag lets the tool skip re-truncation.
 
-Imports target ``agent_base.python_executors.local_python_executor`` (the doc's
-stated source for the executor value types). The implementation does not exist
+Imports target ``agent_base.python_executors.local_python_executor`` (the
+source for the executor value types). The implementation does not exist
 yet.
 """
 
@@ -57,5 +57,5 @@ def test_executor_result_final_answer_value():
 
 
 def test_code_output_alias_is_deleted():
-    # §6 (G0): CodeOutput = ExecutorResult alias removed.
+    # CodeOutput = ExecutorResult alias removed.
     assert not hasattr(lpe, "CodeOutput")

@@ -1,6 +1,6 @@
-"""Interface red-suite: the named provider registry (§2.4 Style 2).
+"""Interface spec: the named provider registry (Style 2).
 
-Covers providers.md §2.4 (Registration — Style 2 named registry, parity with
+Covers Registration (Style 2 named registry, parity with
 storage ``create_adapters`` / formatter ``get_formatter``):
 - ``PROVIDERS`` exists at ``agent_base.providers`` and exposes ``register(name, cls)``
   and ``create(name, **kwargs)``.
@@ -8,7 +8,7 @@ storage ``create_adapters`` / formatter ``get_formatter``):
 - ``create`` on an unregistered name raises (KeyError-family).
 
 Registered classes here are in-file COLLABORATOR fakes; the registry plumbing is the
-type under test. Per §2.4 the RECOMMENDED path is Style 1 (value injection) — that is
+type under test. The RECOMMENDED path is Style 1 (value injection) — that is
 exercised in the protocol file via direct construction; Style 3 back-compat factory
 subclasses are core/runtime's concern and are out of scope here.
 """
@@ -73,7 +73,7 @@ def test_create_unregistered_name_raises():
     try:
         PROVIDERS.create("definitely-not-registered")
     except (KeyError, LookupError, ValueError) as exc:
-        # §2.4: unknown name raises a registry-family lookup error (KeyError-family).
+        # Unknown name raises a registry-family lookup error (KeyError-family).
         assert isinstance(exc, (KeyError, LookupError, ValueError))
     else:
         raise AssertionError("create() on an unknown provider name must raise")

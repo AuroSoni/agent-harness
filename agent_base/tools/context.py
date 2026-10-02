@@ -10,17 +10,17 @@ Rung 2**) and a :meth:`ToolContext.once` helper for at-most-once side effects.
 The guarantee surfaced to authors: *your tool may re-run from the last
 checkpoint on failover — key every external side effect on ``ctx.idempotency_key``.*
 
-Extended per tools.md §2.2 (R3/I4/I5/B8 — this subsystem OWNS the additions;
+Extended (this subsystem OWNS the additions;
 the runtime populates them at call-time):
 
-- ``sandbox`` / ``principal`` / ``media`` capability fields (R3),
+- ``sandbox`` / ``principal`` / ``media`` capability fields,
 - ``emit(body, *, correlation_id=None, expects_reply=False)`` with a LOUD
-  unwired default that raises (B8),
-- ``emit_capped`` / ``emit_capped_bytes`` output budgeting (I5/O11(a) — plain
+  unwired default that raises,
+- ``emit_capped`` / ``emit_capped_bytes`` output budgeting (plain
   kwargs over library default constants; the ``OutputBudget`` dataclass is
   deleted), and ``spill``, the persistence step they share with callers that
   present an overflow their own way (MCP JSON results),
-- ``call_frontend_tool(name, input)`` — the public relay primitive (I4; the
+- ``call_frontend_tool(name, input)`` — the public relay primitive (the
   old public ``await_external`` is runtime-internal only).
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ T = TypeVar("T")
 #: it is stripped from the generated schema and never shown to the model.
 CTX_PARAM_NAME = "ctx"
 
-# ─── Library default budgeting constants (tools.md §2.4; O11(a): no OutputBudget) ───
+# ─── Library default budgeting constants (no OutputBudget) ───
 DEFAULT_EMIT_MAX_CHARS = 25_000      # chars (the ctx.emit_capped default kwarg)
 DEFAULT_EMIT_MAX_BYTES = 1_200_000   # bytes (the ctx.emit_capped_bytes default kwarg)
 TOOL_RESULTS_DIR = ".tool_results"   # sandbox zone for overflow persistence
@@ -139,10 +139,10 @@ class ToolContext:
     replay_reason: str | None = None
     idempotency_key: str = ""
 
-    # ─── R3 capability fields — populated by the runtime at call-time ───
+    # ─── Capability fields — populated by the runtime at call-time ───
     sandbox: "Sandbox | None" = None        # overflow persistence seam (emit_capped*)
     principal: "SessionPrincipal | None" = None  # tenant of the sandbox namespace writes land in
-    media: "MediaBackend | None" = None     # emit_capped_bytes delegates here when configured (R16)
+    media: "MediaBackend | None" = None     # emit_capped_bytes delegates here when configured
     #: Where overflow files land. A bare module constant would pin this to the
     #: legacy zone name, so a sandbox whose layout puts tool results elsewhere
     #: would write somewhere nothing reads.
@@ -172,7 +172,7 @@ class ToolContext:
             return await fn()
         return await self._once_store.run(composite, fn)
 
-    # ─── emit (B8): explicit signature + LOUD unwired default ───────────────
+    # ─── emit: explicit signature + LOUD unwired default ───────────────
 
     def emit(
         self,
@@ -183,18 +183,18 @@ class ToolContext:
     ) -> None:
         """Emit a :class:`MetaBody` on the control channel.
 
-        B8: the unwired default RAISES (replaces the silent ``lambda _b: None``).
+        The unwired default RAISES (replaces the silent ``lambda _b: None``).
         The runtime swaps in a wired ``emit`` at call-time; a full queue at
-        runtime is governed by R21's lossy-queue policy, NOT by this
+        runtime is governed by the lossy-queue policy, NOT by this
         unwired-context guard.
         """
         raise RuntimeError("ctx.emit not available in this execution context")
 
-    # ─── emit_text (WT-4): user-facing display line, live + replay ──────────
+    # ─── emit_text: user-facing display line, live + replay ──────────
 
     def emit_text(self, text: str) -> None:
         """Stream a short user-facing text line to the live UI AND persist it
-        for history replay (WT-4).
+        for history replay.
 
         The wired implementation (a) emits a ``TextDelta`` on the run's
         stream and (b) appends a DISPLAY-ONLY assistant message entry to the
@@ -207,16 +207,16 @@ class ToolContext:
         """
         raise RuntimeError("ctx.emit_text not available in this execution context")
 
-    # ─── Budgeting on ctx (I5/O11(a)) — replaces ConfigurableToolBase.emit_capped* ───
+    # ─── Budgeting on ctx — replaces ConfigurableToolBase.emit_capped* ───
 
     async def emit_capped(self, text: str, *, max_chars: int = DEFAULT_EMIT_MAX_CHARS) -> str:
         """Persist FULL ``text`` via ``ctx.sandbox``, return a possibly-truncated
         string with a reference appended when truncated.
 
         Idempotent via :meth:`once`. The one canonical replacement for Nova's
-        ``save_tool_result`` + ``truncation_reference`` fork (F6). ``max_chars``
+        ``save_tool_result`` + ``truncation_reference`` fork. ``max_chars``
         is a plain kwarg over the library default constant — there is no
-        ``OutputBudget`` dataclass (O11(a)).
+        ``OutputBudget`` dataclass.
         """
         if len(text) <= max_chars:
             return text
@@ -263,7 +263,7 @@ class ToolContext:
         max_bytes: int = DEFAULT_EMIT_MAX_BYTES,
     ) -> str:
         """Bytes variant. When ``ctx.media``/BlobStore is configured, persistence
-        DELEGATES to the content-addressed blob store (R16/Fork H); otherwise
+        DELEGATES to the content-addressed blob store; otherwise
         falls back to ``ctx.sandbox``. Returns a reference (BlobStore key or
         sandbox path). Idempotent via :meth:`once`.
         """
@@ -271,7 +271,7 @@ class ToolContext:
         suffix = ext.lstrip(".") or "bin"
 
         async def _persist() -> str:
-            # R16: blob-store delegation when media is configured.
+            # Blob-store delegation when media is configured.
             if self.media is not None:
                 namespace = (
                     getattr(self.principal, "scope_key", None)
@@ -303,12 +303,12 @@ class ToolContext:
 
         return await self.once(f"emit_capped_bytes:{digest}:{suffix}", _persist)
 
-    # ─── Relay primitive (I4) — call a frontend tool and AWAIT its reply ────
+    # ─── Relay primitive — call a frontend tool and AWAIT its reply ────
 
     async def call_frontend_tool(self, name: str, input: dict) -> "list[ContentBlock]":
         """Invoke a frontend/relay tool and return its reply blocks to the tool body.
 
-        I4: the runtime MINTS the cid, emits ``AwaitInput`` with the right
+        The runtime MINTS the cid, emits ``AwaitInput`` with the right
         header, parks the await, and returns the reply blocks here — it NEVER
         splices them. Abort cancels this like any other parked await. The old
         public ``await_external(cid)`` is gone (runtime-internal only); a tool

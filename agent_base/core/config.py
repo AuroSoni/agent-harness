@@ -5,10 +5,10 @@ Conversation is a single run record for UI display and pagination.
 LLMConfig is the base for provider-specific LLM configuration.
 PendingToolRelay captures state when the agent pauses for frontend/user tool responses.
 
-Serialization note (core.md §4.1, Fork S1 / R22): the wire-crossing entities
+Serialization note: the wire-crossing entities
 (``Conversation``, ``AgentResult``, ``CostBreakdown``, ``Usage``,
 ``TurnSettlement``) carry their own canonical, ``_v``-stamped
-``to_dict()``/``from_dict()`` (the ``Serializable`` convention, O15(c)).
+``to_dict()``/``from_dict()`` (the ``Serializable`` convention).
 ``AgentConfig`` stays storage-codec-owned — it is heavy and never crosses the
 wire as a unit; the storage codec MAY call child ``to_dict()``s internally.
 """
@@ -92,7 +92,7 @@ class PendingToolRelay:
     stores the results here alongside the pending frontend/confirmation
     calls, then parks on the cid-keyed await table. ``submit(ToolReply(cid))``
     resumes the loop — hot in place, or cold via rehydrate-then-resolve on
-    the persisted ``cid`` (relay-await §2.4).
+    the persisted ``cid``.
 
     When ``AgentConfig.pending_relay`` is ``None``, no relay is pending.
     When set, the agent is mid-turn awaiting external tool results.
@@ -111,7 +111,7 @@ class PendingToolRelay:
     confirmation_calls: list[ToolCallInfo] = field(default_factory=list)
     completed_results: list[Message] = field(default_factory=list)
     run_id: str | None = None
-    # R23 (relay-await §2.4): the persisted cold-match field — a ToolReply(cid)
+    # The persisted cold-match field — a ToolReply(cid)
     # for an evicted session rehydrates then re-arms THIS cid. Additive and
     # nullable for old rows; storage round-trips it.
     cid: str | None = None
@@ -120,7 +120,7 @@ class PendingToolRelay:
     # additive + nullable (old rows deserialize to None) and stored as plain
     # to_dict() payloads so this module takes no cost/pricing import.
     #   pre_pause_settlement — TurnSettlement.to_dict(): the run's priced,
-    #     UNBILLED spend so far (own steps only; priced at generation, D13).
+    #     UNBILLED spend so far (own steps only; priced at generation).
     #     Restored into the runtime on cold resume and folded into the run's
     #     single settlement at finalize/abort. Never emitted at the park.
     #   pre_pause_run_usage / pre_pause_run_cost — Usage.to_dict() /
@@ -161,8 +161,8 @@ class SubAgentSchema:
 # Cost Breakdown
 # ==============================================================================
 #
-# Canonical home (R11): agent_base/core/cost.py (pricing-cost subsystem); this
-# module re-exports it (core.md §2.1.1) so legacy importers
+# Canonical home: agent_base/core/cost.py; this
+# module re-exports it so legacy importers
 # (`from agent_base.core.config import CostBreakdown`) bind the one runtime class.
 
 from agent_base.core.cost import CostBreakdown  # noqa: F401  (canonical home)
@@ -262,9 +262,9 @@ class AgentConfig:
     # pre-pause leg's.)
     current_step: int = 0
 
-    # --- Profiles (contract §6 / agent-loop-hooks §2.7; CM-G3e) ---
+    # --- Profiles ---
     # The active declarative profile NAME. Persisted so a resume re-applies
-    # the profile's tools + system prompt (R20: persisted wins). ``None`` =
+    # the profile's tools + system prompt (persisted wins). ``None`` =
     # the runtime was built without profiles (or pre-profile rows).
     active_profile: str | None = None
 
@@ -285,9 +285,9 @@ class AgentConfig:
     # Persisted agent phase for AWAITING_RELAY cold-start abort.
     agent_phase: str | None = None
 
-    # --- Ownership (typed, indexed, scope-flagged) — tenancy §B.1 ---
+    # --- Ownership (typed, indexed, scope-flagged) ---
     # Replaces extras["owner"]; the bound storage adapter stamps/filters these
-    # internally (O2: `for_principal` is the one public seam).
+    # internally (`for_principal` is the one public seam).
     owner_tenant: str | None = None        # was organization_id
     owner_subject: str | None = None       # was member_id
 
@@ -296,7 +296,7 @@ class AgentConfig:
 
     @property
     def principal(self) -> "Any":
-        """Bridge to the shared identity type (tenancy §B.1): the persisted
+        """Bridge to the shared identity type: the persisted
         scope key as a ``SessionPrincipal``. The row persists only the scope
         key — claims are runtime-only state."""
         from agent_base.core.identity import SessionPrincipal
@@ -357,9 +357,9 @@ class Conversation:
     # --- Cost breakdown ---
     cost: CostBreakdown | None = None
 
-    # --- Ownership (typed; tenancy §B.1 — storage-plane columns) ---
+    # --- Ownership (typed; storage-plane columns) ---
     # Stamped/filtered by the bound storage adapter; deliberately NOT part of
-    # the FE wire projection (`to_dict()` — core.md §2.1.2 key set).
+    # the FE wire projection (`to_dict()` key set).
     owner_tenant: str | None = None
     owner_subject: str | None = None
 
@@ -378,7 +378,7 @@ class Conversation:
     # --- User extension point ---
     extras: dict[str, Any] = field(default_factory=dict)
 
-    # --- Canonical versioned serialization (core.md §2.1.2 — resolves E10) ---
+    # --- Canonical versioned serialization ---
 
     def to_dict(self) -> dict[str, Any]:
         """Canonical, versioned, JSON-safe projection of a single run record.
