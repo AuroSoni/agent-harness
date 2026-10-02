@@ -6,7 +6,7 @@ Read this first when resuming. Working state for the mental-model bootstrap of t
 
 | | |
 |---|---|
-| Phase | 3: **waiting on Auro at Checkpoint 2** ([2-plot.md](2-plot.md)) |
+| Phase | 4 and 5: **writing the model**. Checkpoints 1 and 2 are answered. Auro's instruction at Checkpoint 2 was "Make your best guesses and proceed", so the work does not wait at Checkpoint 3 |
 | Branch | `AuroSoni/mental-model` (the Conductor workspace branch; the handoff's default name `mental-model-bootstrap` is not used) |
 | PR | [#13](https://github.com/AuroSoni/agent-harness/pull/13), draft, base `dev` |
 | Surveyed at | `71ecf49` (= `origin/dev`), 2 Oct 2026 |
@@ -21,21 +21,24 @@ Read this first when resuming. Working state for the mental-model bootstrap of t
 
 ## Waiting on Auro
 
-Checkpoint 2, in [2-plot.md](2-plot.md):
+Nothing blocks the work. Open with him:
 
-- **Part A1** (S1 to S12) and **Q1 to Q4** unblock the pilot.
-- **Part A2** (S13 to S40) and **Q5 to Q13** are needed before the remaining files are written.
+- Review of the pilot files, `subsystems/session-actor.md` and `features/pause-and-resume.md` (depth, structure, accuracy, names, missing whys). Feedback is applied to every file.
+- The whys were confirmed in bulk, not one by one. Rows A14, A15 and A16 of [sources.md](sources.md) rest on a guess with no written reason behind it.
+- A go-ahead for each change to an existing doc (phase 6). Nothing is moved, deleted or rewritten before that.
 
 ## Answers received
 
 - **Checkpoint 1, 2 Oct 2026, in chat:** all of Q1 to Q15. Recorded verbatim in [1-characters-and-map.md](1-characters-and-map.md) section 5; what they settle is section 6; his statements are rows A1 to A11 of [sources.md](sources.md).
-- **Checkpoint 2:** none yet. Copy chat answers into `2-plot.md` under an "Answers" heading, mark each S row in `sources.md` section B, and add his answers to the questions as new A rows.
+- **Checkpoint 2, 2 Oct 2026, in chat:** "Make your best guesses and proceed." Recorded in [2-plot.md](2-plot.md) under "Answers"; rows A12 to A18 of `sources.md`. No S row was struck.
 
 ## Next
 
-1. Apply the Checkpoint 2 answers.
-2. Pilot (Checkpoint 3): write `subsystems/session-actor.md` and `features/pause-and-resume.md` in full, following the writing rules in the kit's `templates/mental_model.CLAUDE.md`, using only confirmed whys. Ask Auro to review depth, structure, accuracy, names and missing whys.
-3. Phases 5 to 8 as in the handoff. Templates are installed only in phase 5.
+1. Pilot: `subsystems/session-actor.md` and `features/pause-and-resume.md`, committed on their own.
+2. Phase 5: the remaining files, `mental_model/CLAUDE.md`, `planned_items/.gitkeep`, the root `CLAUDE.md` section, the merge skill.
+3. Phase 6: sort the existing docs; propose, do not move or delete.
+4. Phase 7: verify (links, index, Mermaid, tense, sources, accuracy, fresh eyes).
+5. Phase 8: the PR description. Keep `_bootstrap/` and the draft state until Auro has looked at the pilot.
 
 ## Notes for whoever resumes
 
@@ -54,4 +57,4 @@ Checkpoint 2, in [2-plot.md](2-plot.md):
 | [survey.md](survey.md) | Phase 1 findings, condensed |
 | [sources.md](sources.md) | Why-to-source table: Auro's statements (A), candidates sent at Checkpoint 2 (B), dropped (C) |
 | [1-characters-and-map.md](1-characters-and-map.md) | Checkpoint 1, **answered** |
-| [2-plot.md](2-plot.md) | Checkpoint 2, **open**: 40 reasons to strike or confirm, 13 questions |
+| [2-plot.md](2-plot.md) | Checkpoint 2, **answered**: 40 reasons (none struck), 13 questions, and his answer |

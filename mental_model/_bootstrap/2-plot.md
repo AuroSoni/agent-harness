@@ -1,5 +1,7 @@
 # Checkpoint 2: the plot
 
+**Status: answered by Auro on 2 Oct 2026** with one instruction, recorded at the end of this file. Every Part A row stands as written and every Part B guess is taken as the answer.
+
 For Auro. Checkpoint 1 settled the characters. This one settles why they are the way they are. It has three parts:
 
 - **Part A: 40 reasons found written down in the repo.** Each was checked against today's code and reworded as the why I would write. Strike the wrong ones, or reword them; every row you leave alone counts as confirmed.
@@ -203,3 +205,30 @@ Guess: one plot point is kept, the June 2026 redesign (S1, S2), told in the sess
 - LiteLLM's `retry_policy` is never read.
 - `interface_plan/subsystems/mcp.md` says MCP images go to the media backend; the code builds inline base64.
 - `README.md` describes XML formatters, a Docker sandbox and a file tree that no longer exist.
+
+---
+
+## Answers (Auro, in chat, 2 Oct 2026)
+
+Copied verbatim.
+
+> Make your best guesses and proceed.
+
+### What this settles
+
+- **Part A:** no row was struck or reworded, so S1 to S40 are confirmed as written. They were confirmed in bulk, not one by one; the PR description says so and lists them for review.
+- **Part B:** each guess is taken as the answer.
+  - Q1: the Rung 2 plumbing is kept on purpose; Rungs 2 to 4 are gated, not scheduled.
+  - Q2: the run is the record and the stream is a live view of it; replay waits for Rung 2.
+  - Q3: the `PrincipalPolicy` seam is deliberate; the missing forwarding to the await table is a bug for the follow-up list.
+  - Q4: `on_turn_end`, `after_tool`, `submit(Abort/Steer)` and `ToolContext` are canon. The model documents the canon; the other four mechanisms go to the follow-up list.
+  - Q5: tool-side capping and the context externalizer are two layers, both canon.
+  - Q6: the settlement is the billing truth; `Conversation.cost` bypassing the pricing policy is drift.
+  - Q7: LiteLLM is described as partial, with its gaps listed.
+  - Q8: the `agent-base` package contract is what `tests/interface/` pins, plus the four tables and `LIBRARY_SCHEMA_VERSION`.
+  - Q9: Nova knowledge inside the library is drift, for the follow-up list.
+  - Q10: in-process code execution is legacy; model code belongs in the sandbox.
+  - Q11: `ZoneLayout` is the library's default layout and the common tools are a generic starter set; absolute trees are an addition.
+  - Q12: the June 2026 redesign is the one plot point kept.
+  - Q13: "turn loop" stays; the cast flags the `Conversation` class and the `agent_runs` table.
+- **Scope of "proceed":** read as leave to carry the work through without waiting at each checkpoint. The pilot files are written first and the rest follow in the same style. Nothing existing is deleted or rewritten without a go-ahead.
