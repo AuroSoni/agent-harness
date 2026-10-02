@@ -72,7 +72,9 @@ The provider rejects a transcript whose tool calls and results do not pair up. A
 
 The same module plans the patches an abort appends: what to keep of a half-streamed response, and which calls to answer with an error. A reply to a pause is reconciled separately, before it is spliced in.
 
-> **Why consecutive user messages are not merged for Anthropic:** the API combines them itself, and a merged message is a history edit that invalidates the prompt cache and every later thinking block. LiteLLM providers still merge.
+> **Why consecutive user messages are not merged for Anthropic:** the API combines them itself, and a merged message is a history edit that invalidates the prompt cache and every later thinking block.
+
+The LiteLLM provider still merges them.
 
 ## Keeping the context in the window
 

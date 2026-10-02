@@ -115,9 +115,13 @@ So the model's tool calls are always answered, and delivering the same reply twi
 
 The cold path covers the root agent's own pause: the manager checks the root's `pending_relay` only.
 
-> **Why the runtime resolves a reply as the owner:** it presents its own principal as the claimant. Without that, a runtime with a named principal was an anonymous claimant against its own record: every reply was rejected and the pause parked forever. The caller was already checked when it attached to the session.
+> **Why the runtime resolves a reply as the owner:** it presents its own principal as the claimant. Without that, a runtime with a named principal was an anonymous claimant against its own record: every reply was rejected and the pause parked forever.
 
-> **Why a resume takes no fork/reset checkpoint:** each one re-encoded the transcript, snapshotted the sandbox and wrote the checkpoint row, only for the end of the run to rewrite it. A resume saves the config and the run's row; [checkpoints](fork-and-reset.md) are taken at the end of a run.
+The caller's own right to the session was checked earlier, when it attached.
+
+> **Why a resume takes no fork/reset checkpoint:** each one re-encoded the transcript, snapshotted the sandbox and wrote the checkpoint row, only for the end of the run to rewrite it.
+
+A resume saves the config and the run's row. [Checkpoints](fork-and-reset.md) are taken at the end of a run.
 
 A resume never resets `current_step`; billing depends on that. See [Billing a run](billing-a-run.md#the-settlement).
 

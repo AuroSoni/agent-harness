@@ -57,7 +57,9 @@ Values that cross the seam:
 | `context_management`, `inference_geo`, `speed`, `service_tier` | Passed through when set |
 | anything else | `api_kwargs`, applied last, so it overrides the rest |
 
-> **Why thinking is chosen by field, not by model name:** which config field the caller set picks the paradigm, which keeps the provider model-agnostic. When both are set, `effort` wins.
+> **Why thinking is chosen by field, not by model name:** which config field the caller set picks the paradigm, which keeps the provider model-agnostic.
+
+When both fields are set, `effort` wins.
 
 **Prompt caching** is always on. Up to four cache breakpoints are placed, in this order of preference: the system prompt (when long enough to cache), document and image blocks, the largest text blocks, the most recent blocks. None is placed on tools. Several decisions elsewhere keep the cached prefix byte-stable: see [chain repair](turn-loop.md#chain-repair), [the tool round](turn-loop.md#the-tool-round) and [Storage](storage.md).
 
