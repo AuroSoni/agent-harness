@@ -79,7 +79,7 @@ This repo keeps a shared mental model of the product in `mental_model/`. It tell
 - A change to how the library works updates the story, through the `merge-mental-model` skill (`/ship`, `/document-release`).
 - A PR description, a commit message and an explanation tell the change as a chapter, in the model's terms, not as a list drawn from the diff (`/ship`, `create-pr`).
 
-Where a skill's output format and these conventions disagree, the conventions win. `create-pr` is being updated separately; until then the same rule applies to it.
+Where a skill's output format and these conventions disagree, the conventions win.
 
 ## Architecture
 
