@@ -19,9 +19,9 @@ There is no `product/` folder. This repo is not a home repo of the product.
 
 This repo is the **agent runtime library** of **Nova**. It ships as the Python package `agent-base` and runs inside the Nova backend's process. It is a provider only: it depends on no other repo of the product.
 
-The product has two home repos, **[nova_backend](https://github.com/Project-Hedge/nova_backend)** and **[nova_excel_addin](https://github.com/Project-Hedge/nova_excel_addin)**. Between them they hold:
+The product has two home repos, **[nova_backend](https://github.com/Project-Hedge/nova_backend)** and **[nova_apps](https://github.com/Project-Hedge/nova_apps)**. Between them they hold:
 
-- **the product map,** in both repos ([backend's copy](https://github.com/Project-Hedge/nova_backend/blob/main/mental_model/product/map.md), [add-in's copy](https://github.com/Project-Hedge/nova_excel_addin/blob/main/mental_model/product/map.md)): every repo, its role, and the contracts between them. The two copies say the same thing;
+- **the product map,** in both repos ([backend's copy](https://github.com/Project-Hedge/nova_backend/blob/main/mental_model/product/map.md), [add-in's copy](https://github.com/Project-Hedge/nova_apps/blob/main/mental_model/product/map.md)): every repo, its role, and the contracts between them. The two copies say the same thing;
 - **the end-to-end features that cross repos,** in `nova_backend`. Three of them pass through this library: a run, fork and reset, and billing. This repo tells the library's part of each, in [features/run.md](features/run.md), [features/fork-and-reset.md](features/fork-and-reset.md) and [features/billing-a-run.md](features/billing-a-run.md);
 - **the planned items for any work that crosses repos,** in `nova_backend`.
 
@@ -38,7 +38,7 @@ No character here uses another repo's contract, so the Depends on sections in th
 
 **To read another repo's model,** read its default branch (`main` for both), not whatever happens to be checked out locally. All three repos take work on `dev` before `main`, so a model file or a planned item that is not on `main` yet is on `origin/dev`; read it there, and say that you did.
 
-1. Find a local checkout. If the product's repos are cloned side by side, it is at `../nova_backend` or `../nova_excel_addin`.
+1. Find a local checkout. If the product's repos are cloned side by side, it is at `../nova_backend` or `../nova_apps`.
 2. Run `git -C <checkout> fetch origin`, then `git -C <checkout> show origin/main:mental_model/<path>`.
 3. Without a local checkout, use `gh api repos/Project-Hedge/<repo>/contents/mental_model/<path> -H "Accept: application/vnd.github.raw"`.
 
