@@ -64,7 +64,7 @@ class MediaFlushRegistry(Protocol):
     """Persistence seam for the cross-turn hash registry, keyed by export path.
 
     The DEFAULT registry is MEDIA-LOCAL and consumer-injectable. It is NOT
-    one of the three library tables and NOT storage-owned by default. A consumer
+    one of the four library tables and NOT storage-owned by default. A consumer
     who wants it in Postgres injects a ``MediaFlushRegistry`` impl.
     """
 
