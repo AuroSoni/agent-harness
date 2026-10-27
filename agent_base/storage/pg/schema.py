@@ -1,7 +1,8 @@
 """``ensure_schema()`` + migrations.
 
-Executable DDL for the **3 library tables only** (``agent_config``,
-``conversation_history``, ``agent_runs``), version-stamped, idempotent. DDL is
+Executable DDL for the **4 library tables only** (``agent_config``,
+``conversation_history``, ``agent_runs``, ``agent_checkpoints``),
+version-stamped, idempotent. DDL is
 generated from the same :class:`~agent_base.storage.pg.columns.ColumnRegistry`
 the adapters compose SQL from, so consumer extra columns appear automatically.
 
@@ -126,7 +127,7 @@ $$""",
 
 @dataclass
 class SchemaRegistries:
-    """The (up to) three ColumnRegistry objects the DDL is generated from.
+    """The (up to) four ColumnRegistry objects the DDL is generated from.
 
     Slots map to the fixed library table names; a ``None`` slot means that
     table is not managed by this PgSchema instance (e.g. a single adapter's
@@ -163,7 +164,7 @@ _TABLE_CONSTRAINTS: dict[str, list[str]] = {
 
 
 class PgSchema:
-    """Owns CREATE TABLE + migrations for the 3 library tables."""
+    """Owns CREATE TABLE + migrations for the 4 library tables."""
 
     def __init__(self, pool: "PgPool", *, registries: SchemaRegistries):
         # registries carries the ColumnRegistry objects so extra columns are
