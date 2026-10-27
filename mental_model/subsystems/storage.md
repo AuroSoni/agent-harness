@@ -87,6 +87,7 @@ Some columns are never overwritten by an upsert: `created_at`, the keys, `archiv
 | Never stamped | Creates each given adapter's table from its declared columns, host extras included, then stamps the current version |
 | Stamped below the current version | Runs the migrations from that version up, in order, then stamps |
 | At the current version | Nothing |
+| Stamped above the current version | Nothing. Whether to run against it is the host's decision |
 
 - All four adapters go in one call. On an unstamped database a call with only some of them creates only their tables and stamps the version, after which the others are never created.
 - Migrations are forward-only and idempotent (`ADD COLUMN IF NOT EXISTS`). They cover the library's base columns only; a host's extra columns on an existing database are the host's migration.

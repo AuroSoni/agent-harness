@@ -9,7 +9,7 @@ Covers:
   ``ensure_schema()`` driven by the ColumnRegistry (consumer extra columns
   appear in the DDL automatically), version bookkeeping in
   ``_agent_base_schema_version``, and the ``ensure_all_schemas`` one-shot
-  helper covering exactly the 3 library tables.
+  helper covering exactly the 4 library tables.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ import inspect
 import pytest
 
 from agent_base.storage.pg import (
+    PgCheckpointAdapterBase,
     PgConfigAdapterBase,
     PgConversationAdapterBase,
     PgRunAdapterBase,
@@ -255,17 +256,19 @@ async def test_ensure_schema_runs_pending_migrations_when_behind():
         assert not creates                             # CREATE-all path must not run
 
 
-async def test_ensure_all_schemas_covers_exactly_the_three_library_tables():
+async def test_ensure_all_schemas_covers_exactly_the_four_library_tables():
     conn = _FakeConn()
     pool = _FakePool(conn)
     config = PgConfigAdapterBase(pool)
     conversation = PgConversationAdapterBase(pool)
     run = PgRunAdapterBase(pool)
-    await ensure_all_schemas(pool, config, conversation, run)
+    checkpoint = PgCheckpointAdapterBase(pool)
+    await ensure_all_schemas(pool, config, conversation, run, checkpoint)
     sql = conn.all_sql()
     assert "agent_config" in sql
     assert "conversation_history" in sql
     assert "agent_runs" in sql
+    assert "agent_checkpoints" in sql
     # consumer product tables are NOT library DDL (scope guard)
     assert "workbook_snapshot" not in sql
     assert "skill_" not in sql

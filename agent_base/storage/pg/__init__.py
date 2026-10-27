@@ -758,7 +758,7 @@ def create_adapters_from_pool(
 
 
 async def ensure_all_schemas(pool: PgPool, *adapters: Any) -> None:
-    """Create the 3 library tables (+ version stamp) in one shot, generated
+    """Create the 4 library tables (+ version stamp) in one shot, generated
     from the given adapters' registries so consumer extra columns are in the
     DDL automatically. Consumer product tables are NOT
     library DDL (scope guard)."""
