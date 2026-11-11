@@ -2,9 +2,10 @@
 (mental_model/planned_items/claude-code-provider.md › How a step works).
 
 - A run's first step resumes at the longest history prefix the ledger knows: a plain resume at the transcript's
-  end, a branch (``resume_session_at`` + ``fork_session``) before it, and what lies beyond the point as text.
-- No point, a CLI failure or the plan's refusal moves the session to the direct client for good; ``name`` follows;
-  with ``fallback="off"`` the step fails and no API key is touched.
+  end, a branch (``resume_session_at`` + ``fork_session``) before it, and what lies beyond the point as text. With
+  no point (or a ledger that fails), a fresh session takes the history as text, and the session stays on Claude Code.
+- A CLI failure or the plan's refusal moves the session to the direct client for good; ``name`` follows; with
+  ``fallback="off"`` the step fails and no API key is touched.
 - Claude Code's web tools are framed as server tools and folded into one step; the direct client gets them as text.
 """
 
@@ -88,23 +89,25 @@ async def test_a_reply_cut_off_mid_stream_goes_in_as_text_in_order(tmp_path):
     assert h.provider.name == "claude_code"
 
 
-async def test_no_matching_point_moves_the_session_to_the_direct_client(tmp_path):
-    reasons: list[str] = []
-    h = Harness(tmp_path)
-    p = h.make_provider(on_fallback=reasons.append)
-    p.inner.generate_stream = AsyncMock(return_value="direct-turn")
+@pytest.mark.parametrize("ledger_fails", [False, True])
+async def test_no_matching_point_starts_a_fresh_session_with_the_history_as_text(tmp_path, ledger_fails):
+    h = Harness(tmp_path, [[text("Again.")]])
+    h.provider.inner.generate_stream = AsyncMock()
+    if ledger_fails:
+        h.ledger.longest_match = AsyncMock(side_effect=ConnectionError("the database is down"))
     history = [Message.user("Hi."), Message.assistant("Hello."), Message.user("And again?")]
-    assert await _step(p, history) == "direct-turn"
-    assert p.fallen_back and p.name == "anthropic" and "no transcript point" in reasons[0]
-    assert h.made == []  # Claude Code never started
-    assert await _step(p, history) == "direct-turn"  # and the session stays on the direct client
+    turn = await asyncio.wait_for(_step(h.provider, history), 5)
+    assert turn.message.content[0].text == "Again." and not h.provider.fallen_back
+    assert h.last.opts.resume is None
+    texts = _sent_texts(h)
+    assert texts[0].startswith("This conversation continues in a new session")
+    assert "<your_reply>Hello.</your_reply>" in texts and texts[-1] == "And again?"
+    h.provider.inner.generate_stream.assert_not_called()
 
 
 async def test_with_the_fallback_off_nothing_reaches_an_api_key(tmp_path):
     h = Harness(tmp_path, fallback="off")
     h.provider.inner.generate_stream = AsyncMock()
-    with pytest.raises(RuntimeError, match="no transcript point"):
-        await _step(h.provider, [Message.user("Hi."), Message.assistant("Hello."), Message.user("Again?")])
     task = asyncio.create_task(_step(h.provider, [Message.user("Hi.")]))
     await wait_until(lambda: h.made)
     h.last.push(RateLimitEvent(rate_limit_info=RateLimitInfo(status="rejected", rate_limit_type="five_hour"),

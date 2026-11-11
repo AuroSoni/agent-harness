@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import dataclasses
 import json
 import time
@@ -94,6 +95,17 @@ class _QueryEnded:
 
 
 _QUERY_ENDED = _QueryEnded()
+
+
+class _Ping:
+    """Hands the stream translator one more event, so it sees an abort that arrived while no event did."""
+
+    type = "ping"
+
+
+_PING = _Ping()
+#: Stream events that put no frame on the sink.
+_NO_FRAME = {"message_start", "message_delta", "message_stop", "ping"}
 
 
 class _NullSink:
@@ -184,17 +196,24 @@ class ClaudeCodeProvider:
         self._futures: dict[str, asyncio.Future] = {}
         self._registered = asyncio.Condition()
         self._generation = 0  # bumped by close(): a handler of an older process stops waiting
+        self._answered = 0  # bumped when a step hands a tool round's results to the waiting handlers
         self._session_id: str | None = None
         self._msg_uuid: dict[str, str] = {}   # API message id -> its transcript entry's uuid
         self._uuid_seen = asyncio.Event()
-        self._cc_results: dict[str, tuple[str, bool]] = {}
+        self._cc_results: dict[str, tuple[str, bool]] = {}  # Claude Code's own web tools' results, by call id
+        self._cc_web_ids: set[str] = set()  # the call ids of those web tools, from the stream
         self._cc_arrived = asyncio.Event()
+        self._open_queries = 0  # queries sent and not yet ended by a ResultMessage
         self._schemas_key: str | None = None
         self._pending: set[asyncio.Task] = set()
         self._prompt_file: Path | None = None
         self._max_tokens: int | None = None
         self._web_limits: dict[str, int | None] = {}
         self._web_uses: dict[str, int] = {}
+
+    #: The runtime passes ``stored_messages=``: the history without the run's render-time contributions, which the
+    #: ledger keys by, so the next run (which renders this run's prompt without them) finds its point.
+    wants_stored_messages = True
 
     @property
     def name(self) -> str:
@@ -233,9 +252,12 @@ class ClaudeCodeProvider:
 
     # ── the optional lifecycle (agent_base.core.provider.ProviderLifecycle) ─
     async def end_run(self) -> None:
-        """The run ended: let its ledger points land, then end its Claude Code process."""
+        """The run ended: let its ledger points land, then end its Claude Code process, and a summary call's if one
+        was cut short (an abort during a compaction)."""
         await self._await_ledger()
         await self.close()
+        if self._side is not None:
+            await self._side.close()
 
     async def aclose(self) -> None:
         await self.close()
@@ -261,13 +283,17 @@ class ClaudeCodeProvider:
         await self.close(keep_slot=True)
         self._reseed = True
 
-    def for_child(self, spec: Any) -> "ClaudeCodeProvider":
-        """A sub-agent follows its parent onto Claude Code: a provider of its own (its own process), sharing the
-        parent's store, ledger, slots and meter."""
+    def for_child(self, spec: Any) -> Any:
+        """A sub-agent follows its parent's transport: on Claude Code, a provider of its own (its own process),
+        sharing the parent's store, ledger, slots and meter; once the parent is on the direct client, the direct
+        client."""
         retry = getattr(spec, "retry_policy", None)
         direct = self.inner
         if retry is not None and retry != self.inner.retry_policy:
-            direct = type(self.inner)(client=self.inner.client, formatter=self.inner.formatter, retry_policy=retry)
+            direct = copy.copy(self.inner)  # the same client and fallback keys, the spec's retry policy
+            direct.retry_policy = retry
+        if self.fallen_back:
+            return direct
         return ClaudeCodeProvider(direct, config=self.config, store=self.store, ledger=self.ledger,
                                   client_factory=self._client_factory)
 
@@ -294,8 +320,10 @@ class ClaudeCodeProvider:
         except (_Fallback, Exception) as e:  # noqa: BLE001
             reason = str(e) or type(e).__name__
             if self.config.fallback == "off":
-                # Plan-only operation: never an API key. The step fails, and the next one tries Claude Code again.
+                # Plan-only operation: never an API key. The step fails, and the next one tries Claude Code again,
+                # from the ledger points this run recorded.
                 logger.error("claude_code_step_failed_no_fallback", reason=reason[:300])
+                await self._await_ledger()
                 await self.close()
                 if isinstance(e, _Fallback):
                     raise RuntimeError(f"Claude Code could not carry this step: {reason}") from e
@@ -317,6 +345,7 @@ class ClaudeCodeProvider:
             return await self._direct(**kw)
 
     async def _direct(self, **kw: Any) -> Any:
+        kw.pop("stored_messages", None)
         kw["messages"] = _plain_history(kw["messages"])
         if isinstance(kw.get("sink"), _NullSink):
             kw.pop("sink")
@@ -342,6 +371,9 @@ class ClaudeCodeProvider:
         next process."""
         self._generation += 1
         self._last_error = None
+        self._open_queries = 0
+        self._cc_results.clear()
+        self._cc_web_ids.clear()
         for f in self._futures.values():
             if not f.done():
                 f.set_result(_STOPPED)
@@ -357,6 +389,7 @@ class ClaudeCodeProvider:
         if self._reader is not None:
             self._reader.cancel()
             self._reader = None
+        self._uuid_seen.set()  # a ledger point still waiting for its entry stops: no reader is left to name it
         self._events = asyncio.Queue()
         if self.one_shot and self._prompt_file is not None:
             with contextlib.suppress(OSError):
@@ -366,18 +399,42 @@ class ClaudeCodeProvider:
     # ── a step ─────────────────────────────────────────────────────────────
     async def _cc_step(self, *, streamed: dict, system_prompt: str | None, messages: list, tool_schemas: list,
                        llm_config: Any, model: str, sink: Any, stream_tool_results: bool = True,
-                       agent_uuid: str = "", cancellation_event: asyncio.Event | None = None) -> Any:
+                       agent_uuid: str = "", cancellation_event: asyncio.Event | None = None,
+                       stored_messages: list | None = None) -> Any:
+        if self.one_shot and self._client is not None:
+            await self.close()  # a summary call's process left by one that was cut short: never reused
+        try:
+            return await self._cc_step_body(
+                streamed=streamed, system_prompt=system_prompt, messages=messages, tool_schemas=tool_schemas,
+                llm_config=llm_config, model=model, sink=sink, stream_tool_results=stream_tool_results,
+                agent_uuid=agent_uuid, cancellation_event=cancellation_event, stored_messages=stored_messages)
+        finally:
+            if self.one_shot:
+                # One call, one process, whatever ends the call: a reply, a failure, or a cancellation (an abort
+                # during a compaction), which no ``except Exception`` sees.
+                await asyncio.shield(self.close())
+
+    async def _cc_step_body(self, *, streamed: dict, system_prompt: str | None, messages: list, tool_schemas: list,
+                            llm_config: Any, model: str, sink: Any, stream_tool_results: bool, agent_uuid: str,
+                            cancellation_event: asyncio.Event | None, stored_messages: list | None) -> Any:
         from agent_base.core.types import Role, ToolResultContent
 
         self._agent_uuid = agent_uuid or self._agent_uuid
         self._web_uses = {}
         self._max_tokens = getattr(llm_config, "max_tokens", None) or self._max_tokens
+        self._last_error = None  # an earlier model call's error (a cut reply's) is not this step's
+        # The ledger keys the history as the host stores it. The messages sent may carry what the run adds at
+        # render time (memory, a hook's context, on the run's own prompt), which the next run renders without.
+        keyed = stored_messages if stored_messages is not None and len(stored_messages) == len(messages) else messages
         last_asst = max((i for i, m in enumerate(messages) if m.role == Role.ASSISTANT), default=-1)
         tail_start, seed = last_asst + 1, False
-        if self._client is not None and self._schemas_key != _canon(sorted(s.name for s in tool_schemas)):
-            await self.close(keep_slot=True)  # the tool roster changed (a connector attached mid-run): start again
+        if self._client is not None and self._schemas_key != _process_key(system_prompt, tool_schemas):
+            # The system prompt or the tools changed mid-run (a profile switch, a connector attached): the process
+            # was started with the old ones, so it ends, once this run's ledger points are in.
+            await self._await_ledger()
+            await self.close(keep_slot=True)
         if self._client is None:
-            tail_start, seed = await self._start(system_prompt, tool_schemas, model, llm_config, messages, last_asst)
+            tail_start, seed = await self._start(system_prompt, tool_schemas, model, llm_config, keyed, last_asst)
 
         if seed:
             await self._send(self._history_as_text(messages))
@@ -390,31 +447,35 @@ class ClaudeCodeProvider:
                 wire = self.formatter._block_to_wire(b) or {}
                 self._futures[b.tool_id].set_result({"content": _wire_to_mcp(wire.get("content")),
                                                      "is_error": bool(wire.get("is_error"))})
+            if live:  # the round is answered: a call still waiting for its id to be registered never will be
+                self._answered += 1
+                async with self._registered:
+                    self._registered.notify_all()
             prompts = [m for m in new if m.role == Role.USER
                        and not any(isinstance(b, ToolResultContent) for b in (m.content or []))]
             if any(m.role == Role.ASSISTANT for m in new):
                 # A model turn beyond the resume point: a reply cut off mid-stream by an abort or a steer, which the
                 # transcript doesn't hold. Everything after the point goes in as text, in order.
-                text = self._beyond_point_as_text([m for m in new if not any(m is p for p in prompts)])
+                body = self._beyond_point_as_text(new)
             else:
-                text = self._results_as_text(orphans) if orphans else []
-            if prompts or text:
+                body = (self._results_as_text(orphans) if orphans else []) + [
+                    blk for m in prompts for blk in self.formatter.format_blocks_to_wire(m.content)]
+            if body:
                 if live:
                     raise _Fallback("a step brought both a live tool round and new user content")
-                body = text + [blk for m in prompts for blk in self.formatter.format_blocks_to_wire(m.content)]
                 await self._send(body)
-        turn = await self._read_step(streamed=streamed, messages=messages, sink=sink,
+        turn = await self._read_step(streamed=streamed, messages=messages, keyed=keyed, sink=sink,
                                      stream_tool_results=stream_tool_results, agent_uuid=agent_uuid,
                                      cancellation_event=cancellation_event)
         self._reseed = False
-        if self.one_shot:
-            await self.close()
         return turn
 
     async def _start(self, system_prompt: str | None, tool_schemas: list, model: str, llm_config: Any,
                      messages: list, last_asst: int) -> tuple[int, bool]:
         """Start the run's Claude Code process. Returns where the history goes beyond the resume point, and
-        whether the whole history goes in as text (a one-shot call, or the first step after a compaction)."""
+        whether the whole history goes in as text: a one-shot call, the first step after a compaction, or a history
+        no transcript point matches (a reply cut off before its point was recorded, an edited history, a session
+        that ran on the direct client before)."""
         if self.one_shot or self._reseed:
             await self._connect(system_prompt or "", tool_schemas, model, llm_config, resume=None, at=None, fork=False)
             return 0, True
@@ -424,14 +485,25 @@ class ClaudeCodeProvider:
 
             fps = prefix_fingerprints(self.formatter, messages[: last_asst + 1])
             points = {i + 1: fps[i] for i, m in enumerate(messages[: last_asst + 1]) if m.role.value == "assistant"}
-            match = await self.ledger.longest_match(points)
+            try:
+                match = await self.ledger.longest_match(points)
+                if match is not None:
+                    project_key = project_key_for_directory(str(self.config.workdir))
+                    # A plain resume when the point is the transcript's end; otherwise branch there (a reset or a
+                    # fork), leaving the old tail in the store as the library leaves its archived tail.
+                    fork = match[2] != await self.store.last_message_uuid(project_key, match[1])
+            except Exception:  # noqa: BLE001 - the ledger or the store failed: a fresh session still carries it
+                logger.warning("claude_code_ledger_lookup_failed", agent_uuid=self._agent_uuid, exc_info=True)
+                match = None
             if match is None:
-                raise _Fallback("no transcript point matches the history")
+                # Nothing to resume: a fresh session takes the history as text, as after a compaction, and the
+                # session stays on Claude Code.
+                logger.info("claude_code_fresh_session", agent_uuid=self._agent_uuid,
+                            reason="no transcript point matches the history")
+                await self._connect(system_prompt or "", tool_schemas, model, llm_config, resume=None, at=None,
+                                    fork=False)
+                return 0, True
             n, resume, at = match
-            project_key = project_key_for_directory(str(self.config.workdir))
-            # A plain resume when the point is the transcript's end; otherwise branch there (a reset or a fork),
-            # leaving the old tail in the store as the library leaves its archived tail.
-            fork = at != await self.store.last_message_uuid(project_key, resume)
             tail_start = n
         await self._connect(system_prompt or "", tool_schemas, model, llm_config, resume=resume,
                             at=at if fork else None, fork=fork)
@@ -452,7 +524,7 @@ class ClaudeCodeProvider:
             await holder.close(keep_slot=True)
         if not await self._slots.acquire(holder, limit=cfg.max_processes, wait_s=cfg.slot_wait_s):
             logger.warning("claude_code_processes_full", limit=cfg.max_processes, wait_s=cfg.slot_wait_s)
-            raise _Fallback(f"all {cfg.max_processes} Claude Code processes were in use for {cfg.slot_wait_s:.0f} s")
+            raise _Fallback(f"all {cfg.max_processes} Claude Code processes were in use for {cfg.slot_wait_s:g} s")
         self._last_error = None
         try:
             (cfg.workdir / "prompts").mkdir(parents=True, exist_ok=True)
@@ -490,7 +562,7 @@ class ClaudeCodeProvider:
             raise
         self._client = client
         self.processes_started += 1
-        self._schemas_key = _canon(sorted(names))
+        self._schemas_key = _process_key(system_prompt, tool_schemas)
         self._reader = asyncio.create_task(self._read())
 
     async def _web_hook(self, hook_input: Any, tool_use_id: str | None, context: Any) -> dict:
@@ -501,7 +573,11 @@ class ClaudeCodeProvider:
             return {}
         if name == "WebFetch":
             guard = self.config.url_guard or public_url_guard
-            refused = await guard((hook_input.get("tool_input") or {}).get("url"))
+            try:
+                refused = await guard((hook_input.get("tool_input") or {}).get("url"))
+            except Exception:  # noqa: BLE001 - a guard that fails refuses: a hook error would let the fetch run
+                logger.warning("claude_code_url_guard_failed", exc_info=True)
+                refused = "The URL could not be checked, so it was not fetched."
             if refused:
                 logger.warning("claude_code_web_fetch_refused", reason=refused[:200])
                 return _deny(refused)
@@ -533,7 +609,7 @@ class ClaudeCodeProvider:
     async def _handle(self, name: str, args: dict) -> dict:
         """One tool call from Claude Code: wait for the tool round's result for that call."""
         tool_id = _call_meta_id()
-        generation = self._generation
+        generation, answered = self._generation, self._answered
         if self._client is None:
             return _STOPPED  # the process this call came from is gone
         async with self._registered:
@@ -542,6 +618,8 @@ class ClaudeCodeProvider:
                     break
                 if self._generation != generation or self._client is None:
                     return _STOPPED  # the process closed before the call was registered
+                if self._answered != answered:
+                    break  # its round was answered without it: an id the step never had
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self._registered.wait(), timeout=1.0)
         if self._generation != generation:
@@ -552,9 +630,16 @@ class ClaudeCodeProvider:
         return await self._futures[tool_id]
 
     async def _send(self, blocks: list[dict]) -> None:
+        """One user message: one query, which a ``ResultMessage`` ends."""
+        first = next((b for b in blocks if b.get("type") == "text"), None)
+        if first is not None and first.get("text", "").startswith("/"):
+            # Never a CLI slash command ("/clear", "/compact"): the library's history is the one that counts.
+            blocks = [dict(b, text=" " + b["text"]) if b is first else b for b in blocks]
+
         async def one():
             yield {"type": "user", "message": {"role": "user", "content": blocks}, "parent_tool_use_id": None}
 
+        self._open_queries += 1
         await self._client.query(one())
 
     # ── history as text ────────────────────────────────────────────────────
@@ -578,31 +663,37 @@ class ClaudeCodeProvider:
 
     def _beyond_point_as_text(self, messages: list) -> list[dict]:
         """The history after the resume point when it holds a model turn the transcript doesn't (a reply cut off
-        mid-stream by an abort or a steer): the replies (their text and tool calls; thinking left out) and the
-        tool results, in order, as text."""
-        from agent_base.core.types import Role, ToolResultContent
-
-        out = [{"type": "text", "text": _CUT_OFF_HEADER}]
-        for m in messages:
-            if m.role == Role.ASSISTANT:
-                out.extend(self._assistant_as_text(m))
-            else:
-                out.extend(self._results_as_text([b for b in m.content or [] if isinstance(b, ToolResultContent)],
-                                                 header=False))
+        mid-stream by an abort or a steer): the prompts, the replies (their text and tool calls; thinking left out)
+        and the tool results, in order, as text, with the last message as its own blocks when it is the user's
+        prompt."""
+        prompt = messages[-1] if messages and _is_prompt(messages[-1]) else None
+        earlier = messages[:-1] if prompt is not None else messages
+        out = [{"type": "text", "text": _CUT_OFF_HEADER}] + self._messages_as_text(earlier)
+        if prompt is not None:
+            out.extend(self.formatter.format_blocks_to_wire(prompt.content))
         return out
 
     def _history_as_text(self, messages: list) -> list[dict]:
-        """The whole history for a fresh session (a one-shot call, or the first step after a compaction): in
-        order, as text, with the last message as its own blocks when it is the user's prompt."""
-        from agent_base.core.types import Role, ToolResultContent
-
-        def is_prompt(m: Any) -> bool:
-            return m.role == Role.USER and not any(isinstance(b, ToolResultContent) for b in m.content or [])
-
-        prompt = messages[-1] if messages and is_prompt(messages[-1]) else None
+        """The whole history for a fresh session (a one-shot call, the first step after a compaction, a history no
+        transcript point matches): in order, as text, with the last message as its own blocks when it is the
+        user's prompt."""
+        prompt = messages[-1] if messages and _is_prompt(messages[-1]) else None
         earlier = messages[:-1] if prompt is not None else messages
         out: list[dict] = [{"type": "text", "text": _HISTORY_HEADER}] if earlier else []
-        for m in earlier:
+        out.extend(self._messages_as_text(earlier))
+        if prompt is not None:
+            out.extend(self.formatter.format_blocks_to_wire(prompt.content))
+        elif earlier:
+            out.append({"type": "text", "text": "Continue from here."})
+        return [b for b in out if b.get("type") != "text" or b.get("text")] or [{"type": "text", "text": "Continue."}]
+
+    def _messages_as_text(self, messages: list) -> list[dict]:
+        """Messages of the library's history as text, in order: the replies and their tool calls marked as the
+        model's own, the tool results, and the user's prompts in ``<user>`` tags."""
+        from agent_base.core.types import Role, ToolResultContent
+
+        out: list[dict] = []
+        for m in messages:
             if m.role == Role.ASSISTANT:
                 out.extend(self._assistant_as_text(m))
                 continue
@@ -617,11 +708,7 @@ class ClaudeCodeProvider:
                 else:
                     out.append({"type": "text", "text": json.dumps(blk, default=str)[:2000]})
             out.append({"type": "text", "text": "</user>"})
-        if prompt is not None:
-            out.extend(self.formatter.format_blocks_to_wire(prompt.content))
-        elif earlier:
-            out.append({"type": "text", "text": "Continue from here."})
-        return [b for b in out if b.get("type") != "text" or b.get("text")] or [{"type": "text", "text": "Continue."}]
+        return out
 
     def _results_as_text(self, blocks: list, header: bool = True) -> list[dict]:
         """Tool results whose step this process never saw (a restart, an abort): as text."""
@@ -648,6 +735,13 @@ class ClaudeCodeProvider:
             async for m in self._client.receive_messages():
                 if isinstance(m, StreamEvent):
                     self._session_id = m.session_id or self._session_id
+                    ev = m.event or {}
+                    if ev.get("type") == "message_start":
+                        self._last_error = None  # a new model call: an earlier call's error is not its own
+                    elif ev.get("type") == "content_block_start":
+                        block = ev.get("content_block") or {}
+                        if block.get("type") == "tool_use" and block.get("name") in CC_WEB_TOOLS:
+                            self._cc_web_ids.add(block.get("id"))
                     await self._events.put(m.event)
                 elif isinstance(m, AssistantMessage):
                     self._session_id = m.session_id or self._session_id
@@ -661,8 +755,8 @@ class ClaudeCodeProvider:
                     if m.error:
                         self._last_error = (m.error, _blocks_text(m.content))
                 elif isinstance(m, UserMessage) and isinstance(m.content, list):
-                    for b in m.content:  # results of the tools Claude Code ran itself (its web tools)
-                        if isinstance(b, ToolResultBlock):
+                    for b in m.content:  # results of the tools Claude Code ran itself (its web tools); the CLI
+                        if isinstance(b, ToolResultBlock) and b.tool_use_id in self._cc_web_ids:  # echoes ours too
                             c = b.content
                             text = c if isinstance(c, str) else "\n".join(
                                 x.get("text", "") for x in (c or []) if isinstance(x, dict))
@@ -681,6 +775,7 @@ class ClaudeCodeProvider:
                         await self._events.put(_Fallback("the CLI reported an API key; it runs on the plan's login only"))
                 elif isinstance(m, ResultMessage):
                     self._session_id = m.session_id or self._session_id
+                    self._open_queries = max(0, self._open_queries - 1)
                     last, self._last_error = self._last_error, None
                     # A failed query streams nothing more: the step waiting on it fails with what the result
                     # stands for. (A refusal already pushed its fallback with the CLI's message.)
@@ -691,8 +786,11 @@ class ClaudeCodeProvider:
             await self._events.put(_Fallback("the Claude Code process ended"))
         except Exception as e:  # noqa: BLE001
             await self._events.put(e)
+        finally:
+            self._cc_arrived.set()  # a step waiting on a web tool's result sees the reader is gone,
+            self._uuid_seen.set()  # and so does a ledger point waiting for its entry
 
-    async def _read_step(self, *, streamed: dict, messages: list, sink: Any, stream_tool_results: bool,
+    async def _read_step(self, *, streamed: dict, messages: list, keyed: list, sink: Any, stream_tool_results: bool,
                          agent_uuid: str, cancellation_event: asyncio.Event | None) -> Any:
         import httpx
         from anthropic._models import construct_type_unchecked
@@ -729,17 +827,31 @@ class ClaudeCodeProvider:
             done.clear()
             return calls
 
+        framed: set[str] = set()
+        reader = self._reader
+
         async def web_results(ids: list[str]) -> None:
+            """Wait for the results of Claude Code's own web calls, then frame them. A process that dies, or an
+            abort, ends the wait."""
+            ids = [i for i in ids if i not in framed]
             deadline = time.monotonic() + 600
             while any(i not in self._cc_results for i in ids) and time.monotonic() < deadline:
+                if reader is None or reader.done():
+                    raise _Fallback("the Claude Code process ended while its web tool ran")
+                if cancellation_event is not None and cancellation_event.is_set():
+                    return
                 self._cc_arrived.clear()
                 with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(self._cc_arrived.wait(), timeout=5)
+                    await asyncio.wait_for(self._cc_arrived.wait(), timeout=0.5)
+            framed.update(ids)
             if stream_tool_results:
                 for i in ids:
                     text, _ = self._cc_results.get(i, ("No result from Claude Code.", True))
                     sink.emit(ToolResultDelta(agent_uuid=agent_uuid, tool_name="web_tool_result", tool_id=i,
                                               result_content=text, is_server_tool=True, is_final=True))
+
+        def web_ids(snap: Any) -> list[str]:
+            return [b.id for b in snap.content if getattr(b, "type", "") == "server_tool_use" and b.id in cc_ids]
 
         async def events():
             nonlocal snapshot, cut
@@ -751,14 +863,24 @@ class ClaudeCodeProvider:
                     if snapshot is None:
                         continue  # nothing of this call streamed: the query's result, or the CLI's retry, follows
                     logger.warning("claude_code_reply_cut", kind=ev.kind, finished_blocks=len(done))
-                    if close_cut():
+                    calls = close_cut()
+                    if snaps:
+                        await web_results(web_ids(snaps[-1]))  # a finished web call of the cut reply
+                    if calls:
                         return
                     cut = ev.kind  # text only: the CLI asks the model to resume, and that call folds in here
                     continue
                 if isinstance(ev, _QueryEnded):
                     if cut and snapshot is None:
                         return  # the CLI did not resume the cut reply: the step ends with it as it was cut
-                    continue  # the result of a query whose step already ended
+                    if self._open_queries:
+                        continue  # the result of a query whose step already ended; this step's query goes on
+                    # The query this step waits on ended without (the rest of) a reply.
+                    if snapshot is not None:
+                        close_cut()
+                    if snaps:
+                        return
+                    raise _Fallback("Claude Code ended the query without a reply")
                 typed = construct_type_unchecked(type_=BetaRawMessageStreamEvent, value=ev)
                 if typed.type == "message_start":
                     if snapshot is not None:  # a new model call while a reply is open: it was cut; fold it in
@@ -776,15 +898,18 @@ class ClaudeCodeProvider:
                     else:
                         typed.content_block.name = name.removeprefix(prefix)
                 snapshot = accumulate_event(event=typed, current_snapshot=snapshot, request_headers=httpx.Headers())
-                streamed["any"] = True
+                if typed.type not in _NO_FRAME and not isinstance(sink, _NullSink):
+                    streamed["any"] = True  # a frame of this step reached the client
                 yield typed
                 if typed.type == "message_stop":
                     snaps.append(snapshot)
-                    mine = [b.id for b in snapshot.content
-                            if getattr(b, "type", "") == "server_tool_use" and b.id in cc_ids]
+                    mine = web_ids(snapshot)
                     calls = [b for b in snapshot.content if getattr(b, "type", "") == "tool_use"]
                     if mine:
                         await web_results(mine)
+                        if cancellation_event is not None and cancellation_event.is_set():
+                            yield _PING  # the stream translator stops at the abort
+                            return
                     if mine and not calls:  # only web tools: fold Claude Code's next model call into this step
                         snapshot = None
                         continue
@@ -814,6 +939,10 @@ class ClaudeCodeProvider:
         msg.provider = self.name
         if len(snaps) > 1:
             msg.usage = _summed_usage(Usage, snaps)
+        if cancelled:
+            # An abort or a steer cut the reply: its process is closed, so no handler waits and no transcript entry
+            # will name the reply. The library repairs the chain; the next run sends the cut reply as text.
+            return ProviderTurn(message=msg, was_cancelled=True, stream_bookkeeping=completed)
         tool_uses = [b for s in snaps for b in s.content if getattr(b, "type", "") == "tool_use"]
         loop = asyncio.get_running_loop()
         async with self._registered:
@@ -821,17 +950,21 @@ class ClaudeCodeProvider:
                 self._futures[b.id] = loop.create_future()
             self._registered.notify_all()
         if not self.one_shot:
-            self._schedule_ledger(messages + [msg], last.id)
-        return ProviderTurn(message=msg, was_cancelled=cancelled, stream_bookkeeping=completed)
+            self._schedule_ledger(keyed + [msg], last.id)
+        return ProviderTurn(message=msg, was_cancelled=False, stream_bookkeeping=completed)
 
     # ── the ledger ─────────────────────────────────────────────────────────
     def _schedule_ledger(self, history: list, message_id: str) -> None:
         fp = prefix_fingerprints(self.formatter, history)[-1]
         agent_uuid = self._agent_uuid
+        generation, reader = self._generation, self._reader
+
+        def live() -> bool:  # only this process's reader can still name the reply's transcript entry
+            return self._generation == generation and reader is not None and not reader.done()
 
         async def record() -> None:
             deadline = time.monotonic() + self.config.ledger_wait_s
-            while message_id not in self._msg_uuid and time.monotonic() < deadline:
+            while message_id not in self._msg_uuid and time.monotonic() < deadline and live():
                 self._uuid_seen.clear()
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self._uuid_seen.wait(), timeout=2)
@@ -867,6 +1000,19 @@ def prune_prompt_files(workdir: Path | str, *, days: int) -> int:
                 path.unlink()
                 deleted += 1
     return deleted
+
+
+def _is_prompt(m: Any) -> bool:
+    """A user message that is the user's prompt, not a tool round's results."""
+    from agent_base.core.types import Role, ToolResultContent
+
+    return m.role == Role.USER and not any(isinstance(b, ToolResultContent) for b in m.content or [])
+
+
+def _process_key(system_prompt: str | None, tool_schemas: list) -> str:
+    """What a run's process was started with: the system prompt and the tools as the model sees them."""
+    tools = sorted(([s.name, s.description or "", s.input_schema or {}] for s in tool_schemas), key=lambda t: t[0])
+    return _canon([system_prompt or "", tools])
 
 
 def _blocks_text(content: Any) -> str:
