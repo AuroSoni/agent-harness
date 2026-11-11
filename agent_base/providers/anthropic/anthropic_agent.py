@@ -1307,15 +1307,18 @@ class AnthropicAgent(AgentRuntime):
             await self._mcp.aclose()
         await provider_aclose(self.provider)
 
-    def _build_render_view(self, messages: list[Message]) -> list[Message]:
+    def _build_render_view(
+        self, messages: list[Message], *, with_runtime: bool = True
+    ) -> list[Message]:
         """Render every message for the LLM wire, applying runtime contributions
-        to the target user message only.
+        to the target user message only (``with_runtime=False``: none, the
+        history as the next run will render it).
 
         The tail instruction comes from the ACTIVE profile
         (``Profile.tail``; the ``_select_tail_for_mode``
         override stub is deleted)."""
         target_id = self._runtime_target_msg_id
-        runtime = self._runtime_contributions
+        runtime = self._runtime_contributions if with_runtime else None
         active = self.active_profile
         tail = active.tail if active is not None else None
         rendered: list[Message] = []
@@ -1327,6 +1330,12 @@ class AnthropicAgent(AgentRuntime):
             )
             rendered.append(view_msg.render(tail_instruction=tail))
         return rendered
+
+    def _stored_view(self, messages: list[Message]) -> list[Message]:
+        """The history without this run's render-time contributions, for a
+        provider that keys its own copy of the history by content
+        (``wants_stored_messages``)."""
+        return self._build_render_view(messages, with_runtime=False)
 
     # ── streaming plumbing (DeltaSink over the Rung-1 stream) ──────────────
 

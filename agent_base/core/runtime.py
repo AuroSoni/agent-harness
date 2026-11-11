@@ -1901,6 +1901,14 @@ class AgentRuntime:
         # Chain integrity before EVERY call — provider-supplied
         # shape, loop-owned policy.
         cfg.context_messages[:] = self.provider.sanitize_chain(cfg.context_messages)
+        # A provider that keys its own copy of the history by content (Claude
+        # Code's ledger) also gets the history as the next run will render it:
+        # without this run's render-time contributions. Opt-in, so no other
+        # provider's signature changes.
+        extra: dict[str, Any] = {}
+        stored_view = getattr(self, "_stored_view", None)
+        if getattr(self.provider, "wants_stored_messages", False) and callable(stored_view):
+            extra["stored_messages"] = stored_view(cfg.context_messages)
         # No retry scalars threaded — the provider reads its own
         # self.retry_policy.
         async def invoke_provider() -> Any:
@@ -1917,6 +1925,7 @@ class AgentRuntime:
                     ),
                     agent_uuid=cfg.agent_uuid,
                     cancellation_event=self._cancellation_event,
+                    **extra,
                 )
             return await self.provider.generate(
                 system_prompt=cfg.system_prompt,
@@ -1925,6 +1934,7 @@ class AgentRuntime:
                 llm_config=cfg.llm_config,
                 model=cfg.model,
                 agent_uuid=cfg.agent_uuid,
+                **extra,
             )
 
         clock = SpanClock()
