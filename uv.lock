@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -35,6 +35,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+claude-code = [
+    { name = "claude-agent-sdk" },
+    { name = "mcp" },
+]
 e2b = [
     { name = "e2b" },
 ]
@@ -57,8 +61,10 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "blake3", specifier = ">=1.0.8" },
     { name = "boto3", specifier = ">=1.40.46" },
+    { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = "==0.2.180" },
     { name = "e2b", marker = "extra == 'e2b'", specifier = ">=2.37,<3" },
     { name = "litellm", specifier = ">=1.80.11" },
+    { name = "mcp", marker = "extra == 'claude-code'", specifier = ">=1.28,<2" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.28,<2" },
     { name = "pillow", specifier = ">=12.1.1" },
     { name = "pymupdf", specifier = ">=1.27.1" },
@@ -66,7 +72,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "structlog", specifier = ">=25.5.0" },
 ]
-provides-extras = ["mcp", "e2b"]
+provides-extras = ["mcp", "e2b", "claude-code"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -739,6 +745,26 @@ wheels = [
 ]
 
 [[package]]
+name = "claude-agent-sdk"
+version = "0.2.180"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "jsonschema" },
+    { name = "mcp" },
+    { name = "sniffio" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f7/23/1483388a34190c4cb41790aa5201126e40d8ad90b363bf090abb273f4dc5/claude_agent_sdk-0.2.180.tar.gz", hash = "sha256:1c0935c881a1b5232e6b6b894078ee79b315d75d449408af2202bddfa990a16c", size = 400210, upload-time = "2026-11-09T20:07:56.832Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/28/02/55d54b457dddf96e39de01a0ebb84853e57c115c027c87bc7d7e9c229932/claude_agent_sdk-0.2.180-py3-none-macosx_11_0_arm64.whl", hash = "sha256:a4177b29a877f820abfd1b7862e61bcea14e1cd7f16c75fcee364b4d95f4c7c4", size = 140102932, upload-time = "2026-11-09T20:08:02.69Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/e1/8df5fe6648de3f4404f159ae5054d8f73deec2c6e11aac17d2fb6264180b/claude_agent_sdk-0.2.180-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:4025c4f1e91ff7e7d16279bf112c6b2487678cc500a4173a5509c88821809cc6", size = 147396833, upload-time = "2026-11-09T20:08:07.266Z" },
+    { url = "https://files.pythonhosted.org/packages/60/ce/b4a05bb0a53ae21537f6c4ecc84d6e9411327a08399b521dadbcfea3bb7d/claude_agent_sdk-0.2.180-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:c1cef7b79747f9d3663555bb37c72d996efc99a727dd68b1cbac62e4d2479f99", size = 151758489, upload-time = "2026-11-09T20:08:12.905Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/28/740605fe81c0afc5216074adc1486d43e8985abfa9e318e761eb78f6298c/claude_agent_sdk-0.2.180-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:0e5237ce189ae316ffbdfbb205277ea9387222b9c3cb6668ce533335ce7c759d", size = 152129633, upload-time = "2026-11-09T20:08:18.949Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/8e/95525f07beb63966ef09129da3f4823fdc805d0781288f1c463340ec7a5d/claude_agent_sdk-0.2.180-py3-none-win_amd64.whl", hash = "sha256:77c8186cf29c928bd424b5803caf4c69ac91ad00c058bddc86b7bb4e7893c551", size = 153848873, upload-time = "2026-11-09T20:08:25.188Z" },
+]
+
+[[package]]
 name = "click"
 version = "8.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -931,7 +957,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -1380,17 +1406,17 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "colorama", marker = "python_full_version < '3.11' and sys_platform == 'win32'" },
-    { name = "decorator", marker = "python_full_version < '3.11'" },
-    { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
-    { name = "jedi", marker = "python_full_version < '3.11'" },
-    { name = "matplotlib-inline", marker = "python_full_version < '3.11'" },
-    { name = "pexpect", marker = "python_full_version < '3.11' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "prompt-toolkit", marker = "python_full_version < '3.11'" },
-    { name = "pygments", marker = "python_full_version < '3.11'" },
-    { name = "stack-data", marker = "python_full_version < '3.11'" },
-    { name = "traitlets", marker = "python_full_version < '3.11'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "decorator" },
+    { name = "exceptiongroup" },
+    { name = "jedi" },
+    { name = "matplotlib-inline" },
+    { name = "pexpect", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "prompt-toolkit" },
+    { name = "pygments" },
+    { name = "stack-data" },
+    { name = "traitlets" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e5/61/1810830e8b93c72dcd3c0f150c80a00c3deb229562d9423807ec92c3a539/ipython-8.38.0.tar.gz", hash = "sha256:9cfea8c903ce0867cc2f23199ed8545eb741f3a69420bfcf3743ad1cec856d39", size = 5513996, upload-time = "2026-01-05T10:59:06.901Z" }
 wheels = [
@@ -1408,17 +1434,17 @@ resolution-markers = [
     "python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "colorama", marker = "python_full_version >= '3.11' and sys_platform == 'win32'" },
-    { name = "decorator", marker = "python_full_version >= '3.11'" },
-    { name = "ipython-pygments-lexers", marker = "python_full_version >= '3.11'" },
-    { name = "jedi", marker = "python_full_version >= '3.11'" },
-    { name = "matplotlib-inline", marker = "python_full_version >= '3.11'" },
-    { name = "pexpect", marker = "python_full_version >= '3.11' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "prompt-toolkit", marker = "python_full_version >= '3.11'" },
-    { name = "pygments", marker = "python_full_version >= '3.11'" },
-    { name = "stack-data", marker = "python_full_version >= '3.11'" },
-    { name = "traitlets", marker = "python_full_version >= '3.11'" },
-    { name = "typing-extensions", marker = "python_full_version == '3.11.*'" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "decorator" },
+    { name = "ipython-pygments-lexers" },
+    { name = "jedi" },
+    { name = "matplotlib-inline" },
+    { name = "pexpect", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "prompt-toolkit" },
+    { name = "pygments" },
+    { name = "stack-data" },
+    { name = "traitlets" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a6/60/2111715ea11f39b1535bed6024b7dec7918b71e5e5d30855a5b503056b50/ipython-9.10.0.tar.gz", hash = "sha256:cd9e656be97618a0676d058134cd44e6dc7012c0e5cb36a9ce96a8c904adaf77", size = 4426526, upload-time = "2026-02-02T10:00:33.594Z" }
 wheels = [
@@ -1430,7 +1456,7 @@ name = "ipython-pygments-lexers"
 version = "1.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pygments", marker = "python_full_version >= '3.11'" },
+    { name = "pygments" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ef/4c/5dd1d8af08107f88c7f741ead7a40854b8ac24ddf9ae850afbcf698aa552/ipython_pygments_lexers-1.1.1.tar.gz", hash = "sha256:09c0138009e56b6854f9535736f4171d855c8c08a563a0dcd8022f78355c7e81", size = 8393, upload-time = "2025-01-17T11:24:34.505Z" }
 wheels = [
@@ -1990,7 +2016,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess", marker = "python_full_version < '3.11' or sys_platform != 'win32'" },
+    { name = "ptyprocess" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [

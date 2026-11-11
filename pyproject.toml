@@ -32,6 +32,15 @@ mcp = [
 e2b = [
     "e2b>=2.37,<3",
 ]
+# The Claude Code provider (agent_base/providers/claude_code/). The SDK is
+# pinned exactly: the transcript format is internal to the CLI it bundles, so
+# a bump re-runs the fingerprint, resume and recovery specs. mcp stays below 2:
+# the provider reads each tool call's id from mcp 1.x's request_ctx, and the
+# SDK does not bound it.
+claude-code = [
+    "claude-agent-sdk==0.2.180",
+    "mcp>=1.28,<2",
+]
 
 [dependency-groups]
 dev = [
