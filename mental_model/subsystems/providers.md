@@ -82,7 +82,7 @@ Frame shapes are in [Streaming](streaming.md).
 | Rate limit | `RATE_LIMITED` |
 | Timeout, connection error | `PROVIDER_TIMEOUT` |
 | Server error, overloaded | `PROVIDER_OVERLOADED` |
-| HTTP 413, request too large, context window | `CONTEXT_OVERFLOW` |
+| A prompt that doesn't fit the context window: HTTP 413 `request_too_large`, or a 400 whose message says so ("prompt is too long", input plus `max_tokens` over the context limit, "input is too long for requested model", "context window") | `CONTEXT_OVERFLOW` |
 | Other status errors | `PROVIDER_STATUS` |
 | Anything else | `INTERNAL` |
 

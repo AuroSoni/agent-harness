@@ -52,6 +52,14 @@ MIN_CACHE_TOKENS_SONNET = 1024
 MIN_CACHE_TOKENS_HAIKU = 2048
 _NON_CACHEABLE_CACHE_CONTROL_TYPES = {"thinking", "redacted_thinking"}
 
+#: How the API words a request whose prompt doesn't fit the model's context window, matched lower-case against the
+#: error's own message. The usual one is a 400 ``invalid_request_error``: "prompt is too long: 210000 tokens >
+#: 200000 maximum". The others: "input length and `max_tokens` exceed context limit: …", "input is too long for
+#: requested model", and the size limit's 413 ``request_too_large``. These are the messages the Claude Code CLI
+#: recognises as a prompt too long (CLI 2.1.321).
+_OVERFLOW_PHRASES = ("prompt is too long", "input is too long for requested model", "exceed context limit",
+                     "context window", "request_too_large")
+
 
 def _apply_cache_control(
     messages: list[dict[str, Any]],
@@ -569,12 +577,15 @@ class AnthropicProvider(Provider):
         if isinstance(exc, ProviderError):
             return exc
         native = ""
+        api_message = ""
         status_code = getattr(exc, "status_code", None)
         body = getattr(exc, "body", None)
         if isinstance(body, dict):
             inner = body.get("error")
             if isinstance(inner, dict) and isinstance(inner.get("type"), str):
                 native = inner["type"]
+            if isinstance(inner, dict) and isinstance(inner.get("message"), str):
+                api_message = inner["message"]
         message = str(exc)
 
         if isinstance(exc, anthropic.RateLimitError):
@@ -598,8 +609,9 @@ class AnthropicProvider(Provider):
                 message=message, retriable=True, raw=exc,
             )
         if isinstance(exc, (anthropic.BadRequestError, anthropic.APIStatusError)):
-            is_413 = status_code == 413
-            if is_413 or "request_too_large" in message or "context window" in message.lower():
+            said = (api_message or message).lower()
+            if (status_code == 413 or native == "request_too_large"
+                    or any(phrase in said for phrase in _OVERFLOW_PHRASES)):
                 return ProviderError(
                     code=ErrorCode.CONTEXT_OVERFLOW, native_code=native or "request_too_large",
                     message=message, retriable=False, raw=exc,
