@@ -1,7 +1,8 @@
 """``ensure_schema()`` + migrations.
 
-Executable DDL for the **4 library tables only** (``agent_config``,
-``conversation_history``, ``agent_runs``, ``agent_checkpoints``),
+Executable DDL for the **6 library tables only** (``agent_config``,
+``conversation_history``, ``agent_runs``, ``agent_checkpoints``, and the Claude
+Code provider's ``claude_code_transcripts`` and ``claude_code_ledger``),
 version-stamped, idempotent. DDL is
 generated from the same :class:`~agent_base.storage.pg.columns.ColumnRegistry`
 the adapters compose SQL from, so consumer extra columns appear automatically.
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
     from .pool import PgPool
 
 #: DDL/migration axis ONLY — NOT the entity-wire version.
-LIBRARY_SCHEMA_VERSION: int = 6
+LIBRARY_SCHEMA_VERSION: int = 7
 
 #: Single-row bookkeeping table ensure_schema() records the version in.
 VERSION_TABLE = "_agent_base_schema_version"
@@ -122,12 +123,48 @@ BEGIN
 END
 $$""",
     ]),
+    # The Claude Code provider's transcript store and ledger
+    # (agent_base/storage/pg/transcripts.py). As with v4->v5, the CREATE TABLEs
+    # carry the LIBRARY BASE columns only and the indexes their base key
+    # columns only: a host's extra columns (owner columns included) are the
+    # host's own upgrade concern. A host that pre-creates these tables with its
+    # columns under the same index names turns every statement here into a
+    # no-op. MUST stay byte-identical with what the transcript/ledger
+    # registries generate on fresh-create (parity test).
+    Migration(6, 7, [
+        "CREATE TABLE IF NOT EXISTS claude_code_transcripts (\n"
+        "    seq BIGSERIAL PRIMARY KEY,\n"
+        "    project_key TEXT NOT NULL,\n"
+        "    session_id TEXT NOT NULL,\n"
+        "    subpath TEXT NOT NULL DEFAULT '',\n"
+        "    entry_uuid TEXT,\n"
+        "    entry JSON NOT NULL,\n"
+        "    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()\n"
+        ")",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_claude_code_transcripts_entry_uuid "
+        "ON claude_code_transcripts (project_key, session_id, subpath, entry_uuid) "
+        "WHERE entry_uuid IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_claude_code_transcripts_key "
+        "ON claude_code_transcripts (project_key, session_id, subpath, seq)",
+        "CREATE TABLE IF NOT EXISTS claude_code_ledger (\n"
+        "    fingerprint TEXT NOT NULL,\n"
+        "    agent_uuid TEXT NOT NULL,\n"
+        "    prefix_len INTEGER NOT NULL,\n"
+        "    session_id TEXT NOT NULL,\n"
+        "    entry_uuid TEXT NOT NULL,\n"
+        "    recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()\n"
+        ")",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_claude_code_ledger_fingerprint "
+        "ON claude_code_ledger (fingerprint)",
+        "CREATE INDEX IF NOT EXISTS idx_claude_code_ledger_session "
+        "ON claude_code_ledger (session_id)",
+    ]),
 ]
 
 
 @dataclass
 class SchemaRegistries:
-    """The (up to) four ColumnRegistry objects the DDL is generated from.
+    """The (up to) six ColumnRegistry objects the DDL is generated from.
 
     Slots map to the fixed library table names; a ``None`` slot means that
     table is not managed by this PgSchema instance (e.g. a single adapter's
@@ -138,6 +175,8 @@ class SchemaRegistries:
     conversation: ColumnRegistry | None = None    # -> conversation_history
     run: ColumnRegistry | None = None             # -> agent_runs
     checkpoint: ColumnRegistry | None = None      # -> agent_checkpoints (fork-reset)
+    transcript: ColumnRegistry | None = None      # -> claude_code_transcripts
+    ledger: ColumnRegistry | None = None          # -> claude_code_ledger
 
 
 #: Extra per-table DDL the registry cannot express (composite uniques).
@@ -163,8 +202,62 @@ _TABLE_CONSTRAINTS: dict[str, list[str]] = {
 }
 
 
+@dataclass(frozen=True)
+class _ScopedIndex:
+    """A composite index whose key includes the registry's ``scope="filter"``
+    columns, placed after ``columns`` and before ``after``.
+
+    The owner is part of each key: a ledger fingerprint is a hash of history
+    content, so two owners can hold the same one, and each must keep its own
+    point. The adapters' ``ON CONFLICT`` targets name the same column lists.
+    """
+
+    name: str
+    columns: tuple[str, ...]
+    after: tuple[str, ...] = ()
+    unique: bool = False
+    where: str = ""
+
+    def sql(self, table: str, owners: list[str]) -> str:
+        kind = "CREATE UNIQUE INDEX" if self.unique else "CREATE INDEX"
+        cols = ", ".join([*self.columns, *owners, *self.after])
+        statement = f"{kind} IF NOT EXISTS {self.name} ON {table} ({cols})"
+        return f"{statement} WHERE {self.where}" if self.where else statement
+
+
+#: Per-table indexes generated from the registry's filter columns. Kept
+#: byte-identical, with no filter columns, to the v6->v7 migration (parity test).
+_SCOPED_INDEXES: dict[str, tuple[_ScopedIndex, ...]] = {
+    # The partial unique index backs append's dedupe (ON CONFLICT ... WHERE
+    # entry_uuid IS NOT NULL DO NOTHING); entries without a uuid are always
+    # kept. The key index serves load / last_message_uuid (ordered by seq) and
+    # prune's per-session delete.
+    "claude_code_transcripts": (
+        _ScopedIndex(
+            "idx_claude_code_transcripts_entry_uuid",
+            ("project_key", "session_id", "subpath", "entry_uuid"),
+            unique=True,
+            where="entry_uuid IS NOT NULL",
+        ),
+        _ScopedIndex(
+            "idx_claude_code_transcripts_key",
+            ("project_key", "session_id", "subpath"),
+            after=("seq",),
+        ),
+    ),
+    # The unique index backs record's upsert (ON CONFLICT ... DO UPDATE); the
+    # session index serves prune's "no ledger point names this session".
+    "claude_code_ledger": (
+        _ScopedIndex(
+            "idx_claude_code_ledger_fingerprint", ("fingerprint",), unique=True
+        ),
+        _ScopedIndex("idx_claude_code_ledger_session", ("session_id",)),
+    ),
+}
+
+
 class PgSchema:
-    """Owns CREATE TABLE + migrations for the 4 library tables."""
+    """Owns CREATE TABLE + migrations for the 6 library tables."""
 
     def __init__(self, pool: "PgPool", *, registries: SchemaRegistries):
         # registries carries the ColumnRegistry objects so extra columns are
@@ -207,6 +300,8 @@ class PgSchema:
             ("conversation_history", self._registries.conversation),
             ("agent_runs", self._registries.run),
             ("agent_checkpoints", self._registries.checkpoint),
+            ("claude_code_transcripts", self._registries.transcript),
+            ("claude_code_ledger", self._registries.ledger),
         ]
         return [(table, registry) for table, registry in pairs if registry is not None]
 
@@ -218,6 +313,10 @@ class PgSchema:
                 f"    {registry.ddl_columns()}\n)"
             )
             statements.extend(_TABLE_CONSTRAINTS.get(table, []))
+            owners = [spec.name for spec in registry.filter_columns()]
+            statements.extend(
+                index.sql(table, owners) for index in _SCOPED_INDEXES.get(table, ())
+            )
             statements.extend(registry.ddl_indexes(table))
         return statements
 

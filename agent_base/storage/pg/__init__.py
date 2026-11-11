@@ -758,10 +758,10 @@ def create_adapters_from_pool(
 
 
 async def ensure_all_schemas(pool: PgPool, *adapters: Any) -> None:
-    """Create the 4 library tables (+ version stamp) in one shot, generated
+    """Create the library tables (+ version stamp) in one shot, generated
     from the given adapters' registries so consumer extra columns are in the
-    DDL automatically. Consumer product tables are NOT
-    library DDL (scope guard)."""
+    DDL automatically. On a fresh database only the given adapters' tables
+    are created. Consumer product tables are NOT library DDL (scope guard)."""
     slots: dict[str, ColumnRegistry] = {}
     for adapter in adapters:
         slot = getattr(adapter, "_registry_slot", None)
@@ -772,12 +772,27 @@ async def ensure_all_schemas(pool: PgPool, *adapters: Any) -> None:
     await schema.ensure_schema()
 
 
+# The Claude Code provider's transcript store and ledger. Imported last: the
+# module builds on _PgAdapterBase above. It never imports claude_agent_sdk.
+from .transcripts import (  # noqa: E402
+    PgTranscriptLedger,
+    PgTranscriptStore,
+    TranscriptPruneReport,
+    prune_transcripts,
+)
+
+
 __all__ = [
     # Adapter bases
     "PgConfigAdapterBase",
     "PgConversationAdapterBase",
     "PgRunAdapterBase",
     "PgCheckpointAdapterBase",
+    # Claude Code transcript store + ledger, and their retention pass
+    "PgTranscriptStore",
+    "PgTranscriptLedger",
+    "TranscriptPruneReport",
+    "prune_transcripts",
     # Column engine (re-exported for convenience)
     "ColumnRegistry",
     "ColumnScope",

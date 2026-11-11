@@ -14,7 +14,7 @@ def test_the_replayed_columns_are_json_and_the_rest_stay_jsonb():
 
 
 def test_the_schema_chain_converts_them_on_existing_databases():
-    assert LIBRARY_SCHEMA_VERSION == 6
+    assert LIBRARY_SCHEMA_VERSION >= 6
     [step] = [m for m in LIBRARY_MIGRATIONS if (m.from_version, m.to_version) == (5, 6)]
     sql = "\n".join(step.statements)
     assert "lock_timeout" in step.statements[0]

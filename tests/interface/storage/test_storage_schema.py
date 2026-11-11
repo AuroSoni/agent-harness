@@ -9,7 +9,8 @@ Covers:
   ``ensure_schema()`` driven by the ColumnRegistry (consumer extra columns
   appear in the DDL automatically), version bookkeeping in
   ``_agent_base_schema_version``, and the ``ensure_all_schemas`` one-shot
-  helper covering exactly the 4 library tables.
+  helper covering exactly the 6 library tables (the Claude Code transcript
+  tables' own specs are in ``test_storage_transcripts.py``).
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ from agent_base.storage.pg import (
     PgConfigAdapterBase,
     PgConversationAdapterBase,
     PgRunAdapterBase,
+    PgTranscriptLedger,
+    PgTranscriptStore,
     ensure_all_schemas,
     principal_columns,
 )
@@ -165,7 +168,7 @@ def test_active_profile_migration_3_to_4_exists_and_is_idempotent():
 
 
 async def test_ensure_schema_fresh_create_stamps_current_version():
-    # Fresh DB (version 0) → CREATE-all path stamps LIBRARY_SCHEMA_VERSION (now 4).
+    # Fresh DB (version 0) → CREATE-all path stamps LIBRARY_SCHEMA_VERSION.
     conn = _FakeConn()                          # fetchval_result=None → version 0
     adapter = PgConfigAdapterBase(_FakePool(conn))
     await adapter.ensure_schema()
@@ -256,19 +259,34 @@ async def test_ensure_schema_runs_pending_migrations_when_behind():
         assert not creates                             # CREATE-all path must not run
 
 
-async def test_ensure_all_schemas_covers_exactly_the_four_library_tables():
+async def test_ensure_all_schemas_covers_exactly_the_six_library_tables():
     conn = _FakeConn()
     pool = _FakePool(conn)
     config = PgConfigAdapterBase(pool)
     conversation = PgConversationAdapterBase(pool)
     run = PgRunAdapterBase(pool)
     checkpoint = PgCheckpointAdapterBase(pool)
-    await ensure_all_schemas(pool, config, conversation, run, checkpoint)
+    transcripts = PgTranscriptStore(pool)
+    ledger = PgTranscriptLedger(pool)
+    await ensure_all_schemas(
+        pool, config, conversation, run, checkpoint, transcripts, ledger
+    )
     sql = conn.all_sql()
     assert "agent_config" in sql
     assert "conversation_history" in sql
     assert "agent_runs" in sql
     assert "agent_checkpoints" in sql
+    assert "claude_code_transcripts" in sql
+    assert "claude_code_ledger" in sql
+    created = [
+        statement.split()[5] for _, statement, _ in conn.calls
+        if statement.startswith("CREATE TABLE IF NOT EXISTS")
+    ]
+    assert created == [
+        "_agent_base_schema_version", "agent_config", "conversation_history",
+        "agent_runs", "agent_checkpoints", "claude_code_transcripts",
+        "claude_code_ledger",
+    ]
     # consumer product tables are NOT library DDL (scope guard)
     assert "workbook_snapshot" not in sql
     assert "skill_" not in sql
