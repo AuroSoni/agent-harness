@@ -456,6 +456,13 @@ class ToolRegistry:
                         pending = set()
                         break
         finally:
+            # This round itself was cancelled (a parent's abort reaching a
+            # sub-agent's tool round): its tools stop too, instead of running on.
+            leftover = [t for t in tasks if not t.done()]
+            for t in leftover:
+                t.cancel()
+            if leftover:
+                await asyncio.gather(*leftover, return_exceptions=True)
             # Clean up cancel_task if it wasn't triggered
             if cancel_task and not cancel_task.done():
                 cancel_task.cancel()

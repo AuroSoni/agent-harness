@@ -74,7 +74,7 @@ await agent.submit(Steer(instruction=Message.user("…"), mode=SteerMode.FORCEFU
 
 ## Sub-agents
 
-- A [sub-agent](../subsystems/sub-agents.md) runs with its parent's cancellation event, and its awaits are filed under the root session, so one abort of the root stops the whole tree.
+- A [sub-agent](../subsystems/sub-agents.md) runs with its parent's cancellation event, and its awaits are filed under the root session, so one abort of the root stops the whole tree. The parent's tool round cancels the `spawn_subagent` call, and a cancelled tool round cancels its own unfinished tools, so the child's tools stop too, and the child's run ends its provider's run.
 - A sub-agent emits no marker; the root's marker ends the stream.
 - `Abort` and `Steer` submitted to a sub-agent's own runtime are `REJECTED` with detail `not_root`.
 

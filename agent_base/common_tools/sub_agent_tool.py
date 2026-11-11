@@ -457,10 +457,19 @@ Args:
                 # Share the parent's Rung-1 stream so the child's deltas land
                 # on the same agent.stream() read path.
                 child._stream_queue = self._parent_context.stream_queue
-            result = await child.run(
-                task,
-                cancellation_event=self._parent_context.parent_cancellation_event,
-            )
+            try:
+                result = await child.run(
+                    task,
+                    cancellation_event=self._parent_context.parent_cancellation_event,
+                )
+            finally:
+                # The child's run is over however it ended, a cancellation
+                # included (the parent's abort cancels this tool call), so
+                # what its provider holds for the run is released. The run's
+                # own end already did this; a second call is a no-op.
+                from agent_base.core.provider import provider_end_run
+
+                await asyncio.shield(provider_end_run(getattr(child, "provider", None)))
         except Exception as exc:
             error_envelope = ToolResultEnvelope.error(
                 "spawn_subagent",
