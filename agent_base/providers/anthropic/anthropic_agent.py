@@ -160,6 +160,8 @@ if TYPE_CHECKING:
 MAX_PARALLEL_TOOL_CALLS = 5
 DEFAULT_MAX_STEPS = 50
 DEFAULT_MAX_TOOL_RESULT_TOKENS = 25000
+#: Overflow compactions one step may make before its CONTEXT_OVERFLOW stands.
+MAX_OVERFLOW_COMPACTIONS = 2
 
 
 def _strip_binary_data(obj: Any) -> Any:
@@ -1724,6 +1726,7 @@ class AnthropicAgent(AgentRuntime):
         self._run_task = asyncio.current_task()
 
         response_message: Message | None = None
+        overflow_compactions = 0  # for the step in flight; a step that gets an answer resets it
         try:
             while self.agent_config.current_step < self.max_steps:
                 if getattr(self, "_sandbox_resume_warm_pending", False):
@@ -1763,11 +1766,16 @@ class AnthropicAgent(AgentRuntime):
                     # Overflow routes through before_compact(trigger=
                     # "overflow"); a block fails the turn upward with a typed
                     # CONTEXT_OVERFLOW (raised inside _compact_with_hooks).
-                    if await self._compact_with_hooks(
+                    # At most MAX_OVERFLOW_COMPACTIONS per step: once the older
+                    # part is only the last summary, each compaction rewrites
+                    # the summary and the request stays too large.
+                    overflow_compactions += 1
+                    if overflow_compactions <= MAX_OVERFLOW_COMPACTIONS and await self._compact_with_hooks(
                         reason=recompact.reason, trigger="overflow", sink=sink
                     ):
                         continue
                     raise (recompact.__cause__ or recompact)
+                overflow_compactions = 0
 
                 # Handle stream cancellation (Scenario A).
                 if turn.was_cancelled:

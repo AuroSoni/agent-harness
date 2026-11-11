@@ -104,7 +104,7 @@ The logs keep the original; only the context gets the reference. Tools can also 
 ## Errors
 
 - **Provider errors** are classified and retried by the [provider](providers.md#errors-and-retries). What survives the retries reaches the loop.
-- **A request that is too large** triggers an `overflow` compaction and a retry of the step, when compaction is configured. If compaction changes nothing, the error stands and the run ends as errored.
+- **A request that is too large** triggers an `overflow` compaction and a retry of the step, when compaction is configured. If compaction changes nothing, or the step has already compacted twice (`MAX_OVERFLOW_COMPACTIONS`), the error stands and the run ends as errored. The bound matters when the run's own prompt is too large: each compaction after that re-summarizes the summary, which counts as a change.
 - **Anything else** ends the run as [errored](../features/run.md#an-errored-run). That includes an exception from a hook.
 - **A tool that raises** is not a loop error. Its exception becomes an error result the model sees.
 
