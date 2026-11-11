@@ -59,7 +59,13 @@ from agent_base.core.hooks.context import (
 )
 from agent_base.core.identity import PrincipalConflict
 from agent_base.core.messages import Message, Usage
-from agent_base.core.provider import ProviderTurn
+from agent_base.core.provider import (
+    ProviderTurn,
+    provider_aclose,
+    provider_end_run,
+    provider_history_replaced,
+    provider_side_calls,
+)
 from agent_base.core.result import AgentResult, LogEntry
 from agent_base.core.runtime import AgentRuntime, _Recompact
 from agent_base.core.trace_spans import (
@@ -1071,10 +1077,14 @@ class AnthropicAgent(AgentRuntime):
             self._compaction_controller = None
             return
 
-        # No retry scalars — the provider reads self.retry_policy.
+        # No retry scalars — the provider reads self.retry_policy. The summary
+        # call is outside the session's conversation, so it goes to the
+        # provider's side calls (the provider itself unless it says otherwise:
+        # ClaudeCodeProvider keeps it off the run's process). Asked at every
+        # build, since the controller is rebuilt at each run start.
         self._compaction_controller = CompactionController(
             config=resolved_config,
-            provider=self.provider,
+            provider=provider_side_calls(self.provider),
             token_estimator=self.provider.token_estimator,
         )
 
@@ -1291,9 +1301,11 @@ class AnthropicAgent(AgentRuntime):
     async def aclose(self) -> None:
         """Teardown runtime resources: MCP client sessions, reconnect tasks,
         stdio children — no leaked subprocesses past the session actor.
-        A sub-agent sharing the parent's source closes nothing."""
+        A sub-agent sharing the parent's source closes nothing. The provider
+        closes what it holds for the session (a no-op for most)."""
         if self._mcp is not None and self._mcp_owned:
             await self._mcp.aclose()
+        await provider_aclose(self.provider)
 
     def _build_render_view(self, messages: list[Message]) -> list[Message]:
         """Render every message for the LLM wire, applying runtime contributions
@@ -2166,6 +2178,12 @@ class AnthropicAgent(AgentRuntime):
         changed = compacted_messages != self.agent_config.context_messages
         if changed:
             self._replace_context_messages(compacted_messages)
+            # A provider that keeps its own copy of the history (Claude Code's
+            # transcript) learns of the rewrite; after_compact below fires
+            # either way, so only a real change reaches it.
+            await provider_history_replaced(
+                self.provider, self.agent_config.context_messages
+            )
         await self._fire_hooks(
             "after_compact",
             trigger=trigger,
@@ -2564,6 +2582,10 @@ class AnthropicAgent(AgentRuntime):
                 if forced is not None:
                     # The cancelled loop never reached its own marker.
                     self._emit_abort_marker(record, phase.value, forced=True)
+                # An abort ends the run, a steer's included: the steered run
+                # starts on a fresh provider state (a new Claude Code process,
+                # resumed from the ledger).
+                await provider_end_run(self.provider)
                 return self._build_aborted_result()
             finally:
                 self._mailbox.unfreeze()
@@ -2754,6 +2776,8 @@ class AnthropicAgent(AgentRuntime):
                 )
             except Exception:  # pragma: no cover - logging must not raise either
                 pass
+        # The errored run is over too (provider_end_run never raises).
+        await provider_end_run(self.provider)
 
     def _close_errored_run(self, error: Exception) -> "Conversation | None":
         """Close the run as errored in memory and write off its unbilled
@@ -4048,7 +4072,9 @@ class AnthropicAgent(AgentRuntime):
                 self._abort_pending.done = True
         if self.early_answer_completion and not self._parent_agent_uuid:
             from .finalization import finalize_answer
-            return await finalize_answer(self, response_message, stop_reason)
+            result = await finalize_answer(self, response_message, stop_reason)
+            await provider_end_run(self.provider)
+            return result
         now = datetime.now(timezone.utc).isoformat()
 
         # Flush exported files from sandbox (returns [] if no sandbox attached).
@@ -4180,6 +4206,10 @@ class AnthropicAgent(AgentRuntime):
                 )
             )
 
+        # The run is over: a provider that holds something per run lets it go
+        # (ClaudeCodeProvider ends the run's CLI process). After RunCompleted,
+        # so ending a process never delays the terminal frame. A no-op for most.
+        await provider_end_run(self.provider)
         return result
 
     @staticmethod

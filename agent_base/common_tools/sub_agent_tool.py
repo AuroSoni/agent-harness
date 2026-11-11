@@ -305,12 +305,20 @@ Args:
         from agent_base.providers.anthropic.anthropic_agent import AnthropicAgent
         from agent_base.providers.anthropic.provider import AnthropicProvider
 
-        # The retry budget rides the provider VALUE, not ctor scalars.
+        from agent_base.core.provider import provider_for_child
+
+        # A child follows its parent's transport when the parent's provider
+        # says how (ClaudeCodeProvider: a child runs on Claude Code too, not
+        # the API key). Otherwise the default: the retry budget rides the
+        # provider VALUE, not ctor scalars.
+        parent = parent_context.parent_agent
         provider_value = (
-            AnthropicProvider(retry_policy=spec.retry_policy)
-            if spec.retry_policy is not None
+            provider_for_child(getattr(parent, "provider", None), spec)
+            if parent is not None
             else None
         )
+        if provider_value is None and spec.retry_policy is not None:
+            provider_value = AnthropicProvider(retry_policy=spec.retry_policy)
         child = AnthropicAgent(
             system_prompt=spec.system_prompt,
             description=spec.description,

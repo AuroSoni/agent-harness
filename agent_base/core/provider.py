@@ -330,8 +330,103 @@ class Provider(Protocol):
         return []
 
 
+# ---------------------------------------------------------------------------
+# The optional lifecycle — for a provider that holds something per run
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class ProviderLifecycle(Protocol):
+    """Optional members of a provider that holds something across the steps of
+    a run, such as a CLI process (``ClaudeCodeProvider``).
+
+    Kept apart from :class:`Provider`: a ``runtime_checkable`` protocol checks
+    every member it declares, so adding these to ``Provider`` would make a
+    structural provider without them stop satisfying it. The runtime calls them
+    through the ``provider_*`` helpers below, which treat a missing member as
+    a no-op (or as "use the provider itself").
+    """
+
+    async def end_run(self) -> None:
+        """The root run ended: a final reply, an abort (a steer included), the
+        step limit, or an error. Not called at a pause."""
+        ...
+
+    async def aclose(self) -> None:
+        """The session ends (eviction, shutdown): release everything."""
+        ...
+
+    def side_calls(self) -> "Provider":
+        """The provider for calls outside the session's conversation, such as
+        compaction's summary call."""
+        ...
+
+    async def history_replaced(self, messages: list["Message"]) -> None:
+        """Compaction rewrote the history; ``messages`` is the new one."""
+        ...
+
+    def for_child(self, spec: Any) -> "Provider | None":
+        """The provider for a sub-agent built from ``spec``; None keeps the
+        default (an ``AnthropicProvider``)."""
+        ...
+
+
+async def provider_end_run(provider: Any) -> None:
+    """Call ``provider.end_run()`` if it has one. Never raises: a run's end
+    must not fail on its provider's cleanup."""
+    fn = getattr(provider, "end_run", None)
+    if fn is None:
+        return
+    try:
+        await fn()
+    except Exception:  # noqa: BLE001
+        _lifecycle_logger().warning("provider_end_run_failed", exc_info=True)
+
+
+async def provider_aclose(provider: Any) -> None:
+    """Call ``provider.aclose()`` if it has one. Never raises."""
+    fn = getattr(provider, "aclose", None)
+    if fn is None:
+        return
+    try:
+        await fn()
+    except Exception:  # noqa: BLE001
+        _lifecycle_logger().warning("provider_aclose_failed", exc_info=True)
+
+
+def provider_side_calls(provider: Any) -> Any:
+    """``provider.side_calls()``, or the provider itself when it has none."""
+    fn = getattr(provider, "side_calls", None)
+    return fn() if fn is not None else provider
+
+
+async def provider_history_replaced(provider: Any, messages: list["Message"]) -> None:
+    """Call ``provider.history_replaced(messages)`` if it has one. Never raises:
+    a provider that misses it falls back on its own at the next step."""
+    fn = getattr(provider, "history_replaced", None)
+    if fn is None:
+        return
+    try:
+        await fn(messages)
+    except Exception:  # noqa: BLE001
+        _lifecycle_logger().warning("provider_history_replaced_failed", exc_info=True)
+
+
+def provider_for_child(provider: Any, spec: Any) -> Any:
+    """``provider.for_child(spec)``, or None (keep the default) when it has none."""
+    fn = getattr(provider, "for_child", None)
+    return fn(spec) if fn is not None else None
+
+
+def _lifecycle_logger() -> Any:
+    from agent_base.logging import get_logger
+
+    return get_logger(__name__)
+
+
 __all__ = [
     "Provider",
+    "ProviderLifecycle",
     "ProviderTurn",
     "ProviderError",
     "RetryPolicy",
@@ -339,4 +434,9 @@ __all__ = [
     "TokenEstimator",
     "ToolCallInfo",
     "make_llm_config",
+    "provider_aclose",
+    "provider_end_run",
+    "provider_for_child",
+    "provider_history_replaced",
+    "provider_side_calls",
 ]

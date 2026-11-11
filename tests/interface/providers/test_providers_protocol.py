@@ -321,3 +321,79 @@ async def test_fake_generate_stream_returns_provider_turn():
         llm_config=LLMConfig(), model="fake/model-1", sink=sink,
     )
     assert isinstance(turn, ProviderTurn)
+
+
+# --------------------------------------------------------------------------- #
+# The optional lifecycle (ProviderLifecycle) and the runtime's helpers          #
+# --------------------------------------------------------------------------- #
+
+from agent_base.core.provider import (  # noqa: E402
+    ProviderLifecycle,
+    provider_aclose,
+    provider_end_run,
+    provider_for_child,
+    provider_history_replaced,
+    provider_side_calls,
+)
+
+
+class _LifecycleProvider(FakeProvider):
+    """A provider that holds something per run: it records each lifecycle call."""
+
+    def __init__(self):
+        self.calls = []
+        self.side = FakeProvider()
+
+    async def end_run(self):
+        self.calls.append("end_run")
+
+    async def aclose(self):
+        self.calls.append("aclose")
+
+    def side_calls(self):
+        return self.side
+
+    async def history_replaced(self, messages):
+        self.calls.append(("history_replaced", len(messages)))
+
+    def for_child(self, spec):
+        return FakeProvider()
+
+
+def test_the_lifecycle_is_a_separate_optional_protocol():
+    # A structural provider without the lifecycle still satisfies Provider.
+    assert isinstance(FakeProvider(), Provider)
+    assert not isinstance(FakeProvider(), ProviderLifecycle)
+    assert isinstance(_LifecycleProvider(), Provider)
+    assert isinstance(_LifecycleProvider(), ProviderLifecycle)
+
+
+async def test_the_helpers_call_the_lifecycle_when_present():
+    p = _LifecycleProvider()
+    await provider_end_run(p)
+    await provider_history_replaced(p, [Message.user("summary")])
+    await provider_aclose(p)
+    assert p.calls == ["end_run", ("history_replaced", 1), "aclose"]
+    assert provider_side_calls(p) is p.side
+    assert isinstance(provider_for_child(p, object()), FakeProvider)
+
+
+async def test_the_helpers_default_without_the_lifecycle():
+    p = FakeProvider()
+    await provider_end_run(p)
+    await provider_aclose(p)
+    await provider_history_replaced(p, [])
+    assert provider_side_calls(p) is p
+    assert provider_for_child(p, object()) is None
+
+
+async def test_end_run_and_aclose_never_raise():
+    class Broken(FakeProvider):
+        async def end_run(self):
+            raise RuntimeError("boom")
+
+        async def aclose(self):
+            raise RuntimeError("boom")
+
+    await provider_end_run(Broken())
+    await provider_aclose(Broken())
