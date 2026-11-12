@@ -74,7 +74,10 @@ class ClaudeCodeConfig:
             ``server_tools`` name ``web_search`` / ``web_fetch``. ``True``: both on. ``False``: both off.
         url_guard: Decides which URLs ``WebFetch`` may open; None is the library's public-address guard.
         env_blank_patterns: Environment variables whose names match are blanked in the CLI's environment.
-        max_processes: Claude Code processes the provider's slots allow at once.
+        max_processes: Claude Code processes the provider's slots allow at once, for the sessions' own runs.
+        max_child_processes: Claude Code processes sub-agents may run at once, per level: children draw from a
+            count of their own, grandchildren from the next one, so a parent waiting on its children never takes
+            their room. Shared by every session's sub-agents at that level.
         slot_wait_s: How long a run's first model call waits for a free slot.
         max_buffer_bytes: The SDK's message buffer (its 1 MB default overflows on a large result or an image).
         max_turns: Claude Code's own turn limit, kept above the library's step limit so the library's holds.
@@ -89,6 +92,7 @@ class ClaudeCodeConfig:
     url_guard: "UrlGuard | None" = None
     env_blank_patterns: tuple[str, ...] = DEFAULT_SECRET_PATTERNS
     max_processes: int = 4
+    max_child_processes: int = 4
     slot_wait_s: float = 15.0
     max_buffer_bytes: int = 64 << 20
     max_turns: int = 1000
@@ -104,6 +108,8 @@ class ClaudeCodeConfig:
             raise ValueError("server_name must be letters, digits, '_' or '-'")
         if self.max_processes < 1:
             raise ValueError("max_processes must be at least 1")
+        if self.max_child_processes < 1:
+            raise ValueError("max_child_processes must be at least 1")
 
     @property
     def tool_prefix(self) -> str:

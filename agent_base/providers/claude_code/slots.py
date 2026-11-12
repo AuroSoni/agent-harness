@@ -9,6 +9,11 @@ that, its step is one Claude Code can't carry, and ``ClaudeCodeConfig.fallback``
 
 The count is per :class:`ProcessSlots` object. ``DEFAULT_SLOTS`` is shared by every provider in the process that
 names no slots of its own, which suits a host running one worker.
+
+Sub-agents draw from a count of their own, one per level: a session's children from ``slots.children``
+(``ClaudeCodeConfig.max_child_processes``), their children from ``slots.children.children``, and so on. A parent
+keeps its slot while it waits for its children, since its process stays open for their results; with one count
+for all, parents could hold every slot and leave their children none.
 """
 
 from __future__ import annotations
@@ -22,10 +27,24 @@ class ProcessSlots:
     def __init__(self) -> None:
         self._held: set = set()
         self._waiters: list[asyncio.Future] = []
+        self._children: ProcessSlots | None = None
 
     @property
     def in_use(self) -> int:
+        """Slots held at this level."""
         return len(self._held)
+
+    @property
+    def children(self) -> "ProcessSlots":
+        """The count the sub-agents of this level's runs draw from (made on first use, then always the same)."""
+        if self._children is None:
+            self._children = ProcessSlots()
+        return self._children
+
+    @property
+    def total_in_use(self) -> int:
+        """Slots held at this level and every level below it."""
+        return self.in_use + (self._children.total_in_use if self._children is not None else 0)
 
     def holds(self, holder: object) -> bool:
         return holder in self._held

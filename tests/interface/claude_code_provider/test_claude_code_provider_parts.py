@@ -25,13 +25,15 @@ def test_config_defaults_and_validation(tmp_path):
     cfg = ClaudeCodeConfig(workdir=tmp_path / "cc")
     assert cfg.workdir == (tmp_path / "cc").resolve() and cfg.workdir.is_absolute()
     assert cfg.server_name == "agent_base" and cfg.tool_prefix == "mcp__agent_base__"
-    assert cfg.fallback == "direct" and cfg.max_processes == 4
+    assert cfg.fallback == "direct" and cfg.max_processes == 4 and cfg.max_child_processes == 4
     with pytest.raises(ValueError):
         ClaudeCodeConfig(workdir=tmp_path, fallback="sometimes")
     with pytest.raises(ValueError):
         ClaudeCodeConfig(workdir=tmp_path, server_name="has spaces")
     with pytest.raises(ValueError):
         ClaudeCodeConfig(workdir=tmp_path, max_processes=0)
+    with pytest.raises(ValueError):
+        ClaudeCodeConfig(workdir=tmp_path, max_child_processes=0)
 
 
 def test_the_clis_environment_carries_no_secret_but_the_login(monkeypatch):
@@ -101,6 +103,22 @@ async def test_process_slots_cap_how_many_processes_run():
     await asyncio.sleep(0.01)
     slots.release(a)
     assert await waiting and slots.in_use == 1
+
+
+async def test_sub_agents_draw_from_a_count_of_their_own_per_level():
+    """A full count of runs leaves the children's untouched: children draw from ``slots.children``, grandchildren
+    from ``slots.children.children``. ``total_in_use`` counts a level and every level below it."""
+    slots, parent, child, grandchild = ProcessSlots(), object(), object(), object()
+    assert await slots.acquire(parent, limit=1, wait_s=0)
+    assert not await slots.acquire(child, limit=1, wait_s=0)
+    assert await slots.children.acquire(child, limit=1, wait_s=0)
+    assert await slots.children.children.acquire(grandchild, limit=1, wait_s=0)
+    assert slots.children is slots.children and slots.in_use == 1 and slots.children.in_use == 1
+    assert slots.total_in_use == 3 and slots.children.total_in_use == 2
+    slots.children.release(child)
+    slots.children.children.release(grandchild)
+    slots.release(parent)
+    assert slots.total_in_use == 0
 
 
 def test_the_plans_meter_holds_a_warning_until_its_window_resets():

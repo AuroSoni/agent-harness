@@ -97,7 +97,7 @@ async def test_end_run_records_the_ledger_points_and_closes_the_process(tmp_path
     await h.provider.end_run()
     assert h.last.closed and h.provider._client is None
     assert len(h.ledger._points) == 1
-    assert h.config.slots.in_use == 0
+    assert h.config.slots.total_in_use == 0
 
 
 async def test_aclose_resolves_waiting_handlers_as_stopped(tmp_path):

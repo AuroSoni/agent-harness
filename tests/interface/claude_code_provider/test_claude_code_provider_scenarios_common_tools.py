@@ -115,5 +115,5 @@ async def test_every_common_tool_runs_through_claude_code(tmp_path):
     # The sub-agent ran on Claude Code, in a process of its own, and its tool call came back through it.
     (child_notes,) = await _results(child)
     assert "beta needle" in _text(child_notes)
-    assert parent.closed and child.closed and h.config.slots.in_use == 0
+    assert parent.closed and child.closed and h.config.slots.total_in_use == 0
     assert h.provider.processes_started == 1  # the whole run on one process

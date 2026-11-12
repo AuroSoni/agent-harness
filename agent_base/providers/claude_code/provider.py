@@ -16,7 +16,8 @@ settles; it calls ``generate_stream`` once per step with the full history, as it
   tool round's result for its call (matched by the model's tool-call id, which Claude Code sends in each MCP
   call's ``_meta``), so the model gets one proper tool result per call; a paused run's handlers keep waiting.
 - The process closes when the run ends (``end_run``: a final reply, an abort or a steer, the step limit, an
-  error) and when the session ends (``aclose``). At most ``max_processes`` run at once (``slots.py``).
+  error) and when the session ends (``aclose``). At most ``max_processes`` runs, and ``max_child_processes``
+  sub-agents per level, hold one at once (``slots.py``).
 - Claude Code's own ``WebSearch`` and ``WebFetch`` stand in for Anthropic's web server tools, framed as server
   tools and held to their ``max_uses`` per step; every ``WebFetch`` URL passes the URL guard first.
 
@@ -157,7 +158,8 @@ class ClaudeCodeProvider:
         config: How the CLI processes run (:class:`ClaudeCodeConfig`).
         store: The transcript store; default an in-memory one (lost with the process).
         ledger: The ledger; default an in-memory one.
-        on_fallback: Called with the reason when the session moves to the direct client.
+        on_fallback: Called with the reason when the session moves to the direct client. Its sub-agents call it
+            too, with the reason prefixed ``sub-agent (level N): ``.
         client_factory: Builds the SDK client from its options (tests pass a scripted stand-in).
     """
 
@@ -183,6 +185,7 @@ class ClaudeCodeProvider:
         self.fallback_reason: str | None = None
         self.processes_started = 0
         self._slots = config.slots or DEFAULT_SLOTS
+        self._level = 0  # 0: a session's own run; 1: its sub-agent; 2: theirs. Each level has its own count
         self._meter = config.meter or DEFAULT_METER
         self._warned: set[str] = set()
         self._side: ClaudeCodeProvider | None = None
@@ -285,8 +288,8 @@ class ClaudeCodeProvider:
 
     def for_child(self, spec: Any) -> Any:
         """A sub-agent follows its parent's transport: on Claude Code, a provider of its own (its own process),
-        sharing the parent's store, ledger, slots and meter; once the parent is on the direct client, the direct
-        client."""
+        sharing the parent's store, ledger and meter, and drawing from the next level's slot count; once the parent
+        is on the direct client, the direct client."""
         retry = getattr(spec, "retry_policy", None)
         direct = self.inner
         if retry is not None and retry != self.inner.retry_policy:
@@ -294,8 +297,10 @@ class ClaudeCodeProvider:
             direct.retry_policy = retry
         if self.fallen_back:
             return direct
-        return ClaudeCodeProvider(direct, config=self.config, store=self.store, ledger=self.ledger,
-                                  client_factory=self._client_factory)
+        child = ClaudeCodeProvider(direct, config=self.config, store=self.store, ledger=self.ledger,
+                                   on_fallback=self.on_fallback, client_factory=self._client_factory)
+        child._slots, child._level = self._slots.children, self._level + 1
+        return child
 
     # ── the Provider protocol ──────────────────────────────────────────────
     async def generate(self, **kw: Any) -> Any:
@@ -362,8 +367,8 @@ class ClaudeCodeProvider:
         logger.warning("claude_code_fallback", agent_uuid=self._agent_uuid, reason=reason[:300])
         await self.close()
         if self.on_fallback is not None:
-            with contextlib.suppress(Exception):
-                self.on_fallback(reason)
+            with contextlib.suppress(Exception):  # a sub-agent's says so, since the callback is its parent's
+                self.on_fallback(f"sub-agent (level {self._level}): {reason}" if self._level else reason)
 
     async def close(self, *, keep_slot: bool = False) -> None:
         """End the Claude Code process, if one is open. Waiting tool handlers get "stopped". The slot goes back
@@ -522,9 +527,12 @@ class ClaudeCodeProvider:
         if holder is not self and holder._client is not None:
             await holder._await_ledger()
             await holder.close(keep_slot=True)
-        if not await self._slots.acquire(holder, limit=cfg.max_processes, wait_s=cfg.slot_wait_s):
-            logger.warning("claude_code_processes_full", limit=cfg.max_processes, wait_s=cfg.slot_wait_s)
-            raise _Fallback(f"all {cfg.max_processes} Claude Code processes were in use for {cfg.slot_wait_s:g} s")
+        # The holder's count: a sub-agent's run, and its summary calls, draw from its level's.
+        limit = cfg.max_child_processes if holder._level else cfg.max_processes
+        if not await holder._slots.acquire(holder, limit=limit, wait_s=cfg.slot_wait_s):
+            logger.warning("claude_code_processes_full", limit=limit, level=holder._level, wait_s=cfg.slot_wait_s)
+            kind = "sub-agent " if holder._level else ""
+            raise _Fallback(f"all {limit} Claude Code {kind}processes were in use for {cfg.slot_wait_s:g} s")
         self._last_error = None
         try:
             (cfg.workdir / "prompts").mkdir(parents=True, exist_ok=True)

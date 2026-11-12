@@ -340,7 +340,7 @@ async def _no_leaks(h: Harness, *providers: Any) -> None:
     for f in h.made:
         assert f.closed, "a fake process was never closed"
         await asyncio.wait_for(asyncio.gather(*f.tool_calls, return_exceptions=True), 5)  # every handler returned
-    assert h.config.slots.in_use == 0, "a process slot is still held"
+    assert h.config.slots.total_in_use == 0, "a process slot is still held"
 
 
 def _cli_result(call_result: Any) -> tuple[str, bool]:

@@ -314,7 +314,7 @@ async def _no_leaks(h: LifeHarness, *providers) -> None:
     """Every process the harness started is closed, no slot is held, and no task is left running."""
     open_ = [i for i, f in enumerate(h.made) if not f.closed]
     assert not open_, f"processes still open: {open_}"
-    assert h.config.slots.in_use == 0, f"{h.config.slots.in_use} slot(s) still held"
+    assert h.config.slots.total_in_use == 0, f"{h.config.slots.total_in_use} slot(s) still held"
     for p in providers:
         assert p._client is None and p._reader is None
     await _settle(lambda: all(t.done() for f in h.made for t in [*f.tool_calls, *f.drips]),
@@ -377,7 +377,7 @@ async def test_a_long_conversation_keeps_one_process_per_run_and_resumes_every_r
         fake = h.made[i]
         assert len(h.made) == i + 1, "one process per run"
         assert fake.closed, f"run {i + 1}'s process outlived its run"
-        assert h.config.slots.in_use == 0
+        assert h.config.slots.total_in_use == 0
         assert fake.sent == [[{"type": "text", "text": prompt}]], "only the new prompt, nothing as text"
         if i:
             prev = h.made[i - 1]
@@ -488,7 +488,7 @@ async def test_a_cold_resume_after_the_session_was_lost_goes_in_as_text_and_stay
     # process starts with an empty await table.
     await agent.aclose()
     first = h.made[0]
-    assert first.closed and h.config.slots.in_use == 0
+    assert first.closed and h.config.slots.total_in_use == 0
     stopped, = [_mcp(r) for r in await asyncio.wait_for(first.tool_calls[0], 5)]
     assert stopped[1] is True and "stopped" in stopped[0][0].text
     for task in (agent._actor_task, getattr(agent, "_rearmed_resume_task", None)):
@@ -565,7 +565,7 @@ async def test_an_abort_mid_stream_then_the_next_run_gets_the_cut_reply_as_text_
     frames = await _read(reader)
     assert _kind(frames[-1]) == "custom:aborted" and frames[-1].body.data["phase"] == "streaming"
     cut_process = h.made[1]
-    assert cut_process.closed and h.config.slots.in_use == 0
+    assert cut_process.closed and h.config.slots.total_in_use == 0
 
     reader = agent.attach_stream()
     await manager.submit("s-abort-stream", UserMessage(message=Message.user("Use only a.csv.")))
@@ -596,7 +596,7 @@ async def test_an_abort_during_a_slow_tool_then_the_next_run_gets_the_results_as
     frames = await _read(reader)
     assert _kind(frames[-1]) == "custom:aborted" and frames[-1].body.data["phase"] == "executing_tools"
     crunch = h.made[1]
-    assert crunch.closed and h.config.slots.in_use == 0
+    assert crunch.closed and h.config.slots.total_in_use == 0
     stopped, = [_mcp(r) for r in await asyncio.wait_for(crunch.tool_calls[0], 5)]
     assert stopped[1] is True  # the CLI's handler call did not outlive the run
 
@@ -628,7 +628,7 @@ async def test_an_abort_while_paused_then_the_next_run_resumes(tmp_path):
     ack = await asyncio.wait_for(manager.submit("s-abort-pause", Abort()), 10)
     assert ack.disposition is Disposition.CANCELLING
     await asyncio.wait_for(agent.wait_idle(), 10)
-    assert h.made[0].closed and h.config.slots.in_use == 0
+    assert h.made[0].closed and h.config.slots.total_in_use == 0
     late = await manager.submit("s-abort-pause", ToolReply(cid=pause.correlation_id, results=[
         ToolResultContent(tool_name="user_confirm", tool_id=pause.body.tools[0].tool_use_id, tool_result="yes")]))
     assert late.disposition is Disposition.IGNORED_STALE
@@ -822,7 +822,7 @@ async def test_the_step_limit_ends_the_runs_process_and_the_next_run_resumes(tmp
     result = await asyncio.wait_for(agent.run("What is (2 + 3) * 10?"), 10)
     assert result.stop_reason == "max_steps"
     first = h.made[0]
-    assert first.closed and h.config.slots.in_use == 0 and h.provider._client is None
+    assert first.closed and h.config.slots.total_in_use == 0 and h.provider._client is None
     assert first.script == [[text("never reached")]]  # no model call after the run ended
     _, stopped = [await asyncio.wait_for(t, 5) for t in first.tool_calls]
     assert _mcp(stopped[0])[1] is True  # the second round's handler was let go
@@ -951,7 +951,7 @@ async def test_aborting_a_parent_ends_its_sub_agents_process(tmp_path):
     await asyncio.wait_for(asyncio.gather(run, return_exceptions=True), 10)
     parent, child = h.made
     assert parent.closed
-    assert child.closed and h.config.slots.in_use == 0, (
+    assert child.closed and h.config.slots.total_in_use == 0, (
         f"the sub-agent's Claude Code process outlived the abort (open: {not child.closed}, "
-        f"slots held: {h.config.slots.in_use})")
+        f"slots held: {h.config.slots.total_in_use})")
     await _no_leaks(h, h.provider)

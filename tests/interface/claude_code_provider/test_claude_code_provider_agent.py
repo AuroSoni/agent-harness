@@ -176,7 +176,7 @@ async def test_an_overflow_compacts_and_retries_on_a_fresh_session(tmp_path):
     assert fresh.opts.resume is None and fresh.sent[0][0]["text"].startswith("This conversation continues")
     assert fresh.sent[0][-1] == {"type": "text", "text": "Hi again."}
     assert result.final_answer == "Hello again." and not h.provider.fallen_back
-    assert h.peak_open == 1 and h.config.slots.in_use == 0
+    assert h.peak_open == 1 and h.config.slots.total_in_use == 0
 
 
 async def test_an_overflow_without_compaction_fails_the_run_and_frees_the_slot(tmp_path):
@@ -185,7 +185,7 @@ async def test_an_overflow_without_compaction_fails_the_run_and_frees_the_slot(t
     with pytest.raises(Exception) as err:
         await asyncio.wait_for(agent.run("Hi."), 10)
     assert getattr(err.value, "code", None) is ErrorCode.CONTEXT_OVERFLOW
-    assert not h.provider.fallen_back and h.config.slots.in_use == 0
+    assert not h.provider.fallen_back and h.config.slots.total_in_use == 0
 
 
 async def test_compaction_mid_run_ends_the_runs_process_and_summarises_on_its_slot(tmp_path):
@@ -217,7 +217,7 @@ async def test_compaction_mid_run_ends_the_runs_process_and_summarises_on_its_sl
     assert texts[0].startswith("This conversation continues") and texts[-1] == "Continue from here."
     assert any('name="add"' in t for t in texts) and "5" in texts
     assert result.final_answer == "2 + 3 = 5." and not h.provider.fallen_back
-    assert h.config.slots.in_use == 0
+    assert h.config.slots.total_in_use == 0
 
 
 async def test_a_failed_summary_call_falls_back_for_that_call_only(tmp_path):

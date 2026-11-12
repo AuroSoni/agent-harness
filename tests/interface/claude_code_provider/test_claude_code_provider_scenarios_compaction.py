@@ -41,7 +41,7 @@ from agent_base.core.provider import ProviderTurn
 from agent_base.core.types import ToolResultContent, ToolUseContent
 from agent_base.providers.anthropic import AnthropicAgent, AnthropicLLMConfig
 from agent_base.providers.anthropic.compaction import CompactionConfig
-from agent_base.providers.claude_code import ProcessSlots
+from agent_base.providers.claude_code import ClaudeCodeProvider, ProcessSlots
 from agent_base.storage import create_adapters
 from agent_base.tools import tool
 
@@ -218,7 +218,7 @@ async def _assert_no_leaks(h: Scenario, *providers: Any, baseline: set | None = 
     """Every fake closed, no slot held, no handler waiting, no ledger task, no stray task."""
     for _ in range(10):
         await asyncio.sleep(0)
-    assert h.config.slots.in_use == 0, f"{h.config.slots.in_use} slot(s) still held"
+    assert h.config.slots.total_in_use == 0, f"{h.config.slots.total_in_use} slot(s) still held"
     open_fakes = [i for i, f in enumerate(h.made) if not f.closed]
     assert not open_fakes, f"Claude Code processes left open: {open_fakes}"
     for p in providers:
@@ -558,9 +558,11 @@ async def test_a_child_runs_on_claude_code_beside_its_waiting_parent(tmp_path):
 
 
 async def test_a_resumed_child_compacts_on_its_own_slot(tmp_path):
+    """The child's summary call runs on the child's slot, in the sub-agents' count: the runs' only slot is the
+    parent's, and the summary never asks for it."""
     base = set(asyncio.all_tasks())
     adapters = _fs_adapters()
-    h = Scenario(tmp_path, max_processes=2, slot_wait_s=0.5, fallback="off")
+    h = Scenario(tmp_path, max_processes=1, max_child_processes=1, slot_wait_s=0.5, fallback="off")
     child_uuids: list[str] = []
 
     async def ended(ctx):
@@ -645,11 +647,26 @@ async def _child_results(h: Scenario) -> list:
     return [r.root for r in await h.made_for("Delegate three.")[0].tool_calls[0]]
 
 
-async def test_three_children_over_two_slots_wait_their_turn(tmp_path):
-    """The parent holds one of the two slots while it waits for its children, so they run one at a time through
-    the other: each waits for the one before it to end. With a wait long enough, all run on Claude Code."""
+async def test_three_children_run_at_once_beside_a_parent_holding_the_only_slot(tmp_path):
+    """The parent holds the runs' only slot while it waits; its children draw from their own count, so all three
+    run at once on Claude Code."""
     base = set(asyncio.all_tasks())
-    h, agent, children = _three_children(tmp_path, max_processes=2, slot_wait_s=5, fallback="off")
+    h, agent, children = _three_children(tmp_path, max_processes=1, slot_wait_s=0.5, fallback="off")
+    result = await _run(agent, "Delegate three.")
+
+    assert result.final_answer == "All three answered."
+    assert [r.content[0].text for r in await _child_results(h)] == ["2."] * 3
+    assert len(children) == 3 and all(c.name == "claude_code" and c.processes_started == 1 for c in children)
+    assert h.peak_open == 4 and h.config.slots.children.in_use == 0
+    await _assert_no_leaks(h, h.provider, *children, baseline=base)
+
+
+async def test_three_children_over_one_child_slot_wait_their_turn(tmp_path):
+    """``max_child_processes=1``: the children run one at a time, each waiting for the one before it to end. With a
+    wait long enough, all run on Claude Code."""
+    base = set(asyncio.all_tasks())
+    h, agent, children = _three_children(tmp_path, max_processes=1, max_child_processes=1, slot_wait_s=5,
+                                          fallback="off")
     loop = asyncio.get_running_loop()
     started = loop.time()
     result = await _run(agent, "Delegate three.")
@@ -662,50 +679,84 @@ async def test_three_children_over_two_slots_wait_their_turn(tmp_path):
     await _assert_no_leaks(h, h.provider, *children, baseline=base)
 
 
-async def test_three_children_over_two_slots_with_a_short_wait_and_the_fallback_off(tmp_path):
-    """The two children that find no slot within ``slot_wait_s`` fail; the parent goes on with their errors."""
+async def test_three_children_over_one_child_slot_with_a_short_wait_and_the_fallback_off(tmp_path):
+    """The two children that find no slot of the sub-agents' within ``slot_wait_s`` fail; the parent goes on with
+    their errors."""
     base = set(asyncio.all_tasks())
-    h, agent, children = _three_children(tmp_path, max_processes=2, slot_wait_s=0.1, fallback="off")
+    h, agent, children = _three_children(tmp_path, max_processes=1, max_child_processes=1, slot_wait_s=0.1,
+                                          fallback="off")
     result = await _run(agent, "Delegate three.")
 
     results = await _child_results(h)
     assert result.final_answer == "All three answered."
     assert sorted(r.isError for r in results) == [False, True, True]
     failed = [r.content[0].text for r in results if r.isError]
-    assert all("processes were in use" in t for t in failed), failed
+    assert all("all 1 Claude Code sub-agent processes were in use" in t for t in failed), failed
     assert len(h.made_for("CHILD-")) == 1 and h.peak_open == 2
     assert not any(c.fallen_back for c in children)
     await _assert_no_leaks(h, h.provider, *children, baseline=base)
 
 
-async def test_three_children_over_two_slots_with_a_short_wait_fall_back_to_the_direct_client(tmp_path):
+async def test_three_children_over_one_child_slot_with_a_short_wait_fall_back_to_the_direct_client(tmp_path):
     base = set(asyncio.all_tasks())
-    h, agent, children = _three_children(tmp_path, max_processes=2, slot_wait_s=0.1)
+    h, agent, children = _three_children(tmp_path, max_processes=1, max_child_processes=1, slot_wait_s=0.1)
+    reasons: list[str] = []
+    h.provider.on_fallback = reasons.append  # the host's callback hears of its sub-agents' fallbacks too
     h.provider.inner.generate = AsyncMock(return_value=_direct_turn("2 (direct)."))
     result = await _run(agent, "Delegate three.")
 
     texts = sorted(r.content[0].text for r in await _child_results(h))
     assert result.final_answer == "All three answered." and texts == ["2 (direct).", "2 (direct).", "2."]
     assert sorted(c.name for c in children) == ["anthropic", "anthropic", "claude_code"]
-    assert all("processes were in use" in c.fallback_reason for c in children if c.fallen_back)
+    assert all("sub-agent processes were in use" in c.fallback_reason for c in children if c.fallen_back)
+    assert len(reasons) == 2 and all(r.startswith("sub-agent (level 1): all 1 Claude Code sub-agent processes")
+                                     for r in reasons), reasons
     assert not h.provider.fallen_back and h.provider.inner.generate.await_count == 2
     await _assert_no_leaks(h, h.provider, *children, baseline=base)
 
 
-async def test_with_one_slot_a_child_never_gets_one_while_its_parent_waits(tmp_path):
-    """``max_processes=1``: the parent's run holds the only slot while it waits for its child, so the child waits
-    ``slot_wait_s`` and fails (fallback off). Not a deadlock: the wait ends; but no child can run on Claude Code."""
+async def test_with_one_slot_and_one_child_slot_a_child_runs_while_its_parent_waits(tmp_path):
+    """``max_processes=1`` and ``max_child_processes=1``: the parent's run holds the runs' only slot while it waits;
+    the child takes the sub-agents' only slot and runs on Claude Code."""
     base = set(asyncio.all_tasks())
-    h = Scenario(tmp_path, max_processes=1, slot_wait_s=0.3, fallback="off")
-    h.route("Delegate it.", [[spawn("CHILD-D: add 1 and 1")], [text("No child.")]])
+    h = Scenario(tmp_path, max_processes=1, max_child_processes=1, slot_wait_s=0.3, fallback="off")
+    h.route("Delegate it.", [[spawn("CHILD-D: add 1 and 1")], [text("The child says 2.")]])
+    h.route("CHILD-D", [[text("2.")]])
     agent = _agent(h.provider, subagents={"helper": _helper()})
     children = _spy_children(h.provider)
     result = await _run(agent, "Delegate it.")
     child_result = (await h.made_for("Delegate it.")[0].tool_calls[0])[0].root
-    assert result.final_answer == "No child."
-    assert child_result.isError and "all 1 Claude Code processes were in use" in child_result.content[0].text
-    assert h.made_for("CHILD-D") == []
+    assert result.final_answer == "The child says 2."
+    assert not child_result.isError and child_result.content[0].text == "2."
+    assert len(h.made_for("CHILD-D")) == 1 and children[0].name == "claude_code" and h.peak_open == 2
     await _assert_no_leaks(h, h.provider, *children, baseline=base)
+
+
+async def test_a_grandchild_draws_from_the_next_levels_count(tmp_path, monkeypatch):
+    """One slot at each level: the parent holds the runs' slot, the child the sub-agents' slot while it waits for
+    its own child, and the grandchild takes the next level's. All three run on Claude Code."""
+    base = set(asyncio.all_tasks())
+    made: list = []
+    original = ClaudeCodeProvider.for_child
+
+    def spy(self: Any, spec: Any) -> Any:
+        child = original(self, spec)
+        made.append(child)
+        return child
+
+    monkeypatch.setattr(ClaudeCodeProvider, "for_child", spy)
+    h = Scenario(tmp_path, max_processes=1, max_child_processes=1, slot_wait_s=0.3, fallback="off")
+    h.route("Delegate deep.", [[spawn("CHILD-G: ask your helper")], [text("The chain says 2.")]])
+    h.route("CHILD-G", [[spawn("GRANDCHILD: add 1 and 1")], [text("My helper says 2.")]])
+    h.route("GRANDCHILD", [[call("add", a=1, b=1)], [text("2.")]])
+    agent = _agent(h.provider, subagents={"helper": _helper(subagents={"helper": _helper()})})
+    result = await _run(agent, "Delegate deep.")
+
+    assert result.final_answer == "The chain says 2."
+    assert [c._level for c in made] == [1, 2] and all(c.name == "claude_code" for c in made)
+    assert made[1]._slots is h.config.slots.children.children
+    assert len(h.made_for("GRANDCHILD")) == 1 and h.peak_open == 3
+    await _assert_no_leaks(h, h.provider, *made, baseline=base)
 
 
 # ── 6. many sessions over one ProcessSlots ───────────────────────────────────
@@ -785,10 +836,9 @@ async def test_six_sessions_that_compact_over_two_slots(tmp_path):
     await _assert_no_leaks(h, *(a.provider for a in agents), baseline=base)
 
 
-async def test_two_sessions_each_waiting_on_a_child_over_two_slots_starve_their_children(tmp_path):
-    """Hold and wait across sessions: each parent holds a slot while it waits for its child, and both slots are
-    the parents'. Neither child can start; each waits ``slot_wait_s`` and fails (fallback off) or moves to the API
-    key (fallback direct). Documents the behaviour."""
+async def test_two_sessions_each_waiting_on_a_child_over_two_slots_both_children_run(tmp_path):
+    """Each parent holds one of the runs' two slots while it waits for its child, so the runs' count is full; the
+    children draw from the sub-agents' count and both run on Claude Code."""
     base = set(asyncio.all_tasks())
     h = Scenario(tmp_path, max_processes=2, slot_wait_s=0.5, fallback="off")
     both_parents_open = lambda: sum(f.prompt.startswith("P") and not f.closed for f in h.made) == 2  # noqa: E731
@@ -799,9 +849,10 @@ async def test_two_sessions_each_waiting_on_a_child_over_two_slots_starve_their_
 
     results = await asyncio.wait_for(asyncio.gather(*(a.run(f"P{i}.") for i, a in enumerate(agents))), 15)
     assert [r.final_answer for r in results] == ["Parent done."] * 2
-    errors = [(await f.tool_calls[0])[0].root for f in h.made if f.prompt.startswith("P")]
-    assert len(errors) == 2 and all(e.isError and "processes were in use" in e.content[0].text for e in errors)
-    assert not [f for f in h.made if f.prompt.startswith("CHILD")]  # no child ever ran on Claude Code
+    answers = [(await f.tool_calls[0])[0].root for f in h.made if f.prompt.startswith("P")]
+    assert len(answers) == 2 and all(not a.isError and a.content[0].text == "child answer" for a in answers)
+    assert len([f for f in h.made if f.prompt.startswith("CHILD")]) == 2 and h.peak_open == 4
+    assert all(c.name == "claude_code" for cs in children for c in cs)
     await _assert_no_leaks(h, *(a.provider for a in agents), *(c for cs in children for c in cs), baseline=base)
 
 
@@ -829,7 +880,7 @@ async def test_an_abort_during_the_summary_call_ends_the_summary_process(tmp_pat
     await _abort_when(agent, run2, lambda: h.summaries and h.summaries[0].sent)
 
     side = h.provider._side
-    assert h.config.slots.in_use == 0
+    assert h.config.slots.total_in_use == 0
     assert h.summaries[0].closed and side._client is None, (
         "the aborted summary's Claude Code process is still open, holding no slot")
 
