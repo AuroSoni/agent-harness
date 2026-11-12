@@ -13,6 +13,7 @@ import asyncio
 import base64
 import json
 import os
+import shutil
 
 from agent_base.common_tools import (ReadTodosTool, SubAgentSpec, TodoWriteTool, code_exec_bundle,
                                      file_ops_bundle)
@@ -22,6 +23,7 @@ from agent_base.sandbox.local import LocalSandbox
 from ._fakes import MODEL, Harness, call, text
 
 POSIX_SHELL = os.name != "nt"
+HAS_RIPGREP = shutil.which("rg") is not None  # grep_search runs ripgrep through the sandbox's shell
 COMMON_TOOLS = {"read_file", "glob_file_search", "grep_search", "list_dir_tree", "apply_patch", "code_execution",
                 "todo_write", "read_todos", "spawn_subagent"}
 
@@ -95,11 +97,14 @@ async def test_every_common_tool_runs_through_claude_code(tmp_path):
 
     (tree, glob, grep, notes, pic, patch, code, todo_w, todo_r, spawn, app, grep2) = await _results(parent)
     assert "notes.md" in _text(tree) and "app.py" in _text(tree)
-    if POSIX_SHELL:  # glob_file_search and grep_search run find/grep through the sandbox's shell
+    # glob_file_search runs find, grep_search ripgrep, through the sandbox's shell: their content is checked where
+    # those are on the path. Elsewhere (Windows' FIND is not find; no rg) the tools still answer and their results
+    # come back through Claude Code.
+    assert _text(glob) and _text(grep) and _text(grep2)
+    if POSIX_SHELL:
         assert "app.py" in _text(glob)
+    if POSIX_SHELL and HAS_RIPGREP:
         assert "beta needle" in _text(grep) and "alpha" in _text(grep2)
-    else:  # Windows' FIND is not find: the tools answer, their results come back, the content can't be checked
-        assert _text(glob) and _text(grep) and _text(grep2)
     assert "beta needle" in _text(notes)
     pic_content, pic_error = _mcp(pic)
     assert not pic_error and any(getattr(c, "type", "") == "image" for c in pic_content)

@@ -1203,15 +1203,18 @@ async def test_the_clis_echo_of_the_librarys_tool_results_is_not_kept_after_the_
     """The CLI echoes every tool result, the library's MCP tools included, as a user message. The provider keeps
     each one's text (for its own web tools) and never lets go of them, so a long-lived session holds every tool
     result it ever saw."""
-    h = H(tmp_path, [[call("add", a=2, b=3)], [text("5.")]])
+    added = call("add", a=2, b=3)
+
+    async def echo_then_reply(fake):  # the CLI's echo of the library's result, then the next model call
+        fake.push(UserMessage(content=[ToolResultBlock(tool_use_id=added["id"], content="5" * 100_000)]))
+        fake.push(*model_call(f"msg_{_next_id()}", [text("5.")], "end_turn", session_id=fake.session_id),
+                  _fakes.result_message(fake.session_id))
+
+    h = H(tmp_path, [[added], raw(echo_then_reply)])
     agent = _agent(h.provider)
-    run = asyncio.create_task(agent.run("What is 2 + 3?"))
-    await wait_until(lambda: h.provider._futures)
-    use_id = next(iter(h.provider._futures))
-    h.last.push(UserMessage(content=[ToolResultBlock(tool_use_id=use_id, content="5" * 100_000)]))
-    await asyncio.wait_for(run, 10)
+    assert (await asyncio.wait_for(agent.run("What is 2 + 3?"), 10)).final_answer == "5."
     await _no_leaks(h)
-    assert use_id not in h.provider._cc_results
+    assert added["id"] not in h.provider._cc_results
 
 
 async def test_a_process_that_exits_before_its_replys_transcript_entry_does_not_hold_the_runs_end(tmp_path):

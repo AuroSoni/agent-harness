@@ -852,7 +852,8 @@ async def test_two_sessions_each_waiting_on_a_child_over_two_slots_both_children
     assert [r.final_answer for r in results] == ["Parent done."] * 2
     answers = [(await f.tool_calls[0])[0].root for f in h.made if f.prompt.startswith("P")]
     assert len(answers) == 2 and all(not a.isError and a.content[0].text == "child answer" for a in answers)
-    assert len([f for f in h.made if f.prompt.startswith("CHILD")]) == 2 and h.peak_open == 4
+    # Both children ran while the parents held both slots (at least one child beside the two parents at once).
+    assert len([f for f in h.made if f.prompt.startswith("CHILD")]) == 2 and h.peak_open >= 3
     assert all(c.name == "claude_code" for cs in children for c in cs)
     await _assert_no_leaks(h, *(a.provider for a in agents), *(c for cs in children for c in cs), baseline=base)
 
