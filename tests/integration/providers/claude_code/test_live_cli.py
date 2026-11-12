@@ -19,7 +19,11 @@ What the offline specs can't show, and these do:
 - ``WebFetch`` through the URL guard, both refused (a guard that raises) and allowed;
 - an image tool result reaching the model;
 - compaction's summary on a one-shot session, and the next step on a fresh one;
-- a sub-agent on a Claude Code process of its own.
+- a sub-agent on a Claude Code process of its own;
+- through ``SessionManager``: a frontend tool's pause answered with a ``ToolReply`` on the same process, and after
+  the process was lost (a cold resume); fork and reset through checkpoints; a forceful steer mid-stream; three
+  sessions over two process slots;
+- the real CLI's transcripts in Postgres, resumed after a cold load (also needs ``AGENT_BASE_PG_TEST_DSN``).
 """
 from __future__ import annotations
 
@@ -88,11 +92,12 @@ def multiply_numbers(a: int, b: int) -> str:
 class Live:
     """A provider over the real CLI. Records every process's options, in order."""
 
-    def __init__(self, tmp_path: Path, **config: Any) -> None:
+    def __init__(self, tmp_path: Path, *, store: Any = None, ledger: Any = None, **config: Any) -> None:
         self.opts: list[Any] = []
         config.setdefault("fallback", "off")
         self.config = ClaudeCodeConfig(workdir=tmp_path / "cc", slots=ProcessSlots(), meter=PlanMeter(), **config)
-        self.store, self.ledger = MemoryTranscriptStore(), MemoryTranscriptLedger()
+        self.store = store if store is not None else MemoryTranscriptStore()
+        self.ledger = ledger if ledger is not None else MemoryTranscriptLedger()
         self.provider = self.make_provider()
 
     def factory(self, opts: Any) -> Any:
@@ -103,6 +108,17 @@ class Live:
         return ClaudeCodeProvider(offline_direct_client(), config=self.config, store=self.store, ledger=self.ledger,
                                   client_factory=self.factory)
 
+    def manager(self, tmp_path: Path, adapters: dict, built: list, **kw: Any) -> Any:
+        """The host's path: each build of a session is a new agent over a new provider on this store and ledger."""
+        from agent_base.session.manager import SessionManager
+
+        def build(root_session_id: str, principal: Any = None) -> AnthropicAgent:
+            agent = _agent(self.make_provider(), tmp_path, adapters=adapters, agent_uuid=root_session_id, **kw)
+            built.append(agent)
+            return agent
+
+        return SessionManager(build)
+
     def entries(self, session_id: str) -> list[dict]:
         """The CLI's main transcript of a session, as the store holds it."""
         for (pk, sid, sub), rows in self.store._entries.items():
@@ -111,9 +127,44 @@ class Live:
         return []
 
 
+@tool(executor="frontend")
+def ask_user(question: str) -> str:
+    """Ask the user a question; the client shows it and sends back the answer.
+
+    Args:
+        question: The question to ask.
+    """
+
+
 @pytest.fixture(autouse=True)
 def _fresh_calls():
     CALLS.clear()
+
+
+def _kind(item: Any) -> str:
+    from agent_base.streaming.meta import MetaEnvelope
+
+    if isinstance(item, MetaEnvelope):
+        return item.kind if item.kind != "custom" else f"custom:{item.body.name}"
+    return getattr(item, "type", "")
+
+
+async def _frames(reader: Any, *, until: tuple[str, ...] = ("run_completed", "await_input"),
+                  timeout: float = STEP_S) -> list:
+    """Read the stream to a terminal frame."""
+    items = []
+    while True:
+        item = await asyncio.wait_for(reader.__anext__(), timeout)
+        items.append(item)
+        if _kind(item) in until:
+            return items
+
+
+def _last_text(agent: AnthropicAgent) -> str:
+    for m in reversed(agent.agent_config.context_messages):
+        if m.role.value == "assistant" and _text(m):
+            return _text(m)
+    return ""
 
 
 def _text(message: Message) -> str:
@@ -366,3 +417,221 @@ async def test_a_sub_agent_runs_on_a_claude_code_process_of_its_own(tmp_path):
     assert ("multiply_numbers", 6, 7) in CALLS
     assert len(children) == 1 and children[0].name == "claude_code" and children[0].processes_started == 1
     assert len(live.opts) == 2 and live.config.slots.total_in_use == 0
+
+
+# ── 11. a frontend tool's pause, hot ──────────────────────────────────────────
+async def test_a_paused_run_resumes_on_the_same_process_when_the_reply_comes(tmp_path):
+    from agent_base.core.ack import Disposition
+    from agent_base.core.commands import ToolReply, UserMessage
+
+    live, built = Live(tmp_path), []
+    manager = live.manager(tmp_path, _fs_adapters(tmp_path), built, tools=[ask_user])
+    agent = await manager.get_or_create("s-hot")
+    reader = agent.attach_stream()
+    await manager.submit("s-hot", UserMessage(message=Message.user(
+        "Use the ask_user tool to ask me for a number. Then reply with only that number times 2.")))
+    pause = (await _frames(reader))[-1]
+    assert pause.kind == "await_input" and pause.body.tools[0].tool_name == "ask_user"
+    await asyncio.sleep(20)  # the user takes a while; the handler waits in the live process
+    reader = agent.attach_stream()
+    ack = await manager.submit("s-hot", ToolReply(cid=pause.correlation_id, results=[
+        ToolResultContent(tool_name="ask_user", tool_id=pause.body.tools[0].tool_use_id, tool_result="21")]))
+    assert ack.disposition is Disposition.RESOLVED
+    frames = await _frames(reader, until=("run_completed",))
+    assert "run_started" not in [_kind(f) for f in frames]  # the same run carried on
+    await asyncio.wait_for(agent.wait_idle(), 60)
+    assert "42" in _last_text(agent)
+    assert built[0].provider.processes_started == 1 and len(live.opts) == 1 and not built[0].provider.fallen_back
+    await manager.shutdown()
+    assert live.config.slots.total_in_use == 0
+
+
+# ── 12. a frontend tool's pause, cold ─────────────────────────────────────────
+async def test_a_paused_run_whose_process_was_lost_resumes_from_the_transcript(tmp_path):
+    from agent_base.await_table import AwaitTable, set_await_table
+    from agent_base.core.ack import Disposition
+    from agent_base.core.commands import ToolReply, UserMessage
+
+    live, built = Live(tmp_path), []
+    adapters = _fs_adapters(tmp_path)
+    manager = live.manager(tmp_path, adapters, built, tools=[ask_user])
+    agent = await manager.get_or_create("s-cold")
+    reader = agent.attach_stream()
+    await manager.submit("s-cold", UserMessage(message=Message.user(
+        "Use the ask_user tool to ask me for a number. Then reply with only that number times 2.")))
+    pause = (await _frames(reader))[-1]
+    assert pause.kind == "await_input"
+    tool_id = pause.body.tools[0].tool_use_id
+    first_session = agent.provider._session_id
+
+    # The host process loses the session: its Claude Code process ends, and a new host starts with an empty
+    # await table, from storage alone.
+    await agent.aclose()
+    for task in (agent._actor_task, getattr(agent, "_rearmed_resume_task", None)):
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    agent._cancellation_event.set()
+    set_await_table(AwaitTable())
+
+    built2: list = []
+    manager2 = live.manager(tmp_path, adapters, built2, tools=[ask_user])
+    cold = await manager2.get_or_create("s-cold")
+    reader = cold.attach_stream()
+    ack = await manager2.submit("s-cold", ToolReply(cid=pause.correlation_id, results=[
+        ToolResultContent(tool_name="ask_user", tool_id=tool_id, tool_result="21")]))
+    assert ack.disposition is Disposition.RESOLVED
+    frames = await _frames(reader, until=("run_completed",))
+    assert frames[-1].body.stop_reason == "end_turn"
+    await asyncio.wait_for(cold.wait_idle(), 60)
+    assert "42" in _last_text(cold)
+    assert live.opts[-1].resume == first_session and not cold.provider.fallen_back
+    await manager2.shutdown()
+    assert live.config.slots.total_in_use == 0
+
+
+# ── 13. fork and reset through checkpoints ───────────────────────────────────
+async def test_fork_and_reset_through_checkpoints_branch_the_transcript(tmp_path):
+    from agent_base.blob_store import LocalBlobStore
+    from agent_base.core.fork_reset import fork_session, reset_session
+    from agent_base.core.identity import SessionPrincipal
+    from agent_base.storage.adapters.memory import (MemoryAgentConfigAdapter, MemoryAgentRunAdapter,
+                                                    MemoryCheckpointAdapter, MemoryConversationAdapter)
+    from agent_base.storage.handles import StorageHandles
+
+    principal = SessionPrincipal(tenant="t1", subject="u1")
+    stores = {"config_adapter": MemoryAgentConfigAdapter(), "conversation_adapter": MemoryConversationAdapter(),
+              "run_adapter": MemoryAgentRunAdapter(), "checkpoint_adapter": MemoryCheckpointAdapter(),
+              "blob_store": LocalBlobStore(base_path=tmp_path / "blobs")}
+    handles = StorageHandles(config=stores["config_adapter"], conversation=stores["conversation_adapter"],
+                             run=stores["run_adapter"], checkpoint=stores["checkpoint_adapter"],
+                             blobs=stores["blob_store"])
+    live = Live(tmp_path)
+    source = _agent(live.provider, tmp_path, adapters=stores, principal=principal)
+    await _run(source, "Remember: the colour is TEAL. Reply with only OK.")
+    run1_session = live.provider._session_id
+    await _run(source, "Correction: the colour is now RED. Reply with only OK.")
+    refs, _ = await stores["checkpoint_adapter"].list_refs(source.agent_uuid)
+    at = min(r.sequence_number for r in refs)  # after the first run
+
+    await fork_session(handles, source_uuid=source.agent_uuid, at_sequence=at, new_uuid="fork-1",
+                       principal=principal, llm_config_class=AnthropicLLMConfig)
+    fork = _agent(live.make_provider(), tmp_path, adapters=stores, agent_uuid="fork-1", principal=principal)
+    forked = await _run(fork, "What colour did I tell you? Reply with one word.")
+    o = live.opts[-1]
+    assert (o.resume, o.fork_session) == (run1_session, True) and o.resume_session_at
+    assert "TEAL" in forked.final_answer.upper() and "RED" not in forked.final_answer.upper()
+
+    await reset_session(handles, agent_uuid=source.agent_uuid, to_sequence=at, principal=principal,
+                        llm_config_class=AnthropicLLMConfig)
+    reset = _agent(live.make_provider(), tmp_path, adapters=stores, agent_uuid=source.agent_uuid,
+                   principal=principal)
+    again = await _run(reset, "What colour did I tell you? Reply with one word.")
+    o = live.opts[-1]
+    assert (o.resume, o.fork_session) == (run1_session, True)
+    assert "TEAL" in again.final_answer.upper() and "RED" not in again.final_answer.upper()
+    assert not any(a.provider.fallen_back for a in (source, fork, reset))
+
+
+# ── 14. a forceful steer ─────────────────────────────────────────────────────
+async def test_a_forceful_steer_mid_stream_runs_the_new_instruction(tmp_path):
+    from agent_base.core.commands import Steer, SteerMode, UserMessage
+    from agent_base.streaming.types import TextDelta
+
+    live, built = Live(tmp_path), []
+    manager = live.manager(tmp_path, _fs_adapters(tmp_path), built)
+    agent = await manager.get_or_create("s-steer")
+    reader = agent.attach_stream()
+    await manager.submit("s-steer", UserMessage(message=Message.user("Write a 1500-word essay about rivers.")))
+    while not isinstance(await asyncio.wait_for(reader.__anext__(), STEP_S), TextDelta):
+        pass  # the essay has started streaming
+    await asyncio.wait_for(manager.submit("s-steer", Steer(
+        instruction=Message.user("Stop the essay. Reply with only the word STEERED."), mode=SteerMode.FORCEFUL)),
+        30)
+    frames = await _frames(reader, until=("run_completed",))
+    kinds = [_kind(f) for f in frames]
+    assert "custom:steered" in kinds and kinds.index("custom:steered") < kinds.index("run_started")
+    await asyncio.wait_for(agent.wait_idle(), 60)
+    assert "STEERED" in _last_text(agent).upper() and not agent.provider.fallen_back
+    await manager.shutdown()
+    assert live.config.slots.total_in_use == 0
+
+
+# ── 15. three sessions over two slots ────────────────────────────────────────
+async def test_three_sessions_share_two_process_slots(tmp_path):
+    live = Live(tmp_path, max_processes=2, slot_wait_s=120)
+    agents = [_agent(live.make_provider(), tmp_path, sandbox=LocalSandbox(sandbox_id=f"live-{i}",
+                                                                            base_dir=tmp_path / "sandboxes"))
+              for i in range(3)]
+    peak, done = [0], asyncio.Event()
+
+    async def sample() -> None:
+        while not done.is_set():
+            peak[0] = max(peak[0], live.config.slots.in_use)
+            await asyncio.sleep(0.02)
+
+    sampler = asyncio.create_task(sample())
+    results = await asyncio.gather(*(_run(a, f"Reply with only the number {i + 7}.") for i, a in enumerate(agents)))
+    done.set()
+    await sampler
+    assert [str(i + 7) in r.final_answer for i, r in enumerate(results)] == [True] * 3
+    assert peak[0] == 2 and len(live.opts) == 3
+    assert not any(a.provider.fallen_back for a in agents) and live.config.slots.total_in_use == 0
+
+
+# ── 16. the real CLI's transcripts in Postgres ───────────────────────────────
+@pytest.mark.skipif(not os.environ.get("AGENT_BASE_PG_TEST_DSN"), reason="needs AGENT_BASE_PG_TEST_DSN as well")
+async def test_the_real_transcripts_round_trip_through_postgres_and_a_cold_load_resumes(tmp_path):
+    import uuid as _uuid
+    from urllib.parse import urlsplit, urlunsplit
+
+    import asyncpg
+
+    from agent_base.storage.pg import PgTranscriptLedger, PgTranscriptStore, ensure_all_schemas
+    from agent_base.storage.pg.pool import PgConnectConfig, create_pool
+
+    dsn = os.environ["AGENT_BASE_PG_TEST_DSN"]
+    name = f"agbs_live_{_uuid.uuid4().hex[:10]}"
+    admin = await asyncpg.connect(dsn)
+    await admin.execute(f'CREATE DATABASE "{name}"')
+    pool = await create_pool(PgConnectConfig(dsn=urlunsplit(urlsplit(dsn)._replace(path=f"/{name}")), max_size=4))
+    try:
+        store, ledger = PgTranscriptStore(pool), PgTranscriptLedger(pool)
+        await ensure_all_schemas(pool, store, ledger)
+        live = Live(tmp_path, store=store, ledger=ledger)
+        adapters = _fs_adapters(tmp_path)
+        agent = _agent(live.provider, tmp_path, adapters=adapters, tools=[add_numbers])
+        await _run(agent, "Remember the code word OSPREY-3. Use add_numbers to add 1 and 2, then reply with "
+                          "only the sum.")
+        session = live.provider._session_id
+        key = {"project_key": _project_key(live), "session_id": session}
+        entries = await store.load(key)
+        kinds = {e.get("type") for e in entries or []}
+        assert {"user", "assistant"} <= kinds, kinds  # with the CLI's other entry types alongside, kept as written
+        points = await _ledger_points(pool)
+        assert points, "the run recorded no ledger point"
+        for _, point_session, entry in points:  # every point names an entry Postgres holds
+            assert await store.has_entry(key["project_key"], point_session, entry)
+
+        cold = _agent(live.make_provider(), tmp_path, adapters=adapters, agent_uuid=agent.agent_uuid,
+                      tools=[add_numbers])
+        again = await _run(cold, "What was the code word? Reply with only the code word.")
+        assert "OSPREY-3" in again.final_answer.upper()
+        assert live.opts[-1].resume == session and not cold.provider.fallen_back
+    finally:
+        await pool.close()
+        await admin.execute(f'DROP DATABASE "{name}" WITH (FORCE)')
+        await admin.close()
+
+
+def _project_key(live: Live) -> str:
+    from claude_agent_sdk._internal.session_store import project_key_for_directory
+
+    return project_key_for_directory(str(live.config.workdir))
+
+
+async def _ledger_points(pool: Any) -> list[tuple]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT prefix_len, session_id, entry_uuid FROM claude_code_ledger")
+    return [(r["prefix_len"], r["session_id"], r["entry_uuid"]) for r in rows]
+
