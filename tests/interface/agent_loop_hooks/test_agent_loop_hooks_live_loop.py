@@ -424,7 +424,7 @@ class _FakeCompactionController:
     def should_compact(self, messages, estimated_tokens) -> bool:
         return False
 
-    async def compact(self, *, context_messages, model, agent_uuid, sink, reason):
+    async def compact(self, *, context_messages, model, agent_uuid, sink, reason, cancellation_event=None):
         self.compact_calls.append(reason)
         return context_messages[1:]
 
@@ -479,6 +479,60 @@ async def test_before_compact_block_on_auto_skips_the_compaction():
     )
     assert changed is False
     assert controller.compact_calls == []  # vetoed — never ran
+
+
+async def test_an_aborted_run_compacts_nothing():
+    fired: list[str] = []
+
+    async def before(ctx):
+        fired.append(ctx.trigger)
+
+    agent = _agent([], hooks={"before_compact": [HookMatcher(hooks=[before])]})
+    await agent.initialize()
+    agent.agent_config.context_messages = [Message.user("a"), Message.user("b")]
+    controller = _FakeCompactionController()
+    agent._compaction_controller = controller
+    agent._cancellation_event = asyncio.Event()
+    agent._cancellation_event.set()
+
+    assert await agent._compact_with_hooks(reason="threshold", trigger="auto", sink=None) is False
+    assert controller.compact_calls == [] and fired == []  # no hook, no summary call
+
+
+async def test_the_controller_gets_the_runs_cancellation_event():
+    seen: list = []
+
+    class _Recording(_FakeCompactionController):
+        async def compact(self, *, cancellation_event=None, **kw):
+            seen.append(cancellation_event)
+            return await super().compact(**kw)
+
+    agent = _agent([])
+    await agent.initialize()
+    agent.agent_config.context_messages = [Message.user("a"), Message.user("b")]
+    agent._compaction_controller = _Recording()
+    agent._cancellation_event = asyncio.Event()
+    await agent._compact_with_hooks(reason="threshold", trigger="auto", sink=None)
+    assert seen == [agent._cancellation_event]
+
+
+async def test_an_abort_during_a_compaction_ends_the_step_without_a_model_call():
+    """The abort arrives while the step's compaction runs; the step then sends no request."""
+    agent = _agent([_assistant_end_turn("never sent")])
+
+    class _AbortedMidSummary(_FakeCompactionController):
+        def should_compact(self, messages, estimated_tokens) -> bool:
+            return True
+
+        async def compact(self, *, context_messages, cancellation_event=None, **kw):
+            cancellation_event.set()  # the user aborts while the summary call runs; it stops, nothing changes
+            return context_messages
+
+    agent._configure_compaction_controller = lambda: None  # keep the stand-in across the run's start
+    agent._compaction_controller = _AbortedMidSummary()
+    result = await asyncio.wait_for(agent.run("Hi."), 5)
+    assert result.was_aborted and result.stop_reason == "aborted"
+    assert agent.provider.calls == 0
 
 
 async def test_before_compact_block_on_overflow_fails_the_turn_upward():

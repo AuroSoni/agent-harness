@@ -1751,6 +1751,14 @@ class AnthropicAgent(AgentRuntime):
                         estimated_tokens=estimated_tokens,
                     )
 
+                # An abort that reached the step before its model call (during a
+                # compaction's summary, a hook, a warm) ends the step here, as a
+                # call cancelled before its first block would, without a request.
+                if self._cancellation_event.is_set():
+                    return await self._handle_stream_abort(
+                        ProviderTurn(message=Message.assistant([]), was_cancelled=True), sink
+                    )
+
                 # --- The ONE provider invocation (runtime seam) ---
                 try:
                     # Repair the chain first, so the request sent is the
@@ -1774,6 +1782,8 @@ class AnthropicAgent(AgentRuntime):
                         reason=recompact.reason, trigger="overflow", sink=sink
                     ):
                         continue
+                    if self._cancellation_event.is_set():
+                        continue  # the compaction was aborted: the step ends as an abort, not an overflow
                     raise (recompact.__cause__ or recompact)
                 overflow_compactions = 0
 
@@ -1828,7 +1838,7 @@ class AnthropicAgent(AgentRuntime):
                             reason="context_window_exceeded",
                             trigger="overflow",
                             sink=sink,
-                        ):
+                        ) or self._cancellation_event.is_set():
                             continue
                     return await self._finalize_run(
                         response_message,
@@ -2172,7 +2182,10 @@ class AnthropicAgent(AgentRuntime):
         ``before_compact`` block on ``trigger="auto"`` skips the compaction;
         on ``trigger="overflow"`` the turn FAILS UPWARD with a typed
         ``CONTEXT_OVERFLOW`` error. Returns True when the context was
-        replaced."""
+        replaced. An aborted run compacts nothing: the summary call stops on
+        the run's cancellation event, and none starts once it is set."""
+        if self._cancellation_event is not None and self._cancellation_event.is_set():
+            return False
         outcome = await self._fire_hooks(
             "before_compact", trigger=trigger, estimated_tokens=estimated_tokens
         )
@@ -2191,6 +2204,7 @@ class AnthropicAgent(AgentRuntime):
             agent_uuid=self.agent_config.agent_uuid,
             sink=sink,
             reason=reason,
+            cancellation_event=self._cancellation_event,
         )
         changed = compacted_messages != self.agent_config.context_messages
         if changed:

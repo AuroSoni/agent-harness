@@ -870,7 +870,10 @@ class ClaudeCodeProvider:
         async def events():
             nonlocal snapshot, cut
             while True:
-                ev = await self._events.get()
+                ev = await self._next_event(cancellation_event)
+                if ev is _PING:
+                    yield _PING  # an abort while the CLI is silent: the stream translator stops at it
+                    return
                 if isinstance(ev, BaseException):
                     raise ev
                 if isinstance(ev, _Cut):
@@ -934,6 +937,10 @@ class ClaudeCodeProvider:
         if cancelled:
             await self.close()
         snaps = snaps or ([snapshot] if snapshot is not None else [])
+        if cancelled and not snaps:  # an abort before any of the reply streamed: nothing to keep
+            from agent_base.core.messages import Message
+
+            return ProviderTurn(message=Message.assistant([]), was_cancelled=True, stream_bookkeeping=set())
         if not snaps and cut:
             raise ProviderError(code=ErrorCode.PROVIDER_OVERLOADED, native_code=cut, retriable=True,
                                 message="The reply was cut off before any part of it finished.")
@@ -968,6 +975,25 @@ class ClaudeCodeProvider:
         return ProviderTurn(message=msg, was_cancelled=False, stream_bookkeeping=completed)
 
     # ── the ledger ─────────────────────────────────────────────────────────
+    async def _next_event(self, cancellation_event: asyncio.Event | None) -> Any:
+        """The process's next message, or ``_PING`` once the run is aborted: a step stops at an abort even while
+        the CLI sends nothing (a silent model call, the CLI's own retry). A message already queued comes first."""
+        if cancellation_event is None:
+            return await self._events.get()
+        if self._events.empty() and cancellation_event.is_set():
+            return _PING
+        get = asyncio.ensure_future(self._events.get())
+        stop = asyncio.ensure_future(cancellation_event.wait())
+        try:
+            await asyncio.wait({get, stop}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stop.cancel()
+            if not get.done():
+                get.cancel()  # a cancelled Queue.get leaves its item in the queue
+        if get.done() and not get.cancelled():
+            return get.result()
+        return _PING
+
     def _schedule_ledger(self, history: list, message_id: str) -> None:
         fp = prefix_fingerprints(self.formatter, history)[-1]
         agent_uuid = self._agent_uuid

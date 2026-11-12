@@ -34,6 +34,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent_base.common_tools.sub_agent_tool import SubAgentSpec
+from agent_base.core.abort_types import STREAM_ABORT_TEXT
 from agent_base.core.errors import ErrorCode
 from agent_base.core.hooks import HookMatcher, HookOutcome
 from agent_base.core.messages import Message, Usage
@@ -861,6 +862,37 @@ async def _abort_when(agent: AnthropicAgent, task: asyncio.Task, ready: Callable
     await wait_until(ready)
     await asyncio.wait_for(agent.abort(), 10)
     await asyncio.gather(asyncio.wait_for(task, 10), return_exceptions=True)
+
+
+async def test_an_abort_during_the_summary_call_stops_it_without_the_hard_cancel(tmp_path):
+    """The summary call gets the run's cancellation event: an abort stops it at once, the context stays as it was,
+    the run ends as an abort of its own (not hard-cancelled at the end of the grace), and no model call follows."""
+    h = Scenario(tmp_path, max_processes=1, slot_wait_s=0.2, fallback="off")
+    h.route("Run one.", [[text("Hello.")]])
+    h.route(SUMMARIZE, [], [[text("Summary two.")]])  # the first summary never answers: the user aborts
+    h.route("Run three.", [[text("Three.")]])
+    gate = Gate()
+    agent = _agent(h.provider, compaction_config=EVERY_STEP, hooks=gate.hooks())
+    agent._abort_grace_ms = 10_000  # a hard cancel would take this long
+    await _run(agent, "Run one.")
+    before = list(agent.agent_config.context_messages)
+    gate.armed = True
+    run2 = asyncio.create_task(agent.run("Run two."))
+    await wait_until(lambda: h.summaries and h.summaries[0].sent)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await asyncio.wait_for(agent.abort(), 5)
+    result = await asyncio.wait_for(run2, 5)
+    assert loop.time() - started < 3
+    assert result.was_aborted and result.stop_reason == "aborted"
+    context = agent.agent_config.context_messages
+    assert context[:len(before)] == before and context[len(before)].content[0].text == "Run two."
+    assert context[-1].content[0].text == STREAM_ABORT_TEXT  # as a call cancelled before its first block
+    assert h.summaries[0].closed and len(h.made) == 2  # run one's process, the summary's: no call after the abort
+
+    gate.armed = True
+    assert (await _run(agent, "Run three.")).final_answer == "Three."
+    await _assert_no_leaks(h, h.provider)
 
 
 async def test_an_abort_during_the_summary_call_ends_the_summary_process(tmp_path):

@@ -108,3 +108,19 @@ async def test_aclose_resolves_waiting_handlers_as_stopped(tmp_path):
     result = (await asyncio.wait_for(h.last.tool_calls[0], 5))[0]
     assert result.root.isError is True and "stopped" in result.root.content[0].text
     assert h.last.closed
+
+
+async def test_an_abort_stops_a_step_while_the_cli_is_silent(tmp_path):
+    """The model call sends nothing (a long silent call, the CLI's own retry): an abort still ends the step at once,
+    as a call cancelled before its first block. Its process closes and its slot goes back, as for any abort."""
+    h = Harness(tmp_path, [])  # the process never answers
+    abort = asyncio.Event()
+    task = asyncio.create_task(h.provider.generate_stream(
+        system_prompt="sys", messages=[Message.user("Hi.")], tool_schemas=SCHEMAS,
+        llm_config=AnthropicLLMConfig(max_tokens=8000), model=MODEL, sink=Sink(), agent_uuid="agent-1",
+        cancellation_event=abort))
+    await wait_until(lambda: h.made and h.last.sent)
+    abort.set()
+    turn = await asyncio.wait_for(task, 2)
+    assert turn.was_cancelled and turn.message.content == []
+    assert h.last.closed and h.provider._client is None and h.config.slots.total_in_use == 0

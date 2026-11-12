@@ -131,6 +131,7 @@ class CompactionController:
         agent_uuid: str,
         sink: "DeltaSink | None" = None,
         reason: str = "threshold",
+        cancellation_event: "asyncio.Event | None" = None,
     ) -> list[Message]:
         preserve_tokens = self.config.preserve_recent_tokens
         if reason != "threshold":
@@ -179,7 +180,18 @@ class CompactionController:
                 sink=sink,
                 stream_tool_results=False,
                 agent_uuid=agent_uuid,
+                cancellation_event=cancellation_event,
             )
+            if turn.was_cancelled:  # the run was aborted: the context stays as it was
+                self.last_compaction_meta = {
+                    "reason": reason,
+                    "compaction_applied": False,
+                    "cancelled": True,
+                    "messages_compacted": 0,
+                    "messages_preserved": len(context_messages),
+                    "summary_tokens": 0,
+                }
+                return context_messages
             summary_text = self._extract_text(turn.message)
         else:
             turn = await self.provider.generate(

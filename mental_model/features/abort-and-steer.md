@@ -38,7 +38,7 @@ sequenceDiagram
 
 | Phase | What is cut | What the context gets |
 |---|---|---|
-| `STREAMING` | The provider stream stops at the next event. The partial response is not a step and is not billed | Only blocks that finished streaming are kept. Tool calls among them get an error result, then an assistant message "Agent run was aborted by the user." |
+| `STREAMING` | The provider stream stops at the next event, and so does a compaction's summary call, leaving the context as it was. A step the abort reached before its model call sends no request. The partial response is not a step and is not billed | Only blocks that finished streaming are kept. Tool calls among them get an error result, then an assistant message "Agent run was aborted by the user." |
 | `EXECUTING_TOOLS` | Unfinished tool tasks are cancelled; finished ones keep their results. A sandbox command dies with its tool task | One result per call; the cancelled ones say "Tool execution was aborted by the user." |
 | `AWAITING_RELAY` | The parked run wakes as aborted | The step's backend results, plus an error result for each call the client had not answered. See [Pause and resume](pause-and-resume.md#abort-while-paused) |
 | `IDLE` | Nothing. `submit` answers `NOT_RUNNING` and runs no teardown | Unchanged |

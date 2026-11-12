@@ -110,6 +110,7 @@ class CompactionController:
         agent_uuid: str,
         sink: "DeltaSink | None" = None,
         reason: str = "threshold",
+        cancellation_event: "asyncio.Event | None" = None,
     ) -> list[Message]:
         """Summarise everything before the safe boundary via
         ``provider.generate`` (using ``config.model`` or ``model``, and
