@@ -19,6 +19,13 @@ from .tool_types import ToolResultEnvelope, GenericTextEnvelope, ToolSchema
 from .decorators import ExecutorType
 from .context import CTX_PARAM_NAME
 
+from agent_base.logging import get_logger
+
+logger = get_logger(__name__)
+
+#: How long a cancelled tool round waits for its tools to stop before it returns without them.
+LEFTOVER_TOOL_WAIT_S = 5.0
+
 if TYPE_CHECKING:
     from agent_base.sandbox.sandbox_types import Sandbox
     from .bundle import Toolish
@@ -458,11 +465,15 @@ class ToolRegistry:
         finally:
             # This round itself was cancelled (a parent's abort reaching a
             # sub-agent's tool round): its tools stop too, instead of running on.
+            # Bounded: a tool that swallows its cancellation runs on rather than
+            # holding the cancelled round open.
             leftover = [t for t in tasks if not t.done()]
             for t in leftover:
                 t.cancel()
             if leftover:
-                await asyncio.gather(*leftover, return_exceptions=True)
+                _, stragglers = await asyncio.wait(leftover, timeout=LEFTOVER_TOOL_WAIT_S)
+                if stragglers:
+                    logger.warning("tool_round_cancelled_tools_still_running", count=len(stragglers))
             # Clean up cancel_task if it wasn't triggered
             if cancel_task and not cancel_task.done():
                 cancel_task.cancel()

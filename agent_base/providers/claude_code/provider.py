@@ -259,14 +259,17 @@ class ClaudeCodeProvider:
     # ── the optional lifecycle (agent_base.core.provider.ProviderLifecycle) ─
     async def end_run(self) -> None:
         """The run ended: let its ledger points land, then end its Claude Code process, and a summary call's if one
-        was cut short (an abort during a compaction)."""
+        was cut short (an abort during a compaction). A teardown still running (an aborted step's) finishes first,
+        so the slot goes back only once that process has exited."""
         await self._await_ledger()
+        await self._await_teardowns()
         await self.close()
         if self._side is not None:
             await self._side.close()
         await self._await_teardowns()
 
     async def aclose(self) -> None:
+        await self._await_teardowns()
         await self.close()
         if self._side is not None:
             await self._side.close()
@@ -413,9 +416,11 @@ class ClaudeCodeProvider:
             if wait:
                 await teardown
             else:
-                task = asyncio.ensure_future(teardown)
+                # The slot goes back when the process has exited, not before: the cap counts live processes.
+                task = asyncio.ensure_future(self._teardown_then_release(teardown, release=not keep_slot))
                 self._teardowns.add(task)
                 task.add_done_callback(self._teardowns.discard)
+                keep_slot = True
         elif reader is not None:
             reader.cancel()
         if not keep_slot:
@@ -426,6 +431,13 @@ class ClaudeCodeProvider:
             with contextlib.suppress(OSError):
                 self._prompt_file.unlink()
             self._prompt_file = None
+
+    async def _teardown_then_release(self, teardown: Any, *, release: bool) -> None:
+        try:
+            await teardown
+        finally:
+            if release and self._client is None:  # no process of this provider started since (it waits for this)
+                self._slots.release(self)
 
     @staticmethod
     async def _teardown(client: Any, reader: asyncio.Task | None, *, interrupt: bool) -> None:
@@ -439,6 +451,10 @@ class ClaudeCodeProvider:
             if callable(end_input) and reader is not None and not reader.done():
                 await asyncio.wait_for(end_input(), 3)
                 await asyncio.wait({reader}, timeout=5)
+            elif not callable(end_input) and type(client).__name__ == "ClaudeSDKClient":
+                # The SDK's transport no longer offers end_input: the CLI's last transcript entries may be lost,
+                # and the next run falls back to an earlier ledger point. Pinned SDK, so a bump shows it here.
+                logger.warning("claude_code_graceful_close_unavailable", reason="no transport end_input")
         with contextlib.suppress(Exception):
             await asyncio.wait_for(client.disconnect(), 10)
         if reader is not None and not reader.done():
@@ -580,6 +596,7 @@ class ClaudeCodeProvider:
                                       PermissionResultDeny, create_sdk_mcp_server)
 
         cfg = self.config
+        await self._await_teardowns()  # an earlier process of this provider exits first, giving its slot back
         # A summary call runs on its session's slot. When the session's process is open (a compaction between two
         # steps of a run), that process ends first: the compaction replaces its history anyway, and a history the
         # compaction leaves as it was resumes from the ledger. The slot stays the session's for its next step.
@@ -1042,9 +1059,11 @@ class ClaudeCodeProvider:
     async def _next_event(self, cancellation_event: asyncio.Event | None) -> Any:
         """The process's next message, or ``_PING`` once the run is aborted: a step stops at an abort even while
         the CLI sends nothing (a silent model call, the CLI's own retry). A message already queued comes first."""
+        if not self._events.empty():
+            return self._events.get_nowait()
         if cancellation_event is None:
             return await self._events.get()
-        if self._events.empty() and cancellation_event.is_set():
+        if cancellation_event.is_set():
             return _PING
         get = asyncio.ensure_future(self._events.get())
         stop = asyncio.ensure_future(cancellation_event.wait())
