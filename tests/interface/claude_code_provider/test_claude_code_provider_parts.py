@@ -105,6 +105,16 @@ async def test_process_slots_cap_how_many_processes_run():
     assert await waiting and slots.in_use == 1
 
 
+async def test_the_memory_store_knows_which_entries_a_main_transcript_holds():
+    store = MemoryTranscriptStore()
+    main = {"project_key": "p", "session_id": "s"}
+    await store.append(main, [{"type": "user", "uuid": "u1"}, {"type": "summary"}])
+    await store.append({**main, "subpath": "subagents/a"}, [{"type": "assistant", "uuid": "a1"}])
+    assert await store.has_entry("p", "s", "u1")
+    assert not await store.has_entry("p", "s", "a1")  # a sub-transcript's entry is not the main transcript's
+    assert not await store.has_entry("p", "other", "u1")
+
+
 async def test_sub_agents_draw_from_a_count_of_their_own_per_level():
     """A full count of runs leaves the children's untouched: children draw from ``slots.children``, grandchildren
     from ``slots.children.children``. ``total_in_use`` counts a level and every level below it."""

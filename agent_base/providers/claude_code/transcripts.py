@@ -54,6 +54,10 @@ class TranscriptStore(Protocol):
         ``subpath``), or None: where a plain resume continues from."""
         ...
 
+    async def has_entry(self, project_key: str, session_id: str, entry_uuid: str) -> bool:
+        """Whether the session's main transcript holds the entry: a ledger point counts only when it does."""
+        ...
+
 
 @runtime_checkable
 class TranscriptLedger(Protocol):
@@ -124,6 +128,9 @@ class MemoryTranscriptStore:
             if entry.get("type") in ("user", "assistant") and entry.get("uuid"):
                 return entry["uuid"]
         return None
+
+    async def has_entry(self, project_key: str, session_id: str, entry_uuid: str) -> bool:
+        return entry_uuid in self._uuids.get((project_key, session_id, ""), set())
 
 
 class MemoryTranscriptLedger:

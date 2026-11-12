@@ -344,6 +344,18 @@ async def test_last_message_uuid_reads_the_last_user_or_assistant_entry_of_the_m
     assert flat.endswith("ORDER BY seq DESC LIMIT 1")
 
 
+async def test_has_entry_asks_whether_the_main_transcript_holds_the_uuid():
+    store, conn = _store(owned=True, bound=True)
+    conn.fetchval_result = True
+    assert await store.has_entry("proj", "s-1", "u-3") is True
+    sql, args = conn.last("fetchval")
+    flat = _norm(sql)
+    assert flat.startswith("SELECT EXISTS (SELECT 1 FROM claude_code_transcripts WHERE ")
+    assert "project_key = $1 AND session_id = $2 AND subpath = $3 AND entry_uuid = $4" in flat
+    assert args[:4] == ("proj", "s-1", "", "u-3")
+    assert "owner_tenant = $5 AND owner_subject = $6" in flat
+
+
 # ---------------------------------------------------------------------------
 # The ledger
 # ---------------------------------------------------------------------------

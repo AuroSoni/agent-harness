@@ -211,6 +211,7 @@ class ClaudeCodeProvider:
         self._open_queries = 0  # queries sent and not yet ended by a ResultMessage
         self._schemas_key: str | None = None
         self._pending: set[asyncio.Task] = set()
+        self._teardowns: set[asyncio.Task] = set()  # closed processes still writing their transcript out
         self._prompt_file: Path | None = None
         self._max_tokens: int | None = None
         self._web_limits: dict[str, int | None] = {}
@@ -263,11 +264,19 @@ class ClaudeCodeProvider:
         await self.close()
         if self._side is not None:
             await self._side.close()
+        await self._await_teardowns()
 
     async def aclose(self) -> None:
         await self.close()
         if self._side is not None:
             await self._side.close()
+        await self._await_teardowns()
+
+    async def _await_teardowns(self) -> None:
+        """Let closed processes finish writing their transcripts to the store (each teardown is bounded)."""
+        for side in (self, self._side):
+            if side is not None and side._teardowns:
+                await asyncio.wait(set(side._teardowns), timeout=30)
 
     def side_calls(self) -> "ClaudeCodeProvider":
         """A one-shot Claude Code session per call, with no ledger and no store, for calls outside the session's
@@ -372,36 +381,68 @@ class ClaudeCodeProvider:
             with contextlib.suppress(Exception):  # a sub-agent's says so, since the callback is its parent's
                 self.on_fallback(f"sub-agent (level {self._level}): {reason}" if self._level else reason)
 
-    async def close(self, *, keep_slot: bool = False) -> None:
+    async def close(self, *, keep_slot: bool = False, wait: bool = True) -> None:
         """End the Claude Code process, if one is open. Waiting tool handlers get "stopped". The slot goes back
         unless ``keep_slot``: a run that goes on (a compaction, an API error, a new tool roster) keeps it for its
-        next process."""
+        next process.
+
+        The process ends gracefully, so the CLI writes its transcript out to the store: a query still in flight is
+        interrupted first (before its handlers answer "stopped", so the CLI makes no model call on them), then
+        stdin closes and the process's last frames are read until it exits. ``wait=False`` returns at once and
+        leaves that to a background teardown, which ``end_run`` and ``aclose`` wait for (an abort's step)."""
         self._generation += 1
+        in_flight = self._open_queries > 0
         self._last_error = None
         self._open_queries = 0
         self._cc_results.clear()
         self._cc_web_ids.clear()
+        client, self._client = self._client, None
+        reader, self._reader = self._reader, None
+        if client is not None and in_flight and wait:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(client.interrupt(), 3)
+            in_flight = False
         for f in self._futures.values():
             if not f.done():
                 f.set_result(_STOPPED)
         self._futures.clear()
         async with self._registered:
             self._registered.notify_all()  # handlers still waiting for their call to be registered
-        client, self._client = self._client, None
         if client is not None:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(client.disconnect(), 10)
+            teardown = self._teardown(client, reader, interrupt=in_flight)
+            if wait:
+                await teardown
+            else:
+                task = asyncio.ensure_future(teardown)
+                self._teardowns.add(task)
+                task.add_done_callback(self._teardowns.discard)
+        elif reader is not None:
+            reader.cancel()
         if not keep_slot:
             self._slots.release(self)
-        if self._reader is not None:
-            self._reader.cancel()
-            self._reader = None
         self._uuid_seen.set()  # a ledger point still waiting for its entry stops: no reader is left to name it
         self._events = asyncio.Queue()
         if self.one_shot and self._prompt_file is not None:
             with contextlib.suppress(OSError):
                 self._prompt_file.unlink()
             self._prompt_file = None
+
+    @staticmethod
+    async def _teardown(client: Any, reader: asyncio.Task | None, *, interrupt: bool) -> None:
+        """End one process gracefully: interrupt its query if one is in flight, close its stdin, read its last
+        frames until it exits (the SDK flushes them to the store when the stream ends), then disconnect. Each wait
+        is bounded; a CLI that doesn't exit is ended by ``disconnect``."""
+        with contextlib.suppress(Exception):
+            if interrupt:
+                await asyncio.wait_for(client.interrupt(), 3)
+            end_input = getattr(getattr(client, "_transport", None), "end_input", None)
+            if callable(end_input) and reader is not None and not reader.done():
+                await asyncio.wait_for(end_input(), 3)
+                await asyncio.wait({reader}, timeout=5)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(client.disconnect(), 10)
+        if reader is not None and not reader.done():
+            reader.cancel()
 
     # ── a step ─────────────────────────────────────────────────────────────
     async def _cc_step(self, *, streamed: dict, system_prompt: str | None, messages: list, tool_schemas: list,
@@ -493,9 +534,10 @@ class ClaudeCodeProvider:
             fps = prefix_fingerprints(self.formatter, messages[: last_asst + 1])
             points = {i + 1: fps[i] for i, m in enumerate(messages[: last_asst + 1]) if m.role.value == "assistant"}
             try:
-                match = await self.ledger.longest_match(points)
+                await self._await_teardowns()  # a closed process may still be writing its transcript out
+                project_key = project_key_for_directory(str(self.config.workdir))
+                match = await self._stored_point(points, project_key)
                 if match is not None:
-                    project_key = project_key_for_directory(str(self.config.workdir))
                     # A plain resume when the point is the transcript's end; otherwise branch there (a reset or a
                     # fork), leaving the old tail in the store as the library leaves its archived tail.
                     fork = match[2] != await self.store.last_message_uuid(project_key, match[1])
@@ -515,6 +557,22 @@ class ClaudeCodeProvider:
         await self._connect(system_prompt or "", tool_schemas, model, llm_config, resume=resume,
                             at=at if fork else None, fork=fork)
         return tail_start, False
+
+    async def _stored_point(self, points: dict[int, str], project_key: str) -> tuple[int, str, str] | None:
+        """The longest point the ledger knows whose entry the store holds. A process that died before writing its
+        transcript out leaves points the transcript lacks; the CLI can't resume or branch at those."""
+        left = dict(points)
+        while left:
+            match = await self.ledger.longest_match(left)
+            if match is None:
+                return None
+            n, session, entry = match
+            if await self.store.has_entry(project_key, session, entry):
+                return match
+            logger.warning("claude_code_point_not_in_transcript", agent_uuid=self._agent_uuid, prefix_len=n,
+                           session_id=session)
+            left.pop(n, None)
+        return None
 
     async def _connect(self, system_prompt: str, tool_schemas: list, model: str, llm_config: Any, *,
                        resume: str | None, at: str | None, fork: bool) -> None:
@@ -741,8 +799,11 @@ class ClaudeCodeProvider:
         from claude_agent_sdk import (AssistantMessage, RateLimitEvent, ResultMessage, StreamEvent, SystemMessage,
                                       ToolResultBlock, UserMessage)
 
+        gen = self._generation
         try:
             async for m in self._client.receive_messages():
+                if self._generation != gen:
+                    continue  # a closed process's last frames: read on, so the SDK writes its transcript out
                 if isinstance(m, StreamEvent):
                     self._session_id = m.session_id or self._session_id
                     ev = m.event or {}
@@ -797,12 +858,15 @@ class ClaudeCodeProvider:
                         await self._events.put(_result_error(m, last))
                     await self._events.put(_QUERY_ENDED)
             # The stream ended: the CLI exited. A step waiting on it fails instead of waiting for good.
-            await self._events.put(_Fallback("the Claude Code process ended"))
+            if self._generation == gen:
+                await self._events.put(_Fallback("the Claude Code process ended"))
         except Exception as e:  # noqa: BLE001
-            await self._events.put(e)
+            if self._generation == gen:
+                await self._events.put(e)
         finally:
-            self._cc_arrived.set()  # a step waiting on a web tool's result sees the reader is gone,
-            self._uuid_seen.set()  # and so does a ledger point waiting for its entry
+            if self._generation == gen:
+                self._cc_arrived.set()  # a step waiting on a web tool's result sees the reader is gone,
+                self._uuid_seen.set()  # and so does a ledger point waiting for its entry
 
     async def _read_step(self, *, streamed: dict, messages: list, keyed: list, sink: Any, stream_tool_results: bool,
                          agent_uuid: str, cancellation_event: asyncio.Event | None) -> Any:
@@ -935,7 +999,7 @@ class ClaudeCodeProvider:
         completed, cancelled = await _process_stream_events(events(), sink, stream_tool_results, agent_uuid,
                                                             cancellation_event)
         if cancelled:
-            await self.close()
+            await self.close(wait=False)  # the run is aborting: the process's teardown must not hold it up
         snaps = snaps or ([snapshot] if snapshot is not None else [])
         if cancelled and not snaps:  # an abort before any of the reply streamed: nothing to keep
             from agent_base.core.messages import Message

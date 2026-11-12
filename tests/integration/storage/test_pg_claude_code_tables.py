@@ -111,6 +111,8 @@ async def test_the_store_behaves_as_the_in_memory_one(pool):
         assert await pg.load(key) == await mem.load(key), key
     assert await pg.last_message_uuid("proj", "s-1") == await mem.last_message_uuid("proj", "s-1") == "a1"
     assert await pg.last_message_uuid("proj", "never-written") is None
+    for session, uuid_ in (("s-1", "u1"), ("s-1", "a1"), ("s-1", "x1"), ("s-2", "x1"), ("s-1", "nope")):
+        assert await pg.has_entry("proj", session, uuid_) == await mem.has_entry("proj", session, uuid_)
     assert await pg.list_subkeys(MAIN) == await mem.list_subkeys(MAIN) == ["subagents/agent-a"]
     sessions = await pg.list_sessions("proj")
     assert sorted(s["session_id"] for s in sessions) == sorted(
@@ -152,6 +154,8 @@ async def test_owners_never_see_each_others_rows(pool):
     await sa.append(MAIN, [{"type": "user", "uuid": "u1", "who": "alice again"}])  # a repeat for alice: dropped
     assert [e["who"] for e in await sa.load(MAIN)] == ["alice"]
     assert [e["who"] for e in await sb.load(MAIN)] == ["bob"]
+    carol = store.for_principal(SessionPrincipal(tenant="t-1", subject="carol"))
+    assert await sa.has_entry("proj", "s-1", "u1") and not await carol.has_entry("proj", "s-1", "u1")
 
     await la.record(agent_uuid="ag", fingerprint="f", prefix_len=1, session_id="s-a", entry_uuid="ea")
     assert await la.longest_match({1: "f"}) == (1, "s-a", "ea") and await lb.longest_match({1: "f"}) is None

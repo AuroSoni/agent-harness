@@ -235,6 +235,16 @@ class PgTranscriptStore(_PgAdapterBase):
         async with self._pool.acquire() as conn:
             return await conn.fetchval(sql, *args)
 
+    async def has_entry(self, project_key: str, session_id: str, entry_uuid: str) -> bool:
+        """Whether the session's main transcript holds the entry (by its
+        ``uuid``)."""
+        where, args = self._scoped_where(
+            {"project_key": project_key, "session_id": session_id, "subpath": "", "entry_uuid": entry_uuid}
+        )
+        sql = f"SELECT EXISTS (SELECT 1 FROM {self.table} WHERE {where})"
+        async with self._pool.acquire() as conn:
+            return bool(await conn.fetchval(sql, *args))
+
 
 # =============================================================================
 # claude_code_ledger

@@ -39,12 +39,16 @@ async def _step(provider, history, *, sink=None, llm_config=None):
 
 
 async def _seeded(tmp_path, transcript_end: str, *scripts):
-    """A harness whose ledger knows POINT (session cc-0, entry u-2) and whose store ends at ``transcript_end``."""
+    """A harness whose ledger knows POINT (session cc-0, entry u-2) and whose store holds u-2 and ends at
+    ``transcript_end``."""
     h = Harness(tmp_path, *scripts)
     fp = prefix_fingerprints(h.provider.formatter, POINT)[-1]
     await h.ledger.record(agent_uuid="agent-1", fingerprint=fp, prefix_len=2, session_id="cc-0", entry_uuid="u-2")
     pk = project_key_for_directory(str(h.config.workdir))
-    await h.store.append({"project_key": pk, "session_id": "cc-0"}, [{"type": "assistant", "uuid": transcript_end}])
+    entries = [{"type": "assistant", "uuid": "u-2"}]
+    if transcript_end != "u-2":
+        entries.append({"type": "assistant", "uuid": transcript_end})
+    await h.store.append({"project_key": pk, "session_id": "cc-0"}, entries)
     return h
 
 
@@ -65,6 +69,30 @@ async def test_a_branch_when_the_point_is_before_the_transcripts_end(tmp_path):
     await asyncio.wait_for(_step(h.provider, POINT + [Message.user("And again?")]), 5)
     o = h.last.opts
     assert (o.resume, o.resume_session_at, o.fork_session) == ("cc-0", "u-2", True)
+
+
+async def test_a_point_whose_entry_the_store_lacks_is_passed_over_for_an_earlier_one(tmp_path):
+    """The process ended before writing its last entry out: the ledger knows a point the transcript lacks. The CLI
+    can't resume there, so the step resumes at the longest point the store holds, with what follows as text."""
+    h = await _seeded(tmp_path, "u-2", [[text("Done.")]])
+    later = POINT + [CUT, Message.assistant("It was 2.")]
+    fp = prefix_fingerprints(h.provider.formatter, later)[-1]
+    await h.ledger.record(agent_uuid="agent-1", fingerprint=fp, prefix_len=4, session_id="cc-0", entry_uuid="u-4")
+    await asyncio.wait_for(_step(h.provider, later + [Message.user("Thanks.")]), 5)
+    o = h.last.opts
+    assert (o.resume, o.resume_session_at, o.fork_session) == ("cc-0", None, False)  # u-2 ends the transcript
+    assert "<your_reply>It was 2.</your_reply>" in _sent_texts(h) and _sent_texts(h)[-1] == "Thanks."
+
+
+async def test_a_point_the_store_lacks_and_no_other_starts_a_fresh_session(tmp_path):
+    h = Harness(tmp_path, [[text("Again.")]])
+    fp = prefix_fingerprints(h.provider.formatter, POINT)[-1]
+    await h.ledger.record(agent_uuid="agent-1", fingerprint=fp, prefix_len=2, session_id="cc-0", entry_uuid="u-2")
+    pk = project_key_for_directory(str(h.config.workdir))
+    await h.store.append({"project_key": pk, "session_id": "cc-0"}, [{"type": "user", "uuid": "u-1"}])
+    await asyncio.wait_for(_step(h.provider, POINT + [CUT, Message.user("And again?")]), 5)
+    assert h.last.opts.resume is None and not h.provider.fallen_back
+    assert _sent_texts(h)[0].startswith("This conversation continues in a new session")
 
 
 async def test_results_beyond_the_point_go_in_as_text(tmp_path):

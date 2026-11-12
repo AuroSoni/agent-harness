@@ -110,6 +110,75 @@ async def test_aclose_resolves_waiting_handlers_as_stopped(tmp_path):
     assert h.last.closed
 
 
+async def test_a_close_interrupts_a_query_in_flight_before_its_handlers_answer(tmp_path):
+    """A run ends while its tool round waits (an abort, an eviction): the query is interrupted first, so the CLI
+    writes the turn out and makes no model call on the "stopped" results its handlers then return."""
+    h = Harness(tmp_path, [[call("add", a=1, b=1)]])
+    await asyncio.wait_for(_step(h.provider, [Message.user("1 + 1?")]), 5)
+    await wait_until(lambda: h.last.tool_calls)
+    seen: list[bool] = []
+
+    async def interrupt() -> None:
+        seen.append(h.last.tool_calls[0].done())
+
+    h.last.interrupt = interrupt
+    await h.provider.end_run()
+    assert seen == [False]  # interrupted while the handler still waited
+    result = (await asyncio.wait_for(h.last.tool_calls[0], 5))[0]
+    assert "stopped" in result.root.content[0].text and h.last.closed
+
+
+async def test_a_close_reads_the_process_to_its_end_so_its_transcript_reaches_the_store(tmp_path):
+    """The CLI writes its last entries out when its stdin closes: the close reads on until it exits, then
+    disconnects, so the store holds them."""
+    h = Harness(tmp_path, [[text("Hello.")]])
+    await asyncio.wait_for(_step(h.provider, [Message.user("Hi.")]), 5)
+    fake, order = h.last, []
+
+    class _Transport:
+        async def end_input(self) -> None:
+            order.append("eof")
+            await fake.opts.session_store.append({"project_key": fake.project_key, "session_id": fake.session_id},
+                                                 [{"type": "assistant", "uuid": "written-at-exit"}])
+            fake.q.put_nowait(None)  # the CLI exits: its stream ends
+
+    disconnect = fake.disconnect
+
+    async def recorded_disconnect() -> None:
+        order.append("disconnect")
+        await disconnect()
+
+    fake._transport, fake.disconnect = _Transport(), recorded_disconnect
+    await h.provider.end_run()
+    assert order == ["eof", "disconnect"]
+    assert await h.store.has_entry(fake.project_key, fake.session_id, "written-at-exit")
+
+
+async def test_an_aborted_steps_teardown_does_not_hold_the_step_up(tmp_path):
+    """An abort's step returns at once; the process's teardown runs on, and ``end_run`` waits for it."""
+    h = Harness(tmp_path, [])
+    abort = asyncio.Event()
+    task = asyncio.create_task(h.provider.generate_stream(
+        system_prompt="sys", messages=[Message.user("Hi.")], tool_schemas=SCHEMAS,
+        llm_config=AnthropicLLMConfig(max_tokens=8000), model=MODEL, sink=Sink(), agent_uuid="agent-1",
+        cancellation_event=abort))
+    await wait_until(lambda: h.made and h.last.sent)
+    fake, disconnect = h.last, h.last.disconnect
+
+    async def slow_disconnect() -> None:
+        await asyncio.sleep(1.0)
+        await disconnect()
+
+    fake.disconnect = slow_disconnect
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    abort.set()
+    turn = await asyncio.wait_for(task, 5)
+    assert turn.was_cancelled and loop.time() - started < 0.5 and not fake.closed
+    await h.provider.end_run()
+    assert fake.closed and not h.provider._teardowns
+
+
 async def test_an_abort_stops_a_step_while_the_cli_is_silent(tmp_path):
     """The model call sends nothing (a long silent call, the CLI's own retry): an abort still ends the step at once,
     as a call cancelled before its first block. Its process closes and its slot goes back, as for any abort."""
