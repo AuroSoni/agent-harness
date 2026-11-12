@@ -5,7 +5,9 @@ Claude Code emits a rate-limit event whenever the plan's meter changes state (th
 (``five_hour``, ``seven_day``, ...). One login usually serves a whole host, so one meter is shared by every
 provider in the process that names no meter of its own (``DEFAULT_METER``).
 
-A refusal moves the running session to the direct client (``provider.py``). A host can also ask
+A refusal moves the running session to the direct client (``provider.py``), unless the plan's extra usage
+(overage) carries the call on: then the session stays on Claude Code, and ``LimitState.overage`` says so. A host
+can also ask
 :meth:`PlanMeter.near_limit` before giving a NEW session Claude Code, so it does not start on a plan that is about
 to stop it. A window's state holds until the reset time Claude Code gives, or for ``HOLD_WITHOUT_RESET_S`` when it
 gives none; an ``allowed`` event for the same window clears it.
@@ -28,6 +30,7 @@ class LimitState:
     status: str                 # allowed_warning or rejected
     utilization: float | None   # the fraction of the window used, when Claude Code reports it
     until: float                # epoch seconds: the window's reset, or the hold without one
+    overage: str | None = None  # the plan's extra usage: allowed, allowed_warning or rejected (None: not given)
 
 
 def _epoch_seconds(value: Any) -> float | None:
@@ -53,7 +56,8 @@ class PlanMeter:
             if status in NEAR:
                 reset = _epoch_seconds(getattr(info, "resets_at", None))
                 until = reset if reset is not None and reset > now else now + HOLD_WITHOUT_RESET_S
-                state = LimitState(window, status, getattr(info, "utilization", None), until)
+                state = LimitState(window, status, getattr(info, "utilization", None), until,
+                                   getattr(info, "overage_status", None))
                 self._states[window] = state
                 return state
             if status == "allowed":

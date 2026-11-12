@@ -68,6 +68,8 @@ FALLBACK_ERRORS = {"rate_limit", "authentication_failed", "billing_error"}
 _FALLBACK_STATUSES = {401, 402, 403, 429}
 #: The CLI's terminal reasons for a context too long for the model. Its own compaction is off (``CLI_ENV``), so it
 #: reports them instead of compacting: the API's "Prompt is too long", or its own pre-call context limit.
+#: The overage states in which the plan's extra usage carries a call its window refused.
+OVERAGE_CARRIES = ("allowed", "allowed_warning")
 OVERFLOW_REASONS = {"prompt_too_long", "blocking_limit", "rapid_refill_breaker"}
 MAX_RESULT_CHARS = 2_000_000
 _STOPPED = {"content": [{"type": "text", "text": "The step was stopped."}], "is_error": True}
@@ -775,9 +777,13 @@ class ClaudeCodeProvider:
                     if state is not None:
                         logger.warning("claude_code_plan_near_limit", window=state.window, status=state.status,
                                        utilization=state.utilization, until=int(state.until))
-                    if m.rate_limit_info.status == "rejected":
-                        await self._events.put(_Fallback(f"the plan's {m.rate_limit_info.rate_limit_type} limit "
-                                                         "refused the call"))
+                    info = m.rate_limit_info
+                    if info.status == "rejected" and info.overage_status in OVERAGE_CARRIES:
+                        # The window is spent, and the plan's extra usage carries the call on: no refusal.
+                        logger.warning("claude_code_plan_on_overage", window=info.rate_limit_type,
+                                       overage=info.overage_status)
+                    elif info.status == "rejected":
+                        await self._events.put(_Fallback(f"the plan's {info.rate_limit_type} limit refused the call"))
                 elif isinstance(m, SystemMessage) and m.subtype == "init":
                     if m.data.get("apiKeySource") not in (None, "none"):
                         await self._events.put(_Fallback("the CLI reported an API key; it runs on the plan's login only"))

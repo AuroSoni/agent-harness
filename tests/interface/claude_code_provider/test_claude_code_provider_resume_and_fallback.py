@@ -130,6 +130,39 @@ async def test_the_plans_refusal_before_anything_streamed_runs_the_step_direct(t
     assert h.config.meter.near_limit().status == "rejected"
 
 
+@pytest.mark.parametrize("overage", ["allowed", "allowed_warning"])
+async def test_a_refusal_the_plans_extra_usage_carries_is_not_a_fallback(tmp_path, overage):
+    """The window is spent but the plan's extra usage carries the call on: the step finishes on Claude Code, and
+    the meter records the refusal with its overage state."""
+    h = Harness(tmp_path, fallback="off")
+    h.provider.inner.generate_stream = AsyncMock()
+    task = asyncio.create_task(_step(h.provider, [Message.user("Hi.")]))
+    await wait_until(lambda: h.made and h.last.sent)
+    h.last.push(RateLimitEvent(rate_limit_info=RateLimitInfo(status="rejected", rate_limit_type="five_hour",
+                                                             overage_status=overage),
+                               uuid="r1", session_id="cc-x"))
+    h.last.script = [[text("Hello on extra usage.")]]
+    await h.last.next_model_call()
+    turn = await asyncio.wait_for(task, 5)
+    assert turn.message.content[0].text == "Hello on extra usage." and not h.provider.fallen_back
+    state = h.config.meter.near_limit()
+    assert state.status == "rejected" and state.overage == overage
+    h.provider.inner.generate_stream.assert_not_called()
+    await h.provider.aclose()
+
+
+async def test_a_refusal_whose_extra_usage_is_refused_too_runs_the_step_direct(tmp_path):
+    h = Harness(tmp_path)
+    h.provider.inner.generate_stream = AsyncMock(return_value="direct-turn")
+    task = asyncio.create_task(_step(h.provider, [Message.user("Hi.")]))
+    await wait_until(lambda: h.made)
+    h.last.push(RateLimitEvent(rate_limit_info=RateLimitInfo(status="rejected", rate_limit_type="five_hour",
+                                                             overage_status="rejected"),
+                               uuid="r1", session_id="cc-x"))
+    assert await asyncio.wait_for(task, 5) == "direct-turn"
+    assert h.provider.fallen_back and h.config.meter.near_limit().overage == "rejected"
+
+
 async def test_a_failure_after_frames_went_out_fails_the_step_then_goes_direct(tmp_path):
     h = Harness(tmp_path)
     h.provider.inner.generate_stream = AsyncMock(return_value="direct-turn")
