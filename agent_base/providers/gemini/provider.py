@@ -1,9 +1,8 @@
 """Gemini provider: models served in Google's generateContent format.
 
 It talks to the Gemini Developer API directly (``GEMINI_API_KEY``), or to any
-gateway that serves the same format at its own base URL, such as an OpenCode
-Console connection (see ``agent_base.providers.opencode_console``). Only the
-base URL, the key and the auth header differ.
+gateway that serves the same format at its own base URL. Only the base URL, the
+key and the auth header differ.
 
 It speaks plain HTTP through ``httpx`` (already a dependency of the Anthropic
 SDK), not Google's Gen AI SDK: a gateway's paths are the API's own paths under
