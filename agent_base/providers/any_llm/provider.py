@@ -160,7 +160,9 @@ class AnyLLMProvider(Provider):
         Returns ``ProviderTurn(message=<canonical assistant Message>)`` with
         ``stop_reason`` normalised (``stop→"stop"``, ``tool_calls→
         "tool_use"``, ``length→"max_tokens"``, unknown passthrough),
-        ``usage`` mapped from OpenAI usage (``prompt_tokens→input_tokens``,
+        ``usage`` mapped from OpenAI usage (``prompt_tokens`` less its
+        ``prompt_tokens_details.cached_tokens``→``input_tokens``, the
+        uncached input alone, as ``Usage`` defines it;
         ``completion_tokens→output_tokens``, ``prompt_tokens_details.
         cached_tokens→cache_read_tokens``, ``completion_tokens_details.
         reasoning_tokens→thinking_tokens``, full raw dict on ``raw_usage``),

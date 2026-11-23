@@ -19,7 +19,8 @@ flowchart LR
 
 - **Row lookup:** exact `model_id`, else the longest `model_id` contained in the model name. An unknown model logs a warning and costs nothing.
 - **Rates** are per million tokens: input, cache write (5 minute and 1 hour), cache read, output; plus per-request rates for web search and web fetch.
-- **Multipliers:** fast mode, or else long context (above the row's threshold, with separate input and output multipliers); then batch and US data residency on top.
+- **Each token is priced once, at its own rate.** `Usage.input_tokens` is the uncached input alone, for every provider: the prompt's cache reads and writes are counted apart, in `cache_read_tokens` and `cache_write_tokens`. The calculator prices `input_tokens` whole at the input rate, and never subtracts the cached part from it. A provider whose API counts cached tokens into its prompt total (an OpenAI-style `prompt_tokens`) subtracts them when it builds `Usage`; see [Providers](../subsystems/providers.md#litellm).
+- **Multipliers:** fast mode, or else long context (above the row's threshold, with separate input and output multipliers; the threshold is measured on the whole prompt, the uncached input and the cache reads and writes together); then batch and US data residency on top.
 - The result is a `CostBreakdown`: `total_cost`, `currency` (USD) and a per-component `breakdown`.
 
 `pricing_policy=` on the agent replaces this calculator for settlements. The default, `CsvPricingPolicy`, calls it.
