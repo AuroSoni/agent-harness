@@ -91,7 +91,7 @@ Profile(name="analyst", tools=[...], frontend_tools=[...], system_prompt="…", 
 ```
 
 - **Declared** with `profiles=` and `default_profile=` on the constructor, or by `on_session_start`.
-- **Applied:** a profile with tools rebuilds the tool registry (MCP tools are re-added); one without keeps the current tools. Its `system_prompt` and `tail` replace the agent's defaults while it is active.
+- **Applied:** a profile with tools rebuilds the tool registry (MCP tools are re-added); one without keeps the current tools. Its `system_prompt` and `tail` replace the agent's defaults while it is active. The default profile applies from a new session's first request, so a profile with tools replaces any `tools=` and `frontend_tools=` passed to the constructor, which are the tools of an agent with no profiles or a prompt-only one.
 - **Switched** only by a hook: `ctx.switch_profile(name)` in `on_turn_start` or `after_tool`.
 
 | Switched from | Takes effect |

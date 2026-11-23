@@ -349,17 +349,15 @@ class AnthropicAgent(AgentRuntime):
         # Tools (backend and frontend) - registry takes care of how to execute tools.
         self.tool_registry: ToolRegistry = ToolRegistry()
 
-        # The boot profile's declarative tool bundle seeds the registry
-        # when no explicit tools=/frontend_tools= kwargs are given (the kwargs
-        # stay the override for profile-less construction).
+        # The boot profile's declarative tool bundle seeds the registry, as a
+        # switch to it would (_apply_profile_resources): a profile that
+        # declares tools replaces both lists, since its system prompt goes
+        # with the first request too. A prompt-only profile keeps the
+        # tools=/frontend_tools= kwargs, which are also the tools of an agent
+        # with no profiles.
         boot_profile = self.active_profile
-        if tools is None and boot_profile is not None and boot_profile.tools:
+        if boot_profile is not None and (boot_profile.tools or boot_profile.frontend_tools):
             tools = list(boot_profile.tools)
-        if (
-            frontend_tools is None
-            and boot_profile is not None
-            and boot_profile.frontend_tools
-        ):
             frontend_tools = list(boot_profile.frontend_tools)
 
         if tools:
@@ -1791,16 +1789,15 @@ class AnthropicAgent(AgentRuntime):
                 if turn.was_cancelled:
                     return await self._handle_stream_abort(turn, sink)
 
-                # Cooperative mid-stream failure — partials kept,
-                # typed report emitted, content survives into the chain.
-                if turn.partial_error is not None and sink is not None:
-                    sink.emit_meta(
-                        ErrorReport(
-                            code=turn.partial_error.code,
-                            message=turn.partial_error.message,
-                            retriable=turn.partial_error.retriable,
-                        )
-                    )
+                # A reply whose stream failed after its frames went out: the
+                # provider kept what streamed (the client saw it once). The
+                # step is recorded and logged as it streamed, but the run ends
+                # as the error it is (run.md › How a run ends), so the half
+                # reply is neither the run's answer nor sent back as context.
+                if turn.partial_error is not None:
+                    self._record_provider_response(turn)
+                    self.agent_config.context_messages.pop()
+                    raise turn.partial_error
 
                 response_message = turn.message
 

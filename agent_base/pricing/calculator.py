@@ -6,6 +6,11 @@ is responsible for summing step costs into a run-level total.
 
 Pricing multipliers (long context, fast mode, batch, data residency)
 are stacked multiplicatively on the CSV base rates per Anthropic docs.
+
+A step through a gateway that reports its own charge (Vercel AI Gateway puts
+``cost`` and ``is_byok`` in each response's ``usage``) costs what the gateway
+charged: its price for a model depends on which provider served the call, so
+a CSV row can't hold it. The row is the fallback when no charge was reported.
 """
 from __future__ import annotations
 
@@ -92,7 +97,9 @@ def resolve_model_pricing(model_name: str) -> ModelPricing | None:
     """Resolve an API model name to its pricing entry.
 
     Handles versioned model names like "claude-sonnet-4-5-20250929"
-    by matching against base model IDs using substring matching.
+    by matching against base model IDs using substring matching. A gateway's
+    ``creator/model`` row matches its own id only, so
+    ``google/gemini-2.5-flash`` never prices ``google/gemini-2.5-flash-lite``.
     """
     pricing = load_pricing()
 
@@ -100,6 +107,8 @@ def resolve_model_pricing(model_name: str) -> ModelPricing | None:
         return pricing[model_name]
 
     for model_id in sorted(pricing.keys(), key=len, reverse=True):
+        if "/" in model_id:
+            continue
         if model_id in model_name:
             return pricing[model_id]
 
@@ -145,6 +154,24 @@ def _raw_field(usage: Usage, key: str) -> Any:
     return raw.get(key)
 
 
+def reported_cost(usage: Usage) -> float | None:
+    """The gateway's own charge for the step in USD, when it reported one.
+
+    Vercel AI Gateway reports ``cost`` with ``is_byok`` in the response's
+    ``usage``. With the host's own provider key (``is_byok``), the provider
+    bills the tokens directly, so the gateway's charge isn't the step's cost:
+    None, and the CSV row prices it.
+    """
+    raw: dict[str, Any] = usage.raw_usage or {}
+    if "cost" not in raw or "is_byok" not in raw or raw.get("is_byok"):
+        return None
+    try:
+        cost = float(raw["cost"])
+    except (TypeError, ValueError):
+        return None
+    return cost if cost >= 0 else None
+
+
 # ---------------------------------------------------------------------------
 # Per-step cost calculation
 # ---------------------------------------------------------------------------
@@ -162,11 +189,18 @@ def calculate_step_cost(usage: Usage, model_name: str) -> CostBreakdown | None:
     Fast mode and long context are mutually exclusive — fast mode
     covers the full context window with no additional long-context charge.
 
+    A step that carries a gateway's reported charge (:func:`reported_cost`)
+    costs that charge, as ``breakdown["reported_cost"]``; the CSV isn't read.
+
     Returns:
         CostBreakdown with per-category breakdown, or None if the
-        model is unknown.
+        model is unknown and no charge was reported.
     """
     from agent_base.core.config import CostBreakdown
+
+    charged = reported_cost(usage)
+    if charged is not None:
+        return CostBreakdown(total_cost=round(charged, 6), breakdown={"reported_cost": round(charged, 6)})
 
     pricing = resolve_model_pricing(model_name)
     if pricing is None:

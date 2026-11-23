@@ -14,3 +14,18 @@ claude-sonnet-4,Claude Sonnet 4,3.00,3.75,6.00,0.30,15.00,2.0,1.5,200000,0.5,0,1
 claude-haiku-4-5,Claude Haiku 4.5,1.00,1.25,2.00,0.10,5.00,1.0,1.0,0,0.5,0,1.0,0,0
 claude-3-5-haiku,Claude Haiku 3.5,0.80,1.00,1.60,0.08,4.00,1.0,1.0,0,0.5,0,1.0,0,0
 claude-3-haiku,Claude Haiku 3,0.25,0.30,0.50,0.03,1.25,1.0,1.0,0,0.5,0,1.0,0,0
+recursive/flint-v1.0,Flint v1.0 (Vercel AI Gateway),0.00,0.00,0.00,0.00,0.00,1.0,1.0,0,1.0,0,1.0,0,0
+nvidia/nemotron-3.5-lightning-free,Nemotron 3.5 Lightning Free (Vercel AI Gateway),0.00,0.00,0.00,0.00,0.00,1.0,1.0,0,1.0,0,1.0,0,0
+zai/glm-5.3-flash,GLM 5.3 Flash (Vercel AI Gateway),0.15,0.00,0.00,0.03,0.50,1.0,1.0,0,1.0,0,1.0,0,0
+deepseek/deepseek-v4.1-flash,DeepSeek V4.1 Flash (Vercel AI Gateway),0.30,0.00,0.00,0.006,1.20,1.0,1.0,0,1.0,0,1.0,0,0
+google/gemini-3.1-flash-lite,Gemini 3.1 Flash-Lite (Vercel AI Gateway),0.25,0.00,0.00,0.03,1.50,1.0,1.0,0,1.0,0,1.0,0,0
+google/gemini-3.8-flash,Gemini 3.8 Flash (Vercel AI Gateway),0.75,0.00,0.00,0.075,3.75,1.0,1.0,0,1.0,0,1.0,0,0
+google/gemini-2.5-flash,Gemini 2.5 Flash (Vercel AI Gateway),0.30,0.00,0.00,0.03,2.50,1.0,1.0,0,1.0,0,1.0,0,0
+openai/gpt-5-nano,GPT-5 nano (Vercel AI Gateway),0.05,0.00,0.00,0.005,0.40,1.0,1.0,0,1.0,0,1.0,0,0
+deepseek/deepseek-v3.1,DeepSeek V3.1 (Vercel AI Gateway),0.25,0.00,0.00,0.13,0.95,1.0,1.0,0,1.0,0,1.0,0,0
+openai/gpt-oss-20b,GPT-OSS 20B (Vercel AI Gateway),0.03,0.00,0.00,0.00,0.14,1.0,1.0,0,1.0,0,1.0,0,0
+amazon/nova-lite,Nova Lite (Vercel AI Gateway),0.06,0.00,0.00,0.015,0.24,1.0,1.0,0,1.0,0,1.0,0,0
+meta/muse-ember,Muse Ember (Vercel AI Gateway),0.10,0.00,0.00,0.004,0.50,1.0,1.0,0,1.0,0,1.0,0,0
+zai/glm-4.7-flash,GLM 4.7 Flash (Vercel AI Gateway),0.07,0.00,0.00,0.00,0.40,1.0,1.0,0,1.0,0,1.0,0,0
+alibaba/qwen3.7-flash,Qwen 3.7 Flash (Vercel AI Gateway),0.03,0.00,0.00,0.006,0.13,1.0,1.0,0,1.0,0,1.0,0,0
+mistral/mistral-nemo,Mistral Nemo (Vercel AI Gateway),0.029,0.00,0.00,0.00,0.03,1.0,1.0,0,1.0,0,1.0,0,0

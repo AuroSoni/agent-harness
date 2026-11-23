@@ -4,6 +4,7 @@ from .calculator import (
     ModelPricing,
     calculate_step_cost,
     load_pricing,
+    reported_cost,
     resolve_model_pricing,
 )
 from .settlement import (
@@ -16,6 +17,7 @@ __all__ = [
     "ModelPricing",
     "calculate_step_cost",
     "load_pricing",
+    "reported_cost",
     "resolve_model_pricing",
     "CsvPricingPolicy",
     "PricingPolicy",

@@ -413,7 +413,14 @@ async def provider_history_replaced(provider: Any, messages: list["Message"]) ->
 
 
 def provider_for_child(provider: Any, spec: Any) -> Any:
-    """``provider.for_child(spec)``, or None (keep the default) when it has none."""
+    """The provider for a sub-agent built from ``spec``.
+
+    A provider a ``ModelRouter`` returned carries it as ``model_router``, and
+    the router decides, by the child's model. Otherwise ``provider.for_child(spec)``,
+    or None (keep the default) when it has none."""
+    router = getattr(provider, "model_router", None)
+    if router is not None:
+        return router.child_provider(provider, spec)
     fn = getattr(provider, "for_child", None)
     return fn(spec) if fn is not None else None
 

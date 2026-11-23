@@ -80,6 +80,7 @@ Each step is one provider call followed by whatever the response asks for. `curr
 
 - A completed or errored run always ends with `run_completed`. An aborted one has no `run_completed`; it ends with the marker, except that a run aborted while paused, and a sub-agent, send no marker.
 - A provider error that says the request is too large is a different path from the stop reason above: if compaction cannot shrink the context, the run ends as errored.
+- A reply whose stream fails after its frames went out (the provider keeps what streamed and returns it with `partial_error`) ends the run as errored: the step is logged as it streamed, so the client has seen it once, but the half reply is neither the run's answer nor sent back as context.
 - `on_turn_end` fires when the model finishes. A hook that answers `continue` appends a hidden user message and the loop carries on; only `max_steps` bounds this.
 - A refusal's response is removed from the context, so it is not replayed to the model on the next run.
 

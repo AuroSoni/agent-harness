@@ -101,6 +101,8 @@ The summarizing call's usage is not billed and is not a step.
 
 The logs keep the original; only the context gets the reference. Tools can also cap their own output before this backstop: see [Tools](tools.md#large-results).
 
+A `read_file` result, the tool the reference names, is never externalized: its own paging bounds a read, and with a limit below one page, reading a reference back would only produce another reference to the same content.
+
 ## Errors
 
 - **Provider errors** are classified and retried by the [provider](providers.md#errors-and-retries). What survives the retries reaches the loop.

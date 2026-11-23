@@ -42,7 +42,9 @@ describes the behaviour the package pins.
 | `fork_reset/` | `features/fork-and-reset.md` | `fork_session`, `reset_session`, `CheckpointAdapter`, the checkpoint codec, sandbox snapshots |
 | `finalization/` | `features/answer-finalization.md` | `early_answer_completion`, the finalization journal |
 | `memory/` | `CLAUDE.md` (characters without a file) | memory stores, `MemoryContribution` |
-| `providers/` | `subsystems/providers.md` | `Provider` value, `RetryPolicy`, `make_llm_config` |
+| `providers/` | `subsystems/providers.md` | `Provider` value, `RetryPolicy`, `make_llm_config`; the conformance tier every provider passes; `ModelRouter`, `VercelGateway`, `OpenAIChatProvider`, the model catalog (planned in `planned_items/multi-provider-models.md`) |
+| `claude_code_provider/` | `planned_items/claude-code-provider.md` | `ClaudeCodeProvider`: its parts, steps, errors, resume and fallback; scenarios of a run's life through the CLI (lifecycle, failures, compaction, the common tools) |
+| `vercel_gateway_provider/` | `planned_items/multi-provider-models.md` | scenarios of a run's life on Vercel AI Gateway, end to end through `AnthropicAgent` and `SessionManager`: lifecycle, failures, compaction and externalization, billing, the common tools |
 | `core/` | `subsystems/turn-loop.md`, `features/run.md` | `AgentRuntime`, `record_turn`, `ErrorCode` |
 | `pricing_cost/` | `features/billing-a-run.md` | `TurnSettlement`, `SettlementAggregator`, `cost_for_turn` |
 | `python_executors/` | `CLAUDE.md` (characters without a file) | executor interfaces |

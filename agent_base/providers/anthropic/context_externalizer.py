@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 
 CONTEXT_DIR = ".context"
+#: The tool the references tell the model to read an externalized file with.
+READER_TOOL = "read_file"
 
 
 def _strip_binary_data(obj: Any) -> Any:
@@ -148,6 +150,12 @@ class ContextExternalizer:
             if isinstance(block, ServerToolResultContent):
                 continue
 
+            # The reader the reference names stays inline: its own paging
+            # bounds a read, and externalizing it would only give the model a
+            # new reference to the same content, every time it read one.
+            if getattr(block, "tool_name", None) == READER_TOOL:
+                continue
+
             original_block = copy.deepcopy(block)
             original_blocks[index] = original_block
             block_tokens = self._estimate_tool_result_block_tokens(original_block)
@@ -260,7 +268,7 @@ class ContextExternalizer:
         """Return the inline reference text for an externalized prompt."""
         return (
             f"Content externalized to {path}. "
-            f"Use read_file with path='{path}' to access the full content."
+            f"Use {READER_TOOL} with path='{path}' to access the full content."
         )
 
     @staticmethod
@@ -268,5 +276,5 @@ class ContextExternalizer:
         """Return the inline reference text for an externalized tool result."""
         return (
             f"Tool result externalized to {path}. "
-            f"Use read_file with path='{path}' to access the full content."
+            f"Use {READER_TOOL} with path='{path}' to access the full content."
         )
