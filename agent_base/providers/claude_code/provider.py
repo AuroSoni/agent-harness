@@ -20,6 +20,10 @@ settles; it calls ``generate_stream`` once per step with the full history, as it
   sub-agents per level, hold one at once (``slots.py``).
 - Claude Code's own ``WebSearch`` and ``WebFetch`` stand in for Anthropic's web server tools, framed as server
   tools and held to their ``max_uses`` per step; every ``WebFetch`` URL passes the URL guard first.
+- Only a call to one of the library's tools as Claude Code holds it (``mcp__<server>__<tool>``) is a call for the
+  turn loop. Claude Code refuses any other name ("No such tool available", without calling a handler) and makes its
+  next model call at once; the step records the refused call as Claude Code's own, with that error, as its
+  transcript has it, and folds the next model call in. The loop never runs a call Claude Code refused.
 
 **After a compaction** (``history_replaced``) the process closes, and the next step starts a fresh session with
 the compacted history as text; that step's ledger point covers the compacted history from then on. Compaction's
@@ -205,9 +209,11 @@ class ClaudeCodeProvider:
         self._session_id: str | None = None
         self._msg_uuid: dict[str, str] = {}   # API message id -> its transcript entry's uuid
         self._uuid_seen = asyncio.Event()
-        self._cc_results: dict[str, tuple[str, bool]] = {}  # Claude Code's own web tools' results, by call id
-        self._cc_web_ids: set[str] = set()  # the call ids of those web tools, from the stream
+        # Calls Claude Code answers itself: its web tools, which it runs, and any tool it doesn't hold, which it refuses
+        self._cc_results: dict[str, tuple[str, bool]] = {}  # their results, by call id
+        self._cc_ids: set[str] = set()  # their call ids, from the stream
         self._cc_arrived = asyncio.Event()
+        self._held: frozenset[str] = frozenset()  # the library's tools as the process holds them (prefixed)
         self._open_queries = 0  # queries sent and not yet ended by a ResultMessage
         self._schemas_key: str | None = None
         self._pending: set[asyncio.Task] = set()
@@ -398,7 +404,7 @@ class ClaudeCodeProvider:
         self._last_error = None
         self._open_queries = 0
         self._cc_results.clear()
-        self._cc_web_ids.clear()
+        self._cc_ids.clear()
         client, self._client = self._client, None
         reader, self._reader = self._reader, None
         if client is not None and in_flight and wait:
@@ -626,6 +632,7 @@ class ClaudeCodeProvider:
                 return PermissionResultDeny(message=f"{name} is not available in this environment.")
 
             names = [s.name for s in tool_schemas]
+            self._held = frozenset(prefix + n for n in names)
             server = create_sdk_mcp_server(name=cfg.server_name, version="1.0.0", tools=self._mcp_tools(tool_schemas))
             opts = ClaudeAgentOptions(
                 model=model, effort=getattr(llm_config, "effort", None), cwd=str(cfg.workdir),
@@ -828,8 +835,8 @@ class ClaudeCodeProvider:
                         self._last_error = None  # a new model call: an earlier call's error is not its own
                     elif ev.get("type") == "content_block_start":
                         block = ev.get("content_block") or {}
-                        if block.get("type") == "tool_use" and block.get("name") in CC_WEB_TOOLS:
-                            self._cc_web_ids.add(block.get("id"))
+                        if block.get("type") == "tool_use" and block.get("name") not in self._held:
+                            self._cc_ids.add(block.get("id"))  # its result arrives as the CLI's UserMessage
                     await self._events.put(m.event)
                 elif isinstance(m, AssistantMessage):
                     self._session_id = m.session_id or self._session_id
@@ -843,8 +850,10 @@ class ClaudeCodeProvider:
                     if m.error:
                         self._last_error = (m.error, _blocks_text(m.content))
                 elif isinstance(m, UserMessage) and isinstance(m.content, list):
-                    for b in m.content:  # results of the tools Claude Code ran itself (its web tools); the CLI
-                        if isinstance(b, ToolResultBlock) and b.tool_use_id in self._cc_web_ids:  # echoes ours too
+                    # Results of the calls Claude Code answered itself (its web tools' results, its refusals). The
+                    # CLI echoes the library's own results here too; those are not kept.
+                    for b in m.content:
+                        if isinstance(b, ToolResultBlock) and b.tool_use_id in self._cc_ids:
                             c = b.content
                             text = c if isinstance(c, str) else "\n".join(
                                 x.get("text", "") for x in (c or []) if isinstance(x, dict))
@@ -901,7 +910,7 @@ class ClaudeCodeProvider:
         prefix = self.config.tool_prefix
         snapshot = None
         snaps: list = []
-        cc_ids: set[str] = set()
+        cc_ids: dict[str, str] = {}  # the calls Claude Code answers itself in this step: id -> name
         done: set[int] = set()  # the open reply's blocks that finished (content_block_stop)
         cut: str | None = None  # a reply was cut off mid-stream (the CLI's error kind); the CLI may resume it
 
@@ -925,14 +934,14 @@ class ClaudeCodeProvider:
         framed: set[str] = set()
         reader = self._reader
 
-        async def web_results(ids: list[str]) -> None:
-            """Wait for the results of Claude Code's own web calls, then frame them. A process that dies, or an
-            abort, ends the wait."""
+        async def own_results(ids: list[str]) -> None:
+            """Wait for the results of the calls Claude Code answered itself (its web tools' results, its refusals),
+            then frame them. A process that dies, or an abort, ends the wait."""
             ids = [i for i in ids if i not in framed]
             deadline = time.monotonic() + 600
             while any(i not in self._cc_results for i in ids) and time.monotonic() < deadline:
                 if reader is None or reader.done():
-                    raise _Fallback("the Claude Code process ended while its web tool ran")
+                    raise _Fallback("the Claude Code process ended before the result of a call it answers itself")
                 if cancellation_event is not None and cancellation_event.is_set():
                     return
                 self._cc_arrived.clear()
@@ -942,10 +951,11 @@ class ClaudeCodeProvider:
             if stream_tool_results:
                 for i in ids:
                     text, _ = self._cc_results.get(i, ("No result from Claude Code.", True))
-                    sink.emit(ToolResultDelta(agent_uuid=agent_uuid, tool_name="web_tool_result", tool_id=i,
+                    name = "web_tool_result" if cc_ids.get(i) in CC_WEB_TOOLS else cc_ids.get(i, "")
+                    sink.emit(ToolResultDelta(agent_uuid=agent_uuid, tool_name=name, tool_id=i,
                                               result_content=text, is_server_tool=True, is_final=True))
 
-        def web_ids(snap: Any) -> list[str]:
+        def own_ids(snap: Any) -> list[str]:
             return [b.id for b in snap.content if getattr(b, "type", "") == "server_tool_use" and b.id in cc_ids]
 
         async def events():
@@ -963,7 +973,7 @@ class ClaudeCodeProvider:
                     logger.warning("claude_code_reply_cut", kind=ev.kind, finished_blocks=len(done))
                     calls = close_cut()
                     if snaps:
-                        await web_results(web_ids(snaps[-1]))  # a finished web call of the cut reply
+                        await own_results(own_ids(snaps[-1]))  # a finished web or refused call of the cut reply
                     if calls:
                         return
                     cut = ev.kind  # text only: the CLI asks the model to resume, and that call folds in here
@@ -990,25 +1000,32 @@ class ClaudeCodeProvider:
                     done.add(typed.index)
                 if typed.type == "content_block_start" and getattr(typed.content_block, "type", "") == "tool_use":
                     name = typed.content_block.name
-                    if name in CC_WEB_TOOLS:  # Claude Code runs it: framed as a server tool, as Anthropic's are
-                        typed.content_block.type = "server_tool_use"
-                        cc_ids.add(typed.content_block.id)
-                    else:
+                    if name in self._held:  # one of the library's tools: a call for the turn loop
                         typed.content_block.name = name.removeprefix(prefix)
+                    else:
+                        # Claude Code answers it itself: it runs its web tools, and refuses any other name ("No such
+                        # tool available") without calling a handler. Framed as a server tool, as Anthropic's are,
+                        # with the result Claude Code gave; the loop never runs it.
+                        typed.content_block.type = "server_tool_use"
+                        cc_ids[typed.content_block.id] = name
+                        if name not in CC_WEB_TOOLS:
+                            logger.info("claude_code_call_refused", agent_uuid=agent_uuid, tool=name)
                 snapshot = accumulate_event(event=typed, current_snapshot=snapshot, request_headers=httpx.Headers())
                 if typed.type not in _NO_FRAME and not isinstance(sink, _NullSink):
                     streamed["any"] = True  # a frame of this step reached the client
                 yield typed
                 if typed.type == "message_stop":
                     snaps.append(snapshot)
-                    mine = web_ids(snapshot)
+                    mine = own_ids(snapshot)
                     calls = [b for b in snapshot.content if getattr(b, "type", "") == "tool_use"]
                     if mine:
-                        await web_results(mine)
+                        await own_results(mine)
                         if cancellation_event is not None and cancellation_event.is_set():
                             yield _PING  # the stream translator stops at the abort
                             return
-                    if mine and not calls:  # only web tools: fold Claude Code's next model call into this step
+                    if mine and not calls:
+                        # Only calls Claude Code answered itself: it makes its next model call at once, which folds
+                        # into this step.
                         snapshot = None
                         continue
                     return
@@ -1203,22 +1220,31 @@ def _summed_usage(usage_cls: Any, snaps: list) -> Any:
                      cache_read_tokens=raw.get("cache_read_input_tokens", 0), raw_usage=raw)
 
 
+def _claude_codes_own(block: Any) -> bool:
+    """A server-tool block of a call Claude Code answered itself: one of its web tools, or a call it refused. The
+    model made those as client calls, so they carry its client id, never an Anthropic server tool's ``srvtoolu_``."""
+    from agent_base.core.types import ServerToolResultContent, ServerToolUseContent
+
+    return isinstance(block, (ServerToolUseContent, ServerToolResultContent)) and (
+        block.tool_name in CC_WEB_TOOLS or not str(block.tool_id or "").startswith("srvtoolu_"))
+
+
 def _plain_history(messages: list) -> list:
-    """The history for the direct client: Claude Code's web-tool blocks (which the API would reject) become text."""
+    """The history for the direct client: the blocks of the calls Claude Code answered itself (its web tools, the
+    calls it refused), which the API would reject, become text."""
     from agent_base.core.types import ServerToolResultContent, ServerToolUseContent, TextContent
 
     out = []
     for m in messages:
         blocks = m.content or []
-        if not any(isinstance(b, (ServerToolUseContent, ServerToolResultContent)) and b.tool_name in CC_WEB_TOOLS
-                   for b in blocks):
+        if not any(_claude_codes_own(b) for b in blocks):
             out.append(m)
             continue
         new = []
         for b in blocks:
-            if isinstance(b, ServerToolUseContent) and b.tool_name in CC_WEB_TOOLS:
+            if isinstance(b, ServerToolUseContent) and _claude_codes_own(b):
                 new.append(TextContent(text=f"[{b.tool_name} {json.dumps(b.tool_input, ensure_ascii=False)}]"))
-            elif isinstance(b, ServerToolResultContent) and b.tool_name in CC_WEB_TOOLS:
+            elif isinstance(b, ServerToolResultContent) and _claude_codes_own(b):
                 text = b.tool_result if isinstance(b.tool_result, str) else json.dumps(b.tool_result, default=str)
                 new.append(TextContent(text=f"[{b.tool_name} result]\n{text}"))
             else:

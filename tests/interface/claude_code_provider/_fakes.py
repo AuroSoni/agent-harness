@@ -5,7 +5,9 @@ Each entry of a script is one model call: a list of blocks, or a ``failure(...)`
 into the options' ``session_store`` as the CLI does. A model call with tool calls makes the fake call each tool
 through the provider's real in-process MCP server, with the model's tool-call id in ``_meta`` as the CLI sends it,
 and stream the next model call once every result is back. Claude Code's own ``WebSearch`` / ``WebFetch`` the fake
-"runs" itself. No CLI, no model call, no network.
+"runs" itself. A call to any other tool the process doesn't hold (a bare name, without ``mcp__<server>__``) it
+refuses as the CLI does: an error result in its ``UserMessage``, no handler call, and the next model call at once.
+No CLI, no model call, no network.
 """
 
 from __future__ import annotations
@@ -42,6 +44,17 @@ def text(t: str) -> dict:
 def call(name: str, server: str = "agent_base", **args: Any) -> dict:
     """A call of one of the library's tools: Claude Code names it ``mcp__<server>__<tool>``."""
     return {"type": "tool_use", "id": f"toolu_{next(_ids)}", "name": f"mcp__{server}__{name}", "input": args}
+
+
+def bare(name: str, **args: Any) -> dict:
+    """A call by a tool's bare name, without the ``mcp__<server>__`` prefix Claude Code lists it under. The process
+    holds no tool of that name, so Claude Code refuses it (``NO_SUCH_TOOL``)."""
+    return {"type": "tool_use", "id": f"toolu_{next(_ids)}", "name": name, "input": args}
+
+
+#: Claude Code's result for a call to a tool it doesn't hold, with ``is_error``, as the transcripts of the CLI that
+#: claude-agent-sdk 0.2.180 bundles have it.
+NO_SUCH_TOOL = "<tool_use_error>Error: No such tool available: {}</tool_use_error>"
 
 
 def web(name: str, result: str, **args: Any) -> dict:
@@ -166,9 +179,13 @@ class FakeClaudeCode:
             self.push(result_message(self.session_id))
             return
         mine = [b for b in uses if b["name"] in CC_WEB]
-        if mine:
-            self.push(UserMessage(content=[ToolResultBlock(tool_use_id=b["id"], content=b["result"]) for b in mine]))
-        theirs = [b for b in uses if b["name"] not in CC_WEB]
+        held = set(self.opts.allowed_tools or [])
+        refused = [b for b in uses if b["name"] not in CC_WEB and b["name"] not in held]
+        if mine or refused:
+            self.push(UserMessage(content=[ToolResultBlock(tool_use_id=b["id"], content=b["result"]) for b in mine]
+                                  + [ToolResultBlock(tool_use_id=b["id"], content=NO_SUCH_TOOL.format(b["name"]),
+                                                     is_error=True) for b in refused]))
+        theirs = [b for b in uses if b["name"] not in CC_WEB and b["name"] in held]
         if theirs:
             self.tool_calls.append(asyncio.create_task(self._run_tools(theirs)))
         else:
