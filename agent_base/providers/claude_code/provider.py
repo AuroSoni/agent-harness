@@ -24,6 +24,10 @@ settles; it calls ``generate_stream`` once per step with the full history, as it
   turn loop. Claude Code refuses any other name ("No such tool available", without calling a handler) and makes its
   next model call at once; the step records the refused call as Claude Code's own, with that error, as its
   transcript has it, and folds the next model call in. The loop never runs a call Claude Code refused.
+- So the process's system prompt is the host's with a note after it: the library's tools are held as
+  ``mcp__<server>__<tool>``, and a tool the instructions or a result name bare is called by that full name. The
+  note depends only on the server and the tool names, so a session's processes get the same bytes; the library's
+  history, and the direct client, keep the host's prompt.
 
 **After a compaction** (``history_replaced``) the process closes, and the next step starts a fresh session with
 the compacted history as text; that step's ledger point covers the compacted history from then on. Compaction's
@@ -49,6 +53,7 @@ import contextlib
 import copy
 import dataclasses
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -619,19 +624,19 @@ class ClaudeCodeProvider:
         self._last_error = None
         try:
             (cfg.workdir / "prompts").mkdir(parents=True, exist_ok=True)
+            names = [s.name for s in tool_schemas]
+            prefix = cfg.tool_prefix
             stem = f"oneshot-{uuid.uuid4().hex}" if self.one_shot else (self._agent_uuid or f"provider-{id(self)}")
             self._prompt_file = cfg.workdir / "prompts" / f"{stem}.txt"  # Windows' command line is too short
-            self._prompt_file.write_text(system_prompt, encoding="utf-8")
+            self._prompt_file.write_text(_with_held_names(system_prompt, cfg.server_name, names), encoding="utf-8")
             self._web_limits = {} if self.one_shot else web_tools_for(llm_config, cfg.web_tools)
             web = list(self._web_limits)
-            prefix = cfg.tool_prefix
 
             async def policy(name: str, tool_input: Any, context: Any) -> Any:
                 if name.startswith(prefix) or name in web:
                     return PermissionResultAllow()
                 return PermissionResultDeny(message=f"{name} is not available in this environment.")
 
-            names = [s.name for s in tool_schemas]
             self._held = frozenset(prefix + n for n in names)
             server = create_sdk_mcp_server(name=cfg.server_name, version="1.0.0", tools=self._mcp_tools(tool_schemas))
             opts = ClaudeAgentOptions(
@@ -1140,6 +1145,23 @@ def prune_prompt_files(workdir: Path | str, *, days: int) -> int:
                 path.unlink()
                 deleted += 1
     return deleted
+
+
+def _with_held_names(system_prompt: str, server_name: str, tool_names: list[str]) -> str:
+    """The system prompt a Claude Code process is given: the host's, then a note that the library's tools are held
+    as ``mcp__<server>__<tool>``, with one tool as the example (the first, by name, that the prompt names; else the
+    first by name). The host's prompt names its tools bare, and a model that calls a bare name gets Claude Code's
+    "No such tool available" and a model call spent. The note depends only on the server and the tool names, never
+    their order, so a session's processes get the same bytes. No tools, no note."""
+    if not tool_names:
+        return system_prompt
+    names = sorted(set(tool_names))
+    example = next((n for n in names if re.search(rf"(?<![\w]){re.escape(n)}(?![\w])", system_prompt)), names[0])
+    prefix = f"mcp__{server_name}__"
+    note = (f"The tools these instructions describe are held by the MCP server `{server_name}`, so each one's name "
+            f"starts with `{prefix}`. Where the instructions or a tool's result name one of them without that "
+            f"prefix, such as `{example}`, call it by its full name, `{prefix}{example}`.")
+    return f"{system_prompt}\n\n{note}" if system_prompt else note
 
 
 def _is_prompt(m: Any) -> bool:

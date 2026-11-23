@@ -866,7 +866,9 @@ async def test_a_system_prompt_change_mid_run_reaches_claude_code(tmp_path):
     await _run(agent, "Be terse, then: what is 2 + 3?")
     assert agent.agent_config.system_prompt == "Answer in one word."
     prompt_file = Path(h.last.opts.system_prompt["path"])
-    assert prompt_file.read_text(encoding="utf-8") == "Answer in one word.",         "the step after the switch ran on a process started with the old system prompt"
+    # The host's prompt, then the note on the tools' held names (test_claude_code_provider_tool_names.py).
+    assert prompt_file.read_text(encoding="utf-8").startswith("Answer in one word.\n\n"), \
+        "the step after the switch ran on a process started with the old system prompt"
     await _no_leaks(h)
 
 

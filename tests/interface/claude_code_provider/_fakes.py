@@ -123,9 +123,11 @@ class FakeClaudeCode:
         self.q: asyncio.Queue = asyncio.Queue()
         self.session_id = opts.resume if (opts.resume and not opts.fork_session) else f"cc-{uuid.uuid4().hex[:8]}"
         self.project_key = project_key_for_directory(str(opts.cwd))
+        self.system_prompt: str | None = None  # the system prompt this process was given, read as the CLI starts
 
     async def connect(self) -> None:
-        return None
+        # The CLI reads its system prompt file when it starts; the provider rewrites the session's file per process.
+        self.system_prompt = Path(self.opts.system_prompt["path"]).read_text(encoding="utf-8")
 
     async def query(self, prompt: Any) -> None:
         async for m in prompt:
