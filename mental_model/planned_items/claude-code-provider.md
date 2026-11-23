@@ -35,7 +35,7 @@ flowchart LR
 
 ## How a step works
 
-This is the reference build's, with three changes: an error the model API reports through the CLI fails the step typed instead of being missed, a reply cut off mid-stream keeps the CLI's shape of it, and a run keeps its process slot across a restart.
+This is the reference build's, with five changes: an error the model API reports through the CLI fails the step typed instead of being missed, a reply cut off mid-stream keeps the CLI's shape of it, a run keeps its process slot across a restart, a call Claude Code refused is recorded as refused instead of run, and the model is told the names its tools are held under.
 
 ```mermaid
 sequenceDiagram
@@ -55,13 +55,17 @@ sequenceDiagram
   H-->>S: one tool_result per call; the next model call runs on the same process
 ```
 
-- **What the process is given:** the system prompt, as a file in one working folder; the library's tool schemas, as in-process MCP tools; no Claude Code tools but `WebSearch` and `WebFetch`; no settings files, `CLAUDE.md` files, plugins or auto-compaction; a permission callback that refuses anything else; an environment with secret-looking variables blanked and `ANTHROPIC_API_KEY` empty.
+- **What the process is given:** the system prompt, as a file in one working folder, with a note on the tools' names after it (below); the library's tool schemas, as in-process MCP tools; no Claude Code tools but `WebSearch` and `WebFetch`; no settings files, `CLAUDE.md` files, plugins or auto-compaction; a permission callback that refuses anything else; an environment with secret-looking variables blanked and `ANTHROPIC_API_KEY` empty.
 - **A handler finds its call** by the tool-call id Claude Code sends in the MCP request's `_meta` (`claudecode/toolUseId`). Parallel calls each get their own result. A paused run's handlers keep waiting in the live process.
 - **Only a call Claude Code holds reaches the turn loop.** Claude Code lists the library's tools as `mcp__<server>__<tool>`, and a call to one of the tools the process was given is the only kind the loop runs (with the prefix stripped). Claude Code answers every other call itself, and the step records it as Claude Code's own, as it records the web tools: a server-tool call and its result, with the result the CLI reported.
   - A call by a tool's bare name (`set_cell` for `mcp__agent_base__set_cell`), or to any other tool the process doesn't hold, is one Claude Code refuses: it returns `No such tool available` without calling a handler, and makes its next model call at once. The step keeps the refused call with that error, as the CLI's transcript has it, and folds the next model call in, where the model usually retries by the full name. So the loop runs the call once, and a frontend tool's client is asked once.
   - A reply that holds a refused call and a call Claude Code holds ends the step there, as any tool call does; the loop runs the held one.
 
   The step used to strip the prefix from every block that wasn't a web tool, so a bare-name call reached the loop unchanged and ran, while the model saw only Claude Code's refusal and called the tool again. In one benchmark of Nova's, 28 of 50 runs sent their first write twice that way.
+- **The model is told the names its tools are held under.** A host's prompt names its tools bare, and each call the model makes by a bare name still costs a model call: Claude Code's refusal, then the retry. In Nova's benchmarks almost all of them were a run's first call to a tool, made before any call by the full name. So the process's system prompt is the host's, then one paragraph: the tools are held by the MCP server `<server>`, so each one's name starts with `mcp__<server>__`; where the instructions or a tool's result name one without that prefix, such as `<example>`, call it by its full name, `mcp__<server>__<example>`. The example is the first tool, by name, that the host's prompt names; else the first tool by name.
+  - The note depends only on the server name and the tool names, never their order. So every process of a session (each run's, a cold load's) is given the same bytes, and the process key stays the host's prompt and tools: the note restarts nothing. Claude Code's transcript doesn't hold the system prompt, so a resume doesn't see it.
+  - A process with no tools (compaction's summary) gets the host's prompt as it is. A sub-agent on Claude Code gets the note for its own tools.
+  - It is Claude Code's alone. The library's history keeps the host's prompt, and so does the direct client after a fallback; it lists the tools by their bare names, as the other providers do.
 - **One process per run.** It closes after a final reply, on abort, on eviction, and at the end of a run that left tool calls unanswered. It closes gracefully, because the CLI writes its last transcript entries only as it ends: a query still in flight is interrupted first (before its handlers answer "stopped", so the CLI makes no model call on them), then stdin closes and the process is read until it exits. An abort's step doesn't wait for that teardown; the run's end does. At most `max_processes` runs hold a process at once, and `max_child_processes` sub-agents per level (see Sub-agents below); a run that finds none free within 15 s is one Claude Code can't carry. A run holds its **slot** from its first model call (or its first compaction summary) to its end: when its process restarts mid-run (a compaction, a failed call, a new tool roster), the slot stays the run's.
 - **The two histories.** `context_messages` stays the one that counts. Claude Code's transcript is a copy the CLI needs in order to resume. The **ledger** maps the fingerprint of each point where a model call ended to the transcript entry holding the same point. A run's first step resumes at the longest prefix the ledger knows whose entry the store holds (a process that died before writing its transcript out leaves points the transcript lacks, and the CLI refuses to resume at one): a plain resume, a branch (`resume_session_at` + `fork_session`) for a reset or a fork, or a resume at the last point with what follows sent as text, in order. With no point (a reply cut off before its point was recorded, a history edited between runs, a session that ran on the direct client before) or a ledger that fails, a fresh session takes the whole history as text, as after a compaction, and the session stays on Claude Code.
 - **The ledger keys the history as the host stores it.** The runtime renders the run's own prompt with what it adds for that run only (memory, a hook's `additional_context`); the next run renders it without them. So the runtime passes the provider `stored_messages=`, the history without those contributions, when the provider asks (`wants_stored_messages`). The CLI still gets the rendered view.
@@ -215,6 +219,10 @@ The developer's answers of 11 Nov 2026, folded into the sections above:
 - The library owns the two tables and their Postgres adapters.
 - The default MCP server name is `agent_base`. A host whose transcripts were written under another name passes that name, so its resumes keep matching.
 - Compaction on Claude Code is option A: the summary through `side_calls()`, then a fresh session from the compacted history. Compaction stays opt-in through `CompactionConfig`.
+
+The developer's answer of 23 Nov 2026:
+
+- The model learns its tools' held names from a note the provider adds after the host's prompt. Not chosen: rewriting the bare names in the host's prompt, a line in each tool's description, or a provider-neutral way for a host to name its tools.
 
 ## Depends on
 
