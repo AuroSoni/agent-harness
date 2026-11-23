@@ -67,7 +67,9 @@ class FakeProcess:
         return True
 
 
-class _FailedProcess:
+class _EndedProcess:
+    """A process that has already ended, with its exit."""
+
     def __init__(self, exit: RemoteExit) -> None:
         self._exit = exit
         self.pid = 0
@@ -78,6 +80,86 @@ class _FailedProcess:
 
     async def kill(self) -> bool:
         return False
+
+
+def _through_link(root: Path, path: Path) -> bool:
+    """Whether ``path``, or a folder between it and ``root``, is a symlink."""
+    while path != root:
+        if path.is_symlink():
+            return True
+        path = path.parent
+    return False
+
+
+def _export_without_dir_fd(env: dict[str, str]) -> RemoteExit:
+    """The export helper's protocol, for a host with no directory descriptors.
+
+    The real helper (``agent_base/sandbox/remote_scripts/export_files.py``)
+    walks with ``dir_fd`` and ``O_NOFOLLOW``, which only POSIX offers. It runs
+    inside the Linux VM, and on a POSIX host this fake runs it for real. On
+    Windows it cannot start, so this stand-in answers the same three modes
+    (``list``, ``manifest``, ``read``) with the same records and exit codes,
+    and skips symlinks. It is not the symlink check: those specs run on POSIX
+    hosts only.
+    """
+    import base64
+    import hashlib
+    import json
+
+    root = Path(env["SBX_EXPORT_ROOT"])
+    mode = env["SBX_EXPORT_MODE"]
+    lines: list[str] = []
+
+    def emit(record: dict[str, Any]) -> None:
+        lines.append(json.dumps(record, separators=(",", ":")) + "\n")
+
+    def done(code: int) -> RemoteExit:
+        return RemoteExit(exit_code=code, stdout="".join(lines), stderr="")
+
+    if mode in ("list", "manifest"):
+        make_hash = None
+        if mode == "manifest":
+            try:
+                from blake3 import blake3 as make_hash
+            except ImportError:
+                emit({"error": "hash_unavailable"})
+                return done(3)
+        files: dict[str, list[Any]] = {}
+        rejected = 0
+        if root.is_dir():
+            for path in sorted(root.rglob("*")):
+                rel = path.relative_to(root).as_posix()
+                if _through_link(root, path):
+                    rejected += 1
+                    continue
+                if not path.is_file():
+                    continue
+                data = path.read_bytes()
+                files[rel] = [make_hash(data).hexdigest() if make_hash else None, len(data)]
+        emit({"files": files, "rejected_count": rejected})
+        return done(0)
+    if mode == "read":
+        parts = env.get("SBX_EXPORT_PATH", "").split("/")
+        if not parts or any(p in ("", ".", "..") for p in parts):
+            emit({"error": "unsafe_path"})
+            return done(4)
+        path = root
+        for part in parts:
+            path = path / part
+            if path.is_symlink():
+                emit({"error": "unsafe_path"})
+                return done(4)
+        if not path.is_file():
+            emit({"error": "not_found"})
+            return done(5)
+        data = path.read_bytes()
+        for offset in range(0, len(data), 32768):
+            chunk = data[offset:offset + 32768]
+            emit({"offset": offset, "data": base64.b64encode(chunk).decode("ascii")})
+        emit({"size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+        return done(0)
+    emit({"error": "export_io_failed"})
+    return done(6)
 
 
 class FakeHandle:
@@ -301,6 +383,14 @@ class FakeHandle:
             )
         env.setdefault("SYSTEMROOT", os.environ.get("SYSTEMROOT", ""))
         env.setdefault("PATH", os.environ.get("PATH", ""))
+        # Only for a real interpreter: a command naming a missing one must
+        # still fail as it would in the VM.
+        if interpreter and "SBX_EXPORT_MODE" in env and not os.supports_dir_fd:
+            ended = _export_without_dir_fd(env)
+            if on_stdout is not None:
+                for line in ended.stdout.splitlines(keepends=True):
+                    on_stdout(line)
+            return _EndedProcess(ended)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -314,7 +404,7 @@ class FakeHandle:
             message = f"{argv[0]}: command not found\n"
             if on_stderr is not None:
                 on_stderr(message)
-            return _FailedProcess(RemoteExit(exit_code=127, stdout="", stderr=message))
+            return _EndedProcess(RemoteExit(exit_code=127, stdout="", stderr=message))
 
         async def _pump(stream, cb, sink: list[str]) -> None:
             assert stream is not None
