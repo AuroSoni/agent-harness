@@ -279,7 +279,7 @@ class ToolRegistry:
 
         registered = self._tools[tool_name]
         clock = SpanClock()
-        start = time.monotonic()
+        start = time.perf_counter()  # SpanClock's clock: the window is derived from this duration
 
         call_kwargs = dict(tool_input)
         if ctx is not None and _accepts_ctx(registered.func):
@@ -304,7 +304,7 @@ class ToolRegistry:
             # Retain runtime-only raised exception for hooks.
             envelope.raised_error = e
 
-        envelope.duration_ms = (time.monotonic() - start) * 1000
+        envelope.duration_ms = (time.perf_counter() - start) * 1000
         trace_safe(
             "registry.execute.window", _stamp_window, envelope, clock, envelope.duration_ms
         )
