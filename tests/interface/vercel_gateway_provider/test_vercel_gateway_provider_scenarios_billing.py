@@ -152,17 +152,12 @@ async def test_a_model_with_no_row_and_no_charge_costs_zero_and_logs_unknown_mod
     await h.no_leaks()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known bug: calculate_step_cost subtracts cached tokens from input_tokens, which the Anthropic, "
-           "Claude Code and OpenAI Chat providers already count without them (only LiteLLM counts them in). "
-           "Fixed separately; this spec then passes and the mark comes off.")
 async def test_cached_tokens_are_left_out_of_the_input_count_and_priced_once_by_the_row(tmp_path):
     """A prompt of 1,000,000 tokens, 600,000 of them read from the cache, with no charge reported. The provider's
     ``Usage`` counts the cached part apart (``input_tokens`` 400,000, ``cache_read_tokens`` 600,000), "as Anthropic
-    does" (``_usage``). The row should price 400,000 input tokens at $0.30 per million and 600,000 cached ones at
-    $0.03: $0.138. ``calculate_step_cost`` takes the cached tokens out of ``input_tokens`` again, as if they were a
-    part of it, so the uncached input is billed at nothing."""
+    does" (``_usage``). The row prices 400,000 input tokens at $0.30 per million and 600,000 cached ones at
+    $0.03: $0.138. ``calculate_step_cost`` prices ``input_tokens`` as the uncached input alone, so each token is
+    priced once."""
     h = Harness(text("Hi.", u=usage(MILLION, 0, cached=600_000, cost=None)))
     agent = h.agent(sandbox=_sandbox(tmp_path))
     result = await agent.run("Hi.")
