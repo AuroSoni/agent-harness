@@ -168,7 +168,7 @@ async def test_generate_builds_request_and_parses_usage(
         return StubResponse(
             choices=[StubChoice(message=StubMessage(content="PONG"), finish_reason="stop")],
             usage=StubUsage(
-                prompt_tokens=12,
+                prompt_tokens=32,
                 completion_tokens=4,
                 prompt_tokens_details={
                     "cached_tokens": 3,
@@ -213,7 +213,8 @@ async def test_generate_builds_request_and_parses_usage(
     assert isinstance(result.content[0], TextContent)
     assert result.content[0].text == "PONG"
     assert result.usage is not None
-    assert result.usage.input_tokens == 12
+    # prompt_tokens counts the cache reads and writes in; Usage counts them apart.
+    assert result.usage.input_tokens == 32 - 3 - 9
     assert result.usage.output_tokens == 4
     assert result.usage.cache_read_tokens == 3
     assert result.usage.cache_write_tokens == 9
@@ -391,6 +392,7 @@ async def test_generate_parses_usage_detail_objects(
     )
 
     assert result.usage is not None
+    assert result.usage.input_tokens == 20 - 4 - 7
     assert result.usage.cache_read_tokens == 4
     assert result.usage.cache_write_tokens == 7
     assert result.usage.thinking_tokens == 3
