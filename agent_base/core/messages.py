@@ -17,6 +17,13 @@ class Usage:
     identity (provider/model) and billing context (usage_kwargs) live on
     Message where they are unambiguous when summing across steps.
 
+    ``input_tokens`` is the uncached input alone, for every provider. The
+    prompt's cache reads and cache writes are counted apart, in
+    ``cache_read_tokens`` and ``cache_write_tokens``, never inside
+    ``input_tokens``; the prompt's size is the sum of the three. A provider
+    whose API counts cached tokens into its prompt total (OpenAI's
+    ``prompt_tokens``) subtracts them when it builds this value.
+
     Follows the ``Serializable`` convention:
     ``to_dict()`` stamps the library-wide ``CORE_SCHEMA_VERSION`` under ``_v``;
     ``from_dict()`` tolerates the stamp, unknown keys, and missing keys.

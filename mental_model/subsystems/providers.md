@@ -105,6 +105,8 @@ Frame shapes are in [Streaming](streaming.md).
 
 Stop reasons are mapped to the loop's vocabulary: `stop` to `stop`, `tool_calls` to `tool_use`, `length` to `max_tokens`.
 
+Usage is mapped to the library's terms, where `input_tokens` is the uncached input alone ([Billing a run](../features/billing-a-run.md#pricing-a-step)). LiteLLM's `prompt_tokens` counts the cached part in (for an Anthropic model it adds the cache reads and writes), so `input_tokens` is `prompt_tokens` less `cached_tokens` and `cache_creation_tokens`, which become `cache_read_tokens` and `cache_write_tokens`.
+
 ## Contracts
 
 Part of the [`agent-base` package contract](../infrastructure/packaging-and-release.md): `AnthropicAgent` and its constructor, `AnthropicLLMConfig`, `LiteLLMAgent`, `LiteLLMConfig`, and the `Provider`, `ProviderTurn`, `ProviderError` and `RetryPolicy` types.

@@ -496,11 +496,18 @@ class LiteLLMProvider(Provider):
             _get_value(raw_usage, "completion_tokens_details")
         )
 
+        # ``prompt_tokens`` counts the cached part in (for an Anthropic model,
+        # LiteLLM adds the cache reads and writes to it); ``Usage`` counts it
+        # apart, so the uncached input is what is left.
+        prompt_tokens = _get_value(raw_usage, "prompt_tokens", 0) or 0
+        cached_tokens = prompt_tokens_details.get("cached_tokens")
+        cache_creation_tokens = prompt_tokens_details.get("cache_creation_tokens")
+
         return Usage(
-            input_tokens=_get_value(raw_usage, "prompt_tokens", 0) or 0,
+            input_tokens=max(prompt_tokens - (cached_tokens or 0) - (cache_creation_tokens or 0), 0),
             output_tokens=_get_value(raw_usage, "completion_tokens", 0) or 0,
-            cache_read_tokens=prompt_tokens_details.get("cached_tokens"),
-            cache_write_tokens=prompt_tokens_details.get("cache_creation_tokens"),
+            cache_read_tokens=cached_tokens,
+            cache_write_tokens=cache_creation_tokens,
             thinking_tokens=completion_tokens_details.get("reasoning_tokens"),
             raw_usage=self._serialize_usage(raw_usage),
         )

@@ -179,6 +179,11 @@ def reported_cost(usage: Usage) -> float | None:
 def calculate_step_cost(usage: Usage, model_name: str) -> CostBreakdown | None:
     """Calculate the cost for a single API call.
 
+    Each token is priced once, at its own rate: ``usage.input_tokens`` (the
+    uncached input alone) at the input rate, ``cache_read_tokens`` at the
+    cache-read rate, and the cache writes at the 5-minute or 1-hour write rate.
+    The long-context threshold is measured on all four together.
+
     Reads Anthropic-specific billing context (cache TTL breakdown,
     server tool counts, inference_geo, service_tier, speed) from
     ``usage.raw_usage`` to apply the correct pricing multipliers.
@@ -240,10 +245,9 @@ def calculate_step_cost(usage: Usage, model_name: str) -> CostBreakdown | None:
     cache_w1h_rate = pricing.cache_write_1h_per_mtok * m_fast * m_longctx_in * m_batch * m_geo
     cache_r_rate = pricing.cache_read_per_mtok * m_fast * m_longctx_in * m_batch * m_geo
 
-    # Base input tokens = input_tokens minus cache tokens (they are a subset)
-    base_input = max(0, input_tokens - (cache_write_5m + cache_write_1h) - cache_read)
-
-    input_cost = (base_input / _MTOK) * input_rate
+    # input_tokens is the uncached input alone: every provider counts cache
+    # reads and writes apart from it (see Usage), so each is priced once here.
+    input_cost = (input_tokens / _MTOK) * input_rate
     output_cost = (output_tokens / _MTOK) * output_rate
     cache_write_5m_cost = (cache_write_5m / _MTOK) * cache_w5m_rate
     cache_write_1h_cost = (cache_write_1h / _MTOK) * cache_w1h_rate
