@@ -1,4 +1,5 @@
 """EX-1: E2B export discovery and publication refuse symlink paths."""
+import os
 import sys
 
 import pytest
@@ -7,6 +8,10 @@ from agent_base.sandbox import E2BSandbox, SandboxPathEscapeError
 from tests.unit.sandbox.fake_e2b import FakeE2BTransport
 
 
+@pytest.mark.skipif(
+    not os.supports_dir_fd,
+    reason="the export helper refuses links through dir_fd and O_NOFOLLOW, which only POSIX offers; "
+           "the fake's stand-in on other hosts is not the symlink check")
 async def test_e2b_exports_publish_regular_nested_files_but_never_links(tmp_path):
     transport = FakeE2BTransport(tmp_path / 'vm')
     sandbox = E2BSandbox(sandbox_id='exports', transport=transport, python_path=sys.executable)

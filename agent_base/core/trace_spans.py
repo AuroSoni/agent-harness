@@ -56,20 +56,26 @@ class SpanClock:
     The end instant is derived from the start plus the monotonic elapsed
     time, so a wall-clock step mid-interval cannot make an interval disagree
     with its own length.
+
+    The elapsed time is read from ``time.perf_counter``, monotonic like
+    ``time.monotonic`` and the same clock on Linux. On Windows
+    ``time.monotonic`` ticks every 15.6 ms, so a derived end instant could
+    land after a wall-clock instant stamped later (a relay span's
+    ``paused_at``); ``perf_counter`` resolves to well under a microsecond.
     """
 
     __slots__ = ("_started_wall", "_started_mono")
 
     def __init__(self) -> None:
         self._started_wall = datetime.now(timezone.utc)
-        self._started_mono = time.monotonic()
+        self._started_mono = time.perf_counter()
 
     @property
     def started_at(self) -> str:
         return self._started_wall.isoformat()
 
     def elapsed_ms(self) -> float:
-        return (time.monotonic() - self._started_mono) * 1000
+        return (time.perf_counter() - self._started_mono) * 1000
 
     def window(self, elapsed_ms: float | None = None) -> tuple[str, str, float]:
         """``(started_at, ended_at, elapsed_ms)`` ending now, or after

@@ -9,7 +9,15 @@ from agent_base.sandbox.remote_scripts import export_files
 from .fake_e2b import FakeE2BTransport
 from .test_e2b_sandbox import _make, _multiroot
 
+#: The symlink checks below test the export helper itself, which refuses links
+#: through ``dir_fd`` and ``O_NOFOLLOW``. Only POSIX offers those, so on any
+#: other host they are skipped rather than run against the fake's stand-in.
+posix_only = pytest.mark.skipif(
+    not os.supports_dir_fd,
+    reason="the export helper refuses links through dir_fd and O_NOFOLLOW, which only POSIX offers")
 
+
+@posix_only
 @pytest.mark.parametrize("absolute", [False, True])
 @pytest.mark.parametrize("fallback", [False, True])
 async def test_exports_skip_symlinks_and_direct_reads_refuse_them(tmp_path, monkeypatch, absolute, fallback):
@@ -37,6 +45,7 @@ async def test_exports_skip_symlinks_and_direct_reads_refuse_them(tmp_path, monk
     assert transport.bytes_read == 0
 
 
+@posix_only
 @pytest.mark.parametrize('parent', [False, True])
 async def test_export_root_and_ancestor_symlinks_are_refused(tmp_path, parent):
     transport = FakeE2BTransport(tmp_path / 'remote')
@@ -52,6 +61,7 @@ async def test_export_root_and_ancestor_symlinks_are_refused(tmp_path, parent):
             await operation()
 
 
+@posix_only
 async def test_file_swapped_after_manifest_cannot_be_exported(tmp_path):
     transport = FakeE2BTransport(tmp_path / 'remote')
     sb = _multiroot(transport)
@@ -67,6 +77,7 @@ async def test_file_swapped_after_manifest_cannot_be_exported(tmp_path):
         _ = [c async for c in sb.get_exported_file('report.txt')]
 
 
+@posix_only
 @pytest.mark.parametrize('directory', [False, True])
 def test_symlink_swap_between_stat_and_open_is_refused(tmp_path, monkeypatch, directory):
     root = tmp_path / 'exports'
