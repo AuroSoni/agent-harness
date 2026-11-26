@@ -50,6 +50,7 @@ async def test_what_the_cli_is_given(tmp_path):
     assert o.system_prompt["type"] == "file"
     assert o.resume is None and o.fork_session is False
     assert o.env["ANTHROPIC_API_KEY"] == "" and o.env["DISABLE_AUTO_COMPACT"] == "1"
+    assert o.env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
     assert o.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "8000"
     assert o.session_store is h.store
     assert type(await o.can_use_tool("mcp__agent_base__add", {}, None)).__name__ == "PermissionResultAllow"

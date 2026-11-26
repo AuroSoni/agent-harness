@@ -47,6 +47,12 @@ def test_the_clis_environment_carries_no_secret_but_the_login(monkeypatch):
     assert cli_env(DEFAULT_SECRET_PATTERNS + ("^VENDOR_",))["VENDOR_ONLY"] == ""
 
 
+def test_claude_codes_own_memory_is_off():
+    """Every process runs in the one ``workdir``, and Claude Code keeps its auto memory per project folder, so
+    left on it would be one store across every user of the host. The host's memory is the only one."""
+    assert cli_env()["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+
+
 def test_request_fields_refused_or_ignored():
     with pytest.raises(ClaudeCodeConfigError, match="skills"):
         check_llm_config(AnthropicLLMConfig(skills=[{"type": "anthropic", "skill_id": "xlsx"}]))
