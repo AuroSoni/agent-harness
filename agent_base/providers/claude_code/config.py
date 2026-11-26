@@ -37,12 +37,14 @@ DEFAULT_SECRET_PATTERNS: tuple[str, ...] = (
 )
 #: The one secret the CLI needs: the plan's long-lived login (``claude setup-token``).
 KEEP_ENV: frozenset[str] = frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})
-#: Claude Code's own limits, lifted so the library's history and tools are what the model sees.
+#: Claude Code's own limits lifted, and its own compaction and memory off, so the library's history and tools
+#: are what the model sees.
 CLI_ENV: dict[str, str] = {
     "ENABLE_TOOL_SEARCH": "false",                       # every tool schema stays loaded
     "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH": "200000",  # no truncation of the tools' descriptions
     "MAX_MCP_OUTPUT_TOKENS": "200000",                   # the library's externalizer is the only result cap
     "DISABLE_AUTO_COMPACT": "1",                         # one history: the library's (compaction is its own)
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",              # no Claude Code memory: the host's is the only one
 }
 
 #: Claude Code's own web tools, by the Anthropic server tool each stands in for.
