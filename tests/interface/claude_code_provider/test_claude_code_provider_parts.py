@@ -53,6 +53,16 @@ def test_claude_codes_own_memory_is_off():
     assert cli_env()["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
 
 
+def test_a_tool_calls_handler_outwaits_the_step_that_registers_it():
+    """Claude Code runs a reply's library calls together with its web calls (the tools are marked read-only), and
+    the step registers the library calls only once the web calls' results are in. So a handler waits for its call
+    to be registered at least as long as the step waits for those results; a slow WebFetch can't leave it
+    unmatched."""
+    from agent_base.providers.claude_code import provider as cc
+
+    assert cc._REGISTER_WAIT_S > cc._OWN_RESULTS_WAIT_S
+
+
 def test_request_fields_refused_or_ignored():
     with pytest.raises(ClaudeCodeConfigError, match="skills"):
         check_llm_config(AnthropicLLMConfig(skills=[{"type": "anthropic", "skill_id": "xlsx"}]))

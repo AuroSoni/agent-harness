@@ -81,7 +81,12 @@ _FALLBACK_STATUSES = {401, 402, 403, 429}
 OVERAGE_CARRIES = ("allowed", "allowed_warning")
 OVERFLOW_REASONS = {"prompt_too_long", "blocking_limit", "rapid_refill_breaker"}
 MAX_RESULT_CHARS = 2_000_000
-_STOPPED = {"content": [{"type": "text", "text": "The step was stopped."}], "is_error": True}
+#: How long a step waits for the results of the calls Claude Code answers itself (its web tools) before it ends.
+_OWN_RESULTS_WAIT_S = 600.0
+#: How long a tool call's handler waits for the step to register it. A reply's library calls are registered only
+#: once its web calls' results are in, and Claude Code runs both at once, so the handler outwaits the step.
+_REGISTER_WAIT_S = _OWN_RESULTS_WAIT_S + 30.0
+_STOPPED ={"content": [{"type": "text", "text": "The step was stopped."}], "is_error": True}
 _CUT_OFF_HEADER = ("Your previous turn was cut off before it finished (the user stopped or redirected it). "
                    "What happened after the point you remember, in order:")
 _RESULTS_HEADER = ("Results of the tool calls from your last step. The step was cut off before they reached you, "
@@ -699,8 +704,13 @@ class ClaudeCodeProvider:
             async def handler(args: dict, _name: str = s.name) -> dict:
                 return await self._handle(_name, args)
 
+            # readOnlyHint: Claude Code runs a reply's calls in batches, and an MCP tool shares a batch only when it
+            # says it is read-only. Otherwise a library call that comes before a WebFetch in one reply is answered
+            # before WebFetch runs, while the step waits for WebFetch's result before it registers that call: each
+            # waits on the other. The loop runs the tools, so this changes only how Claude Code schedules the calls.
             tools.append(SdkMcpTool(name=s.name, description=s.description or "", input_schema=schema,
-                                    handler=handler, annotations=ToolAnnotations(maxResultSizeChars=MAX_RESULT_CHARS)))
+                                    handler=handler, annotations=ToolAnnotations(
+                                        readOnlyHint=True, maxResultSizeChars=MAX_RESULT_CHARS)))
         return tools
 
     async def _handle(self, name: str, args: dict) -> dict:
@@ -709,8 +719,10 @@ class ClaudeCodeProvider:
         generation, answered = self._generation, self._answered
         if self._client is None:
             return _STOPPED  # the process this call came from is gone
+        deadline = time.monotonic() + _REGISTER_WAIT_S
         async with self._registered:
-            for _ in range(120):  # a call is registered once its message's message_stop is read
+            # A call is registered once its reply is read, its web calls' results included.
+            while time.monotonic() < deadline:
                 if tool_id in self._futures or (tool_id is None and self._futures):
                     break
                 if self._generation != generation or self._client is None:
@@ -943,7 +955,7 @@ class ClaudeCodeProvider:
             """Wait for the results of the calls Claude Code answered itself (its web tools' results, its refusals),
             then frame them. A process that dies, or an abort, ends the wait."""
             ids = [i for i in ids if i not in framed]
-            deadline = time.monotonic() + 600
+            deadline = time.monotonic() + _OWN_RESULTS_WAIT_S
             while any(i not in self._cc_results for i in ids) and time.monotonic() < deadline:
                 if reader is None or reader.done():
                     raise _Fallback("the Claude Code process ended before the result of a call it answers itself")

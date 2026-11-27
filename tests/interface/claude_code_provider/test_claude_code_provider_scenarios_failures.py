@@ -120,10 +120,18 @@ class Fake(FakeClaudeCode):
                     res, err = spec.get("permissionDecisionReason") or "denied", True
             self.web_results[b["id"]] = (res, err)
             results.append(ToolResultBlock(tool_use_id=b["id"], content=res, is_error=err))
-        self.push(UserMessage(content=results))
+        own = UserMessage(content=results)
         theirs = [b for b in uses if b["name"] not in CC_WEB]
+        # As the base fake: a library call that comes before a web call and isn't marked read-only is answered
+        # before Claude Code runs the web call.
+        mine = [b for b in uses if b["name"] in CC_WEB]
+        held_first = bool(theirs and mine) and uses.index(theirs[0]) < uses.index(mine[0]) \
+            and not await self._read_only(theirs)
+        if not held_first:
+            self.push(own)
         if theirs:
-            self.tool_calls.append(asyncio.create_task(self._run_tools(theirs)))
+            run = self._run_tools(theirs, then=own) if held_first else self._run_tools(theirs)
+            self.tool_calls.append(asyncio.create_task(run))
         else:
             await self.next_model_call()
 
@@ -1022,6 +1030,23 @@ async def test_a_tool_call_id_the_step_never_registered_does_not_stall_the_next_
     assert getattr(outcome, "final_answer", outcome) == "5 and 20."
     said, is_error = _cli_result((await h.last.tool_calls[0])[1])
     assert is_error and "could not be matched" in said
+    await _no_leaks(h)
+
+
+async def test_a_library_call_before_a_web_call_in_one_reply_gets_its_own_result(tmp_path):
+    """One reply calls a library tool, then WebFetch (Nova's UAT U16, 27 Nov 2026). Claude Code answers a call that
+    isn't safe to run alongside others before it starts the next, and the step waited for WebFetch's result before
+    registering the library call: each waited on the other until the handler gave up after 120 s with "could not
+    be matched", though the tool round then ran the call. The library's tools are marked read-only, so Claude Code
+    runs them with its web tools, and the call gets its own result."""
+    h = H(tmp_path, [[call("add", a=2, b=3), web("WebFetch", "Example page.", url="https://example.com")],
+                     [text("5.")]])
+    agent = _agent(h.provider, server_tools=[WEB_FETCH])
+    run = asyncio.create_task(agent.run("What is 2 + 3? Then read example.com."))
+    outcome = await _settles(run, h, 8, "the library call waits on WebFetch, which waits on the library call")
+    assert getattr(outcome, "final_answer", outcome) == "5."
+    said, is_error = _cli_result((await h.last.tool_calls[0])[0])
+    assert not is_error and "5" in said
     await _no_leaks(h)
 
 

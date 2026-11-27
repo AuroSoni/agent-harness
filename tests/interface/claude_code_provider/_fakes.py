@@ -183,15 +183,34 @@ class FakeClaudeCode:
         mine = [b for b in uses if b["name"] in CC_WEB]
         held = set(self.opts.allowed_tools or [])
         refused = [b for b in uses if b["name"] not in CC_WEB and b["name"] not in held]
+        own = None
         if mine or refused:
-            self.push(UserMessage(content=[ToolResultBlock(tool_use_id=b["id"], content=b["result"]) for b in mine]
-                                  + [ToolResultBlock(tool_use_id=b["id"], content=NO_SUCH_TOOL.format(b["name"]),
-                                                     is_error=True) for b in refused]))
+            own = UserMessage(content=[ToolResultBlock(tool_use_id=b["id"], content=b["result"]) for b in mine]
+                              + [ToolResultBlock(tool_use_id=b["id"], content=NO_SUCH_TOOL.format(b["name"]),
+                                                 is_error=True) for b in refused])
         theirs = [b for b in uses if b["name"] not in CC_WEB and b["name"] in held]
+        # Claude Code runs a reply's calls in batches, in order: calls that are safe to run together share a
+        # batch, any other call runs alone and is answered before the next batch starts. Its web tools are safe;
+        # an MCP tool is only when its annotations say readOnlyHint (the bundled CLI's isConcurrencySafe). So a
+        # library call that comes before a web call, and isn't marked read-only, is answered before the web call
+        # runs.
+        held_first = bool(theirs and mine) and uses.index(theirs[0]) < uses.index(mine[0]) \
+            and not await self._read_only(theirs)
+        if own is not None and not held_first:
+            self.push(own)
         if theirs:
-            self.tool_calls.append(asyncio.create_task(self._run_tools(theirs)))
+            run = self._run_tools(theirs, then=own) if held_first else self._run_tools(theirs)
+            self.tool_calls.append(asyncio.create_task(run))
         else:
             await self.next_model_call()
+
+    async def _read_only(self, uses: list[dict]) -> bool:
+        """Whether every one of these library calls' tools is annotated readOnlyHint, as the server lists it."""
+        server = next(iter(self.opts.mcp_servers.values()))["instance"]
+        listed = await server.request_handlers[mcp_types.ListToolsRequest](
+            mcp_types.ListToolsRequest(method="tools/list"))
+        hints = {t.name: getattr(t.annotations, "readOnlyHint", None) for t in listed.root.tools}
+        return all(hints.get(u["name"].split("__", 2)[-1]) is True for u in uses)
 
     async def _cut(self, blocks: list[dict], partial: str, resumed_ok: bool) -> None:
         msg_id = f"msg_{next(_ids)}"
@@ -221,9 +240,11 @@ class FakeClaudeCode:
                                     num_turns=1, session_id=self.session_id,
                                     result=None if resumed_ok else "API Error: Server error mid-response."))
 
-    async def _run_tools(self, uses: list[dict]) -> list:
+    async def _run_tools(self, uses: list[dict], then: Any = None) -> list:
         server = next(iter(self.opts.mcp_servers.values()))["instance"]
         results = await asyncio.gather(*(self.call_tool(server, u) for u in uses))
+        if then is not None:
+            self.push(then)  # the reply's web calls, which ran only after these were answered
         await self.next_model_call()
         return results
 
